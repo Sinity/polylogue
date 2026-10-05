@@ -58,6 +58,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
 
 pytestmark = pytest.mark.xdist_group("web-reader")
@@ -181,7 +182,7 @@ def _message_ids(payload: dict[str, Any]) -> list[str]:
 def _deep_message_id(session_id: str, archive_root: Path) -> str:
     """The id of the message at ``_DEEP_INDEX`` in composed transcript order."""
 
-    with ArchiveStore(archive_root) as archive:
+    with ArchiveStore(archive_root, read_only=True) as archive:
         envelope = archive.read_session_page(session_id, limit=1, offset=_DEEP_INDEX)
     return str(envelope.messages[0].message_id)
 
@@ -510,7 +511,8 @@ async def test_db_backed_window_composes_no_transcript(
     """
 
     session_id = seeded_archive["session_ids"][0]
-    target = _deep_message_id(session_id, seeded_archive["archive_root"])
+    # Opening the archive store may bootstrap under the synchronous lease; keep it off the loop.
+    target = run_off_event_loop(lambda: _deep_message_id(session_id, seeded_archive["archive_root"]))
     composed = _composed_row_counter(monkeypatch)
 
     paged = await _db_backed(seeded_archive["archive_root"], monkeypatch, "_do_get_messages", session_id, _PAGE, 0)

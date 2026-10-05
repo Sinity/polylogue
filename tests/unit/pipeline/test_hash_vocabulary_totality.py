@@ -176,7 +176,7 @@ def test_a_value_outside_the_vocabulary_is_refused_by_name() -> None:
         _normalize_nested_for_hash({"outer": [object()]})
     message = str(caught.value)
     assert "object" in message
-    assert "payload.outer[]" in message
+    assert "payload.'outer'[]" in message
     assert issubclass(UnhashablePayloadValueError, TypeError)
 
 
@@ -288,7 +288,7 @@ def test_fast_walk_still_names_the_path_of_a_refused_value() -> None:
     """Anti-vacuity: re-raising the fast walk's internal signal loses the path."""
     with pytest.raises(UnhashablePayloadValueError) as caught:
         _normalize_nested_for_hash({"outer": {"inner": [1, {"leaf": object()}]}})
-    assert "payload.outer.inner[].leaf" in str(caught.value)
+    assert "payload.'outer'.'inner'[].'leaf'" in str(caught.value)
 
 
 def test_decimals_beyond_float_precision_keep_distinct_identities() -> None:

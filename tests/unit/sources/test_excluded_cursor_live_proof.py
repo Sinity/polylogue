@@ -32,11 +32,8 @@ def test_candidate_fixture_proves_all_cursor_outcomes_and_is_immutable(tmp_path:
         "deferred_partial": True,
     }
     deferred_partial = next(case for case in receipt["cases"] if case["case_id"] == "deferred-partial")
-    assert deferred_partial["failure_evidence"] == {
-        "artifact_kind": "deferred_hot_jsonl_capture",
-        "support_status": "partial_decode",
-        "parse_error_present": False,
-    }
+    assert deferred_partial["failure_evidence"] is None
+    assert deferred_partial["attempt"]["evidence_ref"] == "batch:partial_admission"
     assert receipt["execution"] == {
         "mode": "candidate_fixture",
         "live_census": "not_run",
@@ -49,10 +46,10 @@ def test_candidate_fixture_proves_all_cursor_outcomes_and_is_immutable(tmp_path:
         "LiveWatcher.classify_ingest_candidates -> page ingest"
     )
     assert receipt["anti_vacuity"] == {
-        "indexed_authority": "byte_proven_source_raw_and_revision_head",
+        "indexed_authority": "retained_source_raw",
         "indexed_session_count_before": 0,
         "indexed_session_count": 1,
-        "deferred_partial_artifact": "deferred_hot_jsonl_capture",
+        "deferred_partial_admission": "batch:partial_admission",
         "unchanged_excluded_attempt_present": False,
     }
 

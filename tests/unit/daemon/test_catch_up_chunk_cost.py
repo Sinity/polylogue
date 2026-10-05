@@ -32,6 +32,7 @@ from polylogue.sources.live import hook_paste_enrichment
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import WatchSource
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.compute_owner import owned_compute_adapter
 
 _MESSAGES_PER_SESSION = 8
@@ -153,7 +154,8 @@ def _build(
     compute_adapter: BoundedComputeAdapter,
 ) -> tuple[LiveBatchProcessor, Path, Path]:
     archive_root = tmp_path / f"archive-{seeded_sessions}"
-    archive_root.mkdir()
+    # Source-only acquisition refuses an archive without its durable Source tier.
+    bootstrap_archive_root(archive_root)
     corpus_root = tmp_path / f"corpus-{seeded_sessions}"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(archive_root / "polylogue.toml"))

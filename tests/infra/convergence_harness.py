@@ -784,16 +784,8 @@ def _analyze_registry_tables(index_db: Path) -> None:
         conn.commit()
 
 
-def seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> PartialConvergenceArchive:
-    """Seed the current partial-convergence workload through typed archive writes.
-
-    Bootstrap takes the synchronous write lease, so an async law's seeding
-    runs off its event loop.
-    """
-    return run_off_event_loop(lambda: _seed_partial_convergence_archive(root, target_hot=target_hot))
-
-
-def _seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> PartialConvergenceArchive:
+def _seed_partial_convergence_archive_on_writer(root: Path, *, target_hot: bool) -> PartialConvergenceArchive:
+    """Seed the current partial-convergence workload through typed archive writes."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     root.mkdir(parents=True, exist_ok=True)
@@ -838,6 +830,11 @@ def _seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> Partia
             archive_id="archive:testdiet-02-partial-convergence",
         ),
     )
+
+
+def seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> PartialConvergenceArchive:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_partial_convergence_archive_on_writer(root, target_hot=target_hot))
 
 
 def truncate_sparse(path: Path, size: int) -> None:

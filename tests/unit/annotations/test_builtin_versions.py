@@ -7,6 +7,7 @@ import json
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -38,6 +39,7 @@ from tests.infra.annotation_history import (
     seed_annotation_history,
 )
 from tests.infra.annotation_join import join_fixture_annotations
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.daemon_operations import daemon_serving_archive
 from tests.infra.live_ingest import write_index_session
 
@@ -85,7 +87,7 @@ def test_ordinary_reopen_preserves_both_post_floor_v1_definitions_and_batches(
 @pytest.mark.asyncio
 async def test_retired_historical_target_is_inspectable_but_cannot_be_resolved(tmp_path: Path) -> None:
     """Historical labels are unsupported structural targets, not invalid schema drift."""
-    seed_annotation_history(tmp_path, "pre_5314")
+    run_off_event_loop(lambda: seed_annotation_history(tmp_path, "pre_5314"))
     initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
     with ArchiveStore.open_existing(tmp_path) as archive:
         batch = archive.get_annotation_batch("historical-seed.activity")
@@ -177,18 +179,23 @@ async def test_actual_facade_daemon_import_records_current_versions_for_all_five
 ) -> None:
     root = tmp_path / "archive"
     if variant is not None:
-        seed_annotation_history(root, variant)
-    with ArchiveStore(root) as archive:
-        session_id = write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="current-annotation",
-                messages=[
-                    ParsedMessage(provider_message_id="m1", role=Role.USER, text="Synthetic annotation evidence")
-                ],
-            ),
-        )
+        run_off_event_loop(lambda: seed_annotation_history(root, variant))
+
+    def _seed_archive_1() -> Any:
+        with ArchiveStore(root) as archive:
+            session_id = write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="current-annotation",
+                    messages=[
+                        ParsedMessage(provider_message_id="m1", role=Role.USER, text="Synthetic annotation evidence")
+                    ],
+                ),
+            )
+            return (session_id,)
+
+    (session_id,) = run_off_event_loop(_seed_archive_1)
     with daemon_serving_archive(root):
         async with Polylogue(archive_root=root, db_path=root / "index.db") as api:
             for schema in SEED_ANNOTATION_SCHEMAS:

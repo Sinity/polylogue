@@ -368,31 +368,34 @@ def test_breaking_the_reset_failures_actuator_is_caught_by_the_validator(
 
 _SIGKILL_SUBPROCESS_SCRIPT = """
 import signal
-import sqlite3
 import sys
 from pathlib import Path
 
-# ``upsert_ingest_cursor`` (polylogue/storage/sqlite/archive_tiers/ops_write.py)
-# issues its own ``conn.commit()`` right after the row UPDATE -- discovered
-# while building this harness: the outer ``BEGIN IMMEDIATE`` in
-# ``CursorStore._read_modify_write_cursor_record`` widens the WRITE LOCK to
-# cover the read (that is what fixes polylogue-qug2's lost-update race), but
-# the actual durable commit boundary is this inner ``conn.commit()``, not the
-# `with conn:` context manager exit several stack frames up. A crash fault
-# has to straddle THIS commit call, not merely "somewhere inside
-# CursorStore.mark_failed", or it can never observe an uncommitted write --
-# proved empirically: wrapping the outer function and killing the process
-# right after it returned always observed the write already durable.
+# The durable commit boundary of a cursor transition is the successful exit
+# of ``with conn:`` in ``CursorStore._connect_ops``: the outer ``BEGIN
+# IMMEDIATE`` in ``_read_modify_write_cursor_record`` widens the write lock to
+# cover the read (polylogue-qug2), and ``upsert_ingest_cursor`` deliberately
+# does not commit inside a held transaction. The context-manager exit commits
+# in C without calling a Python ``commit`` override, so the pause straddles
+# ``__exit__`` itself. A fault merely "somewhere inside mark_failed" can never
+# observe an uncommitted write.
 #
 # ARMED gates the pause so only the write this test cares about is poisoned
 # -- CursorStore.__init__ issues its own unrelated ops-tier commits during
 # initialize()/interrupted-attempt recovery, which must proceed normally.
 ARMED = [False]
 
+from polylogue.storage import io_phase_metrics  # noqa: E402
 
-class PausingConnection(sqlite3.Connection):
-    def commit(self):
-        if ARMED[0]:
+from polylogue.storage import io_phase_metrics  # noqa: E402
+
+
+# Ops connections are created by ``connect_measured`` with its own measured
+# connection factory; pause inside that same class so the admitted creator
+# and its custody checks stay the production ones.
+class PausingConnection(io_phase_metrics._MeasuredConnection):
+    def __exit__(self, exc_type, exc, traceback):
+        if ARMED[0] and exc_type is None and self.in_transaction:
             sys.stdout.write("WROTE\\n")
             sys.stdout.flush()
             # Genuinely parks this thread in a kernel wait -- no further
@@ -404,18 +407,10 @@ class PausingConnection(sqlite3.Connection):
             # interpreter can -- and, measured empirically, does -- run far
             # enough to finish the commit before the kernel acts on it).
             signal.pause()
-        return super().commit()
+        return super().__exit__(exc_type, exc, traceback)
 
 
-_original_connect = sqlite3.connect
-
-
-def _patched_connect(*args, **kwargs):
-    kwargs.setdefault("factory", PausingConnection)
-    return _original_connect(*args, **kwargs)
-
-
-sqlite3.connect = _patched_connect
+io_phase_metrics._MeasuredConnection = PausingConnection
 
 from polylogue.sources.live.cursor import CursorPathAuthority, CursorStore  # noqa: E402
 

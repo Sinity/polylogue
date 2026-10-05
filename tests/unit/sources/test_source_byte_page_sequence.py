@@ -89,3 +89,25 @@ def test_a_failed_capture_retires_only_its_own_reader(tmp_path: Path) -> None:
         assert replacement._process is not None and replacement._process is not failed
         with store.open(capture.blob_hash) as retained:
             assert retained.read() == second.read_bytes()
+
+
+def test_a_page_proves_each_binding_without_a_fresh_reader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lent page binds its inputs; no capture starts a process of its own.
+
+    Anti-vacuity: binding through ``_exchange_source_worker`` again starts one
+    fresh interpreter per input, which the patched exchange refuses here.
+    """
+    from polylogue.sources import sqlite_export
+
+    def refuse_fresh_reader(request: dict[str, object], handle: object = None) -> dict[str, object]:
+        raise AssertionError(f"fresh reader for {request['operation']}")
+
+    monkeypatch.setattr(sqlite_export, "_exchange_source_worker", refuse_fresh_reader)
+    store = BlobStore(tmp_path / "blobs")
+    paths = _inputs(tmp_path, 3)
+    with source_byte_page_sequence() as pages:
+        for path in paths:
+            capture = capture_bound_path(store, path, Provider.CLAUDE_CODE, byte_page=pages.page())
+            assert capture.canonical_source_path == str(path.parent.resolve() / path.name)
+            with store.open(capture.blob_hash) as retained:
+                assert retained.read() == path.read_bytes()

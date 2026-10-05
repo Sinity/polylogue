@@ -28,6 +28,7 @@ import pytest
 from polylogue.archive.query.metadata import query_unit_descriptors
 from polylogue.mcp.declarations.registry import declared_tool_names
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
 from tests.infra.storage_records import SessionBuilder
 
@@ -38,11 +39,14 @@ def _seeded_archive(tmp_path: Path) -> Path:
     archive_root = tmp_path / "archive"
     from polylogue.operations.fts_derivation import stamp_fts_readiness_binding
 
-    with ArchiveStore(archive_root) as archive:
-        builder = SessionBuilder(archive_root / "index.db", "capability-pointer").provider("codex-session")
-        builder.add_message(role="user", text="capability pointer seed").save()
-        assert stamp_fts_readiness_binding(archive._conn)
-        archive._conn.commit()
+    def seed() -> None:
+        with ArchiveStore(archive_root) as archive:
+            builder = SessionBuilder(archive_root / "index.db", "capability-pointer").provider("codex-session")
+            builder.add_message(role="user", text="capability pointer seed").save()
+            assert stamp_fts_readiness_binding(archive._conn)
+            archive._conn.commit()
+
+    run_off_event_loop(seed)
     return archive_root
 
 
@@ -306,9 +310,12 @@ async def test_capability_pages_keep_declarations_without_full_statistics(
     elif archive_state == "empty":
         from polylogue.operations.fts_derivation import stamp_fts_readiness_binding
 
-        with ArchiveStore(root) as archive:
-            assert stamp_fts_readiness_binding(archive._conn)
-            archive._conn.commit()
+        def stamp_empty() -> None:
+            with ArchiveStore(root) as archive:
+                assert stamp_fts_readiness_binding(archive._conn)
+                archive._conn.commit()
+
+        run_off_event_loop(stamp_empty)
 
     def forbidden(*args: object, **kwargs: object) -> None:
         raise AssertionError("capability pages must not aggregate statistics or hydrate sessions")

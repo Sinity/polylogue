@@ -168,7 +168,7 @@ GALLERY_SAMPLES: tuple[GallerySample, ...] = (
 #: wrapping them. Fixing *that* is the ratchet's actual target and is not
 #: what this raise buys.
 REFLOW_OVERFLOW_BASELINE: Mapping[str, int] = {
-    "root-help@40": 159,
+    "root-help@40": 158,
     "root-help@60": 101,
     "root-help@80": 10,
     "root-help@120": 2,
@@ -176,9 +176,9 @@ REFLOW_OVERFLOW_BASELINE: Mapping[str, int] = {
     "find-help@60": 11,
     "find-help@80": 0,
     "find-help@120": 0,
-    "read-help@40": 55,
-    "read-help@60": 37,
-    "read-help@80": 3,
+    "read-help@40": 47,
+    "read-help@60": 34,
+    "read-help@80": 1,
     "read-help@120": 0,
     "unsignalled-query@40": 3,
     "unsignalled-query@60": 3,

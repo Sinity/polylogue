@@ -49,6 +49,7 @@ from polylogue.sources.sqlite_snapshot import (
     sqlite_source_revision,
 )
 from polylogue.storage.blob_store import BlobStore
+from tests.infra.raw_owner_routes import ingest_files_with_owners
 
 _STATE_DB_SCHEMA = """
 CREATE TABLE schema_version(version INTEGER NOT NULL);
@@ -783,7 +784,7 @@ def _processor(
     root.mkdir(parents=True)
     db_path = workspace_env["data_root"] / db_name
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
-    cursor = CursorStore(db_path)
+    cursor = CursorStore(db_path, ops_db_path=workspace_env["archive_root"] / "ops.db")
     processor = LiveBatchProcessor(
         archive,
         (_hermes_source(root),),
@@ -817,7 +818,7 @@ async def test_reingesting_a_repaged_database_adds_no_raw_revision(
     source_path = root / "state.db"
     try:
         _write_state_db(source_path, sessions=2)
-        first = await processor.ingest_files([source_path], emit_event=False)
+        first = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert first.failed_file_count == 0
         after_first = _raw_rows(workspace_env["archive_root"], source_path)
         assert len(after_first) == 1
@@ -826,7 +827,7 @@ async def test_reingesting_a_repaged_database_adds_no_raw_revision(
             conn.execute("PRAGMA page_size=8192")
             conn.execute("VACUUM")
 
-        second = await processor.ingest_files([source_path], emit_event=False)
+        second = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert second.failed_file_count == 0
         assert _raw_rows(workspace_env["archive_root"], source_path) == after_first
     finally:
@@ -853,7 +854,7 @@ async def test_sqlite_acquisition_failure_is_a_failed_file_not_a_batch_abort(
             raise sqlite3.DatabaseError("database disk image is malformed")
 
         monkeypatch.setattr("polylogue.sources.live.batch.snapshot_sqlite_to_blob", fail_snapshot)
-        result = await processor.ingest_files([source_path], emit_event=False)
+        result = await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         assert result.failed_file_count == 1
         assert result.succeeded_file_count == 0
@@ -893,7 +894,7 @@ async def test_sqlite_acquisition_failure_does_not_fail_its_healthy_siblings(
 
         monkeypatch.setattr("polylogue.sources.live.batch.snapshot_sqlite_to_blob", fail_only_state)
 
-        result = await processor.ingest_files([broken, healthy], emit_event=False)
+        result = await ingest_files_with_owners(processor, [broken, healthy], emit_event=False)
 
         assert result.failed_file_count == 1
         assert result.succeeded_file_count == 1
@@ -913,13 +914,13 @@ async def test_one_changed_row_produces_exactly_one_new_raw_revision(
     source_path = root / "state.db"
     try:
         _write_state_db(source_path, sessions=2)
-        await processor.ingest_files([source_path], emit_event=False)
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
         after_first = _raw_rows(workspace_env["archive_root"], source_path)
 
         with closing(sqlite3.connect(source_path)) as conn, conn:
             conn.execute("UPDATE sessions SET title = 'renamed' WHERE id = 'session-1'")
 
-        await processor.ingest_files([source_path], emit_event=False)
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
         after_second = _raw_rows(workspace_env["archive_root"], source_path)
 
         assert len(after_first) == 1
@@ -945,7 +946,7 @@ async def test_the_freshness_gate_skips_a_checkpointed_but_unchanged_database(
     source_path = root / "state.db"
     try:
         _write_state_db(source_path, sessions=2, wal=True)
-        await processor.ingest_files([source_path], emit_event=False)
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         with closing(sqlite3.connect(source_path)) as conn:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -982,7 +983,7 @@ async def test_the_freshness_gate_reopens_a_logically_changed_database(
     source_path = root / "state.db"
     try:
         _write_state_db(source_path, sessions=2, wal=True)
-        await processor.ingest_files([source_path], emit_event=False)
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         with closing(sqlite3.connect(source_path)) as conn, conn:
             conn.execute("UPDATE sessions SET title = 'renamed' WHERE id = 'session-0'")

@@ -27,7 +27,8 @@ if TYPE_CHECKING:
 class ParsingService:
     """Service for parsing sessions from sources asynchronously."""
 
-    DEFAULT_RAW_BATCH_SIZE = 50
+    #: Raw records per parse page; a paging granularity, not an admission limit.
+    RAW_BATCH_SIZE = 50
     DEFAULT_RAW_BATCH_BLOB_LIMIT_BYTES = 128 * 1024 * 1024
 
     def __init__(
@@ -36,22 +37,16 @@ class ParsingService:
         archive_root: Path,
         config: Config,
         *,
-        raw_batch_size: int = DEFAULT_RAW_BATCH_SIZE,
         ingest_workers: int | None = None,
-        measure_ingest_result_size: bool = False,
         execution: IngestExecution | None = None,
         retained_runner: Callable[[Sequence[str]], Awaitable[tuple[PreparedRevisionReplayResult, ...]]] | None = None,
     ) -> None:
-        if raw_batch_size <= 0:
-            raise ValueError("raw_batch_size must be a positive integer")
         if ingest_workers is not None and ingest_workers <= 0:
             raise ValueError("ingest_workers must be a positive integer")
         self.repository = repository
         self.archive_root = archive_root
         self.config = config
-        self._raw_batch_size = raw_batch_size
         self._ingest_workers = ingest_workers
-        self._measure_ingest_result_size = measure_ingest_result_size
         self.execution = execution
         self.retained_runner = retained_runner
 
@@ -102,20 +97,12 @@ class ParsingService:
         )
 
     @property
-    def raw_batch_size(self) -> int:
-        return self._raw_batch_size
-
-    @property
     def raw_batch_blob_limit_bytes(self) -> int:
         return self.DEFAULT_RAW_BATCH_BLOB_LIMIT_BYTES
 
     @property
     def ingest_workers(self) -> int | None:
         return self._ingest_workers
-
-    @property
-    def measure_ingest_result_size(self) -> bool:
-        return self._measure_ingest_result_size
 
     async def parse_from_raw(
         self,

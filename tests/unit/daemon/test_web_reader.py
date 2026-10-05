@@ -442,7 +442,13 @@ def _running_server_without_seed(
     auth_token: str = "",
 ) -> Iterator[tuple[HTTPServer, str]]:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
+    from polylogue.paths import archive_root
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
+    # The server binds an existing archive; "without seed" means an empty one.
+    root = archive_root()
+    if not root.is_dir():
+        initialize_active_archive_root(root)
     server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler)
     server.auth_token = auth_token
     server.api_host = "127.0.0.1"
@@ -2078,7 +2084,8 @@ class TestReaderDegradedStates:
 
 
 class TestReaderQueryCompletions:
-    def test_query_completions_endpoint_exposes_shared_payload(self) -> None:
+    def test_query_completions_endpoint_exposes_shared_payload(self, workspace_env: dict[str, Path]) -> None:
+        del workspace_env
         with _running_server_without_seed() as (_server, base_url):
             payload = _get_json(base_url, "/api/query-completions?kind=field&incomplete=d")
 
@@ -2094,7 +2101,8 @@ class TestReaderQueryCompletions:
         assert date_candidate["insert"] == "date "
         assert date_candidate["source"] == "DATE_QUERY_FIELD_REGISTRY"
 
-    def test_query_completions_endpoint_reports_invalid_context(self) -> None:
+    def test_query_completions_endpoint_reports_invalid_context(self, workspace_env: dict[str, Path]) -> None:
+        del workspace_env
         with _running_server_without_seed() as (_server, base_url):
             status, payload = _get_json_ex(base_url, "/api/query-completions?kind=structural-field")
 
@@ -2102,7 +2110,8 @@ class TestReaderQueryCompletions:
         assert payload["error"] == "invalid_query_completion"
         assert "--unit is required" in str(payload["message"])
 
-    def test_query_completions_endpoint_exposes_terminal_fields(self) -> None:
+    def test_query_completions_endpoint_exposes_terminal_fields(self, workspace_env: dict[str, Path]) -> None:
+        del workspace_env
         with _running_server_without_seed() as (_server, base_url):
             payload = _get_json(
                 base_url,
@@ -2120,7 +2129,8 @@ class TestReaderQueryCompletions:
         assert [candidate["value"] for candidate in candidate_payloads] == ["boundary"]
         assert candidate_payloads[0]["insert"] == "boundary:"
 
-    def test_query_completions_endpoint_exposes_pipeline_stages(self) -> None:
+    def test_query_completions_endpoint_exposes_pipeline_stages(self, workspace_env: dict[str, Path]) -> None:
+        del workspace_env
         with _running_server_without_seed() as (_server, base_url):
             payload = _get_json(
                 base_url,
@@ -3005,7 +3015,8 @@ class TestReaderQueryUnits:
 
 
 class TestReaderViewProfiles:
-    def test_read_view_profiles_endpoint_exposes_shared_profile_semantics(self) -> None:
+    def test_read_view_profiles_endpoint_exposes_shared_profile_semantics(self, workspace_env: dict[str, Path]) -> None:
+        del workspace_env
         from polylogue.archive.viewport import read_view_http_capability_payloads
 
         with _running_server_without_seed() as (_server, base_url):

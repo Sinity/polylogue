@@ -183,7 +183,7 @@ def _mock_live_ingest(
             raw_byte_sizes={path: path.stat().st_size for path in paths},
         )
 
-    def fake_append_ingest(plans: list[Any]) -> _AppendResult:
+    async def fake_append_ingest(_processor: Any, plans: list[Any]) -> _AppendResult:
         return _AppendResult(succeeded=plans, failed=[], worker_count=1)
 
     def fake_existing_provider_session_id(path: Path, *, expected_origin: str) -> str | None:
@@ -192,7 +192,7 @@ def _mock_live_ingest(
 
     with (
         patch.object(proc, "_ingest_full_paths", fake_full_ingest),
-        patch.object(proc, "_ingest_append_plans", fake_append_ingest),
+        patch.object(proc, "_append_runner", fake_append_ingest),
         patch.object(proc, "_existing_provider_session_id", fake_existing_provider_session_id),
     ):
         yield existing_ids
@@ -418,7 +418,7 @@ class TestActiveAppendNoFullReread:
             *,
             whole_archive: bool = True,
             session_ids: Iterable[str] = (),
-        ) -> tuple[set[Path], float, dict[str, float], list[object]]:
+        ) -> tuple[set[Path], float, dict[str, float], list[object], list[object]]:
             # Bound to the production signature of
             # ``LiveBatchProcessor._converge_paths``: the real route passes
             # ``whole_archive=`` and ``session_ids=`` as keywords, and a double
@@ -429,7 +429,8 @@ class TestActiveAppendNoFullReread:
             if not appended_after_persistence:
                 _append_jsonl(path, [_claude_code_record(session_id=session_id, uuid="later")])
                 appended_after_persistence = True
-            return set(paths), 0.0, {}, []
+            # (converged paths, seconds, stage seconds, open debt, debt settlements)
+            return set(paths), 0.0, {}, [], []
 
         monkeypatch.setattr(proc, "_converge_paths", append_after_persistence)
         full_route_paths: list[Path] = []

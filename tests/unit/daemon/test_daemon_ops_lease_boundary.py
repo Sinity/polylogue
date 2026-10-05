@@ -32,6 +32,7 @@ direction, so "stop enforcing the lease on ops.db" cannot pass this module.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -113,9 +114,15 @@ async def test_batch_event_is_published_through_the_daemon_writer(tmp_path: Path
     emitted: list[str] = []
 
     async def sync_runner(actor: str, function: Any, /, *args: Any, **kwargs: Any) -> Any:
+        # Like the daemon writer, run the leased function on a worker thread:
+        # a synchronous lease may not block the event loop.
         admitted_actors.append(actor)
-        with write_lease(actor, archive_root=root):
-            return function(*args, **kwargs)
+
+        def leased() -> Any:
+            with write_lease(actor, archive_root=root):
+                return function(*args, **kwargs)
+
+        return await asyncio.to_thread(leased)
 
     def emitter(kind: str, payload: dict[str, object]) -> None:
         # Stands in for ``daemon.cli._emit_live_batch_event``, whose ops-tier

@@ -74,9 +74,7 @@ class PipelineProbeRequest:
     source_blob_root: str | None = None
     manifest_out: str | None = None
     manifest_in: str | None = None
-    raw_batch_size: int | None = None
     ingest_workers: int | None = None
-    measure_ingest_result_size: bool = False
     workdir: str | None = None
     json_out: str | None = None
     max_total_ms: float | None = None
@@ -126,12 +124,8 @@ class PipelineProbeRequest:
             argv.extend(("--manifest-out", self.manifest_out))
         if self.manifest_in is not None:
             argv.extend(("--manifest-in", self.manifest_in))
-        if self.raw_batch_size is not None:
-            argv.extend(("--raw-batch-size", str(self.raw_batch_size)))
         if self.ingest_workers is not None:
             argv.extend(("--ingest-workers", str(self.ingest_workers)))
-        if self.measure_ingest_result_size:
-            argv.append("--measure-ingest-result-size")
         if self.workdir is not None:
             argv.extend(("--workdir", self.workdir))
         if self.json_out is not None:
@@ -174,12 +168,8 @@ class PipelineProbeRequest:
             payload["manifest_out"] = self.manifest_out
         if self.manifest_in is not None:
             payload["manifest_in"] = self.manifest_in
-        if self.raw_batch_size is not None:
-            payload["raw_batch_size"] = self.raw_batch_size
         if self.ingest_workers is not None:
             payload["ingest_workers"] = self.ingest_workers
-        if self.measure_ingest_result_size:
-            payload["measure_ingest_result_size"] = True
         if self.workdir is not None:
             payload["workdir"] = self.workdir
         if self.json_out is not None:
@@ -226,9 +216,7 @@ class PipelineProbeRequest:
             if payload.get("manifest_out") is not None
             else None,
             manifest_in=payload_string(payload.get("manifest_in")) if payload.get("manifest_in") is not None else None,
-            raw_batch_size=payload_int(payload.get("raw_batch_size"), "raw_batch_size"),
             ingest_workers=payload_int(payload.get("ingest_workers"), "ingest_workers"),
-            measure_ingest_result_size=bool(payload.get("measure_ingest_result_size", False)),
             workdir=payload_string(payload.get("workdir")) if payload.get("workdir") is not None else None,
             json_out=payload_string(payload.get("json_out")) if payload.get("json_out") is not None else None,
             max_total_ms=payload_float(payload.get("max_total_ms"), "max_total_ms"),

@@ -145,6 +145,13 @@ def read_staging_receipt(
             metadata_identity = _named_identity(directory, name)
         except FileNotFoundError:
             return None
+        except OSError as exc:
+            # A receipt name beyond the filesystem's name limit cannot exist:
+            # receipts belong to short operation slots, never to a payload file
+            # whose own valid name already uses the whole limit.
+            if exc.errno != errno.ENAMETOOLONG:
+                raise
+            return None
         root = _identity(os.stat(staged.name, dir_fd=directory, follow_symlinks=False))
         if root[2] != stat.S_IFDIR:
             raise ValueError("staged receipt requires its private directory slot")
@@ -351,8 +358,13 @@ def bind_source_input(
     semantic_parent: Path | None = None,
     staged_input: StagedInputMember | None = None,
     captured_profile: CapturedHermesProfile | None = None,
+    byte_page: SourceBytePage | None = None,
 ) -> Iterator[SourceInputBinding]:
-    """Capture provenance once without opening an ordinary parent database FD."""
+    """Capture provenance once without opening an ordinary parent database FD.
+
+    A caller binding a page of inputs lends its live ``byte_page``: that
+    reader proves the binding instead of a fresh process per input.
+    """
     from polylogue.sources.sqlite_export import _exchange_source_worker, _identity, _named_identity
 
     path = path.absolute()
@@ -392,23 +404,22 @@ def bind_source_input(
             raise OSError(errno.ESTALE, "source input must be a regular file", str(path))
         if staged_input is not None and main != staged_input.file_identity:
             raise OSError(errno.ESTALE, "staged input changed before binding", str(path))
-        result = _exchange_source_worker(
-            {
-                "operation": "binding",
-                "source": str(physical_path),
-                "directory": descriptor,
-                "metadata_directory": metadata_descriptor,
-                "metadata_name": path.name,
-                "semantic_source": str(semantic_path),
-                "identities": {"": main},
-                "staged_input": None
-                if staged_input is None
-                else {
-                    "identity": staged_input.identity.to_dict(),
-                    "provenance": staged_input.provenance,
-                },
-            }
-        )
+        request = {
+            "operation": "binding",
+            "source": str(physical_path),
+            "directory": descriptor,
+            "metadata_directory": metadata_descriptor,
+            "metadata_name": path.name,
+            "semantic_source": str(semantic_path),
+            "identities": {"": main},
+            "staged_input": None
+            if staged_input is None
+            else {
+                "identity": staged_input.identity.to_dict(),
+                "provenance": staged_input.provenance,
+            },
+        }
+        result = _exchange_source_worker(request) if byte_page is None else byte_page.exchange(request, None)
         if (
             set(result) != {"source_path", "provenance", "staged", "profile"}
             or not isinstance(result["source_path"], str)
@@ -799,14 +810,12 @@ def _bound_byte_request(binding: SourceInputBinding, operation: str) -> dict[str
 def preflight_bound_bytes(
     binding: SourceInputBinding,
     *,
-    label: str,
     check_stop: Callable[[], None],
 ) -> dict[str, Any]:
     """Return shape evidence only after the accepted byte reader has settled."""
     from polylogue.sources.sqlite_export import _ProgressSink, source_byte_page
 
     request = _bound_byte_request(binding, "preflight_bytes")
-    request["preflight_label"] = label
     request["progress"] = True
     with source_byte_page() as reader:
         result = reader.exchange(request, _ProgressSink(check_stop))

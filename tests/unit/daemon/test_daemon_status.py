@@ -48,6 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     upsert_ingest_cursor,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.fts import completed_fts_readiness
 from tests.infra.session_profiles import write_session_profile
 
@@ -68,6 +69,7 @@ def test_status_fingerprint_changes_when_source_tier_changes(monkeypatch: pytest
     assert _daemon_status_fingerprint(index) != before
 
 
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
@@ -2102,24 +2104,36 @@ def test_build_daemon_status_claim_guard_keeps_registry_debt_health_separate(
     assert claim_guard["converged"]["reason"] == "ready"
 
 
+def _inspect_raw_frontier(root: Path) -> None:
+    """Run the production frontier inspection on its supplied convergence owner."""
+    import asyncio
+
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async def run() -> None:
+        async with prepared_live_convergence_owner(root) as owner:
+            await owner.run_convergence_sync(
+                "fixture.status.frontier",
+                inspect_prepared_raw_authority_frontier,
+                root,
+                input_demand=owner._compute_adapter.amend_current_input_demand,
+            )
+
+    asyncio.run(run())
+
+
 def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_path: Path) -> None:
     """polylogue-yla8.7 AC: a current accepted append head whose predecessor
     chain is broken must surface through ``raw_frontier_integrity``, render
     ``component_readiness`` as ``poisoned``, and block claim-guard
     ``converged`` end-to-end through ``build_daemon_status()`` — the same
-    authority gap yla8.6 found only through manual SQL."""
-    for tier in (
-        ArchiveTier.SOURCE,
-        ArchiveTier.INDEX,
-        ArchiveTier.EMBEDDINGS,
-        ArchiveTier.USER,
-        ArchiveTier.OPS,
-        ArchiveTier.AUDIT,
-    ):
-        if tier is ArchiveTier.SOURCE:
-            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
-        else:
-            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+    authority gap yla8.6 found only through manual SQL.
+
+    Status reports the completed frontier inspection rather than re-scanning
+    the corpus, so the fixture runs the production inspection producer after
+    seeding the broken chain."""
+    bootstrap_archive_root(tmp_path)
 
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
@@ -2164,6 +2178,7 @@ def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_pat
             (bytes(32),),
         )
         conn.commit()
+    _inspect_raw_frontier(tmp_path)
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
@@ -3230,7 +3245,8 @@ def test_blob_publication_reservation_info_reports_unresolved_bucket(tmp_path: P
     initialize_active_archive_root(archive_root_dir)
     publisher = ArchiveBlobPublisher(archive_root_dir / "source.db", archive_root_dir / "blob")
     publisher.write_from_bytes(b"unresolved status probe payload")
-    publisher.flush()
+    with write_lease("test.status-fixture", archive_root=archive_root_dir):
+        publisher.flush()
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=archive_root_dir),
@@ -4028,7 +4044,8 @@ def test_publication_surfaces_preserve_blocked_liveness(
     initialize_active_archive_root(root)
     publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
     blob_hash, _size = publisher.write_from_bytes(b"blocked publication surface control")
-    receipt = publisher.flush()[0]
+    with write_lease("test.status-fixture", archive_root=root):
+        receipt = publisher.flush()[0]
     if not blob_present:
         BlobStore(root / "blob").blob_path(blob_hash).unlink()
     (root / "index.db").unlink()

@@ -22,7 +22,7 @@
       },
       {
         "responseId": "reasoning",
-        "parentResponseId": "human",
+        "parentResponseId": "unrelated-observation",
         "sender": "ASSISTANT",
         "message": null,
         "createTime": "2026-01-01T00:00:02Z",

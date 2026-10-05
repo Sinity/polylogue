@@ -10,7 +10,6 @@ from polylogue.pipeline.services.ingest_batch._core import (
 )
 from polylogue.pipeline.services.ingest_batch._models import (
     _IngestBatchSummary,
-    _IngestWorkerRequest,
     _RawIngestOutcome,
     _SessionEntry,
 )
@@ -23,7 +22,6 @@ from polylogue.pipeline.services.ingest_worker import ingest_record
 __all__ = [
     "_SessionEntry",
     "_IngestBatchSummary",
-    "_IngestWorkerRequest",
     "_RawIngestOutcome",
     "_build_batch_memory_observation",
     "_unattributed_batch_elapsed_s",

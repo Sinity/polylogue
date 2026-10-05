@@ -10,6 +10,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
+from polylogue.core.stage_admission import stage_write_admission
 from polylogue.pipeline.services.ingest_batch._core import _prepare_ingest_payloads
 from polylogue.pipeline.services.ingest_batch._core import _write_session as _lower_ingest_session
 from polylogue.sources.parsers.base import ParsedSession
@@ -59,6 +60,26 @@ def close_fixture_index_connection(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
+def fixture_index_connection(index_path: Path) -> Iterator[sqlite3.Connection]:
+    """A lease-free, measured Index connection on a bootstrapped archive.
+
+    Canonical session preparation refuses a caller that already holds writer
+    custody, so fixture writers take their own lease after preparing; a test
+    handing them a connection must not hold one.
+    """
+    from polylogue.storage.io_phase_metrics import connect_measured
+    from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
+
+    run_off_event_loop(lambda: bootstrap_archive_root(index_path.parent))
+    conn = connect_measured(index_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        close_fixture_index_connection(conn)
+
+
+@contextmanager
 def fixture_index_mutation_scope(
     conn: sqlite3.Connection, *, archive_root: Path | None = None, standalone_memory: bool = False
 ) -> Iterator[IndexMutationScope]:
@@ -103,18 +124,16 @@ def write_fixture_ingest_payload(conn: sqlite3.Connection, payload: Any, **kwarg
     """
     import tempfile
 
-    from polylogue.core.stage_admission import stage_write_admission
     from polylogue.sources.prepared_jsonl import PreparedJsonl
     from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
     from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
-    from polylogue.storage.sqlite.write_lease import write_lease
     from tests.infra.archive_templates import bootstrap_archive_root
 
     if current_index_mutation_scope() is not None:
         raise ValueError("fixture preparation must precede its Index mutation scope")
     path = index_path_for_connection(conn)
     root = path.parent
-    with write_lease("test.fixture.bootstrap", archive_root=root):
+    with _fixture_writer_admission(conn, "test.fixture.bootstrap", root):
         bootstrap_archive_root(root)
     publisher = kwargs.get("blob_publisher") or ArchiveBlobPublisher(root / "source.db", root / "blob")
     if not isinstance(publisher, ArchiveBlobPublisher):
@@ -122,6 +141,9 @@ def write_fixture_ingest_payload(conn: sqlite3.Connection, payload: Any, **kwarg
     kwargs["blob_publisher"] = publisher
     kwargs["manage_transaction"] = False
     artifact = None
+    # The prepared view below is retired with its artifact; the caller's
+    # payload keeps the session it supplied so it can be written again.
+    supplied_session = payload.parsed_session
     try:
         with PreparedIndexMutation(path, archive_root=root) as seal:
             source = kwargs.get("source_conn")
@@ -149,16 +171,16 @@ def write_fixture_ingest_payload(conn: sqlite3.Connection, payload: Any, **kwarg
             _prepare_ingest_payloads(index, kwargs["source_conn"], (payload,))
             seal.validate_observers_current()
 
-            # Prepared Blob reservations are prepared lease-free on their
-            # reference seal; each page's publication is admitted as a stage
-            # write that holds the lease, as the daemon's writer admits it.
-            def leased_stage_write(actor: str, work: Callable[[], Any]) -> Any:
-                with write_lease(actor, archive_root=root):
+            # Blob reservations are prepared lease-free against the seal and
+            # each page is flushed through stage admission, as the retained
+            # owner does under the daemon writer.
+            def admitted(actor: str, work: Callable[[], Any]) -> Any:
+                with _fixture_writer_admission(conn, actor, root):
                     return work()
 
-            with stage_write_admission(leased_stage_write):
+            with stage_write_admission(admitted):
                 artifact.publish_blobs(reference_seal=seal)
-            with write_lease("test.fixture.ingest", archive_root=root):
+            with _fixture_writer_admission(conn, "test.fixture.ingest", root):
                 with seal.mutation_scope(conn):
                     result = _lower_ingest_session(conn, payload, **kwargs)
                 with (
@@ -199,6 +221,7 @@ def write_fixture_ingest_payload(conn: sqlite3.Connection, payload: Any, **kwarg
             else:
                 payload.prepared_artifact = None
                 payload.prepared_session_ordinal = None
+                payload.parsed_session = supplied_session
         if failures:
             raise BaseExceptionGroup(
                 "fixture ingest cleanup remains unsettled", ([primary] if primary else []) + failures

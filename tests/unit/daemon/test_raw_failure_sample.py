@@ -85,6 +85,8 @@ class TestRawFailureSampleModel:
                     "terminal_unknown_export_no_session",
                     "terminal_unsupported_shape",
                     "terminal_missing_source_coordinates",
+                    "terminal_missing_profile_identity",
+                    "terminal_retained_zip_membership_unproved",
                 }
             )
             == RAW_FAILURE_TERMINAL_EVIDENCE_KINDS
