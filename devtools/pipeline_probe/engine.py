@@ -195,7 +195,7 @@ def _fetch_archive_file_set_candidates(
             SELECT raw_id, origin, source_path, source_index, blob_hash, blob_size,
                    acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
                    validated_at_ms, validation_status, validation_error,
-                   validation_drift_count, validation_mode, detection_warnings_json
+                   validation_drift_count, validation_mode, detection_warnings_json, canonical_source_path
             FROM raw_sessions
             ORDER BY acquired_at_ms DESC, raw_id ASC
             """
@@ -222,6 +222,7 @@ def _fetch_archive_file_set_candidates(
                 payload_provider=provider,
                 source_name=provider.value,
                 source_path=source_path,
+                canonical_source_path=row[16],
                 source_index=int(row[3] or 0),
                 blob_size=int(row[5] or 0),
                 acquired_at=acquired_at,
