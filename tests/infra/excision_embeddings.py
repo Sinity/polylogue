@@ -3,6 +3,7 @@
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from polylogue.storage.io_phase_metrics import connection_cursor
 from polylogue.storage.sqlite.archive_tiers.embedding_write import upsert_message_embedding
@@ -14,7 +15,9 @@ from tests.infra.excision_execution import begin_excision_control
 from tests.infra.storage_records import SessionBuilder
 
 
-def begin_embedding_excision_control(root: Path, *, shared: bool, include_survivor: bool = True):
+def begin_embedding_excision_control(
+    root: Path, *, shared: bool, include_survivor: bool = True
+) -> tuple[Any, Any, bytes]:
     """Use the existing vector producer; no provider or purchased request runs."""
     with write_lease("test.native-embedding-intent", archive_root=root):
         bootstrap_archive_root(root)
@@ -60,7 +63,7 @@ def begin_embedding_excision_control(root: Path, *, shared: bool, include_surviv
     return started, args, vector_hash
 
 
-def prepare_embedding_excision_source_command(seal, started, args) -> None:
+def prepare_embedding_excision_source_command(seal: Any, started: Any, args: Any) -> None:
     """Use the original closure's canonical producer before its paid child."""
     from polylogue.security.excision import _stage_excision_source_closure
 
@@ -188,7 +191,7 @@ def seed_excision_session(
     return str(session_id)
 
 
-def seed_excision_marker_witnesses(root: Path, batches) -> None:
+def seed_excision_marker_witnesses(root: Path, batches: Any) -> None:
     """Use the existing physical incarnation producer on a fixture-owned writer."""
     from polylogue.pipeline.services.ingest_batch._core import _ensure_ingest_index_incarnation
     from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, native_sql_owner_for_connection

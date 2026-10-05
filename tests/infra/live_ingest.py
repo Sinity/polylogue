@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+    from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
 
 
 def write_session_sync(
@@ -255,3 +256,19 @@ async def prepared_live_convergence_owner(
             if primary is not None:
                 cleanup_failures.insert(0, primary)
             raise BaseExceptionGroup("prepared live fixture settlement failed", cleanup_failures)
+
+
+def run_owned_append_plans(root: Path, owner: object, plans: list[_AppendPlan]) -> _AppendResult:
+    """Acquire and converge append plans through the canonical daemon owner.
+
+    The owner prepares and publishes each acquired raw on its admitted compute
+    creator, exactly as the watcher's append runner does; no fixture-local
+    convergence callback is substituted.
+    """
+    from typing import Any, cast
+
+    async def run() -> _AppendResult:
+        async with prepared_live_convergence_owner(root) as convergence:
+            return await convergence.ingest_append_plans(cast(Any, owner), plans)
+
+    return asyncio.run(run())

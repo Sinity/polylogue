@@ -38,6 +38,7 @@ from typing import Any
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.status import _archive_live_ingest_attempt_summary_info
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -142,7 +143,9 @@ async def test_batch_event_is_published_through_the_daemon_writer(tmp_path: Path
     assert "watcher.live_ingest.ops.batch_event" in admitted_actors
 
 
-def test_convergence_debt_drain_runs_under_its_stage_admission(tmp_path: Path) -> None:
+def test_convergence_debt_drain_runs_under_its_stage_admission(
+    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """The maintenance drain works with the boundary armed.
 
     The drain's own writes are admitted one section at a time, exactly as the
@@ -165,7 +168,7 @@ def test_convergence_debt_drain_runs_under_its_stage_admission(tmp_path: Path) -
             return work()
 
     with arm_write_lease_enforcement(), stage_write_admission(admission):
-        assert _drain_convergence_debt_once(root / "index.db") == 0
+        assert _drain_convergence_debt_once(root / "index.db", compute_adapter=bounded_compute_adapter) == 0
 
     assert "maintenance.convergence_debt.initialize" in admitted
 

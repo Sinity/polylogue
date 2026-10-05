@@ -10,6 +10,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
+from polylogue.storage.sqlite.archive_tiers.source_write import PreparedParserSingletonWitness
 from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 from polylogue.storage.sqlite.reference_seal import KnownTierCell, PreparedIndexMutation
@@ -86,6 +87,7 @@ def run(root: Path) -> dict[str, object]:
                         prepared_cells: dict[str, KnownTierCell] | None,
                         allocation_parameter: int | None,
                         generated_primary_key: bool,
+                        parser_singleton_witness: PreparedParserSingletonWitness | None,
                         binding_cells: tuple[KnownTierCell, ...],
                     ) -> Iterator[sqlite3.Cursor]:
                         nonlocal attempts
@@ -101,6 +103,7 @@ def run(root: Path) -> dict[str, object]:
                             prepared_cells=prepared_cells,
                             allocation_parameter=allocation_parameter,
                             generated_primary_key=generated_primary_key,
+                            parser_singleton_witness=parser_singleton_witness,
                             binding_cells=binding_cells,
                         ) as cursor:
                             yield cursor

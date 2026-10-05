@@ -18,8 +18,8 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from types import FrameType, SimpleNamespace
+from typing import Any, ParamSpec, TypeVar, cast
 from unittest.mock import Mock, patch
 
 import pytest
@@ -33,6 +33,7 @@ from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.daemon.derivation import DerivationReport, Outcome
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
 from polylogue.daemon.lineage_startup import LineageStartupCensus
+from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.logging import capture
@@ -46,6 +47,9 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.live_ingest import write_index_session
+
+P = ParamSpec("P")
+T = TypeVar("T")
 
 
 def _converged_lineage_census() -> LineageStartupCensus:
@@ -368,6 +372,7 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
 def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
     tmp_path: Path,
     frozen_clock: FrozenClock,
+    bounded_compute_adapter: BoundedComputeAdapter,
 ) -> None:
     from polylogue.daemon import cli as daemon_cli
 
@@ -393,7 +398,7 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
         execute_sessions=lambda session_ids: tuple(session_ids) == ("conv-1",),
     )
     with patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=(stage,)):
-        retried = daemon_cli._drain_convergence_debt_once(db)
+        retried = daemon_cli._drain_convergence_debt_once(db, compute_adapter=bounded_compute_adapter)
         debt_after = cursor.list_convergence_debt()
 
     assert retried == 1
@@ -405,6 +410,7 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
 def test_drain_convergence_debt_preserves_error_for_unimplemented_stage(
     tmp_path: Path,
     frozen_clock: FrozenClock,
+    bounded_compute_adapter: BoundedComputeAdapter,
 ) -> None:
     """A stage with no registered implementation leaves its debt row untouched.
 
@@ -438,7 +444,7 @@ def test_drain_convergence_debt_preserves_error_for_unimplemented_stage(
         execute=lambda _candidate: False,
     )
     with patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=(stage,)):
-        retried = daemon_cli._drain_convergence_debt_once(db)
+        retried = daemon_cli._drain_convergence_debt_once(db, compute_adapter=bounded_compute_adapter)
         debt_after = cursor.list_convergence_debt()
 
     assert retried == 0
@@ -932,7 +938,9 @@ def test_polylogued_watch_reports_archive_ownership_conflict_as_click_error(
     assert "Traceback" not in result.output
 
 
-def test_drive_source_catchup_skips_when_no_drive_sources(tmp_path: Path) -> None:
+def test_drive_source_catchup_skips_when_no_drive_sources(
+    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     from polylogue.config import Config
     from polylogue.daemon import cli as daemon_cli
 
@@ -947,13 +955,19 @@ def test_drive_source_catchup_skips_when_no_drive_sources(tmp_path: Path) -> Non
         patch("polylogue.config.get_config", return_value=config),
         patch("polylogue.services.build_runtime_services") as build_services,
     ):
-        changed = asyncio.run(daemon_cli._run_drive_source_catchup_once(_unused_session_profile_callback))
+        changed = asyncio.run(
+            daemon_cli._run_drive_source_catchup_once(
+                _unused_session_profile_callback, raw_owner=None, compute_owner=bounded_compute_adapter
+            )
+        )
 
     assert changed == 0
     build_services.assert_not_called()
 
 
-def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) -> None:
+def test_drive_source_catchup_ingests_configured_drive_source(
+    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """Drive hands every parsed id to the daemon's canonical derivation owner.
 
     Anti-vacuity: restoring the legacy bulk-refresh caller reaches the patched
@@ -980,10 +994,19 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
             events.append("close")
 
     class FakeParser:
-        def __init__(self, *, repository: object, archive_root: Path, config: Config, execution: object) -> None:
+        def __init__(
+            self,
+            *,
+            repository: object,
+            archive_root: Path,
+            config: Config,
+            execution: object,
+            retained_runner: object,
+        ) -> None:
             from polylogue.daemon.drive_catchup import DriveCatchupExecution
 
             assert isinstance(execution, DriveCatchupExecution)
+            assert retained_runner == raw_owner.ingest_retained_raw_ids
             events.append(("parser", repository, archive_root, config))
 
         async def ingest_sources(
@@ -1004,6 +1027,13 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
                 ),
             )
 
+    class FakeRawOwner:
+        async def ingest_retained_raw_ids(self, raw_ids: Sequence[str]) -> tuple[object, ...]:
+            del raw_ids
+            return ()
+
+    raw_owner = FakeRawOwner()
+
     async def canonical_callback(session_ids: Sequence[str] | None) -> DerivationReport:
         events.append(("canonical", session_ids))
         return cast(DerivationReport, object())
@@ -1013,7 +1043,13 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
         patch("polylogue.services.build_runtime_services", return_value=FakeServices()) as build_services,
         patch("polylogue.pipeline.services.parsing.ParsingService", FakeParser),
     ):
-        changed = asyncio.run(daemon_cli._run_drive_source_catchup_once(canonical_callback))
+        changed = asyncio.run(
+            daemon_cli._run_drive_source_catchup_once(
+                canonical_callback,
+                raw_owner=cast(RawObservationConvergenceOwner, raw_owner),
+                compute_owner=bounded_compute_adapter,
+            )
+        )
 
     assert changed == 2
     build_services.assert_called_once_with(config=config, db_path=config.db_path)
@@ -1022,7 +1058,9 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
     assert events[-1] == "close"
 
 
-def test_drive_source_catchup_keeps_session_derivation_failures_nonfatal(tmp_path: Path) -> None:
+def test_drive_source_catchup_keeps_session_derivation_failures_nonfatal(
+    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """A derived-output failure does not discard completed Drive source work."""
     from polylogue.config import Config, Source
     from polylogue.daemon import cli as daemon_cli
@@ -1066,7 +1104,11 @@ def test_drive_source_catchup_keeps_session_derivation_failures_nonfatal(tmp_pat
         patch("polylogue.pipeline.services.parsing.ParsingService", FakeParser),
         capture() as records,
     ):
-        changed = asyncio.run(daemon_cli._run_drive_source_catchup_once(failing_callback))
+        changed = asyncio.run(
+            daemon_cli._run_drive_source_catchup_once(
+                failing_callback, raw_owner=None, compute_owner=bounded_compute_adapter
+            )
+        )
 
     assert changed == 1
     failures = [r for r in records if r["event"] == "daemon.drive_catchup.session_profile_failed"]
@@ -1079,17 +1121,21 @@ def test_drive_source_catchup_keeps_session_derivation_failures_nonfatal(tmp_pat
     )
 
 
-def test_drive_source_catchup_safe_wrapper_logs_failure() -> None:
+def test_drive_source_catchup_safe_wrapper_logs_failure(bounded_compute_adapter: BoundedComputeAdapter) -> None:
     from polylogue.daemon import cli as daemon_cli
 
-    async def fail_catchup(_callback: object) -> int:
+    async def fail_catchup(_callback: object, **_owners: object) -> int:
         raise RuntimeError("drive unavailable")
 
     with (
         patch.object(daemon_cli, "_run_drive_source_catchup_once", fail_catchup),
         capture() as records,
     ):
-        changed = asyncio.run(daemon_cli._run_drive_source_catchup_safely(_unused_session_profile_callback))
+        changed = asyncio.run(
+            daemon_cli._run_drive_source_catchup_safely(
+                _unused_session_profile_callback, raw_owner=None, compute_owner=bounded_compute_adapter
+            )
+        )
 
     assert changed == 0
     failures = [r for r in records if r["event"] == "daemon.drive_catchup.failed"]
@@ -1770,7 +1816,7 @@ def test_lifecycle_start_failure_releases_pidfile(tmp_path: Path, monkeypatch: p
     from polylogue.daemon import cli as daemon_cli
 
     class Coordinator(DaemonWriteCoordinator):
-        async def run_sync(self, _actor: str, _function: object, /, *args: object, **kwargs: object) -> object:
+        async def run_sync(self, _actor: str, _function: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
             raise RuntimeError("ops unavailable")
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
@@ -1801,11 +1847,11 @@ def test_daemon_startup_reconciles_trains_before_schema_probe(tmp_path: Path, mo
     events: list[str] = []
 
     class Coordinator(DaemonWriteCoordinator):
-        async def run_sync(self, actor: str, _function: object, /, *args: object, **kwargs: object) -> object:
+        async def run_sync(self, actor: str, _function: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
             del args, kwargs
             if actor == "daemon.lifecycle.start":
                 raise RuntimeError("startup stopped")
-            return None
+            return cast(T, None)
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr(
@@ -2146,10 +2192,10 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         kernel = _kwargs["execution_kernel"]
         assert isinstance(kernel, BoundedComputeAdapter)
         api_server.execution_kernel = kernel
-        from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
-
         bridge = _kwargs["write_bridge"]
         root = _kwargs["archive_root"]
+        assert isinstance(bridge, DaemonWriteThreadBridge)
+        assert isinstance(root, Path)
         api_server.operation_runtime.raw_observation_owner = RawObservationConvergenceOwner(
             root,
             compute_adapter=kernel,
@@ -3017,10 +3063,10 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         kernel = kwargs["execution_kernel"]
         assert isinstance(kernel, BoundedComputeAdapter)
         api_server.execution_kernel = kernel
-        from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
-
         bridge = kwargs["write_bridge"]
         root = kwargs["archive_root"]
+        assert isinstance(bridge, DaemonWriteThreadBridge)
+        assert isinstance(root, Path)
         api_server.operation_runtime.raw_observation_owner = RawObservationConvergenceOwner(
             root,
             compute_adapter=kernel,
@@ -3369,6 +3415,7 @@ def test_raw_observation_owner_preserves_source_frontier_refusal(
 def test_raw_observation_publication_holds_writer_lease_through_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    bounded_compute_adapter: BoundedComputeAdapter,
 ) -> None:
     """Canonical replay keeps FTS/index publication under one writer lease."""
     from contextlib import contextmanager
@@ -3431,7 +3478,7 @@ def test_raw_observation_publication_holds_writer_lease_through_replay(
     monkeypatch.setattr("polylogue.storage.blob_store.BlobStore.verify", lambda _self, _blob_hash: True)
     monkeypatch.setattr("polylogue.sources.revision_backfill.backfill_historical_revision_evidence", fake_replay)
 
-    adapter = RawObservationDerivation(tmp_path)
+    adapter = RawObservationDerivation(tmp_path, compute_adapter=bounded_compute_adapter)
     monkeypatch.setattr(adapter, "_current", lambda _frame: True)
     monkeypatch.setattr(adapter, "_binding", lambda _raw_ids: "binding")
     monkeypatch.setattr(adapter, "source_paths", lambda _raw_ids: {"raw-1": "/archive/source.jsonl"})
@@ -3899,10 +3946,11 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
                 failure.add_note(f"original scratch cleanup owners={tuple(cleanup_owners.values())!r}")
                 thread_sites: list[tuple[str, tuple[tuple[str, str, int], ...]]] = []
                 thread_names = {thread.ident: thread.name for thread in threading.enumerate()}
-                for thread_id, frame in sys._current_frames().items():
+                for thread_id, thread_frame in sys._current_frames().items():
                     if thread_id == threading.get_ident():
                         continue
                     sites: list[tuple[str, str, int]] = []
+                    frame: FrameType | None = thread_frame
                     while frame is not None:
                         filename = frame.f_code.co_filename
                         if "/polylogue/" in filename:

@@ -785,10 +785,10 @@ def build_immutable_tree(
             except Exception:
                 _remove_tree(staging)
                 raise
-            artifact = load()
-            if artifact is None:
+            published = load()
+            if published is None:
                 raise RuntimeError("published immutable tree failed validation")
-            return artifact
+            return published
     finally:
         _release_lock_domain(domain)
 

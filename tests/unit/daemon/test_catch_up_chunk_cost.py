@@ -25,12 +25,14 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_default_convergence_stages
 from polylogue.sources.live import hook_paste_enrichment
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import WatchSource
+from tests.infra.compute_owner import owned_compute_adapter
 
 _MESSAGES_PER_SESSION = 8
 
@@ -148,6 +150,7 @@ def _build(
     *,
     monkeypatch: pytest.MonkeyPatch,
     seeded_sessions: int,
+    compute_adapter: BoundedComputeAdapter,
 ) -> tuple[LiveBatchProcessor, Path, Path]:
     archive_root = tmp_path / f"archive-{seeded_sessions}"
     archive_root.mkdir()
@@ -155,7 +158,7 @@ def _build(
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(archive_root / "polylogue.toml"))
     db_path = archive_root / "index.db"
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
+    converger = DaemonConverger(stages=make_default_convergence_stages(db_path, compute_adapter=compute_adapter))
     processor = LiveBatchProcessor(
         cast(Any, _Polylogue(archive_root, db_path)),
         (WatchSource(name="claude-code", root=corpus_root),),
@@ -202,25 +205,28 @@ def test_chunk_convergence_cost_does_not_grow_with_archive_size(
     small_sessions, large_sessions = 2, 14
     probe = _ChunkProbe(monkeypatch)
     results: dict[int, tuple[int, int, dict[str, float]]] = {}
-    for seeded_sessions in (small_sessions, large_sessions):
-        processor, corpus_root, source_db = _build(tmp_path, monkeypatch=monkeypatch, seeded_sessions=seeded_sessions)
-        # The first chunk after seeding also prunes the seeding's consumed
-        # raw-existence journal, one trigger firing per row (#5657), so it is
-        # O(seeded rows) once. Converge one warm-up chunk so the measured one
-        # is a steady-state chunk.
-        warm_up = [_write_session(corpus_root, seeded_sessions + chunk_files)]
-        assert _converge_chunk(processor, probe, warm_up, whole_archive=False).succeeded_file_count == 1
-        chunk = [_write_session(corpus_root, seeded_sessions + offset) for offset in range(chunk_files)]
-        for offset in range(chunk_files):
-            _seed_hook_event(source_db, seeded_sessions + offset)
-        probe.statements = probe.hook_events_read = 0
-        metrics = _converge_chunk(processor, probe, chunk, whole_archive=False)
-        assert metrics.succeeded_file_count == chunk_files
-        results[seeded_sessions] = (
-            probe.statements,
-            probe.hook_events_read,
-            dict(metrics.stage_timings_s),
-        )
+    with owned_compute_adapter() as compute:
+        for seeded_sessions in (small_sessions, large_sessions):
+            processor, corpus_root, source_db = _build(
+                tmp_path, monkeypatch=monkeypatch, seeded_sessions=seeded_sessions, compute_adapter=compute
+            )
+            # The first chunk after seeding also prunes the seeding's consumed
+            # raw-existence journal, one trigger firing per row (#5657), so it is
+            # O(seeded rows) once. Converge one warm-up chunk so the measured one
+            # is a steady-state chunk.
+            warm_up = [_write_session(corpus_root, seeded_sessions + chunk_files)]
+            assert _converge_chunk(processor, probe, warm_up, whole_archive=False).succeeded_file_count == 1
+            chunk = [_write_session(corpus_root, seeded_sessions + offset) for offset in range(chunk_files)]
+            for offset in range(chunk_files):
+                _seed_hook_event(source_db, seeded_sessions + offset)
+            probe.statements = probe.hook_events_read = 0
+            metrics = _converge_chunk(processor, probe, chunk, whole_archive=False)
+            assert metrics.succeeded_file_count == chunk_files
+            results[seeded_sessions] = (
+                probe.statements,
+                probe.hook_events_read,
+                dict(metrics.stage_timings_s),
+            )
 
     small_statements, small_events, small_stages = results[small_sessions]
     large_statements, large_events, large_stages = results[large_sessions]
@@ -237,12 +243,15 @@ def test_chunk_convergence_cost_does_not_grow_with_archive_size(
 
 def test_final_catch_up_chunk_runs_the_whole_archive_stages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     probe = _ChunkProbe(monkeypatch)
-    processor, corpus_root, source_db = _build(tmp_path, monkeypatch=monkeypatch, seeded_sessions=2)
-    chunk = [_write_session(corpus_root, 2)]
-    _seed_hook_event(source_db, 2)
+    with owned_compute_adapter() as compute:
+        processor, corpus_root, source_db = _build(
+            tmp_path, monkeypatch=monkeypatch, seeded_sessions=2, compute_adapter=compute
+        )
+        chunk = [_write_session(corpus_root, 2)]
+        _seed_hook_event(source_db, 2)
 
-    probe.statements = probe.hook_events_read = 0
-    metrics = _converge_chunk(processor, probe, chunk, whole_archive=True)
+        probe.statements = probe.hook_events_read = 0
+        metrics = _converge_chunk(processor, probe, chunk, whole_archive=True)
 
     assert metrics.succeeded_file_count == 1
     assert "raw_authority_verdict_cache" in metrics.stage_timings_s

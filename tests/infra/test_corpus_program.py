@@ -265,10 +265,10 @@ def test_native_attachment_preserves_semantics_lineage_and_retained_replay(
 ) -> None:
     from polylogue.core.enums import Provider
     from polylogue.sources.dispatch import parse_payload
-    from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from tests.infra.corpus_program import CorpusState
+    from tests.infra.retained_replay import replay_retained_components
 
     payload = (Path(__file__).parents[1] / "fixtures" / "corpus-program-codex-native.jsonl").read_bytes()
     runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
@@ -360,7 +360,7 @@ def test_native_attachment_preserves_semantics_lineage_and_retained_replay(
         child_raw = archive.write_raw_payload(
             provider=provider, payload=retained, source_path="child.json", acquired_at_ms=2
         )
-    result = backfill_historical_revision_evidence(replay_root, selected_raw_ids=[parent_raw, child_raw])
+    result = replay_retained_components(replay_root, selected_raw_ids=[parent_raw, child_raw])
     assert result.quarantined == result.adoption_deferred == 0
     assert result.replayed_logical_sources == 2
     assert semantics(replay_root) == before
@@ -397,10 +397,10 @@ def test_native_web_attachment_preserves_kind_title_and_retained_replay(
     """Dropping native kind or inventing provider title evidence makes this fail."""
     from polylogue.core.enums import Provider, SessionKind, TitleSource
     from polylogue.sources.dispatch import parse_payload
-    from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+    from tests.infra.retained_replay import replay_retained_components
 
     payload = json.loads((Path(__file__).parents[1] / "fixtures" / fixture).read_text())
     payload["is_temporary"] = True
@@ -457,7 +457,7 @@ def test_native_web_attachment_preserves_kind_title_and_retained_replay(
         raw_id = archive.write_raw_payload(
             provider=retained_provider, payload=retained, source_path="capture.json", acquired_at_ms=1
         )
-    result = backfill_historical_revision_evidence(replay_root, selected_raw_ids=[raw_id])
+    result = replay_retained_components(replay_root, selected_raw_ids=[raw_id])
     assert result.quarantined == result.adoption_deferred == 0
     assert result.replayed_logical_sources == 1
     assert _stored_authored_transcript(replay_root) == before
@@ -475,10 +475,10 @@ def test_idless_native_attachment_keeps_native_message_ownership_and_retained_by
     """Inventing a native turn ID strands this attachment during ingestion/replay."""
     from polylogue.core.enums import Provider
     from polylogue.sources.dispatch import parse_payload
-    from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+    from tests.infra.retained_replay import replay_retained_components
 
     records = [
         json.loads(line)
@@ -523,7 +523,7 @@ def test_idless_native_attachment_keeps_native_message_ownership_and_retained_by
         raw_id = archive.write_raw_payload(
             provider=provider, payload=retained, source_path="capture.json", acquired_at_ms=1
         )
-    result = backfill_historical_revision_evidence(replay_root, selected_raw_ids=[raw_id])
+    result = replay_retained_components(replay_root, selected_raw_ids=[raw_id])
     assert result.quarantined == result.adoption_deferred == 0
     assert result.replayed_logical_sources == 1
     assert _stored_authored_transcript(replay_root) == before

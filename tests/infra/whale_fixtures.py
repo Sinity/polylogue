@@ -377,7 +377,6 @@ def acquire_codex_revision_chain(
     """
     from polylogue.config import Source
     from polylogue.pipeline.services.acquisition import AcquisitionService
-    from polylogue.sources.live.append_ingest import ingest_append_plans
     from polylogue.sources.live.batch import LiveBatchProcessor
     from polylogue.sources.live.batch_support import _AppendPlan
     from polylogue.sources.live.cursor import CursorStore
@@ -385,6 +384,7 @@ def acquire_codex_revision_chain(
     from polylogue.storage.archive_identity import ArchiveLocation
     from polylogue.storage.sqlite import SQLiteBackend
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import run_owned_append_plans
 
     async def _run() -> tuple[tuple[str, ...], tuple[int, ...], tuple[str, ...]]:
         from polylogue.archive.revision_authority import (
@@ -443,7 +443,9 @@ def acquire_codex_revision_chain(
                 cursor=cursor,
                 parser_fingerprint=_PARSER_FINGERPRINT,
             )
-            full_result = processor._ingest_full_paths_sync([source_path], source_name="codex")
+            full_result = processor._ingest_full_paths_sync(
+                [source_path], source_name="codex", captured_sqlite_by_path={}
+            )
             if full_result.failed or full_result.succeeded != [source_path]:
                 raise AssertionError(f"production planner baseline ingest failed: {full_result!r}")
             processor._record_full_cursor(
@@ -532,7 +534,7 @@ def acquire_codex_revision_chain(
                     ),
                 )
             for plan in plans:
-                append_result = ingest_append_plans(owner, [plan])
+                append_result = run_owned_append_plans(archive_root, owner, [plan])
                 if append_result.failed or (append_result.succeeded != [plan] and append_result.deferred != [plan]):
                     raise AssertionError(f"append ingestion changed fixture authority state: {append_result!r}")
                 with sqlite3.connect(archive_root / "source.db") as conn:

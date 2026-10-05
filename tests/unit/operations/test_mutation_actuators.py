@@ -26,6 +26,7 @@ import json
 import sqlite3
 import threading
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import Context
 from pathlib import Path
@@ -1616,7 +1617,7 @@ class TestBlockerResolveActuator:
     def test_prepare_finds_a_real_unresolved_blocker(self, tmp_path: Path) -> None:
         root = tmp_path / "archive"
 
-        def check(args):
+        def check(args: BlockerResolveArgs) -> None:
             plan = BlockerResolveActuator().prepare(args)
             assert plan.target_refs == ("raw-authority-blocker:blocker-prepare",)
             assert plan.context["kind"] == "stale_plan"
@@ -1639,7 +1640,7 @@ class TestBlockerResolveActuator:
         )
 
     def test_prepare_on_unknown_blocker_yields_empty_plan(self, tmp_path: Path) -> None:
-        def check(args):
+        def check(args: BlockerResolveArgs) -> None:
             plan = BlockerResolveActuator().prepare(args)
             assert plan.target_refs == ()
             assert plan.context["found"] is False
@@ -1649,7 +1650,7 @@ class TestBlockerResolveActuator:
     def test_execute_resolves_and_reopens_replanning(self, tmp_path: Path) -> None:
         root = tmp_path / "archive"
 
-        def check(args):
+        def check(args: BlockerResolveArgs) -> None:
             actuator = BlockerResolveActuator()
             executor = OperationExecutor()
             plan = executor.prepare(actuator, args)
@@ -1677,7 +1678,7 @@ class TestBlockerResolveActuator:
     def test_role_only_authorize_refuses(self, tmp_path: Path) -> None:
         """The reset-class actuator still requires confirm_flag authorization."""
 
-        def check(args):
+        def check(args: BlockerResolveArgs) -> None:
             actuator = BlockerResolveActuator()
             executor = OperationExecutor()
             plan = executor.prepare(actuator, args)
@@ -1701,23 +1702,23 @@ class TestBlockerResolveActuator:
         actuator = BlockerResolveActuator()
         executor = OperationExecutor()
 
-        def prepare(args):
+        def prepare(args: BlockerResolveArgs) -> tuple[Any, Any]:
             plan = executor.prepare(actuator, args)
             authorization = executor.authorize(
                 actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
             )
             return plan, authorization
 
-        def exercise(phase):
+        def exercise(phase: _BlockerPhase) -> None:
             plan, authorization = phase("blocker-stale", "ack", prepare)
 
-            def acknowledge(args):
+            def acknowledge(args: BlockerResolveArgs) -> None:
                 intervening, token = prepare(args)
                 assert executor.execute(actuator, intervening, token, args).status == "applied"
 
             phase("blocker-stale", "resolved elsewhere first", acknowledge)
 
-            def stale(args):
+            def stale(args: BlockerResolveArgs) -> None:
                 with pytest.raises(PlanStaleError):
                     executor.execute(actuator, plan, authorization, args)
 
@@ -1737,7 +1738,7 @@ class TestBlockerResolveActuator:
         """The original frontier obligation needs no second judgment or assertion contract."""
         root = tmp_path / "archive"
 
-        def check(args):
+        def check(args: BlockerResolveArgs) -> None:
             actuator = BlockerResolveActuator()
             executor = OperationExecutor()
             plan = actuator.prepare(args)
@@ -2822,7 +2823,12 @@ def test_audited_excision_recovery_keeps_exact_removal_authority(
         assert paid.execute("SELECT count(*) FROM excision_embedding_completions").fetchone() == (int(not refused),)
 
 
-def _run_prepared_blocker_case(archive_root, seed, work):
+_BlockerPhase = Callable[[str, str, Callable[[BlockerResolveArgs], Any]], Any]
+
+
+def _run_prepared_blocker_case(
+    archive_root: Path, seed: dict[str, Any] | None, work: Callable[[_BlockerPhase], object]
+) -> object:
     """Run the original actuator law on a real supplied preparation/writer owner."""
     import asyncio
 
@@ -2831,8 +2837,8 @@ def _run_prepared_blocker_case(archive_root, seed, work):
     from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
     from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    async def run():
-        def initialize():
+    async def run() -> object:
+        def initialize() -> None:
             bootstrap_archive_root(archive_root)
             if seed is not None:
                 _seed_raw_authority_blocker(archive_root, **seed)
@@ -2840,8 +2846,8 @@ def _run_prepared_blocker_case(archive_root, seed, work):
         await run_archive_fixture_write(archive_root, initialize)
         async with prepared_live_convergence_owner(archive_root) as owner:
 
-            def exercise():
-                def phase(blocker_id, resolution, assertion):
+            def exercise() -> object:
+                def phase(blocker_id: str, resolution: str, assertion: Callable[[BlockerResolveArgs], Any]) -> Any:
                     with prepared_frontier_blocker_acknowledgement(
                         archive_root,
                         blocker_id,

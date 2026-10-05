@@ -12,6 +12,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider
 from polylogue.operations.raw_observation_derivation import converge_raw_observations
 from polylogue.sources.live.cursor import CursorStore
@@ -80,7 +81,9 @@ def test_interrupted_attempt_is_recorded_without_raw_derivation_debt(tmp_path: P
         )
 
 
-def test_restart_rewinds_cursor_then_common_raw_derivation_recovers_retained_bytes(tmp_path: Path) -> None:
+def test_restart_rewinds_cursor_then_common_raw_derivation_recovers_retained_bytes(
+    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """A fresh pass reconstructs pending raw work after cursor and ops-state loss.
 
     Anti-vacuity: changing the raw adapter to trust cursor/debt telemetry, or
@@ -117,22 +120,24 @@ def test_restart_rewinds_cursor_then_common_raw_derivation_recovers_retained_byt
         )
 
     recovered = converge_raw_observations(
-        tmp_path,
-        source_roots=(source_path.parent,),
-        limit=1,
+        tmp_path, source_roots=(source_path.parent,), limit=1, compute_adapter=bounded_compute_adapter
     )
     assert recovered.done == recovered.work.published == 1
     assert recovered.failed == recovered.pending == 0
     assert _sessions_for_raw(tmp_path, raw_id) == [("cursor-ahead", raw_id)]
 
 
-def test_common_raw_derivation_restart_recovers_output_loss_without_ops_hints(tmp_path: Path) -> None:
+def test_common_raw_derivation_restart_recovers_output_loss_without_ops_hints(
+    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """Output loss and a later admission are both rediscovered after restart."""
     bootstrap_archive_root(tmp_path)
     source_root = tmp_path / "sources"
     source_root.mkdir()
     first = _write_unparsed_raw(tmp_path, source_path=source_root / "first.json", native_id="first")
-    initial = converge_raw_observations(tmp_path, source_roots=(source_root,), limit=1)
+    initial = converge_raw_observations(
+        tmp_path, source_roots=(source_root,), limit=1, compute_adapter=bounded_compute_adapter
+    )
     assert initial.done == 1 and initial.failed == initial.pending == 0
 
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -143,7 +148,9 @@ def test_common_raw_derivation_restart_recovers_output_loss_without_ops_hints(tm
         conn.commit()
     second = _write_unparsed_raw(tmp_path, source_path=source_root / "second.json", native_id="second")
 
-    restarted = converge_raw_observations(tmp_path, source_roots=(source_root,), limit=2)
+    restarted = converge_raw_observations(
+        tmp_path, source_roots=(source_root,), limit=2, compute_adapter=bounded_compute_adapter
+    )
     assert restarted.done == restarted.work.published == 2
     assert restarted.failed == restarted.pending == 0
     assert _sessions_for_raw(tmp_path, first) == [("first", first)]

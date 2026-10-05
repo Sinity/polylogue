@@ -906,7 +906,7 @@ def _prepared_blocker_crash_and_restart(root: Path, crash: Crash) -> str:
                     binding = runtime_operation_binding(actuator)
                     principal = _principal(binding)
 
-                    def intent():
+                    def intent() -> tuple[str, Any]:
                         preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
                         authorization = executor.authorize_bound(
                             binding, preview, principal, confirmation_strength="bound_token"
