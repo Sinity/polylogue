@@ -1575,10 +1575,17 @@ def prepare_membership_replay(
                     projections[raw_id],
                     session.updated_at,
                     browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
+                    # Only declared provider IDs are identity evidence; an
+                    # id-less message must not stand in as a shared ``None``
+                    # member that makes unrelated snapshots look preserved.
                     provider_message_ids=(
-                        session.messages.provider_message_ids(include_none=True)
+                        session.messages.provider_message_ids(include_none=False)
                         if isinstance(session.messages, SqliteMessageSink)
-                        else frozenset(message.provider_message_id for message in session.messages)
+                        else frozenset(
+                            message.provider_message_id
+                            for message in session.messages
+                            if message.provider_message_id is not None
+                        )
                     ),
                     provider_attachment_ids=frozenset(
                         attachment.provider_attachment_id for attachment in session.attachments
