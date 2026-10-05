@@ -93,7 +93,9 @@ def _assertion_object_id(ref: str) -> str | None:
     return parsed.object_id if parsed.kind in {"assertion", "finding"} else None
 
 
-def _frame_and_definition(conn: sqlite3.Connection, provenance: FindingProvenance) -> tuple[str | None, str | None]:
+def _frame_and_definition(
+    conn: sqlite3.Connection, provenance: FindingProvenance, *, schema: str | None = None
+) -> tuple[str | None, str | None]:
     """Return ``(frame_hash, definition_hash)`` a finding actually declares.
 
     The frame is the evaluated relation's corpus epoch and the definition is
@@ -110,14 +112,14 @@ def _frame_and_definition(conn: sqlite3.Connection, provenance: FindingProvenanc
     if result_set_ref is not None:
         object_id = _object_id_of_kind(result_set_ref, "result-set")
         if object_id is not None:
-            manifest = get_result_set(conn, object_id)
+            manifest = get_result_set(conn, object_id, schema=schema)
             if manifest is not None:
                 frame_hash = manifest.corpus_epoch
     query_ref_value = provenance.query_ref
     if query_ref_value is not None:
         object_id = _object_id_of_kind(query_ref_value, "query")
         if object_id is not None:
-            query = get_query(conn, object_id)
+            query = get_query(conn, object_id, schema=schema)
             if query is not None:
                 definition_hash = query.query_hash
     return frame_hash, definition_hash
@@ -140,6 +142,7 @@ def build_finding_evidence_adapter(
     incompatible_result_set_refs: frozenset[str] = frozenset(),
     max_nodes: int = FINDING_ANCESTRY_MAX_NODES,
     index_conn: sqlite3.Connection | None = None,
+    schema: str | None = None,
 ) -> FindingEvidenceAdapter:
     """Project one finding and its transitive assertion ancestry into a graph.
 
@@ -202,7 +205,7 @@ def build_finding_evidence_adapter(
             if assertion_id is None or ref in expanded or not resolvable:
                 continue
             expanded.add(ref)
-            envelope = read_assertion_envelope(conn, assertion_id)
+            envelope = read_assertion_envelope(conn, assertion_id, schema=schema)
             if envelope is None:
                 continue
             nodes[ref] = EvidenceGraphNode(
@@ -223,12 +226,16 @@ def build_finding_evidence_adapter(
                 # half of polylogue-rxdo.4 this change does not reach.
                 public=True,
             )
-            pending.append((ref, (_cited(conn, str(child), index_conn) for child in envelope.evidence_refs)))
+            pending.append(
+                (ref, (_cited(conn, str(child), index_conn, schema=schema) for child in envelope.evidence_refs))
+            )
 
     return FindingEvidenceAdapter(graph_nodes=tuple(nodes.values()), graph_edges=tuple(edges))
 
 
-def _cited(conn: sqlite3.Connection, ref: str, index_conn: sqlite3.Connection | None) -> FindingEvidenceResolution:
+def _cited(
+    conn: sqlite3.Connection, ref: str, index_conn: sqlite3.Connection | None, *, schema: str | None = None
+) -> FindingEvidenceResolution:
     """One ref discovered during ancestry expansion.
 
     Every transitive ref goes through the same fail-closed resolver as a
@@ -237,7 +244,7 @@ def _cited(conn: sqlite3.Connection, ref: str, index_conn: sqlite3.Connection | 
     """
     from polylogue.storage.sqlite.finding_provenance import resolve_evidence_ref
 
-    return resolve_evidence_ref(conn, ref, index_conn=index_conn)
+    return resolve_evidence_ref(conn, ref, index_conn=index_conn, schema=schema)
 
 
 def _ref_kind(ref: str) -> str:
@@ -253,10 +260,11 @@ def evaluate_finding_evidence(
     *,
     max_nodes: int = FINDING_ANCESTRY_MAX_NODES,
     index_conn: sqlite3.Connection | None = None,
+    schema: str | None = None,
 ) -> EvidenceIntegrityVerdict:
     """Return the shared evaluator's verdict for one finding's ancestry."""
-    frame_hash, definition_hash = _frame_and_definition(conn, provenance)
-    incompatible_result_set_refs = _incompatible_result_set_refs(conn, provenance, definition_hash)
+    frame_hash, definition_hash = _frame_and_definition(conn, provenance, schema=schema)
+    incompatible_result_set_refs = _incompatible_result_set_refs(conn, provenance, definition_hash, schema=schema)
     adapter = build_finding_evidence_adapter(
         conn,
         provenance,
@@ -265,6 +273,7 @@ def evaluate_finding_evidence(
         incompatible_result_set_refs=incompatible_result_set_refs,
         max_nodes=max_nodes,
         index_conn=index_conn,
+        schema=schema,
     )
     detector_ref = provenance.detector_ref
     return evaluate_adapter(
@@ -281,6 +290,8 @@ def _incompatible_result_set_refs(
     conn: sqlite3.Connection,
     provenance: FindingProvenance,
     definition_hash: str | None,
+    *,
+    schema: str | None = None,
 ) -> frozenset[str]:
     """Identify declared result sets evaluated for a different query."""
     if definition_hash is None:
@@ -292,7 +303,7 @@ def _incompatible_result_set_refs(
         object_id = _object_id_of_kind(ref, "result-set") if ref is not None else None
         if object_id is None:
             continue
-        manifest = get_result_set(conn, object_id)
+        manifest = get_result_set(conn, object_id, schema=schema)
         if manifest is not None and manifest.query_hash != definition_hash and ref is not None:
             incompatible.add(ref)
     return frozenset(incompatible)

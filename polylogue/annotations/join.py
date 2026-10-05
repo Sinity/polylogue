@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import sqlite3
 from collections import Counter
-from contextlib import closing
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Protocol, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
-
+from polylogue.annotations.join_contracts import (
+    AnnotationGroupDimension,
+    AnnotationJoinDiagnostic,
+    AnnotationJoinDiagnosticCode,
+    AnnotationStructuralGroup,
+    AnnotationStructuralJoinRequest,
+    AnnotationStructuralJoinResult,
+    AnnotationStructuralJoinRow,
+)
 from polylogue.annotations.schema import (
     ANNOTATION_SCHEMA_REGISTRY,
     RETIRED_ANNOTATION_TARGET_KINDS,
@@ -18,7 +25,7 @@ from polylogue.annotations.schema import (
     validate_annotation_row,
     validate_annotation_value,
 )
-from polylogue.core.enums import AssertionKind, AssertionStatus
+from polylogue.core.enums import AssertionKind
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.core.refs import ObjectRef
 from polylogue.storage.sqlite.archive_tiers.user_annotations import read_durable_annotation_schema
@@ -29,11 +36,6 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     read_assertion_envelope,
     read_latest_candidate_judgment,
 )
-
-AnnotationGroupDimension = Literal["repo", "model", "time", "origin"]
-AnnotationJoinDiagnosticCode = Literal["missing_target", "ambiguous_target", "schema_drift", "invalid_value"]
-_MAX_JOIN_LIMIT = 1_000
-_MAX_DIAGNOSTICS = 100
 
 
 class StructuralJoinArchive(Protocol):
@@ -51,95 +53,7 @@ class AnnotationStructuralJoinError(ValueError):
     """Raised when a join request cannot be evaluated honestly."""
 
 
-class AnnotationStructuralJoinRequest(BaseModel):
-    """Explicit schema/status selection for one bounded annotation join."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    schema_id: str = Field(min_length=1, max_length=256)
-    schema_version: int = Field(ge=1)
-    statuses: tuple[AssertionStatus, ...] = Field(min_length=1)
-    target_kind: str | None = Field(default=None, min_length=1, max_length=64)
-    group_by: tuple[AnnotationGroupDimension, ...] = ()
-    limit: int = Field(default=500, ge=1, le=_MAX_JOIN_LIMIT)
-    offset: int = Field(default=0, ge=0)
-
-    @model_validator(mode="after")
-    def validate_lifecycle_selection(self) -> AnnotationStructuralJoinRequest:
-        if len(set(self.statuses)) != len(self.statuses):
-            raise ValueError("annotation join statuses must be unique")
-        if AssertionStatus.ACCEPTED in self.statuses and AssertionStatus.ACTIVE in self.statuses:
-            raise ValueError("accepted and active cannot be joined together because they represent one label lifecycle")
-        return self
-
-
-class AnnotationJoinDiagnostic(BaseModel):
-    """One bounded reason a selected annotation did not join cleanly."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    code: AnnotationJoinDiagnosticCode
-    assertion_ref: str
-    target_ref: str
-    detail: str = Field(max_length=512)
-
-
-class AnnotationStructuralJoinRow(BaseModel):
-    """One label joined to one exact target without collapsing label identity."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    assertion_ref: str
-    batch_ref: str | None
-    schema_id: str
-    schema_version: int
-    status: AssertionStatus
-    labeler_ref: str | None
-    adjudicator_ref: str | None
-    source_assertion_ref: str
-    judgment_ref: str | None
-    judgment_decision: str | None
-    judgment_reason: str | None
-    supersedes: tuple[str, ...]
-    target_ref: str
-    value: dict[str, Any]
-    evidence_refs: tuple[str, ...]
-    structural: dict[str, Any]
-
-
-class AnnotationStructuralGroup(BaseModel):
-    """Deterministic aggregate over successfully joined label rows."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    dimensions: dict[str, Any]
-    label_count: int = Field(ge=1)
-    distinct_target_count: int = Field(ge=1)
-
-
-class AnnotationStructuralJoinResult(BaseModel):
-    """Rows, aggregates, and explicit non-join/fanout accounting."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    qualified_schema_id: str
-    requested_statuses: tuple[AssertionStatus, ...]
-    selected_annotation_count: int = Field(ge=0)
-    matched_annotation_count: int = Field(ge=0)
-    offset: int = Field(ge=0)
-    next_offset: int | None = Field(default=None, ge=0)
-    selection_truncated: bool
-    joined_count: int = Field(ge=0)
-    missing_target_count: int = Field(ge=0)
-    ambiguous_target_count: int = Field(ge=0)
-    schema_drift_count: int = Field(ge=0)
-    invalid_value_count: int = Field(ge=0)
-    multi_label_target_count: int = Field(ge=0)
-    duplicate_label_count: int = Field(ge=0)
-    diagnostics_truncated: bool
-    diagnostics: tuple[AnnotationJoinDiagnostic, ...]
-    rows: tuple[AnnotationStructuralJoinRow, ...]
-    groups: tuple[AnnotationStructuralGroup, ...]
+_MAX_DIAGNOSTICS = 100
 
 
 def _bounded_detail(detail: str) -> str:
@@ -225,11 +139,13 @@ def _group_value(row: AnnotationStructuralJoinRow, dimension: AnnotationGroupDim
 def _groups(
     rows: list[AnnotationStructuralJoinRow],
     dimensions: tuple[AnnotationGroupDimension, ...],
+    checkpoint: Callable[[], None],
 ) -> tuple[AnnotationStructuralGroup, ...]:
     if not dimensions:
         return ()
     grouped: dict[tuple[object, ...], list[AnnotationStructuralJoinRow]] = {}
     for row in rows:
+        checkpoint()
         key = tuple(_group_value(row, dimension) for dimension in dimensions)
         grouped.setdefault(key, []).append(row)
     return tuple(
@@ -245,82 +161,85 @@ def _groups(
 async def join_typed_annotations(
     poly: StructuralJoinArchive,
     request: AnnotationStructuralJoinRequest,
+    *,
+    user_conn: sqlite3.Connection,
+    user_schema: str | None,
+    checkpoint: Callable[[], None],
 ) -> AnnotationStructuralJoinResult:
     """Join selected typed labels to exact targets, retaining one row per label."""
 
-    user_db = Path(poly.archive_root) / "user.db"
-    if not user_db.exists():
-        raise AnnotationStructuralJoinError("annotation user tier is not initialized")
-    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-    with closing(
-        open_readonly_connection(
-            user_db,
-            timeout_class="background-read",
-            validate_schema=False,
+    user_conn.row_factory = sqlite3.Row
+    checkpoint()
+    durable = read_durable_annotation_schema(user_conn, request.schema_id, request.schema_version, schema=user_schema)
+    if durable is None:
+        raise AnnotationStructuralJoinError(
+            f"annotation schema {request.schema_id!r}@v{request.schema_version} is not registered durably"
         )
-    ) as user_conn:
-        user_conn.row_factory = sqlite3.Row
-        durable = read_durable_annotation_schema(user_conn, request.schema_id, request.schema_version)
-        if durable is None:
-            raise AnnotationStructuralJoinError(
-                f"annotation schema {request.schema_id!r}@v{request.schema_version} is not registered durably"
-            )
-        schema = durable.schema
-        try:
-            active_schema = ANNOTATION_SCHEMA_REGISTRY.get(request.schema_id, request.schema_version)
-        except KeyError:
-            active_schema = None
-        registry_drift = active_schema is not None and active_schema.definition_fingerprint != durable.definition_sha256
-        qualified_id = schema.qualified_id
-        same_schema_prefix = f"{schema.schema_id}@v"
-        assertions = list_assertion_claims(
-            user_conn,
-            kinds=(AssertionKind.ANNOTATION,),
-            statuses=request.statuses,
-            annotation_schema_qualified_id=qualified_id,
-            annotation_target_kind=request.target_kind,
-            limit=request.limit,
-            offset=request.offset,
-        )
-        matched_count = count_assertion_claims(
-            user_conn,
-            kinds=(AssertionKind.ANNOTATION,),
-            statuses=request.statuses,
-            annotation_schema_qualified_id=qualified_id,
-            annotation_target_kind=request.target_kind,
-        )
-        drift_count = count_assertion_claims(
-            user_conn,
-            kinds=(AssertionKind.ANNOTATION,),
-            statuses=request.statuses,
-            annotation_schema_prefix=same_schema_prefix,
-            annotation_schema_excluded_qualified_id=qualified_id,
-            annotation_target_kind=request.target_kind,
-        )
-        drift_rows = list_assertion_claims(
-            user_conn,
-            kinds=(AssertionKind.ANNOTATION,),
-            statuses=request.statuses,
-            annotation_schema_prefix=same_schema_prefix,
-            annotation_schema_excluded_qualified_id=qualified_id,
-            annotation_target_kind=request.target_kind,
-            limit=_MAX_DIAGNOSTICS,
-        )
-        source_candidates: dict[str, ArchiveAssertionEnvelope] = {}
-        judgments: dict[str, ArchiveAssertionEnvelope] = {}
-        for assertion in assertions:
-            for superseded_ref in assertion.supersedes:
-                if not superseded_ref.startswith("assertion:"):
-                    continue
-                source = read_assertion_envelope(user_conn, superseded_ref.removeprefix("assertion:"))
-                if source is not None:
-                    source_candidates[superseded_ref] = source
-            assertion_ref = f"assertion:{assertion.assertion_id}"
-            source_ref = next((ref for ref in assertion.supersedes if ref in source_candidates), assertion_ref)
-            judgment = read_latest_candidate_judgment(user_conn, source_ref)
-            if judgment is not None:
-                judgments[source_ref] = judgment
+    schema = durable.schema
+    try:
+        active_schema = ANNOTATION_SCHEMA_REGISTRY.get(request.schema_id, request.schema_version)
+    except KeyError:
+        active_schema = None
+    registry_drift = active_schema is not None and active_schema.definition_fingerprint != durable.definition_sha256
+    qualified_id = schema.qualified_id
+    same_schema_prefix = f"{schema.schema_id}@v"
+    checkpoint()
+    assertions = list_assertion_claims(
+        user_conn,
+        schema=user_schema,
+        kinds=(AssertionKind.ANNOTATION,),
+        statuses=request.statuses,
+        annotation_schema_qualified_id=qualified_id,
+        annotation_target_kind=request.target_kind,
+        limit=request.limit,
+        offset=request.offset,
+    )
+    checkpoint()
+    matched_count = count_assertion_claims(
+        user_conn,
+        schema=user_schema,
+        kinds=(AssertionKind.ANNOTATION,),
+        statuses=request.statuses,
+        annotation_schema_qualified_id=qualified_id,
+        annotation_target_kind=request.target_kind,
+    )
+    checkpoint()
+    drift_count = count_assertion_claims(
+        user_conn,
+        schema=user_schema,
+        kinds=(AssertionKind.ANNOTATION,),
+        statuses=request.statuses,
+        annotation_schema_prefix=same_schema_prefix,
+        annotation_schema_excluded_qualified_id=qualified_id,
+        annotation_target_kind=request.target_kind,
+    )
+    checkpoint()
+    drift_rows = list_assertion_claims(
+        user_conn,
+        schema=user_schema,
+        kinds=(AssertionKind.ANNOTATION,),
+        statuses=request.statuses,
+        annotation_schema_prefix=same_schema_prefix,
+        annotation_schema_excluded_qualified_id=qualified_id,
+        annotation_target_kind=request.target_kind,
+        limit=_MAX_DIAGNOSTICS,
+    )
+    source_candidates: dict[str, ArchiveAssertionEnvelope] = {}
+    judgments: dict[str, ArchiveAssertionEnvelope] = {}
+    for assertion in assertions:
+        checkpoint()
+        for superseded_ref in assertion.supersedes:
+            checkpoint()
+            if not superseded_ref.startswith("assertion:"):
+                continue
+            source = read_assertion_envelope(user_conn, superseded_ref.removeprefix("assertion:"), schema=user_schema)
+            if source is not None:
+                source_candidates[superseded_ref] = source
+        assertion_ref = f"assertion:{assertion.assertion_id}"
+        source_ref = next((ref for ref in assertion.supersedes if ref in source_candidates), assertion_ref)
+        judgment = read_latest_candidate_judgment(user_conn, source_ref, schema=user_schema)
+        if judgment is not None:
+            judgments[source_ref] = judgment
 
     selection_truncated = request.offset + len(assertions) < matched_count
     selected = list(assertions)
@@ -343,6 +262,7 @@ async def join_typed_annotations(
             )
 
     for drift in drift_rows:
+        checkpoint()
         diagnose(
             "schema_drift",
             f"assertion:{drift.assertion_id}",
@@ -351,6 +271,7 @@ async def join_typed_annotations(
         )
 
     for assertion in selected:
+        checkpoint()
         assertion_ref = f"assertion:{assertion.assertion_id}"
         stamp = _schema_stamp(assertion.value)
         if registry_drift:
@@ -478,16 +399,8 @@ async def join_typed_annotations(
         > len(diagnostics),
         diagnostics=tuple(diagnostics),
         rows=tuple(rows),
-        groups=_groups(rows, request.group_by),
+        groups=_groups(rows, request.group_by, checkpoint),
     )
 
 
-__all__ = [
-    "AnnotationJoinDiagnostic",
-    "AnnotationStructuralGroup",
-    "AnnotationStructuralJoinError",
-    "AnnotationStructuralJoinRequest",
-    "AnnotationStructuralJoinResult",
-    "AnnotationStructuralJoinRow",
-    "join_typed_annotations",
-]
+__all__ = ["AnnotationStructuralJoinError", "StructuralJoinArchive", "join_typed_annotations"]

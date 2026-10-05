@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from polylogue.annotations.importer import AnnotationBatchImportRequest, import_annotation_batch
-from polylogue.annotations.join import AnnotationStructuralJoinRequest, join_typed_annotations
+from polylogue.annotations.join_contracts import AnnotationStructuralJoinRequest
 from polylogue.annotations.schema import (
     SEED_ACTIVITY_SCHEMA,
     SEED_ANNOTATION_SCHEMAS,
@@ -51,6 +51,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     read_assertion_envelope,
     upsert_assertion,
 )
+from tests.infra.annotation_join import join_fixture_annotations
 from tests.infra.user_tier import connect_user_db
 
 
@@ -527,7 +528,7 @@ def test_accept_then_durable_batch_import_requires_label_judgment_for_active_que
         schema_version=active.version,
         statuses=(AssertionStatus.ACTIVE,),
     )
-    assert asyncio.run(join_typed_annotations(facade, active_request)).joined_count == 0
+    assert asyncio.run(join_fixture_annotations(facade, active_request)).joined_count == 0
 
     batch_request = AnnotationBatchImportRequest(
         jsonl=json.dumps(
@@ -565,13 +566,13 @@ def test_accept_then_durable_batch_import_requires_label_judgment_for_active_que
     assert assertion_ref is not None
 
     # The governed schema exists, but an agent batch is still candidate-only.
-    assert asyncio.run(join_typed_annotations(facade, active_request)).joined_count == 0
+    assert asyncio.run(join_fixture_annotations(facade, active_request)).joined_count == 0
     candidate_request = AnnotationStructuralJoinRequest(
         schema_id=active.schema_id,
         schema_version=active.version,
         statuses=(AssertionStatus.CANDIDATE,),
     )
-    assert asyncio.run(join_typed_annotations(facade, candidate_request)).joined_count == 1
+    assert asyncio.run(join_fixture_annotations(facade, candidate_request)).joined_count == 1
 
     conn = connect_user_db(user_db)
     try:
@@ -600,9 +601,9 @@ def test_accept_then_durable_batch_import_requires_label_judgment_for_active_que
         )
     )
     assert replayed.valid_count == 1
-    assert asyncio.run(join_typed_annotations(facade, candidate_request)).joined_count == 0
+    assert asyncio.run(join_fixture_annotations(facade, candidate_request)).joined_count == 0
 
-    active_join = asyncio.run(join_typed_annotations(facade, active_request))
+    active_join = asyncio.run(join_fixture_annotations(facade, active_request))
     assert active_join.joined_count == 1
     assert active_join.rows[0].batch_ref == "annotation-batch:archive-topic-backfill-1"
     assert active_join.rows[0].adjudicator_ref == "user:operator"

@@ -1154,3 +1154,21 @@ systemctl --user start polylogued
 
 The daemon will catch up on any files ingested after the backup was taken.
 ```
+
+### Structural annotation joins
+
+`polylogue annotations join` lowers its schema, explicit lifecycle statuses,
+target kind, grouping and page operands to the resident `annotation.join` read.
+The CLI renders the existing join report and never opens an archive. Daemon
+absence or a typed rejection is final. The producer reads label selection,
+schema evidence, judgments and structural targets from one pinned Index/User
+view. Missing targets, schema drift and invalid values remain explicit report
+counts and give the operation a degraded verdict even when no row joins.
+
+The Python API retains its controlled direct read of the same declared product
+composer. It pins the same attached tiers before evaluating the join; it does
+not delegate target resolution back to a facade or reopen User for selection.
+Its original operation-read owner revalidates archive identity across the pin;
+a generation republished during that interval produces a typed retryable refusal.
+Pages retain `matched_annotation_count`, `next_offset` and
+`selection_truncated`; the page budget bounds delivery rather than total scope.

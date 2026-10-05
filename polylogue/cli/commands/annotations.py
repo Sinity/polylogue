@@ -2,26 +2,23 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from typing import cast
 
 import click
 
-from polylogue.annotations.join import (
+from polylogue.annotations.join_contracts import (
     AnnotationGroupDimension,
-    AnnotationStructuralJoinError,
+    AnnotationJoinOperationResult,
     AnnotationStructuralJoinRequest,
-    AnnotationStructuralJoinResult,
-    join_typed_annotations,
 )
-from polylogue.api import Polylogue
+from polylogue.cli.operation_kernel import OperationRequest
+from polylogue.cli.read_dispatch import dispatch_read
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.annotation_limits import MAX_ANNOTATION_IMPORT_BYTES
 from polylogue.core.enums import AssertionStatus
-from polylogue.paths import archive_root
 
 #: The ``jsonl`` bound on ``mutation.annotation.import_batch``'s request
 #: contract. Read from the leaf owner in ``polylogue.core``, which holds no
@@ -133,7 +130,9 @@ def import_annotations_command(
 @click.option("--group-by", multiple=True, type=click.Choice(("repo", "model", "time", "origin")))
 @click.option("--limit", "-l", default=500, show_default=True, type=click.IntRange(min=1, max=1_000))
 @click.option("--offset", default=0, show_default=True, type=click.IntRange(min=0))
+@click.pass_obj
 def join_annotations_command(
+    env: AppEnv,
     schema_id: str,
     schema_version: int,
     statuses: tuple[str, ...],
@@ -155,13 +154,11 @@ def join_annotations_command(
             offset=offset,
         )
 
-        async def run() -> AnnotationStructuralJoinResult:
-            async with Polylogue(archive_root=archive_root()) as poly:
-                return await join_typed_annotations(poly, request)
-
-        result = asyncio.run(run())
-    except (AnnotationStructuralJoinError, ValueError) as exc:
+        payload, _ = dispatch_read(env.config, OperationRequest("annotation.join", request.model_dump(mode="json")))
+        result = AnnotationJoinOperationResult.model_validate(payload).result
+    except ValueError as exc:
         fail("annotations join", str(exc))
+
     click.echo(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, sort_keys=True))
 
 

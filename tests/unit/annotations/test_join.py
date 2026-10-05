@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.annotations.join import AnnotationStructuralJoinRequest, join_typed_annotations
+from polylogue.annotations.join_contracts import AnnotationStructuralJoinRequest
 from polylogue.annotations.schema import (
     DELEGATION_DISCOURSE_SCHEMA,
     AnnotationField,
@@ -24,6 +24,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_annotations import persist_annotation_schema
 from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidate, upsert_assertion
+from tests.infra.annotation_join import join_fixture_annotations
 from tests.infra.live_ingest import write_index_session
 from tests.infra.user_tier import connect_user_db
 
@@ -288,8 +289,8 @@ async def test_delegation_join_groups_active_labels_and_reports_nonjoins(
         group_by=("repo", "model", "time"),
     )
     async with Polylogue(archive_root=archive_root) as poly:
-        result = await join_typed_annotations(poly, request)
-        accepted = await join_typed_annotations(
+        result = await join_fixture_annotations(poly, request)
+        accepted = await join_fixture_annotations(
             poly,
             request.model_copy(update={"statuses": (AssertionStatus.ACCEPTED,)}),
         )
@@ -520,7 +521,7 @@ async def test_terminal_lifecycle_join_retains_labeler_and_judgment_provenance(
         conn.commit()
 
     async with Polylogue(archive_root=archive_root) as poly:
-        terminal = await join_typed_annotations(
+        terminal = await join_fixture_annotations(
             poly,
             AnnotationStructuralJoinRequest(
                 schema_id=schema.schema_id,
@@ -529,7 +530,7 @@ async def test_terminal_lifecycle_join_retains_labeler_and_judgment_provenance(
             ),
         )
         active = (
-            await join_typed_annotations(
+            await join_fixture_annotations(
                 poly,
                 AnnotationStructuralJoinRequest(
                     schema_id=schema.schema_id,
@@ -588,7 +589,7 @@ async def test_registry_drift_reports_truncated_diagnostics_honestly(
         conn.commit()
 
     async with Polylogue(archive_root=archive_root) as poly:
-        result = await join_typed_annotations(
+        result = await join_fixture_annotations(
             poly,
             AnnotationStructuralJoinRequest(
                 schema_id="delegation.discourse",

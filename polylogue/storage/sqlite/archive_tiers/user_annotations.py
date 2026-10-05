@@ -62,15 +62,20 @@ def read_durable_annotation_schema(
     conn: sqlite3.Connection,
     schema_id: str,
     version: int | None = None,
+    *,
+    schema: str | None = None,
 ) -> DurableAnnotationSchema | None:
     """Read one schema version, defaulting to the highest durable version."""
 
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError(f"invalid SQLite schema name: {schema!r}")
+    table = f"{schema}.annotation_schemas" if schema is not None else "annotation_schemas"
     conn.row_factory = sqlite3.Row
     if version is None:
         row = conn.execute(
-            """
+            f"""
             SELECT schema_id, schema_version, definition_json, definition_sha256, registered_at_ms
-            FROM annotation_schemas
+            FROM {table}
             WHERE schema_id = ?
             ORDER BY schema_version DESC
             LIMIT 1
@@ -79,9 +84,9 @@ def read_durable_annotation_schema(
         ).fetchone()
     else:
         row = conn.execute(
-            """
+            f"""
             SELECT schema_id, schema_version, definition_json, definition_sha256, registered_at_ms
-            FROM annotation_schemas
+            FROM {table}
             WHERE schema_id = ? AND schema_version = ?
             """,
             (schema_id, version),
@@ -239,7 +244,7 @@ class AnnotationBatchReadPage:
 
 
 def read_annotation_batch_page(
-    conn: sqlite3.Connection, batch_id: str, *, limit: int, offset: int
+    conn: sqlite3.Connection, batch_id: str, *, limit: int, offset: int, schema: str | None = None
 ) -> AnnotationBatchReadPage | None:
     """Decode only the selected evidence page on the caller's read transaction.
 
@@ -248,14 +253,17 @@ def read_annotation_batch_page(
     """
     if limit < 1 or offset < 0:
         raise ValueError("annotation page limit must be positive and offset nonnegative")
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError("invalid SQLite schema")
+    table = "annotation_batches" if schema is None else f"{schema}.annotation_batches"
     conn.row_factory = sqlite3.Row
     row = conn.execute(
-        """SELECT batch_id, schema_id, schema_version, target_ref, source_result_ref,
+        f"""SELECT batch_id, schema_id, schema_version, target_ref, source_result_ref,
                   actor_ref, model_ref, prompt_ref, total_count, valid_count,
                   invalid_count, abstained_count, metadata_json, created_at_ms,
                   json_array_length(assertion_refs_json) AS refs_count,
                   json_array_length(validation_failures_json) AS failures_count
-           FROM annotation_batches WHERE batch_id = ?""",
+           FROM {table} WHERE batch_id = ?""",
         (batch_id,),
     ).fetchone()
     if row is None:
@@ -275,10 +283,10 @@ def read_annotation_batch_page(
     header["qualified_schema_id"] = f"{row['schema_id']}@v{row['schema_version']}"
     total = int(row["valid_count"]) + int(
         conn.execute(
-            """SELECT COALESCE(SUM(CASE WHEN json_type(f.value, '$.errors') = 'array'
+            f"""SELECT COALESCE(SUM(CASE WHEN json_type(f.value, '$.errors') = 'array'
                                     AND json_array_length(f.value, '$.errors') > 0
                               THEN json_array_length(f.value, '$.errors') ELSE 1 END), 0)
-           FROM annotation_batches b, json_each(b.validation_failures_json) f
+           FROM {table} b, json_each(b.validation_failures_json) f
            WHERE b.batch_id = ?""",
             (batch_id,),
         ).fetchone()[0]
@@ -286,15 +294,15 @@ def read_annotation_batch_page(
     # Order only ordinal keys before the page cut. Amplified error documents
     # and repeated failure metadata are serialized only for selected items.
     selected = conn.execute(
-        """WITH failures AS MATERIALIZED (
+        f"""WITH failures AS MATERIALIZED (
           SELECT CAST(f.key AS INTEGER) AS ordinal, f.value AS original,
                  json_remove(f.value, '$.errors') AS fields,
                  CASE WHEN json_type(f.value, '$.errors') = 'array'
                       THEN json_extract(f.value, '$.errors') ELSE '[]' END AS errors
-          FROM annotation_batches b, json_each(b.validation_failures_json) f WHERE b.batch_id = ?
+          FROM {table} b, json_each(b.validation_failures_json) f WHERE b.batch_id = ?
         ), entries AS (
           SELECT 0 AS section, CAST(a.key AS INTEGER) AS ordinal, -1 AS error_ordinal
-          FROM annotation_batches b, json_each(b.assertion_refs_json) a WHERE b.batch_id = ?
+          FROM {table} b, json_each(b.assertion_refs_json) a WHERE b.batch_id = ?
           UNION ALL
           SELECT 1, f.ordinal, CAST(e.key AS INTEGER) FROM failures f, json_each(f.errors) e
           UNION ALL
@@ -312,7 +320,7 @@ def read_annotation_batch_page(
                            'error', json(f.errors -> ('$[' || s.error_ordinal || ']')))
           END AS item
         FROM selected s LEFT JOIN failures f ON s.section = 1 AND s.ordinal = f.ordinal
-                        JOIN annotation_batches b ON b.batch_id = ?
+                        JOIN {table} b ON b.batch_id = ?
         ORDER BY s.section, s.ordinal, s.error_ordinal""",
         (batch_id, batch_id, limit + 1, offset, batch_id),
     ).fetchall()

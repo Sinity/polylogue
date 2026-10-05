@@ -300,6 +300,53 @@ class InsightExportWireResult(_OperationPayload):
         return handler.resolve_ref_schema(handler(InsightExportResult.__pydantic_core_schema__))
 
 
+class AnnotationJoinWireRequest(_OperationPayload):
+    schema_id: str
+    schema_version: int
+    statuses: list[str]
+    target_kind: str | None = None
+    group_by: list[str] = Field(default_factory=list)
+    limit: int = 500
+    offset: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_join_request(cls, value: object) -> object:
+        from polylogue.annotations.join_contracts import AnnotationStructuralJoinRequest
+
+        _validate_json_result_model(AnnotationStructuralJoinRequest, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.annotations.join_contracts import AnnotationStructuralJoinRequest
+
+        return handler.resolve_ref_schema(handler(AnnotationStructuralJoinRequest.__pydantic_core_schema__))
+
+
+class AnnotationJoinWireResult(_OperationPayload):
+    result: dict[str, object]
+    outcome: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_join_result(cls, value: object) -> object:
+        from polylogue.annotations.join_contracts import AnnotationJoinOperationResult
+
+        _validate_json_result_model(AnnotationJoinOperationResult, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.annotations.join_contracts import AnnotationJoinOperationResult
+
+        return handler.resolve_ref_schema(handler(AnnotationJoinOperationResult.__pydantic_core_schema__))
+
+
 class FablePacketWireRequest(_OperationPayload):
     seed: str
     requested_size: int = Field(ge=0)
@@ -1832,6 +1879,15 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="InsightReadinessWireResult",
         request_model=InsightReadinessWireRequest,
         result_model=InsightReadinessWireResult,
+    ),
+    DaemonOperationSpec(
+        "annotation.join",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="annotation.join.request/v1",
+        result_contract="annotation.join.result/v1",
+        request_model=AnnotationJoinWireRequest,
+        result_model=AnnotationJoinWireResult,
     ),
     DaemonOperationSpec(
         "insights.rigor",

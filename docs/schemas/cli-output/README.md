@@ -15,6 +15,7 @@ devtools render cli-output-schemas --check # CI sync check
 
 | File | Surfaces | Source model |
 | --- | --- | --- |
+| [`annotation-join.schema.json`](./annotation-join.schema.json) | `polylogue annotations join` | `AnnotationStructuralJoinResult` |
 | [`session-list-row.schema.json`](./session-list-row.schema.json) | `polylogue read --all --format json`<br>`polylogue read --all --format ndjson`<br>`polylogue read --all --format yaml` | `SessionListEnvelope` |
 | [`session-summary.schema.json`](./session-summary.schema.json) | `polylogue analyze --format json (rows)`<br>`polylogue --format json find <query> (hits[].session)` | `SessionSummaryEnvelope` |
 | [`session-message-row.schema.json`](./session-message-row.schema.json) | `polylogue read --view messages --format ndjson`<br>`polylogue read --view messages --format json (messages[])` | `MessageRowEnvelope` |
