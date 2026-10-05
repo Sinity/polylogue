@@ -141,3 +141,48 @@ def test_daemon_served_query_does_not_import_heavy_local_execution_stack(
     assert result.stdout.strip() == "CLEAN", (
         f"heavy modules leaked into the daemon fast path: {result.stdout.strip()}\nstderr: {result.stderr}"
     )
+
+
+@pytest.mark.parametrize(
+    "probe,forbidden",
+    [
+        (
+            "from polylogue.surfaces.machine_envelope import success; assert success({'value': 1}).to_dict()['result'] == {'value': 1}",
+            ("polylogue.surfaces.authority",),
+        ),
+        (
+            "from polylogue.core.bounded import run_bounded; assert run_bounded([sys.executable, '-c', 'pass'], 10).returncode == 0",
+            ("asyncio",),
+        ),
+        (
+            "from polylogue.cli.shared.machine_errors import error_runtime; error = error_runtime('synthetic failure').to_dict(); assert error['code'] == 'runtime_error'; assert 'outcome' not in error",
+            ("polylogue.surfaces.outcome",),
+        ),
+        (
+            "import click; from polylogue.cli.click_option_groups import _validate_origin_tokens; assert _validate_origin_tokens(click.Context(click.Command('probe')), click.Option(['--origin']), None) is None; assert _validate_origin_tokens(click.Context(click.Command('probe')), click.Option(['--exclude-origin']), '') is None",
+            ("polylogue.sources.origin_specs",),
+        ),
+        (
+            "from polylogue.archive.query.search_hits import bound_display_title; assert bound_display_title('synthetic title') == 'synthetic title'",
+            ("polylogue.storage.archive_identity", "polylogue.storage.sqlite.archive_tiers.write"),
+        ),
+        (
+            "import polylogue.coordination.envelope",
+            (
+                "polylogue.storage.archive_identity",
+                "polylogue.storage.sqlite.connection_profile",
+                "polylogue.storage.derived.topology",
+                "polylogue.storage.derived.raw",
+                "polylogue.storage.sqlite.run_projection_relations",
+            ),
+        ),
+    ],
+)
+@pytest.mark.uses_real_clock("fresh subprocess observes actual imports and physical exit, not latency")
+def test_unused_cold_branches_do_not_load_their_execution_owners(
+    tmp_path: Path, probe: str, forbidden: tuple[str, ...]
+) -> None:
+    """Restoring an eager import loads an owner the selected branch never uses."""
+    code = f"import sys\n{probe}\nassert not set({forbidden!r}) & sys.modules.keys()\n"
+    result = subprocess.run([sys.executable, "-c", code], cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

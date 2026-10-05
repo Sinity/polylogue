@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.surfaces.machine_envelope import (
@@ -13,7 +13,9 @@ from polylogue.surfaces.machine_envelope import (
     emit_success,
     success,
 )
-from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
+
+if TYPE_CHECKING:
+    from polylogue.surfaces.outcome import OutcomeEnvelope
 
 
 class MachineErrorEnvelope(TypedDict):
@@ -312,6 +314,8 @@ def error_no_results(
     filters: list[str] | None = None,
     diagnostics: JSONDocument | None = None,
 ) -> MachineError:
+    from polylogue.surfaces.outcome import decide_outcome
+
     details: JSONDocument = {}
     if filters:
         details["filters"] = list(filters)
