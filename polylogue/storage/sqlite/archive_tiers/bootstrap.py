@@ -215,7 +215,7 @@ _TIER_PROTOTYPE_LOCK = threading.Lock()
 _TIER_INIT_COUNTS: dict[tuple[str, str], int] = {}
 _TIER_INIT_COUNTS_LOCK = threading.Lock()
 
-_TIER_PROTOTYPES: dict[tuple[str, int, str, int], Path] = {}
+_TIER_PROTOTYPES: dict[tuple[str, int, str, int, str], Path] = {}
 _TIER_PROTOTYPE_DIR: Path | None = None
 _PROTOTYPE_CACHEABLE_TIERS = frozenset(ArchiveTier)
 
@@ -304,16 +304,18 @@ def connection_page_size(conn: sqlite3.Connection) -> int:
 
 def _tier_prototype_key(
     conn: sqlite3.Connection, tier: ArchiveTier, required_version: int
-) -> tuple[str, int, str, int]:
+) -> tuple[str, int, str, int, str]:
     """Identify a prototype by every input that shapes its SQLite pages.
 
-    Page size belongs in the key because a prototype is restored with the
-    SQLite backup API, which makes an empty destination adopt the source's
-    page size outright. Without it a caller that asked for 8192 would get a
-    4096-page database back from the cache and never be told.
+    Page size and journal mode belong in the key because a prototype is
+    restored with the SQLite backup API, which makes an empty destination
+    adopt the source's page size and header (WAL or rollback) outright.
+    Without them a caller that asked for 8192, or for an inactive generation
+    in rollback mode, would get the other shape back from the cache.
     """
     ddl_digest = hashlib.sha256(archive_tier_spec(tier).baseline_ddl.encode()).hexdigest()
-    return tier.value, required_version, ddl_digest, connection_page_size(conn)
+    journal_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    return tier.value, required_version, ddl_digest, connection_page_size(conn), journal_mode
 
 
 def _restore_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required_version: int) -> bool:
@@ -366,7 +368,7 @@ def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required
     staging: Path | None = None
     directory = _tier_prototype_dir()
     try:
-        destination = directory / f"{tier.value}-v{required_version}-{key[2]}-p{key[3]}.db"
+        destination = directory / f"{tier.value}-v{required_version}-{key[2]}-p{key[3]}-{key[4]}.db"
         staging_fd, staging_name = tempfile.mkstemp(
             prefix=f".{destination.name}.",
             suffix=".tmp",
@@ -660,8 +662,13 @@ def initialize_archive_database(
     expected_version: int | None = None,
     inactive_destination: InactiveTierDestination | None = None,
     page_size: int | None = None,
+    inactive_generation: bool = False,
 ) -> None:
     """Create or initialize one archive tier database file.
+
+    ``inactive_generation`` creates an inactive Index generation in
+    rollback-journal mode: its bulk-build writer then opens without a header
+    change, and promotion switches it to WAL.
 
     A path below ``.archive-tuples`` is an inactive whole-archive candidate,
     not an ordinary archive root.  Such a writer must carry the manifest-bound
@@ -794,7 +801,7 @@ def initialize_archive_database(
         # rewrites the header under any reference seal prepared against it.
         from polylogue.storage.sqlite.connection_profile import initialize_tier_database_mode
 
-        initialize_tier_database_mode(conn, embeddings=tier is ArchiveTier.EMBEDDINGS)
+        initialize_tier_database_mode(conn, rollback=tier is ArchiveTier.EMBEDDINGS or inactive_generation)
         initialize_archive_tier(conn, tier)
         if tier is ArchiveTier.INDEX:
             from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest

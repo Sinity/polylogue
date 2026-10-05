@@ -1059,7 +1059,7 @@ class IndexGenerationStore:
                 f"IndexGenerationStore.create(index={index_path})",
                 archive_root=self.archive_root,
             )
-            initialize_archive_database(index_path, ArchiveTier.INDEX, page_size=page_size)
+            initialize_archive_database(index_path, ArchiveTier.INDEX, page_size=page_size, inactive_generation=True)
             generation = IndexGeneration(
                 generation_id=generation_id,
                 owner_id=owner,
@@ -1199,7 +1199,10 @@ class IndexGenerationStore:
         if stat.S_ISLNK(target_metadata.st_mode) or not stat.S_ISREG(target_metadata.st_mode):
             raise RuntimeError("generation index is not a regular, non-symlink file")
         target = target_path.absolute()
-        _checkpoint_truncate(target, label="new index", archive_root=self.archive_root)
+        # The generation was built in rollback-journal mode; promotion is its
+        # exclusive commit point and the one place it takes the live tiers'
+        # WAL mode, before any reader can reach it through the pointer.
+        _checkpoint_truncate(target, label="new index", archive_root=self.archive_root, enter_wal=True)
         pointer = self.active_pointer
         predecessor_generation_id = self._generation_id_for_active_target(pointer)
         retired = self.generations_root / f"retired-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
@@ -2119,7 +2122,7 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
     return digest.hexdigest()
 
 
-def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
+def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path, enter_wal: bool = False) -> None:
     """Checkpoint one inode without a path check-then-reopen race.
 
     An exclusive ``TRUNCATE`` checkpoint is a durable mutation of an archive
@@ -2162,6 +2165,10 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
         owned_fd, fd = fd, -1
         owner = NativeSQLCustodyOwner(conn, anchored_descriptors=(owned_fd,))
         try:
+            if enter_wal:
+                mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                if str(mode).lower() != "wal":
+                    raise RuntimeError(f"{label} could not enter WAL mode: {mode!r}")
             checkpoint = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
         except BaseException as primary:
             _close_failed_native_construction(owner, primary)
