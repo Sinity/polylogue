@@ -42,7 +42,10 @@ from polylogue.storage.raw_authority import iter_parser_census_logical_keys, raw
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
-from tests.infra.prepared_membership import publish_prepared_membership_classification
+from tests.infra.prepared_membership import (
+    publish_prepared_membership_classification,
+    write_prepared_retained_session,
+)
 from tests.infra.prepared_replay import (
     apply_prepared_revision_replay,
     independent_source_connection,
@@ -1367,12 +1370,8 @@ def test_precedence_write_refuses_a_raw_recorded_ambiguous(tmp_path: Path) -> No
                 (raw_id, raw_id, bytes.fromhex(raw_id)),
             )
 
-        returned_raw_id, session_id = archive.write_parsed_for_retained_raw(
-            session,
-            raw_id=raw_id,
-            source_path="a.json",
-            acquired_at_ms=2,
-        )
+        result = write_prepared_retained_session(archive, session, raw_id=raw_id)
+        returned_raw_id, session_id = result.raw_id, result.session_id
 
     assert returned_raw_id == raw_id
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -1433,12 +1432,8 @@ def test_precedence_write_allows_a_non_ambiguous_sibling_membership_on_the_same_
                 (raw_id, raw_id + "-b", bytes.fromhex(raw_id)),
             )
 
-        _, ambiguous_session_id = archive.write_parsed_for_retained_raw(
-            ambiguous_session, raw_id=raw_id, source_path="bundle.json", acquired_at_ms=2
-        )
-        _, settled_session_id = archive.write_parsed_for_retained_raw(
-            settled_session, raw_id=raw_id, source_path="bundle.json", acquired_at_ms=3
-        )
+        ambiguous_session_id = write_prepared_retained_session(archive, ambiguous_session, raw_id=raw_id).session_id
+        settled_session_id = write_prepared_retained_session(archive, settled_session, raw_id=raw_id).session_id
 
     with sqlite3.connect(tmp_path / "index.db") as conn:
         # The ambiguous membership is still refused ...
@@ -2432,17 +2427,7 @@ def test_retained_index_cas_failure_persists_evidence_with_first_failure_state(
 
         monkeypatch.setattr(archive_revision_governance, "_write_parsed_precedence_result", raise_conflict)
         with pytest.raises(archive_revision_governance.MembershipReplayConflictError):
-            archive._index_parsed_for_retained_raw(
-                session,
-                raw_id=raw_id,
-                source_index=0,
-                stage_timings_s=None,
-                stage_timing_prefix="test",
-                manage_transaction=False,
-                preacquired_attachment_blobs={},
-                finalize_raw_parse=False,
-                revision_authoritative=True,
-            )
+            write_prepared_retained_session(archive, session, raw_id=raw_id, revision_authoritative=True)
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         assert source_conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (
