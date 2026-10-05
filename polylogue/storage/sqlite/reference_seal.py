@@ -8620,6 +8620,9 @@ class PreparedIndexMutation:
             "ON known_tier_effects(tier,parent_effect_id,table_name)",
             "CREATE INDEX IF NOT EXISTS temp.known_tier_effect_old ON known_tier_effects(tier,table_name,old_rowid,effect_id)",
             "CREATE INDEX IF NOT EXISTS temp.known_tier_effect_new ON known_tier_effects(tier,table_name,new_rowid,effect_id)",
+            # Pending-capture probes name no table; without this they scan
+            # every effect of the tier on each Source statement.
+            "CREATE INDEX IF NOT EXISTS temp.known_tier_effect_consumed ON known_tier_effects(tier,consumed)",
         )
         for statement in statements:
             _check_reference_cancellation()
@@ -9054,12 +9057,18 @@ class PreparedIndexMutation:
         ) as coordinates:
             for table, rowid in coordinates:
                 _check_reference_cancellation()
+                # The latest effect touching this coordinate, from two indexed
+                # probes: an OR over both rowids walked every effect of the
+                # table, making each verification quadratic in its effects.
                 with self._owned_cursor(
                     self._scratch,
-                    "SELECT new_rowid,new_image FROM temp.known_tier_effects "
-                    "WHERE tier=? AND table_name=? AND (old_rowid=? OR new_rowid=?) "
-                    "ORDER BY effect_id DESC LIMIT 1",
-                    (tier, table, rowid, rowid),
+                    "SELECT new_rowid,new_image FROM temp.known_tier_effects WHERE effect_id=("
+                    "SELECT max(effect_id) FROM ("
+                    "SELECT max(effect_id) AS effect_id FROM temp.known_tier_effects "
+                    "WHERE tier=? AND table_name=? AND old_rowid=? "
+                    "UNION ALL SELECT max(effect_id) FROM temp.known_tier_effects "
+                    "WHERE tier=? AND table_name=? AND new_rowid=?))",
+                    (tier, table, rowid, tier, table, rowid),
                 ) as cursor:
                     expected = cursor.fetchone()
                 assert expected is not None
