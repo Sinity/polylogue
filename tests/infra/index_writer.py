@@ -334,7 +334,11 @@ def write_fixture_index_session(
                 if conventional_index.exists() or conventional_index.is_symlink():
                     raise ValueError("fixture producer does not own this archive's active Index")
                 conventional_index.symlink_to(path)
-            bootstrap_archive_root(root)
+            # A bulk build defers the secondary indexes of an already
+            # bootstrapped archive; re-bootstrapping mid-build would refuse
+            # the deliberately incomplete manifest.
+            if not (_secondary_indexes_deferred(conn) and (root / ".polylogue-format.json").exists()):
+                bootstrap_archive_root(root)
         with PreparedIndexMutation(path, archive_root=root, input_demand=input_demand) as seal:
             require_source_target(seal)
             index = seal.observer("index")
@@ -366,6 +370,21 @@ def write_fixture_index_session(
                 if primary is not None:
                     raise BaseExceptionGroup("fixture preparation and cleanup failed", [primary, cleanup]) from None
                 raise
+
+
+def _secondary_indexes_deferred(conn: sqlite3.Connection) -> bool:
+    """Whether this Index is inside a bulk build: every deferrable index is dropped."""
+    from polylogue.storage.sqlite.runtime_indexes import DEFERRED_SECONDARY_INDEX_NAMES
+
+    placeholders = ", ".join("?" for _ in DEFERRED_SECONDARY_INDEX_NAMES)
+    with closing(
+        conn.execute(
+            f"SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ({placeholders})",
+            DEFERRED_SECONDARY_INDEX_NAMES,
+        )
+    ) as rows:
+        present = int(rows.fetchone()[0])
+    return present == 0
 
 
 @contextmanager
@@ -418,3 +437,39 @@ def prepared_fixture_index_batch(
     finally:
         if seal is None or not seal.publication_lifetime_bound:
             exclusion.close()
+
+
+@contextmanager
+def published_fixture_index_batch(
+    conn: sqlite3.Connection,
+    sessions: Sequence[ParsedSession],
+    *,
+    archive_root: Path,
+    before_publish: Callable[[], object] | None = None,
+    **write_options: Any,
+) -> Iterator[list[str]]:
+    """Prepare every session first, then publish them all in one Index write scope.
+
+    The archive root is bootstrapped before preparation. ``before_publish``
+    runs inside the scope ahead of the writes (a bulk build defers its
+    secondary indexes there). The yielded session ids are already written;
+    work the caller runs inside the block (bulk finalization, index
+    restoration) shares the same scope, which commits once when the block
+    exits.
+    """
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    if not (archive_root / ".polylogue-format.json").exists():
+        with _fixture_writer_admission(conn, "test.fixture.batch.bootstrap", archive_root):
+            bootstrap_archive_root(archive_root)
+    with (
+        prepared_fixture_index_batch(conn, sessions, archive_root=archive_root) as (seal, prepared),
+        _fixture_writer_admission(conn, "test.fixture.index.batch", archive_root),
+        seal.mutation_scope(conn),
+    ):
+        if before_publish is not None:
+            before_publish()
+        yield [
+            write_fixture_index_session(conn, session, prepared_write=carrier, **write_options)
+            for session, carrier in zip(sessions, prepared, strict=True)
+        ]
