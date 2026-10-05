@@ -119,6 +119,7 @@ def run(root: Path) -> dict[str, object]:
                             (None, *raw_parameters, *blob_parameters),
                             table="raw_sessions",
                             writable_targets=(("raw_sessions", (raw,)),),
+                            prepared_cells={"raw_id": raw},
                             allocation_parameter=0,
                         ) as cursor:
                             allocated = cursor.lastrowid

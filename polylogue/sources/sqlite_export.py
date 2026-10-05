@@ -489,6 +489,12 @@ def _exchange_worker_request(
             raise OSError(errno.EPROTO, "invalid SQLite worker frame")
 
 
+#: Operations a creator's live page process serves. A binding opens no
+#: source content: it re-proves the input's name and staging provenance
+#: through the same received directory capabilities as a byte read.
+_BYTE_PAGE_OPERATIONS = frozenset({"bytes", "preflight_bytes", "binding"})
+
+
 def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | None = None) -> dict[str, Any]:
     """Exchange declared non-byte source operations with one fresh process."""
     if request["operation"] in {"bytes", "preflight_bytes"}:
@@ -509,7 +515,7 @@ class SourceBytePage:
         self._finished = False
         self._creator = threading.current_thread()
 
-    def exchange(self, request: dict[str, Any], handle: BinaryWriteSink) -> dict[str, Any]:
+    def exchange(self, request: dict[str, Any], handle: BinaryWriteSink | None) -> dict[str, Any]:
         from polylogue.core.compute_cancel import check_compute_cancelled
 
         if threading.current_thread() is not self._creator:
@@ -518,8 +524,8 @@ class SourceBytePage:
             raise RuntimeError("source byte page is no longer accepting observations")
         try:
             check_compute_cancelled()
-            if request["operation"] not in {"bytes", "preflight_bytes"}:
-                raise OSError(errno.EPROTO, "non-byte observation on source byte page")
+            if request["operation"] not in _BYTE_PAGE_OPERATIONS:
+                raise OSError(errno.EPROTO, "undeclared observation on source byte page")
             if self._process is None:
                 parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
                 self._stack.callback(parent.close)
@@ -647,6 +653,42 @@ def source_byte_page_sequence() -> Iterator[SourceBytePageSequence]:
         sequence._discard()
 
 
+def _bind_input_in_worker(request: dict[str, Any]) -> dict[str, Any]:
+    """Prove one input's name and staging provenance inside a reader process."""
+    source = Path(request["source"])
+    accepted = request["identities"][""]
+    main = None if accepted is None else cast(_FileIdentity, tuple(accepted))
+    if main is None or _named_identity(request["directory"], source.name) != main:
+        raise OSError(errno.ESTALE, "SQLite binding input changed", str(source))
+    if request.get("staged_input") is None:
+        original, provenance = None, None
+    else:
+        from polylogue.sources.source_staging import _verify_staging_metadata_name
+        from polylogue.storage.sqlite.archive_tiers.source_items import CapturedSourceInputIdentity
+
+        staged = request["staged_input"]
+        if not isinstance(staged, dict) or set(staged) != {"identity", "provenance"}:
+            raise OSError(errno.EPROTO, "invalid captured staging input")
+        receipt = CapturedSourceInputIdentity.from_dict(staged["identity"])
+        provenance = staged["provenance"]
+        _verify_staging_metadata_name(request["metadata_directory"], provenance)
+        original = {
+            "source_path": receipt.semantic_source_path,
+            "identity_path": receipt.canonical_source_path,
+            "profile_root": receipt.profile_root,
+            "profile_key": receipt.profile_key,
+            "profile_source_path": receipt.profile_source_path,
+        }
+    if _named_identity(request["directory"], source.name) != main:
+        raise OSError(errno.ESTALE, "SQLite binding input changed", str(source))
+    return {
+        "source_path": original["source_path"] if original is not None else request["semantic_source"],
+        "profile": original,
+        "provenance": provenance,
+        "staged": original is not None,
+    }
+
+
 def _source_byte_page_main(channel_fd: int) -> None:
     """Each request closes its original file and received directories before C."""
     from polylogue.sources.source_staging import _read_bound_input_in_worker
@@ -685,11 +727,15 @@ def _source_byte_page_main(channel_fd: int) -> None:
                     observed = os.fstat(descriptor)
                     if not stat.S_ISDIR(observed.st_mode) or list(_identity(observed)) != expected:
                         raise OSError(errno.ESTALE, "source byte directory differs from its accepted anchor")
-                if request["operation"] not in {"bytes", "preflight_bytes"}:
+                if request["operation"] not in _BYTE_PAGE_OPERATIONS:
                     raise OSError(errno.EPROTO, "invalid source byte page operation")
                 request["directory"], request["metadata_directory"] = directory, metadata
-                result = _read_bound_input_in_worker(
-                    request, _WorkerSink() if request["operation"] == "bytes" else None
+                result = (
+                    _bind_input_in_worker(request)
+                    if request["operation"] == "binding"
+                    else _read_bound_input_in_worker(
+                        request, _WorkerSink() if request["operation"] == "bytes" else None
+                    )
                 )
             finally:
                 for descriptor in descriptors:
@@ -975,42 +1021,7 @@ def _source_worker_main() -> None:
             _write_frame(sys.stdout.buffer, b"S")
             return
         if request["operation"] == "binding":
-            main = accepted[""]
-            if main is None or _named_identity(request["directory"], source.name) != main:
-                raise OSError(errno.ESTALE, "SQLite binding input changed", str(source))
-            if request.get("staged_input") is None:
-                original, provenance = None, None
-            else:
-                from polylogue.sources.source_staging import _verify_staging_metadata_name
-                from polylogue.storage.sqlite.archive_tiers.source_items import CapturedSourceInputIdentity
-
-                staged = request["staged_input"]
-                if not isinstance(staged, dict) or set(staged) != {"identity", "provenance"}:
-                    raise OSError(errno.EPROTO, "invalid captured staging input")
-                receipt = CapturedSourceInputIdentity.from_dict(staged["identity"])
-                provenance = staged["provenance"]
-                _verify_staging_metadata_name(request["metadata_directory"], provenance)
-                original = {
-                    "source_path": receipt.semantic_source_path,
-                    "identity_path": receipt.canonical_source_path,
-                    "profile_root": receipt.profile_root,
-                    "profile_key": receipt.profile_key,
-                    "profile_source_path": receipt.profile_source_path,
-                }
-            if _named_identity(request["directory"], source.name) != main:
-                raise OSError(errno.ESTALE, "SQLite binding input changed", str(source))
-            _write_frame(
-                sys.stdout.buffer,
-                b"R",
-                _control_bytes(
-                    {
-                        "source_path": original["source_path"] if original is not None else request["semantic_source"],
-                        "profile": original,
-                        "provenance": provenance,
-                        "staged": original is not None,
-                    }
-                ),
-            )
+            _write_frame(sys.stdout.buffer, b"R", _control_bytes(_bind_input_in_worker(request)))
             _write_frame(sys.stdout.buffer, b"S")
             return
         if request["operation"] == "copy":

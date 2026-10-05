@@ -54,6 +54,7 @@ from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.storage_records import SessionBuilder
 
 _MATERIALIZER_VERSION = SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -1085,14 +1086,18 @@ async def test_async_profile_inspection_honors_demand_without_a_binding_change(
     import aiosqlite
 
     root, index_db, session_id = marker_archive
-    _converge_session_profile(root, index_db, session_id)
-    with closing(_write_connection(index_db)) as conn:
-        conn.execute(
-            "INSERT INTO session_profile_demand(session_id, revision) VALUES (?, 1) "
-            "ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1",
-            (session_id,),
-        )
-        conn.commit()
+
+    def seed() -> None:
+        _converge_session_profile(root, index_db, session_id)
+        with closing(_write_connection(index_db)) as conn:
+            conn.execute(
+                "INSERT INTO session_profile_demand(session_id, revision) VALUES (?, 1) "
+                "ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1",
+                (session_id,),
+            )
+            conn.commit()
+
+    run_off_event_loop(seed)
 
     async with aiosqlite.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
         statuses = await inspect_session_profiles_async(
@@ -1168,7 +1173,7 @@ def test_profile_resume_retains_shrinking_required_page_suffix(tmp_path: Path, i
     )
     frame = make_session_profile_frame(index_db, archive_root=root, scope=None)
     prerequisites = (SESSION_SUMMARY_DOMAIN, SESSION_USAGE_ROLLUP_DOMAIN)
-    with write_lease("test.profile-resume"):
+    with write_lease("test.profile-resume", archive_root=root):
         converge(registry, frame, domains=prerequisites)
         assert profile.required_page(frame, cursor=None, limit=4)[0] == tuple(ids[:4])
         first = converge(registry, frame, domains=(SESSION_PROFILE_DOMAIN,), budget=Budget(page=4, publication=2))
@@ -1182,10 +1187,10 @@ def test_profile_resume_retains_shrinking_required_page_suffix(tmp_path: Path, i
         assert _materialize(index_db, ids[2])
         ids.append(seed("g"))
         _mutate(index_db, ids[0], "word_count", "word_count + 1")
-        with write_lease("test.profile-prerequisites"):
+        with write_lease("test.profile-prerequisites", archive_root=root):
             converge(registry, frame, domains=prerequisites)
 
-    with write_lease("test.profile-resume"):
+    with write_lease("test.profile-resume", archive_root=root):
         second = converge(
             registry,
             frame,
@@ -1196,7 +1201,7 @@ def test_profile_resume_retains_shrinking_required_page_suffix(tmp_path: Path, i
     assert second.failed == 0
     assert _status(index_db, ids[2]) == "valid"
     cursor = second.cursor
-    with write_lease("test.profile-resume"):
+    with write_lease("test.profile-resume", archive_root=root):
         while not cursor.position(SESSION_PROFILE_DOMAIN).swept:
             report = converge(
                 registry, frame, domains=(SESSION_PROFILE_DOMAIN,), budget=Budget(page=4, publication=2), cursor=cursor
