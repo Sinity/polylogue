@@ -18,15 +18,13 @@ from pathlib import Path
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
-from polylogue import Polylogue
 from polylogue.maintenance import blob_conservation
 from polylogue.maintenance.blob_conservation import check_blob_conservation
 from polylogue.sources.live import WatchSource
-from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_liveness import BlobLivenessProjection
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
+from tests.infra.live_batch import prepared_live_batch_processor
 
 _SEEDED_SESSION_ID = "11111111-2222-3333-4444-555555555555"
 
@@ -259,18 +257,15 @@ async def _seed_archive(workspace_env: dict[str, Path]) -> Path:
         + "\n",
         encoding="utf-8",
     )
-    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "index.db")
-    processor = LiveBatchProcessor(
-        archive,
+    # The live route publishes through the daemon's supplied owners: write
+    # coordinator, capture stage and retained Raw owner.
+    async with prepared_live_batch_processor(
+        workspace_env["archive_root"],
         (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
-        cursor=CursorStore(workspace_env["data_root"] / "cursor.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
-    )
-    try:
+    ) as processor:
         metrics = await processor.ingest_files([transcript], emit_event=False)
         assert metrics.succeeded_file_count == 1
-    finally:
-        await archive.close()
     return transcript
 
 
