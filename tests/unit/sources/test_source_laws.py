@@ -799,7 +799,8 @@ def test_iter_source_sessions_with_raw_assigns_source_indexes_for_multi_session_
 
     assert len(results) == 2
     raw_records = [raw_data for raw_data, _ in results if raw_data is not None]
-    assert [raw_data.source_index for raw_data in raw_records] == [0, 1]
+    # A ZIP member's stored index encodes (entry ordinal, element split).
+    assert [zip_member_source_coordinate(raw_data.source_index or 0) for raw_data in raw_records] == [(0, 0), (0, 1)]
     modes: list[str] = []
     for raw_data in raw_records:
         assert raw_data.addressing_mode is not None
