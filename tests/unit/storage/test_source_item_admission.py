@@ -6,6 +6,7 @@ import hashlib
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -158,9 +159,17 @@ def test_late_membership_error_rolls_back_raw_and_membership_together(
 
     conn, _generation, item_id, plan = _archive(tmp_path)
 
-    def late_failure(*_args: object, **_kwargs: object) -> None:
+    consume = blob_publication.consume_blob_publication_receipt
+    failed: list[bool] = []
+
+    def late_failure(*args: Any, **kwargs: Any) -> None:
+        # The raw's blob reference consumes its own receipt earlier; the
+        # admission's final consumption is the one after its membership edge.
+        if conn.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone() == (0,):
+            consume(*args, **kwargs)
+            return
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
-        assert conn.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone() == (1,)
+        failed.append(True)
         raise ValueError("late receipt consumption failure")
 
     monkeypatch.setattr(blob_publication, "consume_blob_publication_receipt", late_failure)
@@ -168,6 +177,7 @@ def test_late_membership_error_rolls_back_raw_and_membership_together(
     with pytest.raises(ValueError, match="late receipt consumption failure"):
         execute_source_item_admission(conn, plan, _member(item_id))
 
+    assert failed == [True]
     assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
     assert conn.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone() == (0,)
     assert conn.in_transaction
