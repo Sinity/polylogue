@@ -763,19 +763,30 @@ it does not turn completed acquisition or append work into failure.
 Hook capture rides the same route: producers append to per-process NDJSON
 carriers, which are ordinary files in their own `hook_carrier` intake class.
 
-JSON and JSONL files are prepared off the writer hold by the watcher's parse
-stage (`polylogue/sources/live/parse_prefetch.py`). A worker copies the file
-into its attempt scratch first and samples the provider, finds the JSONL
-frontier and parses from that copy, so the carrier's digest and its provider
-describe one revision; the writer accepts a carrier only when its own capture
-hashes the same. When a JSON document the stage prepared has no carrier for
-its captured bytes (the file changed after preparation, or preparation was
-deferred), the writer does not decode the capture to classify it: it releases
-that capture, reports `live.ingest.json_capture_deferred`, and defers the path
-to a later pass whose preparation matches what it captures. A complete JSONL
-record that does not decode is refused for every provider: the raw is retained
-with `terminal_corrupt_input` evidence (`terminal_unknown_json_decode` for an
-unknown provider) instead of being skipped on the way to the cursor frontier.
+JSON and JSONL files are captured first and prepared afterwards. The
+writer's full-ingest pass (`polylogue/sources/live/batch.py`) retains each
+file's bytes and records its raw row; it does not parse them. After that
+writer has returned, the batch hands the acquired raw IDs to the daemon's
+raw-observation owner (`RawObservationConvergenceOwner.ingest_retained_raw_ids`
+in `polylogue/daemon/raw_observation_owner.py`, with its archive work in
+`polylogue/operations/raw_observation_owner.py`). In acquire-only degraded
+mode, where live ingest must not read derived tiers, the pass stops after
+capture.
+
+The owner opens the selected destination (the active index, or the cold-build
+generation) and then prepares each raw, together with the Claude Code sidecar
+owners it implies, on a bounded compute worker from the retained bytes, never
+from the live file. Each raw publishes through one admitted writer stage.
+Preparation and publication see the same retained revision, so a file that
+changes after capture is a new raw on a later pass. A raw that first needs
+Source census or classification publishes that phase and is prepared again;
+a phase that leaves its original inputs unchanged is a retryable error, not a
+loop. A complete JSONL record or JSON document that does not decode is refused
+with terminal evidence: `terminal_corrupt_input`, or
+`terminal_unknown_json_decode` for an unknown provider
+(`terminal_decode_evidence` in `polylogue/sources/prepared_jsonl.py`). Live
+intake and retained replay apply that same rule. An unterminated JSONL tail is
+excluded from the parsed prefix rather than refused.
 
 An archive storage fault -- a full disk or quota, an I/O error, a corrupt
 database page, a read-only mount, or attachment bytes a parse worker published

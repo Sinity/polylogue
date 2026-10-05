@@ -66,12 +66,12 @@ from polylogue.operations.operation_context import (
     observe_control_authority,
     open_operation_control,
 )
-from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 
 if TYPE_CHECKING:
     from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance
     from polylogue.operations.audit import CanonicalAuditLiteral
     from polylogue.operations.insight_acceptance import AcceptedInsightPart, SessionInsightPartReceipt
+    from polylogue.operations.raw_observation_owner import PreparedRevisionReplayResult
 
 _T = TypeVar("_T")
 

@@ -1040,12 +1040,26 @@ def raw_frontier_integrity_projection(
     sample_limit: int = 10,
 ) -> RawFrontierIntegrityProjection:
     """Read completed coverage without repeating the original corpus inspection."""
+    from polylogue.core.evidence import Measured, Unavailable
     from polylogue.storage.frontier_inspection import read_frontier_coverage_for_archive
+    from polylogue.storage.tier_access import capture_sqlite_read
 
+    coverage: dict[str, object]
     try:
-        coverage = read_frontier_coverage_for_archive(archive_root)
-    except (OSError, sqlite3.Error, ValueError) as failure:
+        read = capture_sqlite_read(lambda: read_frontier_coverage_for_archive(archive_root))
+    except (OSError, ValueError) as failure:
         coverage = {"available": False, "current": False, "healthy": False, "detail": str(failure)}
+    else:
+        if isinstance(read, Measured):
+            coverage = read.value
+        else:
+            detail = read.detail if isinstance(read, Unavailable) else None
+            coverage = {
+                "available": False,
+                "current": False,
+                "healthy": False,
+                "detail": detail or "sqlite_read_failed",
+            }
     return _raw_frontier_integrity_from_coverage(coverage, raw_materialization_readiness, sample_limit=sample_limit)
 
 

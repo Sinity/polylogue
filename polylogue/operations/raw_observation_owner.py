@@ -1,0 +1,430 @@
+"""Archive-facing work of the resident raw-observation owner.
+
+The daemon owner (``polylogue.daemon.raw_observation_owner``) keeps write
+admission, prepared-worker settlement and convergence orchestration. This
+module holds everything that reads or prepares Source, Index and cold-build
+state, and returns the exact operations the daemon runs on its admitted
+workers. It never imports the daemon: the daemon passes its collaborators in.
+"""
+
+from __future__ import annotations
+
+import pickle
+from builtins import BaseExceptionGroup
+from collections.abc import Callable, Sequence
+from functools import partial
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, TypeAlias
+
+from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.raw_failure_evidence import (
+    CohortMembershipRefusalError,
+    RetainedRawDecodeRefusalError,
+    RetainedRawDependencyRefusalError,
+)
+from polylogue.operations.raw_observation_derivation import (
+    make_raw_observation_derivation,
+    publish_raw_observation_once,
+    raw_observation_frame,
+)
+
+if TYPE_CHECKING:
+    from polylogue.core.sql_settlement import SQLCustodyOwner
+    from polylogue.sources.live.append_ingest import _AppendIngestOwner
+    from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
+    from polylogue.sources.revision_backfill import PreparedRevisionReplayResult, RevisionCensusResult
+    from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+
+    #: Public annotation names for the daemon owner, which may not reach the
+    #: source or storage packages directly.
+    AppendIngestOwner: TypeAlias = _AppendIngestOwner
+    AppendPlan: TypeAlias = _AppendPlan
+    AppendResult: TypeAlias = _AppendResult
+
+ReplayPhase = Literal["census", "classification", "replay"]
+DestinationAdapter = Callable[[], "tuple[RawObservationDerivation, Path | None]"]
+
+
+def retained_settlement_owners(retained: Sequence[RawObservationReplacement]) -> tuple[SQLCustodyOwner, ...]:
+    """Replacements whose original preparation has not physically settled."""
+    return tuple(
+        replacement
+        for replacement in retained
+        if replacement.reference_seal is None or not replacement.reference_seal._closed
+    )
+
+
+def _publish_after(before_publication: Callable[[], None] | None, publish: Callable[[], bool]) -> bool:
+    if before_publication is not None:
+        before_publication()
+    return publish()
+
+
+def _receive_phase(
+    received: list[tuple[ReplayPhase, RevisionCensusResult | PreparedRevisionReplayResult]],
+    phase: ReplayPhase,
+    receipt: RevisionCensusResult | PreparedRevisionReplayResult,
+) -> None:
+    received.append((phase, receipt))
+
+
+class RawObservationArchiveWork:
+    """Source/Index/cold-build work for one archive's raw-observation owner."""
+
+    def __init__(self, archive_root: Path, *, compute_adapter: BoundedComputeAdapter) -> None:
+        self._archive_root = archive_root
+        self._compute_adapter = compute_adapter
+
+    def require_source_frontier_authority(self, raw_id: str) -> None:
+        """Refuse exactly the raw paths the durable frontier cannot authorize.
+
+        Fair intake owns retry/isolation of this typed refusal.  The check is
+        deliberately at the canonical owner boundary so periodic and whale
+        callers cannot select a raw observation through a legacy scanner and
+        then publish it without the source-frontier proof.
+        """
+        from polylogue.readiness.capability import raw_frontier_source_selection_refusal
+
+        refusal = raw_frontier_source_selection_refusal(self._archive_root, raw_ids=(raw_id,))
+        if refusal.unattributed_reason is not None:
+            raise RuntimeError(f"raw observation source-selection gate blocked: {refusal.unattributed_reason}")
+        if not refusal.source_paths:
+            return
+        source_path = (
+            make_raw_observation_derivation(self._archive_root, compute_adapter=self._compute_adapter)
+            .source_paths((raw_id,))
+            .get(raw_id)
+        )
+        if source_path in refusal.source_paths:
+            raise RuntimeError(
+                f"raw observation source-selection gate blocked: raw {raw_id} is on refused source path {source_path}"
+            )
+
+    def cold_destination(self, before_publication: Callable[[], None] | None = None) -> Callable[[], None] | None:
+        """The writer operation establishing the original cold profile, if a cold build is active."""
+        from polylogue.sources.live.cold_build import active_cold_build_generation
+
+        cold_build = active_cold_build_generation(self._archive_root)
+        if cold_build is None:
+            return None
+
+        def establish() -> None:
+            if before_publication is not None:
+                before_publication()
+            with cold_build.open_writer():
+                pass
+
+        return establish
+
+    def retained_destination(self, before_publication: Callable[[], None] | None = None) -> Callable[[], None]:
+        """The writer operation that opens the selected destination before retained preparation.
+
+        It establishes the writer profile and runtime indexes before the
+        retained preparation records its original file identity; source-only
+        acquisition deliberately never opened this destination.
+        """
+
+        def prepare() -> None:
+            from polylogue.sources.live.cold_build import active_cold_build_generation
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+            if before_publication is not None:
+                before_publication()
+            cold_build = active_cold_build_generation(self._archive_root)
+            with (
+                ArchiveStore.open_existing(self._archive_root, read_only=False)
+                if cold_build is None
+                else cold_build.open_writer()
+            ):
+                pass
+
+        return prepare
+
+    def destination_adapter(self) -> tuple[RawObservationDerivation, Path | None]:
+        """Bind preparation and its frame to the actual registered destination."""
+        from polylogue.sources.live.cold_build import active_cold_build_generation
+
+        cold_build = active_cold_build_generation(self._archive_root)
+        generation = None if cold_build is None else cold_build.generation
+        index_path = None if generation is None else Path(generation.index_path)
+        return (
+            make_raw_observation_derivation(
+                self._archive_root,
+                compute_adapter=self._compute_adapter,
+                index_db_path=index_path,
+                owned_generation=generation,
+            ),
+            index_path,
+        )
+
+    def append_plans_operation(
+        self,
+        owner: AppendIngestOwner,
+        plans: list[AppendPlan],
+        *,
+        retained: list[RawObservationReplacement],
+        require_authority: Callable[[str], None],
+    ) -> Callable[[], AppendResult]:
+        """Acquire, prepare and publish append raws; run on the admitted worker."""
+        from polylogue.sources.live.append_ingest import ingest_append_plans
+
+        acquired_inputs: list[tuple[str, bytes, int]] = []
+
+        def converge_raw(root: Path, raw_id: str, plan: _AppendPlan) -> None:
+            if root.resolve() != self._archive_root.resolve():
+                raise ValueError("append raw belongs to a different archive owner")
+            require_authority(raw_id)
+            # These operands belong to this still-admitted task. A future plan
+            # is not prepaid for a late original CAS read until it is acquired.
+            acquired_inputs.append((raw_id, bytes.fromhex(plan.payload_hash), len(plan.payload)))
+            publish_raw_observation_once(
+                root,
+                raw_id,
+                retained_replacements=retained,
+                compute_adapter=self._compute_adapter,
+                prepaid_blob_inputs=tuple(acquired_inputs),
+            )
+
+        return lambda: ingest_append_plans(owner, plans, converge_raw=converge_raw)
+
+    @staticmethod
+    def sidecar_owner_selector(acquired: tuple[str, ...]) -> Callable[[PreparedSessionSourceRead], Sequence[str]]:
+        """Select the acquired raws plus the Claude sidecar owners they imply."""
+        from polylogue.sources.live.sidecar_resolution import select_retained_claude_sidecar_owner_raw_ids
+
+        return lambda reader: tuple(
+            dict.fromkeys((*acquired, *select_retained_claude_sidecar_owner_raw_ids(reader, acquired)))
+        )
+
+    def retained_replay_operation(
+        self,
+        scope_operand: bytes,
+        *,
+        retained: list[RawObservationReplacement],
+        destination: DestinationAdapter,
+        require_authority: Callable[[str], None],
+        select_retained_raw_ids: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
+        on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None,
+        on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None] | None,
+        on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None,
+        before_publication: Callable[[], None] | None,
+    ) -> Callable[[], tuple[PreparedRevisionReplayResult, ...]]:
+        """Settle real selected replay receipts, including preparatory Source phases.
+
+        The selector borrows each canonical Raw preparation's original reader;
+        it never returns an archive handle or substitutes publication authority.
+        The original semantic inputs detect an unchanged preparatory phase. Actual
+        Source receipts and the new phase's original witnesses own every effect.
+        """
+        archive_root = self._archive_root
+
+        def replay() -> tuple[PreparedRevisionReplayResult, ...]:
+            from polylogue.core.compute_cancel import check_compute_cancelled
+            from polylogue.core.stage_admission import admit_stage_write
+            from polylogue.sources.revision_backfill import (
+                PreparedRevisionReplayResult,
+                RetainedPreparationRetryableError,
+            )
+
+            adapter, index_path = destination()
+
+            def retire_original(current: RawObservationReplacement, primary: BaseException | None = None) -> None:
+                try:
+                    current.close()
+                except BaseException as cleanup:
+                    if primary is not None:
+                        raise BaseExceptionGroup(
+                            "retained operation and physical retirement failed", [primary, cleanup]
+                        ) from primary
+                    raise
+                retained.remove(current)
+
+            results: list[PreparedRevisionReplayResult] = []
+            visited: set[str] = set()
+            refused_ids: set[str] = set()
+            dependency_blocked_ids: set[str] = set()
+            selected = pickle.loads(scope_operand)
+            for raw_id in selected:
+                if raw_id in visited:
+                    continue
+                require_authority(raw_id)
+                previous_progress: tuple[str, tuple[object, ...]] | None = None
+                while True:
+                    check_compute_cancelled()
+                    original_inputs: list[tuple[object, ...]] = []
+                    original_keys: dict[str, tuple[str, ...]] = {}
+
+                    def select_original(
+                        reader: PreparedSessionSourceRead,
+                        *,
+                        selected_raw_id: str = raw_id,
+                        captured_inputs: list[tuple[object, ...]] = original_inputs,
+                        captured_keys: dict[str, tuple[str, ...]] = original_keys,
+                    ) -> Sequence[str]:
+                        # Exclude only explicit selections whose actual original
+                        # Source receipt still refuses. Canonical dependencies are
+                        # expanded afterward and retain their refusal obligation.
+                        for refused_id in tuple(refused_ids):
+                            if reader.raw_terminal_decode_refusal(refused_id) is None:
+                                refused_ids.remove(refused_id)
+                        selected_ids = tuple(
+                            item
+                            for item in (
+                                selected_raw_id,
+                                *(select_retained_raw_ids(reader) if select_retained_raw_ids else ()),
+                            )
+                            if item not in refused_ids and item not in dependency_blocked_ids
+                        )
+                        expanded, _member_keys = reader.expand_raw_membership_selection(selected_ids)
+                        for dependency_id in expanded:
+                            if dependency_id in refused_ids:
+                                dependency = reader.raw_terminal_decode_refusal(dependency_id)
+                                if dependency is not None:
+                                    raise RetainedRawDependencyRefusalError(
+                                        selected_raw_id,
+                                        tuple(sorted(reader.raw_selection_values("keys", (selected_raw_id,)))),
+                                        dependency,
+                                    )
+                        logical_keys = reader.raw_revision_rebuild_logical_keys(expanded)
+                        captured_keys.update(
+                            (item, tuple(sorted(reader.raw_selection_values("keys", (item,))))) for item in expanded
+                        )
+                        current = tuple((item, reader.raw_parser_census_is_current(item)) for item in expanded)
+                        captured_inputs.append(
+                            (
+                                tuple((item, reader.raw_revision_descriptor(item)) for item in expanded),
+                                current,
+                                reader.raw_membership_census_rows(expanded),
+                                tuple((key, reader.raw_revision_replay_plan(key)) for key in logical_keys)
+                                if all(valid for _item, valid in current)
+                                else (),
+                            )
+                        )
+                        return expanded
+
+                    frame = raw_observation_frame(archive_root, raw_ids=(raw_id,), index_db_path=index_path)
+                    try:
+                        replacement = adapter.compute(
+                            frame, raw_id, replay_current=True, select_retained_raw_ids=select_original
+                        )
+                    except RetainedRawDecodeRefusalError as refusal:
+                        # The compute wrapper has settled the original parent.
+                        # Its reader captured the exact subject keys before the
+                        # current Source receipt refused this selected input.
+                        if on_terminal_refusal is None or refusal.raw_id not in original_keys:
+                            raise
+                        on_terminal_refusal(original_keys[refusal.raw_id], refusal)
+                        visited.add(refusal.raw_id)
+                        refused_ids.add(refusal.raw_id)
+                        if refusal.raw_id == raw_id:
+                            break
+                        continue
+                    except RetainedRawDependencyRefusalError as refusal:
+                        # compute settles its original parent before propagating
+                        # this exact error; failed settlement remains a group.
+                        if on_dependency_refusal is None:
+                            raise refusal.dependency from refusal
+                        on_dependency_refusal(refusal)
+                        dependency_blocked_ids.add(raw_id)
+                        visited.add(raw_id)
+                        break
+                    retained.append(replacement)
+                    if replacement.prepared_key_refusals and on_membership_refusal is None:
+                        # Strict callers receive the original per-key outcome
+                        # only after its original preparation physically closes.
+                        membership_error = replacement.prepared_key_refusals[0]
+                        retire_original(replacement, membership_error)
+                        raise membership_error
+                    phase = (
+                        "census"
+                        if replacement.needs_source_census
+                        else ("classification" if replacement.needs_source_classification else "replay")
+                    )
+                    if len(original_inputs) != 1:
+                        progress_error = RetainedPreparationRetryableError(
+                            "retained preparation omitted its original phase inputs"
+                        )
+                        retire_original(replacement, progress_error)
+                        raise progress_error
+                    progress_operand = (phase, original_inputs[0])
+                    if previous_progress == progress_operand:
+                        progress_error = RetainedPreparationRetryableError(
+                            "accepted preparatory Source phase left identical original inputs"
+                        )
+                        retire_original(replacement, progress_error)
+                        raise progress_error
+                    phases: list[tuple[ReplayPhase, RevisionCensusResult | PreparedRevisionReplayResult]] = []
+                    publication_failures: list[BaseException] = []
+                    try:
+                        try:
+                            published = admit_stage_write(
+                                "watcher.live_ingest.retained.publish",
+                                partial(
+                                    _publish_after,
+                                    before_publication,
+                                    partial(
+                                        adapter.publish,
+                                        frame,
+                                        replacement,
+                                        phase_receipt=partial(_receive_phase, phases),
+                                        publication_failure=publication_failures.append,
+                                    ),
+                                ),
+                            )
+                        except BaseException as primary:
+                            # Admission and caller validation can fail before
+                            # the publisher receives its original carrier.
+                            retire_original(replacement, primary)
+                            raise
+                    except RetainedRawDecodeRefusalError as refusal:
+                        if on_terminal_refusal is None:
+                            raise
+                        if replacement.reference_seal is not None and not replacement.reference_seal._closed:
+                            raise
+                        on_terminal_refusal(original_keys[refusal.raw_id], refusal)
+                        visited.add(refusal.raw_id)
+                        refused_ids.add(refusal.raw_id)
+                        if refusal.raw_id == raw_id:
+                            break
+                        # A selected independent refusal does not settle the
+                        # healthy subject. Its next original selection excludes
+                        # that offered input but still expands dependencies.
+                        continue
+                    # publish physically settles its same original parent.
+                    # A failed close raises before this removal/result.
+                    retire_original(replacement)
+                    if published:
+                        terminal = [receipt for phase, receipt in phases if phase == "replay"]
+                        if len(terminal) != 1 or not isinstance(terminal[0], PreparedRevisionReplayResult):
+                            raise RetainedPreparationRetryableError("retained replay lacks its actual terminal receipt")
+                        if replacement.prepared_key_refusals:
+                            assert on_membership_refusal is not None
+                            for membership_refusal in replacement.prepared_key_refusals:
+                                on_membership_refusal(membership_refusal)
+                        results.append(terminal[0])
+                        visited.update(replacement.raw_ids)
+                        break
+                    if publication_failures:
+                        raise publication_failures[0]
+                    if len(phases) != 1 or phases[0][0] not in ("census", "classification"):
+                        raise RetainedPreparationRetryableError(
+                            "retained publication deferred without accepted Source progress"
+                        )
+                    previous_progress = progress_operand
+            return tuple(results)
+
+        return replay
+
+
+__all__ = [
+    "AppendIngestOwner",
+    "AppendPlan",
+    "AppendResult",
+    "PreparedRevisionReplayResult",
+    "PreparedSessionSourceRead",
+    "RawObservationArchiveWork",
+    "RawObservationDerivation",
+    "RawObservationReplacement",
+    "retained_settlement_owners",
+]

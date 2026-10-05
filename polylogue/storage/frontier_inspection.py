@@ -1245,13 +1245,15 @@ def frontier_inspection_projection_from_connections(
     healthy frontier. This performs only journal/identity reads, not a corpus
     inspection or a filesystem blob walk.
     """
+    from polylogue.core.evidence import Measured, Unavailable
     from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
     from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.tier_access import capture_sqlite_read
 
-    try:
+    def read_frame() -> tuple[FrontierJournalState, FrontierInspectionMark | None]:
         state = read_frontier_journal_state(
             source=source,
             index=index,
@@ -1266,9 +1268,16 @@ def frontier_inspection_projection_from_connections(
             index_triggers=declared_frontier_triggers(INDEX_DDL),
             cursor_triggers=declared_frontier_triggers(OPS_DDL),
         )
-        mark = read_frontier_inspection_mark(ops, schema=ops_schema)
-    except (OSError, sqlite3.Error, ValueError) as failure:
+        return state, read_frontier_inspection_mark(ops, schema=ops_schema)
+
+    try:
+        frame = capture_sqlite_read(read_frame)
+    except (OSError, ValueError) as failure:
         return {"available": False, "current": False, "healthy": False, "detail": str(failure)}
+    if not isinstance(frame, Measured):
+        detail = frame.detail if isinstance(frame, Unavailable) else None
+        return {"available": False, "current": False, "healthy": False, "detail": detail or "sqlite_read_failed"}
+    state, mark = frame.value
     if mark is None:
         return {
             "available": False,

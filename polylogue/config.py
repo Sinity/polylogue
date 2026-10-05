@@ -557,43 +557,6 @@ class PolylogueConfig:
         return int(str(self._data.get("ingest_commit_batch_messages", 8000)))
 
     @property
-    def live_watcher_parse_stage_workers(self) -> int | None:
-        """Worker cap for the watcher-owned pre-parse thread pool.
-
-        ``None``/absent or <=0 falls back to the adaptive available-CPU-minus-one
-        default. See ``polylogue.sources.live.parse_prefetch``.
-        """
-        value = self._data.get("live_watcher_parse_stage_workers")
-        if value is None:
-            return None
-        return int(str(value))
-
-    @property
-    def live_watcher_parse_stage_max_inflight_bytes(self) -> int | None:
-        """Whale-memory budget (bytes) for in-flight watcher prefetch payloads.
-
-        ``None``/absent or <=0 falls back to the adaptive 1/32-physical-RAM
-        default. See ``polylogue.sources.live.parse_prefetch``.
-        """
-        value = self._data.get("live_watcher_parse_stage_max_inflight_bytes")
-        if value is None:
-            return None
-        return int(str(value))
-
-    @property
-    def live_watcher_parse_stage_stall_report_seconds(self) -> float | None:
-        """Seconds without forward progress before a watcher preparation reports a stall.
-
-        Not a deadline: the watcher warm keeps waiting for its preparations.
-        ``None``/absent or <=0 falls back to the 60s default. See
-        ``polylogue.sources.live.parse_prefetch``.
-        """
-        value = self._data.get("live_watcher_parse_stage_stall_report_seconds")
-        if value is None:
-            return None
-        return float(str(value))
-
-    @property
     def memory_budget_bytes(self) -> int | None:
         """Optional positive process memory budget used by SQLite profiles."""
         return _parse_memory_budget_bytes(self._data.get("memory_budget_bytes"), source="memory_budget_bytes")
@@ -1187,43 +1150,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
-        "live_watcher_parse_stage_workers",
-        toml_path="watcher.parse_stage_workers",
-        env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WORKERS",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Worker cap for the watcher-owned pre-parse thread pool "
-            "(polylogue-wf8a); default available-CPU-minus-one. <=0 falls back to the "
-            "adaptive default."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "live_watcher_parse_stage_max_inflight_bytes",
-        toml_path="watcher.parse_stage_max_inflight_bytes",
-        env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_MAX_INFLIGHT_BYTES",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Whale-memory budget (bytes) for watcher prefetch payloads "
-            "admitted while parses are in flight; default 1/32 physical RAM "
-            "clamped [64 MiB, 512 MiB]. <=0 falls back to the adaptive "
-            "default."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "live_watcher_parse_stage_stall_report_seconds",
-        toml_path="watcher.parse_stage_stall_report_seconds",
-        env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_STALL_REPORT_SECONDS",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Seconds without forward progress before a watcher preparation "
-            "reports live.parse_prefetch.preparation_stalled. Not a deadline: "
-            "the warm keeps waiting. <=0 falls back to the 60s default."
-        ),
-    ),
-    ConfigInventoryEntry(
         "judgment_automation_enabled",
         toml_path="judgment_automation.enabled",
         env_var="POLYLOGUE_JUDGMENT_AUTOMATION_ENABLED",
@@ -1281,14 +1207,11 @@ _INT_CONFIG_KEYS = frozenset(
         "memory_budget_bytes",
         "judgment_automation_interval_s",
         "judgment_automation_batch_limit",
-        "live_watcher_parse_stage_workers",
-        "live_watcher_parse_stage_max_inflight_bytes",
     }
 )
 _FLOAT_CONFIG_KEYS = frozenset(
     {
         "embedding_max_cost_usd",
-        "live_watcher_parse_stage_stall_report_seconds",
     }
 )
 _BOOL_CONFIG_KEYS = frozenset(
@@ -1497,9 +1420,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "ingest_commit_batch_messages": 8000,
         "memory_budget_bytes": None,
         "subscription_plans": (),
-        "live_watcher_parse_stage_workers": None,
-        "live_watcher_parse_stage_max_inflight_bytes": None,
-        "live_watcher_parse_stage_stall_report_seconds": None,
         "mcp_write_enabled": False,
         "mcp_judge_enabled": False,
         "mcp_maintenance_enabled": False,

@@ -25,24 +25,9 @@ from polylogue.operations.durable_change_train import (
     PendingDurableMigration,
     execute_durable_change_train,
     pending_durable_migrations,
+    pre_migration_backup,
     rehearse_pending_durable_migration,
 )
-
-
-def pre_migration_backup(
-    archive_root: Path, migration: PendingDurableMigration, *, archive_owner: OwnedArchiveLocation
-) -> Path:
-    """Take and scratch-verify the backup a data-changing migration requires."""
-
-    from polylogue.storage.backup_package import create_pre_migration_backup
-
-    return create_pre_migration_backup(
-        archive_root,
-        tier=migration.tier.value,
-        current_version=migration.current_version,
-        target_version=migration.target_version,
-        archive_owner=archive_owner,
-    )
 
 
 def apply_declared_durable_migrations(
@@ -110,4 +95,4 @@ def _apply_step(
         )
 
 
-__all__ = ["apply_declared_durable_migrations", "pre_migration_backup"]
+__all__ = ["apply_declared_durable_migrations"]

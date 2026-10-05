@@ -265,6 +265,9 @@ def ingest_append_plans(
                 return False, None
             if read_raw_profile_identity(source, raw_id) != profile_key:
                 return False, None
+            if plan.cursor_fingerprint is None:
+                # The APPEND bind refuses such a plan, so no terminal proof exists.
+                return False, None
             parent = archive.raw_append_revision_parent(str(row[0]), plan.start_offset, plan.cursor_fingerprint)
             if (
                 row[1] != RawRevisionAuthority.BYTE_PROVEN.value

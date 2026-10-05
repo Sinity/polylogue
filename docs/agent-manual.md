@@ -26,7 +26,7 @@ The authoritative `Origin` enum contains the currently supported public source t
 | `hermes-session` | Hermes agent sessions |
 | `antigravity-session` | Antigravity language-server and trajectory SQLite conversations |
 | `beads-issue` | Reserved Beads issue origin (not admitted) |
-| `grok-export` | Grok account-data exports (lab: xAI) |
+| `grok-export` | Grok account exports and original endpoint bundles (lab: xAI) |
 | `chatgpt-export` | ChatGPT web exports (lab: OpenAI) |
 | `claude-ai-export` | Claude web exports (lab: Anthropic) |
 | `claude-design-session` | Claude Design agentic sessions (lab: Anthropic) |

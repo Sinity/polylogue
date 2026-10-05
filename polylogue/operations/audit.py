@@ -3881,4 +3881,4 @@ class AuditRepository:
         }
 
 
-__all__ = ["AuditRepository", "AuditTargetState", "plan_from_stored_payload", "token_sha256"]
+__all__ = ["AuditRepository", "AuditTargetState", "CanonicalAuditLiteral", "plan_from_stored_payload", "token_sha256"]

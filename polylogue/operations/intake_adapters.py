@@ -718,8 +718,8 @@ class FileIntakeAdapter(IntakeAdapter):
         bootstrap, the retention scan, the archive-wide convergence pass and
         the parse stage's own warm -- is paid once per call. Admitting one
         file per call made each of those a per-file cost over a corpus of
-        tens of thousands of files, and handed ``LiveParseStage`` a single
-        path per batch, which is no parallelism at all.
+        tens of thousands of files, and gave preparation a single path per
+        batch, which is no parallelism at all.
 
         The batch is one call; the *outcomes* stay per item, read back from
         ``LiveBatchMetrics`` by path, so the dispatcher's deficit,

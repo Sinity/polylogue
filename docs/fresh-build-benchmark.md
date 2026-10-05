@@ -94,14 +94,11 @@ comparable receipts.
 
 ## Components
 
-`components parse|blob --corpus DIR --scratch DIR [--workers N]` times one
-production stage over the corpus's files: the off-writer parse and
-preparation a worker runs per session file, or blob acquisition of every file,
-sidecars included. A selection that matches no file fails. Parse runs on
-threads, so it isolates per-file cost; process-pool start-up and IPC belong to
-the end-to-end run. Any worker error, or a corpus file that changed during
-the timed work, exits non-zero. They iterate in seconds;
-the end-to-end run proves the total.
+`components blob --corpus DIR --scratch DIR [--workers N]` times blob
+acquisition of every corpus file, sidecars included. A selection that matches
+no file fails. Any worker error, or a corpus file that changed during the
+timed work, exits non-zero. It iterates in seconds; the end-to-end run proves
+the total.
 
 ## Reading the numbers
 
