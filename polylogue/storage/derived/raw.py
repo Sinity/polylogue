@@ -787,6 +787,10 @@ class RawObservationDerivation(RawObservationInspection):
 
     domain = RAW_OBSERVATION_DOMAIN
     prerequisites: tuple[str, ...] = ()
+    #: Restored bytes, Source census and classification each commit before
+    #: the replay that depends on them can be prepared off the writer; the
+    #: kernel continues those phases within one pass (replay is the last).
+    publication_phases = 4
 
     def __init__(
         self,
@@ -804,6 +808,9 @@ class RawObservationDerivation(RawObservationInspection):
         self._prepaid_blob_inputs = prepaid_blob_inputs
         self._index_db_path = index_db_path
         self._owned_generation = owned_generation
+        #: Replacements whose publication committed a prerequisite phase,
+        #: consumed by :meth:`publication_advanced` on the same key.
+        self._phase_committed: dict[int, str] = {}
         if owned_generation is not None:
             from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
 
@@ -813,6 +820,15 @@ class RawObservationDerivation(RawObservationInspection):
             if index_db_path is not None and index_db_path.resolve(strict=True) != destination.index_path:
                 raise ValueError("retained replay Index differs from its owned generation")
             self._index_db_path = destination.index_path
+
+    def publication_advanced(self, replacement: RawObservationReplacement) -> bool:
+        """Whether this replacement's publication committed a prerequisite phase.
+
+        False from :meth:`publish` otherwise means a refusal or a moved input;
+        only a committed restoration, census or classification is the key's
+        own progress that a fresh preparation can continue.
+        """
+        return self._phase_committed.pop(id(replacement), None) == replacement.key
 
     @staticmethod
     def _blob_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
@@ -1772,8 +1788,9 @@ class RawObservationDerivation(RawObservationInspection):
                     return False
                 if replacement.blob_restorations is not None:
                     self._publish_blob_restorations(replacement.blob_restorations)
-                    # The restored bytes are prepared on the next pass, which now
-                    # finds them present; this publication certifies no output.
+                    # The restored bytes are prepared by the next phase, which
+                    # now finds them present; this publication certifies no output.
+                    self._phase_committed[id(replacement)] = replacement.key
                     return False
                 with self._preparation_archive() as archive:
                     raw_ids, _keys = archive.expand_raw_membership_selection(list(replacement.raw_ids))
@@ -1817,6 +1834,7 @@ class RawObservationDerivation(RawObservationInspection):
                     refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)
                     if refusal is not None:
                         raise refusal
+                    self._phase_committed[id(replacement)] = replacement.key
                     return False
                 if replacement.needs_source_classification:
                     if replacement.prepared_source_classification is None:
@@ -1838,6 +1856,7 @@ class RawObservationDerivation(RawObservationInspection):
                     refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)
                     if refusal is not None:
                         raise refusal
+                    self._phase_committed[id(replacement)] = replacement.key
                     return False
                 if (
                     replacement.prepared_inputs is None

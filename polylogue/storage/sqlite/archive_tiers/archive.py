@@ -9805,12 +9805,6 @@ def _archive_profile_rows_debt(conn: sqlite3.Connection) -> ArchiveDebtInsight:
       sessions(session_id) ON DELETE CASCADE``, so every write profile that
       enforces foreign keys makes the orphan uninsertable and cascades the
       parent delete.
-    * The one production route that deliberately drops enforcement -- the bulk
-      ingest window's ``PRAGMA foreign_keys = OFF`` in
-      ``pipeline/services/ingest_batch/_core.py`` -- runs
-      ``_foreign_key_violations_for_sessions`` over a plan derived from the
-      live schema before it commits, and raises ``sqlite3.IntegrityError``
-      rather than committing a violation that window admitted.
     * A full session-insight rebuild additionally prunes per-session insight
       rows whose session is gone (``_delete_orphan_session_insights_sync`` in
       ``storage/derived/session/rebuild.py``), so even a hypothetical orphan
