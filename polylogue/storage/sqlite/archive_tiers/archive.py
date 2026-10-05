@@ -4535,6 +4535,31 @@ class ArchiveStore:
             invalidate_search_cache()
         return removed
 
+    def list_working_directory_completions(self, incomplete: str, *, limit: int) -> list[tuple[str, int]]:
+        """Read a requested prefix window from this original Index snapshot."""
+        self.check_operation_read()
+        prefix = incomplete.replace("\\", "/")
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        cursor = self._conn.execute(
+            r"""
+            SELECT REPLACE(path, char(92), '/') AS directory, COUNT(DISTINCT session_id) AS session_count
+            FROM session_working_dirs
+            WHERE path != '' AND REPLACE(path, char(92), '/') LIKE ? ESCAPE '\'
+            GROUP BY directory
+            ORDER BY session_count DESC, directory
+            LIMIT ?
+            """,
+            (escaped + "%", limit),
+        )
+        try:
+            values: list[tuple[str, int]] = []
+            for row in cursor:
+                self.check_operation_read()
+                values.append((str(row["directory"]), int(row["session_count"])))
+            return values
+        finally:
+            cursor.close()
+
     def list_user_tags(self, *, origin: str | None = None) -> dict[str, int]:
         """Return user tag counts over archive sessions."""
         where = "WHERE st.tag_source = 'user'"

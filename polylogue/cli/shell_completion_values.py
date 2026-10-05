@@ -3,9 +3,8 @@
 Archive-backed completions are one declared ``completion`` operation through
 the kernel, so a resident daemon answers a TAB press from its already-open
 snapshot instead of the shell-completion process opening the archive itself.
-Session-id, tag, repo-name and tool-name values come from native
-session/tag/repo/action read models; cwd-prefix has no archive source yet and
-degrades to an empty completion list.
+Session-id, tag, repo-name, working-directory and tool-name values come from
+native session/tag/repo/working-directory/action read models.
 
 The daemon-only operation avoids opening the archive on a cold shell process.
 Successful daemon answers are retained for 24 hours in a small disposable XDG
@@ -89,6 +88,9 @@ def _completion_cache_path() -> Path:
 
 
 def _cached_value_matches(source: str, value: str, help_text: object, incomplete: str) -> bool:
+    if source == "cwd_prefix":
+        value = value.replace("\\", "/")
+        incomplete = incomplete.replace("\\", "/")
     prefix = incomplete.casefold()
     if source == "session_id":
         # Session completion also accepts native-ID substrings and title text.
@@ -97,14 +99,19 @@ def _cached_value_matches(source: str, value: str, help_text: object, incomplete
     return value.casefold().startswith(prefix)
 
 
+def _read_completion_cache_payload(path: Path) -> object:
+    """Read an advisory cache within its byte budget on both cache paths."""
+    with path.open("rb") as stream:
+        raw = stream.read(_COMPLETION_CACHE_MAX_BYTES + 1)
+    if len(raw) > _COMPLETION_CACHE_MAX_BYTES:
+        return None
+    return json.loads(raw)
+
+
 def _read_completion_cache(source: str, incomplete: str, *, limit: int, archive_root: str) -> list[CompletionItem]:
     """Read recent daemon answers without opening the archive."""
     try:
-        with _completion_cache_path().open("r", encoding="utf-8") as stream:
-            raw = stream.read(_COMPLETION_CACHE_MAX_BYTES + 1)
-        if len(raw) > _COMPLETION_CACHE_MAX_BYTES:
-            return []
-        payload = json.loads(raw)
+        payload = _read_completion_cache_payload(_completion_cache_path())
         if not isinstance(payload, dict) or payload.get("version") != _COMPLETION_CACHE_VERSION:
             return []
         archives = payload.get("archives")
@@ -140,13 +147,10 @@ def _remember_completion_values(source: str, value: object, *, archive_root: str
         import fcntl
 
         with lock_path.open("a") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             prior: object = None
-            try:
-                raw = path.read_text(encoding="utf-8")
-                prior = json.loads(raw) if len(raw.encode("utf-8")) <= _COMPLETION_CACHE_MAX_BYTES else None
-            except (OSError, ValueError):
-                pass
+            with suppress(OSError, ValueError):
+                prior = _read_completion_cache_payload(path)
             archives = prior.get("archives") if isinstance(prior, dict) else None
             archive_map = dict(archives) if isinstance(archives, dict) else {}
             old = archive_map.get(archive_root)
@@ -162,7 +166,7 @@ def _remember_completion_values(source: str, value: object, *, archive_root: str
                         and 0 <= now - row["seen_at"] <= _COMPLETION_CACHE_TTL_SECONDS
                     ]
                     for key, rows in raw_values.items()
-                    if key in {"session_id", "tag", "repo", "tool"} and isinstance(rows, list)
+                    if key in {"session_id", "tag", "repo", "cwd_prefix", "tool"} and isinstance(rows, list)
                 }
             values[source] = [
                 row
@@ -727,12 +731,8 @@ def complete_cwd_prefix_values(
     param: click.Parameter,
     incomplete: str,
 ) -> list[CompletionItem]:
-    del ctx, param, incomplete
-    # The read models do not expose a session-cwd aggregate
-    # yet, so cwd-prefix completion has no source to draw from. Returning an
-    # empty list keeps the completer well-behaved (no traceback) until a
-    # cwd projection lands.
-    return []
+    del ctx, param
+    return completion_values("cwd_prefix", incomplete, limit=_MAX_VALUE_COMPLETIONS)
 
 
 def complete_tool_values(

@@ -859,7 +859,7 @@ def test_dynamic_completers_offer_no_candidate_without_a_daemon(
     the completer offers nothing rather than opening the archive itself, and
     renders one non-insertable ``message`` naming the remedy, because an empty
     candidate list is indistinguishable from "the archive has no matching
-    values". ``cwd_prefix`` has no archive source at all and stays silent.
+    values". Working-directory values use that same resident route.
 
     The shell axis is omitted deliberately: the same items are produced for
     every shell, and per-shell rendering of a message is pinned in
@@ -874,10 +874,7 @@ def test_dynamic_completers_offer_no_candidate_without_a_daemon(
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
 
     items = _run_completion("bash", BashComplete, cwords)
-    if label == "cwd_prefix":
-        assert items == []
-    else:
-        assert items == [(DAEMON_REQUIRED_COMPLETION_MESSAGE, DAEMON_REQUIRED_COMPLETION_MESSAGE)]
+    assert items == [(DAEMON_REQUIRED_COMPLETION_MESSAGE, DAEMON_REQUIRED_COMPLETION_MESSAGE)]
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
@@ -936,10 +933,7 @@ def test_every_dynamic_completer_resolves_against_a_seeded_archive(
     monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
 
     items = _run_completion("bash", BashComplete, cwords)
-    if label == "cwd_prefix":
-        assert items == []
-    else:
-        assert items == [(DAEMON_REQUIRED_COMPLETION_MESSAGE, DAEMON_REQUIRED_COMPLETION_MESSAGE)]
+    assert items == [(DAEMON_REQUIRED_COMPLETION_MESSAGE, DAEMON_REQUIRED_COMPLETION_MESSAGE)]
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
