@@ -46,6 +46,7 @@ from tests.infra.query_differential import (
     evaluate_query_laws,
     surface_bench,
 )
+from tests.infra.workload_artifacts import seal_fixture_tree
 
 pytestmark = pytest.mark.timeout(600)
 
@@ -182,8 +183,14 @@ def census_snapshot(
     # The census starts a daemon on the copy, so the copy must be a populated
     # archive with its own destination authority (a raw byte copy keeps the
     # source's durable identity and is refused at bootstrap).
-    destination = tmp_path_factory.mktemp("query-law-census") / "copy"
-    method = clone_archive_template(query_law_corpus.archive_root, destination)
+    # Population clones only a sealed source (no WAL/SHM sidecars), and the
+    # shared corpus stays writable for the law daemon, so seal a private copy.
+    work = tmp_path_factory.mktemp("query-law-census")
+    template = work / "sealed-template"
+    shutil.copytree(query_law_corpus.archive_root, template)
+    seal_fixture_tree(template)
+    destination = work / "copy"
+    method = clone_archive_template(template, destination)
     snapshot = ArchiveSnapshot(
         source=query_law_corpus.archive_root.resolve(),
         root=destination.resolve(),
@@ -192,6 +199,10 @@ def census_snapshot(
     )
     yield snapshot
     shutil.rmtree(snapshot.root, ignore_errors=True)
+    for path in (template, *template.rglob("*")):
+        if not path.is_symlink():
+            path.chmod(path.stat().st_mode | 0o200)
+    shutil.rmtree(template, ignore_errors=True)
 
 
 @pytest.fixture

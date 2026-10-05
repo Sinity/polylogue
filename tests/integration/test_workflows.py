@@ -82,7 +82,30 @@ async def temp_config_and_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     storage_repo = SessionRepository(backend=backend)
     conv_repo = SessionRepository(backend=backend)
 
-    yield config, storage_repo, conv_repo, archive_root, db_path
+    # Parsing publishes through the daemon's raw owner and writer execution;
+    # _parsing_service binds every service in the test to this archive's owner.
+    from polylogue.daemon.drive_catchup import DriveCatchupExecution
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    try:
+        async with prepared_live_convergence_owner(archive_root) as owner:
+            execution = DriveCatchupExecution(owner._write_coordinator, compute_adapter=owner._compute_adapter)
+            _WORKFLOW_OWNERS[archive_root] = (owner, execution)
+            try:
+                yield config, storage_repo, conv_repo, archive_root, db_path
+            finally:
+                _WORKFLOW_OWNERS.pop(archive_root, None)
+    finally:
+        await backend.close()
+
+
+_WORKFLOW_OWNERS: dict[Path, tuple[Any, Any]] = {}
+
+
+def _parsing_service(**kwargs: Any) -> ParsingService:
+    """A ParsingService published by the fixture's daemon raw owner."""
+    owner, execution = _WORKFLOW_OWNERS[kwargs["archive_root"]]
+    return ParsingService(**kwargs, execution=execution, retained_runner=owner.ingest_retained_raw_ids)
 
 
 @pytest.fixture
@@ -143,7 +166,7 @@ async def test_full_workflow_per_provider(
     source = synthetic_source(provider, count=1, messages_per_session=range(4, 12))
 
     # 1. IMPORT: Run ingestion
-    service = ParsingService(
+    service = _parsing_service(
         repository=storage_repo,
         archive_root=archive_root,
         config=config,
@@ -218,7 +241,7 @@ async def test_render_formats(
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
     # Import data
-    service = ParsingService(
+    service = _parsing_service(
         repository=storage_repo,
         archive_root=archive_root,
         config=config,
@@ -257,7 +280,7 @@ async def test_incremental_sync_no_duplicates(
     """Syncing same source twice doesn't create duplicates."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
-    service = ParsingService(
+    service = _parsing_service(
         repository=storage_repo,
         archive_root=archive_root,
         config=config,
@@ -315,7 +338,7 @@ async def test_incremental_sync_with_updates(temp_config_and_repo: WorkflowRepos
     try:
         # First sync
         source_before_update = Source(name="test", path=source_path_before_update)
-        service = ParsingService(
+        service = _parsing_service(
             repository=storage_repo,
             archive_root=archive_root,
             config=config,
@@ -410,7 +433,7 @@ async def test_sync_handles_deleted_sessions(temp_config_and_repo: WorkflowRepos
 
     try:
         # Sync both
-        service = ParsingService(
+        service = _parsing_service(
             repository=storage_repo,
             archive_root=archive_root,
             config=config,
@@ -445,7 +468,7 @@ async def test_multi_source_concurrent_sync(
     sources = [chatgpt_sample_source, gemini_sample_source]
 
     # Sync all sources
-    service = ParsingService(
+    service = _parsing_service(
         repository=storage_repo,
         archive_root=archive_root,
         config=config,
@@ -501,7 +524,7 @@ async def test_multi_source_isolated_namespaces(temp_config_and_repo: WorkflowRe
         path2 = Path(f.name)
 
     try:
-        service = ParsingService(
+        service = _parsing_service(
             repository=storage_repo,
             archive_root=archive_root,
             config=config,
@@ -542,7 +565,7 @@ async def test_sync_with_malformed_file_skips_gracefully(temp_config_and_repo: W
 
     try:
         source = Source(name="bad", path=bad_path)
-        service = ParsingService(
+        service = _parsing_service(
             repository=storage_repo,
             archive_root=archive_root,
             config=config,
@@ -563,7 +586,7 @@ async def test_sync_with_missing_file_reports_error(temp_config_and_repo: Workfl
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
     source = Source(name="missing", path=Path("/nonexistent/file.json"))
-    service = ParsingService(
+    service = _parsing_service(
         repository=storage_repo,
         archive_root=archive_root,
         config=config,
@@ -588,7 +611,7 @@ async def test_sync_partial_success_with_mixed_sources(
         Source(name="bad", path=Path("/nonexistent.json")),
     ]
 
-    service = ParsingService(
+    service = _parsing_service(
         repository=storage_repo,
         archive_root=archive_root,
         config=config,
@@ -613,7 +636,7 @@ async def test_search_accuracy_basic_terms(temp_config_and_repo: WorkflowRepos, 
     """Search returns correct sessions for basic queries."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
-    service = ParsingService(
+    service = _parsing_service(
         repository=storage_repo,
         archive_root=archive_root,
         config=config,
@@ -686,7 +709,7 @@ async def test_search_with_special_characters(temp_config_and_repo: WorkflowRepo
         path = Path(f.name)
 
     try:
-        service = ParsingService(
+        service = _parsing_service(
             repository=storage_repo,
             archive_root=archive_root,
             config=config,
