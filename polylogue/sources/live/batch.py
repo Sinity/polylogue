@@ -165,6 +165,7 @@ from polylogue.sources.live.cursor import (
     ConvergenceDebtBatchEntry,
     ConvergenceDebtSettlement,
     ConvergenceDebtWrite,
+    CursorPathAuthority,
     CursorRecord,
     CursorStore,
 )
@@ -2303,9 +2304,10 @@ class LiveBatchProcessor:
             return 0
         try:
             stat = path.stat()
+            authority = CursorPathAuthority.observe(path)
         except FileNotFoundError:
             try:
-                self._cursor.mark_failed(path)
+                self._cursor.mark_failed(path, authority=None)
             except sqlite3.OperationalError as exc:
                 if not is_transient_sqlite_lock(exc):
                     raise
@@ -2321,11 +2323,12 @@ class LiveBatchProcessor:
                 try:
                     tail_hash, _tail_bytes = tail_hash_from_path(path, stat.st_size)
                 except FileNotFoundError:
-                    self._cursor.mark_failed(path)
+                    self._cursor.mark_failed(path, authority=None)
                     return 0
                 self._cursor.set(
                     path,
                     stat.st_size,
+                    authority=authority,
                     byte_offset=0,
                     last_complete_newline=0,
                     parser_fingerprint=self._current_parser_fingerprint(),
@@ -2336,7 +2339,7 @@ class LiveBatchProcessor:
                     st_ino=stat.st_ino,
                     mtime_ns=stat.st_mtime_ns,
                 )
-            self._cursor.mark_failed(path, failed_stat=stat)
+            self._cursor.mark_failed(path, authority=authority, failed_stat=stat)
         except sqlite3.OperationalError as exc:
             if not is_transient_sqlite_lock(exc):
                 raise
@@ -2535,8 +2538,11 @@ class LiveBatchProcessor:
         updated = self._cursor.set(
             path,
             byte_size,
-            canonical_source_path=canonical_source_path,
-            captured_profile_key=captured_profile_key,
+            authority=(
+                CursorPathAuthority(canonical_source_path, captured_profile_key)
+                if canonical_source_path is not None
+                else CursorPathAuthority.observe(path)
+            ),
             byte_offset=last_nl,
             last_complete_newline=last_nl,
             parser_fingerprint=self._current_parser_fingerprint(),
@@ -2688,6 +2694,7 @@ class LiveBatchProcessor:
         updated = self._cursor.set(
             path,
             byte_size,
+            authority=CursorPathAuthority.observe(path),
             byte_offset=0,
             last_complete_newline=0,
             parser_fingerprint=self._current_parser_fingerprint(),
@@ -4458,6 +4465,7 @@ class LiveBatchProcessor:
         self._cursor.set(
             path,
             st_size,
+            authority=CursorPathAuthority.observe(path),
             byte_offset=st_size,
             last_complete_newline=st_size,
             parser_fingerprint=self._current_parser_fingerprint(),
@@ -4529,6 +4537,7 @@ class LiveBatchProcessor:
         self._cursor.set(
             path,
             st_size,
+            authority=CursorPathAuthority.observe(path),
             byte_offset=0,
             last_complete_newline=0,
             parser_fingerprint=self._current_parser_fingerprint(),
@@ -5897,10 +5906,14 @@ class LiveBatchProcessor:
             cursor_mtime_ns = proof_end.st_mtime_ns if proof_end.st_size == planned_size else plan.mtime_ns
         assert stored_tail_hash is not None
         content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
+        authority = CursorPathAuthority.observe(plan.path)
+        if plan.canonical_source_path is not None and authority.canonical_source_path != plan.canonical_source_path:
+            # The path now names another file than the one the plan captured.
+            return False
         updated = self._cursor.set(
             plan.path,
             cursor_stat_size,
-            canonical_source_path=plan.canonical_source_path,
+            authority=authority,
             byte_offset=publication_end,
             last_complete_newline=publication_end,
             parser_fingerprint=plan.parser_fingerprint or self._current_parser_fingerprint(),

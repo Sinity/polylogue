@@ -49,7 +49,7 @@ from polylogue.sources.live.batch_support import (
     encode_cursor_hash_authority,
     tail_hash_from_path,
 )
-from polylogue.sources.live.cursor import CursorRecord, CursorStore
+from polylogue.sources.live.cursor import CursorPathAuthority, CursorRecord, CursorStore
 from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, LiveBatchMetrics
 from polylogue.sources.live.watcher import WriteCoordinator
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
@@ -59,6 +59,7 @@ from polylogue.storage.archive_readiness import raw_materialization_readiness_sn
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.raw_owner_routes import replay_retained_raws_async, seed_membership_census
 
@@ -187,6 +188,7 @@ async def _seed_live_cursor_authority_case(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(source_path),
     )
     polylogue = SimpleNamespace(archive_root=root, backend=SimpleNamespace(db_path=root / "index.db"))
     processor = LiveBatchProcessor(
@@ -484,7 +486,7 @@ def test_cursor_default_is_zero(tmp_path: Path) -> None:
 def test_cursor_round_trip(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     p = tmp_path / "session.jsonl"
-    store.set(p, 42, record_count=3)
+    store.set(p, 42, record_count=3, authority=fixture_cursor_authority(p))
     assert store.get(p) == 42
     record = store.get_record(p)
     assert isinstance(record, CursorRecord)
@@ -497,8 +499,8 @@ def test_cursor_round_trip(tmp_path: Path) -> None:
 def test_cursor_upsert_overwrites(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     p = tmp_path / "session.jsonl"
-    store.set(p, 100)
-    store.set(p, 250, record_count=99)
+    store.set(p, 100, authority=fixture_cursor_authority(p))
+    store.set(p, 250, record_count=99, authority=fixture_cursor_authority(p))
     assert store.get(p) == 250
 
 
@@ -506,8 +508,8 @@ def test_cursor_isolated_per_path(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     a = tmp_path / "a.jsonl"
     b = tmp_path / "b.jsonl"
-    store.set(a, 10)
-    store.set(b, 20)
+    store.set(a, 10, authority=fixture_cursor_authority(a))
+    store.set(b, 20, authority=fixture_cursor_authority(b))
     assert store.get(a) == 10
     assert store.get(b) == 20
 
@@ -518,8 +520,21 @@ def test_cursor_fetches_records_in_bulk(tmp_path: Path) -> None:
     second = tmp_path / "second.jsonl"
     missing = tmp_path / "missing.jsonl"
 
-    store.set(first, 11, parser_fingerprint="parser", content_fingerprint="first-hash")
-    store.set(second, 22, parser_fingerprint="parser", content_fingerprint="second-hash", excluded=True)
+    store.set(
+        first,
+        11,
+        parser_fingerprint="parser",
+        content_fingerprint="first-hash",
+        authority=fixture_cursor_authority(first),
+    )
+    store.set(
+        second,
+        22,
+        parser_fingerprint="parser",
+        content_fingerprint="second-hash",
+        excluded=True,
+        authority=fixture_cursor_authority(second),
+    )
 
     records = store.get_records([first, second, missing, first])
 
@@ -532,7 +547,7 @@ def test_cursor_persists_across_instances(tmp_path: Path) -> None:
     db = tmp_path / "live.sqlite"
     store_a = CursorStore(db)
     p = tmp_path / "session.jsonl"
-    store_a.set(p, 555)
+    store_a.set(p, 555, authority=fixture_cursor_authority(p))
     store_b = CursorStore(db)
     assert store_b.get(p) == 555
 
@@ -548,7 +563,7 @@ def test_cursor_creates_table_if_missing(tmp_path: Path) -> None:
 def test_cursor_writes_updated_at(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     p = tmp_path / "s.jsonl"
-    store.set(p, 1)
+    store.set(p, 1, authority=fixture_cursor_authority(p))
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         row = conn.execute("SELECT updated_at_ms FROM ingest_cursor WHERE source_path=?", (str(p),)).fetchone()
     assert row[0]
@@ -739,6 +754,7 @@ def test_cursor_syncs_positions_to_archive_ops_db(tmp_path: Path) -> None:
         failure_count=2,
         next_retry_at="2026-05-24T00:01:00+00:00",
         excluded=True,
+        authority=fixture_cursor_authority(source),
     )
 
     with sqlite3.connect(tmp_path / "ops.db") as conn:
@@ -903,7 +919,7 @@ def test_cursor_mark_failed_creates_record_for_new_path(tmp_path: Path) -> None:
     p = tmp_path / "new.jsonl"
     p.write_text('{"a":1}\n')
 
-    store.mark_failed(p)
+    store.mark_failed(p, authority=fixture_cursor_authority(p))
 
     record = store.get_record(p)
     assert record is not None
@@ -918,7 +934,7 @@ def test_cursor_mark_failed_quarantines_repeated_failures(tmp_path: Path) -> Non
     p.write_text('{"a":1}\n')
 
     for _ in range(5):
-        store.mark_failed(p)
+        store.mark_failed(p, authority=fixture_cursor_authority(p))
 
     record = store.get_record(p)
     assert record is not None
@@ -941,6 +957,7 @@ def test_cursor_quarantine_binds_to_failed_replacement_observation(tmp_path: Pat
         st_dev=accepted.st_dev,
         st_ino=accepted.st_ino,
         mtime_ns=accepted.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
 
     replacement = tmp_path / "replacement.json"
@@ -948,7 +965,7 @@ def test_cursor_quarantine_binds_to_failed_replacement_observation(tmp_path: Pat
     replacement.replace(path)
     failed = path.stat()
     for _ in range(5):
-        store.mark_failed(path, failed_stat=failed)
+        store.mark_failed(path, failed_stat=failed, authority=fixture_cursor_authority(path))
 
     record = store.get_record(path)
     assert record is not None
@@ -973,6 +990,7 @@ def test_cursor_round_trips_freshness_metadata(tmp_path: Path) -> None:
         parser_fingerprint="parser-v1",
         content_fingerprint="abc123",
         source_name="codex",
+        authority=fixture_cursor_authority(p),
     )
 
     record = store.get_record(p)
@@ -1165,7 +1183,9 @@ def test_page_classification_names_scheduled_retries_as_pending(tmp_path: Path) 
     for path in (owed, settled):
         path.write_text('{"role":"user","content":"a"}\n')
     watcher, _parse_sources = _make_watcher(tmp_path, root)
-    watcher._cursor.set(owed, 0, failure_count=1, next_retry_at="2999-01-01T00:00:00+00:00")
+    watcher._cursor.set(
+        owed, 0, failure_count=1, next_retry_at="2999-01-01T00:00:00+00:00", authority=fixture_cursor_authority(owed)
+    )
     observed = settled.stat()
     watcher._cursor.set(
         settled,
@@ -1175,6 +1195,7 @@ def test_page_classification_names_scheduled_retries_as_pending(tmp_path: Path) 
         st_ino=observed.st_ino,
         mtime_ns=observed.st_mtime_ns,
         excluded=True,
+        authority=fixture_cursor_authority(settled),
     )
 
     assert watcher.classify_ingest_candidates([owed, settled]) == ((), (owed,))
@@ -1222,7 +1243,7 @@ def test_size_only_cursor_reingests_to_populate_fingerprint(tmp_path: Path) -> N
     f = root / "session.jsonl"
     f.write_text('{"a":1}\n')
     watcher, parse_sources = _make_watcher(tmp_path, root)
-    watcher._cursor.set(f, f.stat().st_size)
+    watcher._cursor.set(f, f.stat().st_size, authority=fixture_cursor_authority(f))
 
     asyncio.run(_ingest_one(watcher, f))
     asyncio.run(_ingest_one(watcher, f))
@@ -1256,6 +1277,7 @@ def test_unchanged_file_uses_stat_fast_path_without_fingerprint_read(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
 
     def fail_fingerprint(path: Path) -> tuple[str, int]:
@@ -1283,6 +1305,7 @@ def test_unchanged_file_uses_stat_fast_path_without_fingerprint_read(
         st_dev=stat.st_dev + 1,
         st_ino=stat.st_ino + 1,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
     assert watcher._needs_work(f) is False
 
@@ -1319,6 +1342,7 @@ def test_parser_version_change_needs_work_without_prefingerprint_read(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
 
     def fail_fingerprint(path: Path) -> tuple[str, int]:
@@ -1346,6 +1370,7 @@ def test_replaced_excluded_file_is_revived_without_retrying_unchanged_poison(tmp
         mtime_ns=stat.st_mtime_ns,
         failure_count=5,
         excluded=True,
+        authority=fixture_cursor_authority(path),
     )
 
     assert watcher._needs_work(path) is False
@@ -1393,6 +1418,7 @@ def test_excluded_file_revives_on_parser_fingerprint_change_without_identity_cha
         mtime_ns=stat.st_mtime_ns,
         failure_count=5,
         excluded=True,
+        authority=fixture_cursor_authority(path),
     )
 
     # Identity-only revival check: unchanged bytes, unchanged parser -> stays
@@ -1568,7 +1594,7 @@ def test_hermes_profile_retarget_reopens_same_inode_cursor(
             path,
             original_stat.st_size,
             source_name="hermes",
-            captured_profile_key=profile,
+            authority=CursorPathAuthority(str(path.resolve()), profile),
             parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
             content_fingerprint=None if cursor_state == "deferred" else blob_hash,
             tail_hash=sqlite_source_revision(path),
@@ -1633,7 +1659,7 @@ def test_hermes_sqlite_profile_retarget_between_probe_and_bound_gate_requires_ac
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint=accepted.source_revision,
         tail_hash=accepted.source_fingerprint,
-        captured_profile_key=accepted.captured_profile_key,
+        authority=CursorPathAuthority(str(declared.resolve()), accepted.captured_profile_key),
         st_dev=before.st_dev,
         st_ino=before.st_ino,
         mtime_ns=before.st_mtime_ns,
@@ -1682,7 +1708,7 @@ def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path
             parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
             content_fingerprint="snapshot-hash",
             tail_hash=initial_revision,
-            captured_profile_key=accepted.captured_profile_key,
+            authority=CursorPathAuthority(str(state_db.resolve()), accepted.captured_profile_key),
             st_dev=stat.st_dev,
             st_ino=stat.st_ino,
             mtime_ns=stat.st_mtime_ns,
@@ -1727,7 +1753,7 @@ def test_hermes_file_alias_wal_commit_reopens_actual_acquired_cursor(tmp_path: P
             parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
             content_fingerprint=accepted.source_revision,
             tail_hash=accepted.source_fingerprint,
-            captured_profile_key=accepted.captured_profile_key,
+            authority=CursorPathAuthority(str(declared.resolve()), accepted.captured_profile_key),
             st_dev=before.st_dev,
             st_ino=before.st_ino,
             mtime_ns=before.st_mtime_ns,
@@ -1904,6 +1930,7 @@ def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
 
     plan = watcher._batch_processor._append_plan(f)
@@ -1939,6 +1966,7 @@ def test_large_incomplete_jsonl_append_defers_until_the_file_changes(tmp_path: P
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
     f.write_bytes(original + (b"x" * (live_watcher._INCOMPLETE_APPEND_PROBE_BYTES + 1)))
 
@@ -1991,6 +2019,7 @@ def test_a_failed_tail_probe_records_the_deferral_instead_of_retrying_forever(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
     f.write_bytes(original + (b"x" * 4096))
 
@@ -2060,6 +2089,7 @@ def test_incomplete_probe_does_not_escalate_for_a_recent_in_progress_writer(tmp_
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
     tail = (b"x" * (live_watcher._INCOMPLETE_APPEND_PROBE_BYTES + 1)) + b'{"b":2}\n'
     f.write_bytes(original + tail)
@@ -2107,6 +2137,7 @@ def test_incomplete_probe_escalates_to_full_scan_once_stat_stops_changing(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
     # A trailing tail whose first PROBE_BYTES contain no newline, but a
     # complete record follows just past the bounded probe window.
@@ -2157,6 +2188,7 @@ def test_incomplete_probe_marks_failed_when_no_newline_exists_anywhere(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
     f.write_bytes(original + (b"x" * (live_watcher._INCOMPLETE_APPEND_PROBE_BYTES + 1)))
 
@@ -3356,6 +3388,7 @@ def test_v5_cursor_reprocesses_unchanged_bytes_through_live_batch(tmp_path: Path
         failure_count=1 if cursor_state in {"excluded", "failed"} else 0,
         excluded=cursor_state == "excluded",
         next_retry_at="2999-01-01T00:00:00+00:00" if cursor_state in {"failed", "deferred"} else None,
+        authority=fixture_cursor_authority(path),
     )
 
     # Use the dispatcher's bulk selection, then the actual batch cursor
@@ -3472,6 +3505,7 @@ def test_incomplete_append_event_defers_without_ingest_until_newline(tmp_path: P
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
 
     f.write_bytes(complete + partial)
@@ -3750,6 +3784,7 @@ def test_page_selection_rebases_device_drift_after_one_prefix_proof(
         st_dev=stat.st_dev + 1,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
 
     calls = 0
@@ -4498,6 +4533,7 @@ def test_stale_deferral_escalates_when_recorded_byte_size_lags_the_file(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(f),
     )
 
     # Fresh observation: still plausibly an in-progress writer.

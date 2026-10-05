@@ -18,6 +18,7 @@ from polylogue.operations.raw_observation_derivation import converge_raw_observa
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.cursor_authority import fixture_cursor_authority
 
 
 def _write_unparsed_raw(archive_root: Path, *, source_path: Path, native_id: str) -> str:
@@ -105,6 +106,7 @@ def test_restart_rewinds_cursor_then_common_raw_derivation_recovers_retained_byt
         parser_fingerprint="test-parser",
         content_fingerprint="claimed-complete",
         tail_hash="claimed-complete",
+        authority=fixture_cursor_authority(source_path),
     )
     store.begin_ingest_attempt(paths=[source_path], input_bytes=source_path.stat().st_size, queued_file_count=1)
 

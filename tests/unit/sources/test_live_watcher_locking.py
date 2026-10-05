@@ -28,6 +28,7 @@ from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
 from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.live_ingest import prepared_live_convergence_owner
 
 
@@ -320,6 +321,7 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(source),
     )
     source.write_bytes(complete + b'{"role":"assistant"')
     watcher_queued = asyncio.Event()

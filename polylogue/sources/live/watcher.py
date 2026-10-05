@@ -56,6 +56,7 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import (
     CursorObservationRebase,
+    CursorPathAuthority,
     CursorRecord,
     CursorStore,
 )
@@ -821,7 +822,7 @@ class LiveWatcher:
                     cursor.byte_size - cursor.byte_offset,
                     cursor.byte_offset,
                 )
-                self._cursor.mark_failed(path, failed_stat=stat)
+                self._cursor.mark_failed(path, authority=CursorPathAuthority.of_record(cursor), failed_stat=stat)
                 return False
             prefix_hash = cursor_prefix_hash(cursor.tail_hash)
             if prefix_hash is None:
@@ -892,7 +893,7 @@ class LiveWatcher:
                     stat.st_size - cursor.byte_offset,
                     cursor.byte_offset,
                 )
-                self._cursor.mark_failed(path, failed_stat=stat)
+                self._cursor.mark_failed(path, authority=CursorPathAuthority.of_record(cursor), failed_stat=stat)
                 return False
             return not self._defer_incomplete_jsonl_append(path, stat=stat, cursor=cursor)
         if cursor.content_fingerprint is None:
@@ -978,6 +979,7 @@ class LiveWatcher:
         updated = self._cursor.set(
             path,
             stat.st_size,
+            authority=CursorPathAuthority.observe(path),
             byte_offset=0,
             last_complete_newline=0,
             parser_fingerprint=_PARSER_FINGERPRINT,
@@ -1306,10 +1308,14 @@ class LiveWatcher:
                 tail_hash,
                 ctime_ns=stat.st_ctime_ns,
             )
+        authority = CursorPathAuthority.observe(path)
+        if authority.captured_profile_key != captured_profile_key:
+            # The archived raw was captured under another profile namespace.
+            return _ArchivedCursorReconciliation.INCOMPATIBLE
         self._cursor.set(
             path,
             archived_size,
-            captured_profile_key=captured_profile_key,
+            authority=authority,
             byte_offset=last_complete_newline,
             last_complete_newline=last_complete_newline,
             parser_fingerprint=_PARSER_FINGERPRINT,
