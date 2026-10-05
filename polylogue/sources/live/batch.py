@@ -822,17 +822,18 @@ def _full_publication_stage_timings(timings: Mapping[str, float]) -> dict[str, f
     return reported
 
 
-def _declared_evidence_raw(source: sqlite3.Connection, raw_id: str, path: Path) -> bool:
-    """Whether a raw's path is declared non-session evidence (a carrier, a memory document).
+def _hook_carrier_raw(source: sqlite3.Connection, raw_id: str, path: Path) -> bool:
+    """Whether a raw is a hook-event carrier, whose acquisition is its admission.
 
-    Retaining such bytes is that path's whole admission, so a census without
-    sessions is its settled outcome rather than a no-session exclusion.
+    A carrier never yields a session; its events are materialized from the
+    retained bytes by the ``hook_events`` derivation. Other declared
+    non-session evidence settles as an ordinary no-session exclusion.
     """
     row = source.execute("SELECT detected_provider FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
     if row is None or row[0] is None:
         return False
-    rule = artifact_rule_for_path(Provider.from_string(str(row[0])), str(path))
-    return rule is not None and rule.parse_policy != "session"
+    classification = classify_artifact_path(str(path), provider=Provider.from_string(str(row[0])))
+    return classification is not None and classification.kind is ArtifactKind.HOOK_EVENT_CARRIER
 
 
 def _admit_live_full_raw(
@@ -3256,7 +3257,7 @@ class LiveBatchProcessor:
                 )
                 if corrupt:
                     settled[path] = REFUSED_CORRUPT_INPUT
-                elif not _declared_evidence_raw(source, raw_id, path) and (
+                elif not _hook_carrier_raw(source, raw_id, path) and (
                     source.execute(
                         "SELECT 1 FROM raw_membership_census WHERE raw_id = ? AND parser_fingerprint = ? "
                         "AND status = 'non_session'",

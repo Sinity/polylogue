@@ -3171,12 +3171,12 @@ def prepare_revision_source_census(
             state.quarantined += 1
             return
         outcome = _prepared_retained_outcome(evidence_reader, raw_id, prepared_inputs)
-        provider, _hash, source_path, revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
+        provider, _hash, source_path, revision_kind, raw_size = evidence_reader.raw_revision_descriptor(raw_id)
         observed_at_ms = evidence_reader.raw_revision_observation_order(raw_id)[0]
-        if isinstance(outcome, UnsupportedRetainedJsonShapeError):
-            # Complete input with no recognized session shape (an empty
-            # export, say) is a settled no-session observation: typed
-            # terminal evidence and a non-session census, never a retry.
+        if isinstance(outcome, UnsupportedRetainedJsonShapeError) and raw_size == 0:
+            # A zero-byte capture holds no record at all: a settled no-session
+            # observation with typed terminal evidence, never a retry. A
+            # non-empty unrecognized shape stays a visible failed census.
             _record_raw_failure_evidence(
                 producer,
                 raw_id,
