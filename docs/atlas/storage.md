@@ -245,3 +245,12 @@ the disposable tier is missing or unreadable; that absence does not abort
 otherwise measurable coverage. Supplied pinned connections keep their original
 attached snapshot authority. Owned diagnostic readers close even when an
 Embeddings attachment refuses (`storage/embeddings/status_payload.py`).
+
+Ordinary full FTS rebuilds clear text and identity residue together and stream
+session pages through the existing paired SQL projections. Progress counts
+settled sessions, using the exact session total; an empty terminal event follows
+both resets. Page publication retains the caller transaction. Async observers
+run on their event loop with one settled handoff at a time; observer errors or
+cancellation settle the physical worker before returning and emit no later
+progress (`storage/fts/fts_lifecycle.py`; `pipeline/services/indexing.py`). The
+separately owned resumable bulk generation retains its existing chunk commits.

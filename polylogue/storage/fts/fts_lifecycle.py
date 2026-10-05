@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import threading
+from builtins import BaseExceptionGroup
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import CancelledError as WorkerCancelledError
 from dataclasses import dataclass
 from typing import TypeAlias, cast
 
@@ -24,9 +28,12 @@ from polylogue.storage.fts.sql import (
     insert_all_message_identity_rows_sql,
     insert_all_message_rows_sql,
     insert_missing_message_rows_range_sql,
+    insert_session_identity_rows_sql,
+    insert_session_rows_sql,
     message_identity_mismatch_sql,
     repair_message_identity_rows_range_sql,
 )
+from polylogue.storage.io_phase_metrics import close_connection_cursor
 from polylogue.storage.sqlite.connection_profile import (
     BOUNDED_REPAIR_CACHE_SIZE_KIB,
     BOUNDED_REPAIR_MMAP_SIZE_BYTES,
@@ -78,6 +85,7 @@ FTS_TRIGGER_NAMES = _FTS_TRIGGER_NAMES
 """Canonical FTS trigger set for all archive and insight search surfaces."""
 
 DEFAULT_MISSING_MESSAGE_FTS_BATCH_ROWS = 50_000
+FTS_REBUILD_SESSION_PAGE_SIZE = 256
 """Rowid window size for archive-wide missing message FTS repair."""
 
 
@@ -284,6 +292,7 @@ def rebuild_fts_index_sync(
     conn: sqlite3.Connection,
     *,
     resume_from_empty_message_index: bool = False,
+    progress_callback: Callable[[int, int, int], None] | None = None,
 ) -> None:
     """Rebuild the full FTS index from persisted archive rows.
 
@@ -293,13 +302,45 @@ def rebuild_fts_index_sync(
     its FTS store is known to have been cleared before replay, so the existing
     paged missing-row writer can commit each chunk and resume an interrupted
     terminal pass without redoing already materialized FTS rows.
+    ``progress_callback`` reports incremental sessions, cumulative sessions,
+    and the exact session total for the ordinary full reset. Both surfaces
+    settle before a page is reported; the caller retains its transaction.
+    The separately owned resumable bulk generation keeps its chunk commits.
     """
     ensure_fts_index_sync(conn)
     if resume_from_empty_message_index:
         insert_missing_message_rows_batched_sync(conn)
     else:
-        rebuild_messages_fts_content_sync(conn)
-        rebuild_messages_fts_identity_sync(conn)
+        conn.execute(FTS_REBUILD_SQL)
+        conn.execute(FTS_IDENTITY_REBUILD_SQL)
+        total = _row_int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone(), 0)
+        if progress_callback is not None and total:
+            progress_callback(0, 0, total)
+        processed = 0
+        cursor = conn.execute("SELECT session_id FROM sessions ORDER BY session_id")
+        primary: BaseException | None = None
+        try:
+            while rows := cursor.fetchmany(FTS_REBUILD_SESSION_PAGE_SIZE):
+                session_ids = tuple(str(row[0]) for row in rows)
+                conn.execute(insert_session_rows_sql(len(session_ids)), session_ids)
+                conn.execute(insert_session_identity_rows_sql(len(session_ids)), session_ids)
+                processed += len(session_ids)
+                if progress_callback is not None:
+                    progress_callback(len(session_ids), processed, total)
+        except BaseException as failure:
+            primary = failure
+            raise
+        finally:
+            try:
+                close_connection_cursor(conn, cursor)
+            except BaseException as cleanup:
+                if primary is None:
+                    raise
+                raise BaseExceptionGroup(
+                    "FTS rebuild failed and its cursor remains unsettled", [primary, cleanup]
+                ) from None
+        if progress_callback is not None and not total:
+            progress_callback(0, 0, 0)
 
 
 def reset_message_fts_index_sync(conn: sqlite3.Connection) -> None:
@@ -391,10 +432,53 @@ async def rebuild_fts_index_async(
             progress_desc=progress_desc,
         )
         return
-    # Keep the exact scan on aiosqlite's owning worker thread.  The sync
-    # lifecycle is the canonical full-rebuild path and couples the rebuild to
-    # its transaction-bound freshness publication.
-    await conn._execute(rebuild_fts_index_sync, conn._conn)  # type: ignore[no-untyped-call]
+    # One settled handoff per page keeps callbacks on their event loop and
+    # propagates callback failures without a growing queue of progress events.
+    loop = asyncio.get_running_loop()
+    owner = asyncio.current_task()
+    cancelled = threading.Event()
+
+    async def report(amount: int, processed: int, total: int) -> None:
+        if cancelled.is_set():
+            return
+        if progress_callback is not None:
+            progress_callback(amount, progress_desc(processed, total) if progress_desc is not None else None)
+        if owner is not None and owner.cancelling():
+            cancelled.set()
+
+    def publish(amount: int, processed: int, total: int) -> None:
+        if cancelled.is_set():
+            raise WorkerCancelledError()
+        if progress_callback is not None:
+            asyncio.run_coroutine_threadsafe(report(amount, processed, total), loop).result()
+        if cancelled.is_set():
+            raise WorkerCancelledError()
+
+    worker = asyncio.ensure_future(
+        conn._execute(rebuild_fts_index_sync, conn._conn, progress_callback=publish)  # type: ignore[no-untyped-call]
+    )
+    cancellation = None
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError as exc:
+            cancellation = cancellation or exc
+            cancelled.set()
+        except BaseException:
+            break
+    # Consume the physical worker verdict even when cancellation wins. The
+    # caller cannot release its connection while a page is still executing.
+    try:
+        worker.result()
+    except BaseException as failure:
+        if cancellation is None:
+            raise
+        if not isinstance(failure, WorkerCancelledError):
+            raise BaseExceptionGroup(
+                "FTS rebuild cancelled with a distinct worker failure", [cancellation, failure]
+            ) from None
+    if cancellation is not None:
+        raise cancellation
 
 
 def repair_message_fts_index_sync(
