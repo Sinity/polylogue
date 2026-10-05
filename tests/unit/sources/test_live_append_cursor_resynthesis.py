@@ -42,6 +42,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import MigrationError, migrate_archive_tier
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.raw_owner_routes import ingest_append_with_owner
 
 
@@ -150,6 +151,7 @@ def test_append_plan_uses_ops_db_cursor_without_consulting_source_db(tmp_path: P
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(source),
     )
     processor = _processor(tmp_path, cursor)
 
@@ -743,6 +745,7 @@ def test_superseded_parser_fingerprint_refuses_append_planning(tmp_path: Path) -
             st_dev=stat.st_dev,
             st_ino=stat.st_ino,
             mtime_ns=stat.st_mtime_ns,
+            authority=fixture_cursor_authority(source),
         )
 
     current_store = CursorStore(tmp_path / "ops-current.db")
