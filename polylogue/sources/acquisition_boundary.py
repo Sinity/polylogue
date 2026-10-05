@@ -590,7 +590,7 @@ def capture_bound_path(
     from polylogue.sources.source_staging import bind_source_input, write_bound_input
 
     if source_binding is None:
-        with bind_source_input(Path(path)) as binding:
+        with bind_source_input(Path(path), byte_page=byte_page) as binding:
             return capture_bound_path(
                 blob_store, path, location, heartbeat=heartbeat, source_binding=binding, byte_page=byte_page
             )
