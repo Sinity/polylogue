@@ -1590,6 +1590,9 @@ def prepare_membership_replay(
                     projections[raw_id],
                     session.updated_at,
                     browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
+                    # Declared capture order: the latest retained observation
+                    # of these bytes, never their evidence volume.
+                    capture_order=archive.raw_revision_observation_order(raw_id),
                     # Only declared provider IDs are identity evidence; an
                     # id-less message must not stand in as a shared ``None``
                     # member that makes unrelated snapshots look preserved.
@@ -3890,6 +3893,8 @@ class RetainedMembershipRead(RetainedRawRead, Protocol):
     def raw_revision_head_raw_id(self, logical_source_key: str) -> str | None: ...
 
     def raw_revision_authority(self, raw_id: str) -> str | None: ...
+
+    def raw_revision_observation_order(self, raw_id: str) -> tuple[int, int]: ...
 
 
 class RetainedSessionRead(RetainedRawRead, RetainedEnrichmentRead, BlobPublicationSourceRead, Protocol):
