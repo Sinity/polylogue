@@ -12,6 +12,7 @@ import hashlib
 import json
 import sqlite3
 from contextlib import closing
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.reference_seal import ReferenceSealError
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.prepared_replay import run_on_convergence_owner
@@ -945,8 +947,14 @@ def test_canonical_replay_does_not_replace_newer_index_authority(tmp_path: Path)
         # runs on that same admitted owner.
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
         frame = raw_observation_frame(tmp_path)
-        old_replacement = adapter.compute(frame, old_raw_id)
-        assert adapter.publish(frame, old_replacement) is True
+        # Each committed preparatory Source phase re-prepares, as the kernel
+        # does within its pass; the replacement that publishes is kept.
+        for _ in range(3):
+            old_replacement = adapter.compute(frame, old_raw_id)
+            if admit_stage_write("test.raw.stale-replacement.first", partial(adapter.publish, frame, old_replacement)):
+                break
+        else:
+            pytest.fail("the original raw did not publish after its preparatory phases")
         new_raw_id = _admit(
             tmp_path,
             (),
@@ -955,13 +963,10 @@ def test_canonical_replay_does_not_replace_newer_index_authority(tmp_path: Path)
             payload=new_payload,
             acquired_at_ms=2,
         )
-        for _ in range(4):
-            report = converge_raw_observations(tmp_path, source_roots=(), compute_adapter=compute, limit=128)
-            assert report.failed == 0, report.outcomes
-            if adapter.inspect(raw_observation_frame(tmp_path), (new_raw_id,))[new_raw_id] == "valid":
-                break
-        else:
-            pytest.fail("new retained raw did not converge after source classification")
+        # Source classification re-prepares the new raw within one pass.
+        report = converge_raw_observations(tmp_path, source_roots=(), compute_adapter=compute, limit=128)
+        assert report.failed == report.pending == 0, report.outcomes
+        assert adapter.inspect(raw_observation_frame(tmp_path), (new_raw_id,))[new_raw_id] == "valid"
 
         with sqlite3.connect(tmp_path / "index.db") as conn:
             head = conn.execute(
@@ -970,8 +975,10 @@ def test_canonical_replay_does_not_replace_newer_index_authority(tmp_path: Path)
             ).fetchone()
             assert head == (new_raw_id,)
         try:
-            adapter.publish(frame, old_replacement)
-        except RawCASFrontierError:
+            admit_stage_write("test.raw.stale-replacement.late", partial(adapter.publish, frame, old_replacement))
+        except (RawCASFrontierError, ReferenceSealError):
+            # A consumed replacement's seal is closed; either typed refusal
+            # leaves the newer head in place, which is asserted below.
             pass
         return new_raw_id
 
