@@ -127,6 +127,7 @@ def _detect_git_dirty(repo_root: Path) -> bool:
         result = run_bounded(
             ["git", "status", "--porcelain"],
             2,
+            check_exit=False,
             cwd=repo_root,
             capture_output=True,
             text=True,
