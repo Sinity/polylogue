@@ -44,7 +44,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.reference_seal import ReferenceSealError
+from polylogue.storage.sqlite.reference_seal import ReferenceSealError, ReferenceSealStaleError
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.prepared_replay import run_on_convergence_owner
@@ -670,18 +670,21 @@ def test_canonical_publish_revalidates_the_promoted_active_generation(tmp_path: 
     (tmp_path / ".index-active-pointer").write_text(f"{first_index}\n", encoding="utf-8")
     second_index = tmp_path / "generations" / "second" / "index.db"
 
-    def exercise(compute: BoundedComputeAdapter) -> bool:
+    def exercise(compute: BoundedComputeAdapter) -> None:
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
         frame = raw_observation_frame(tmp_path)
         replacement = adapter.compute(frame, raw_id)
         try:
             initialize_archive_database(second_index, ArchiveTier.INDEX)
             (tmp_path / ".index-active-pointer").write_text(f"{second_index}\n", encoding="utf-8")
-            return adapter.publish(frame, replacement)
+            # Publication revalidates the configured active Index and refuses
+            # the moved destination with a typed stale-seal error.
+            with pytest.raises(ReferenceSealStaleError):
+                admit_stage_write("test.raw.promoted-generation", partial(adapter.publish, frame, replacement))
         finally:
             replacement.close()
 
-    assert run_on_convergence_owner(tmp_path, "test.raw.promoted-generation", exercise) is False
+    run_on_convergence_owner(tmp_path, "test.raw.promoted-generation", exercise)
     with sqlite3.connect(second_index) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
@@ -892,7 +895,10 @@ def test_canonical_deadline_bounds_a_pass_without_substituting_a_count_limit(
 
         def compute_then_expire(frame: object, key: str) -> object:
             replacement = original_compute(frame, key)  # type: ignore[arg-type]
-            clock[0] = 2.0
+            # Preparatory Source phases re-prepare within the same component;
+            # expire only once the component reaches its destination write.
+            if replacement.prepared_writes:
+                clock[0] = 2.0
             return replacement
 
         monkeypatch.setattr(adapter, "compute", compute_then_expire)
