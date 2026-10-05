@@ -44,10 +44,10 @@ MULTI_SESSION_CASES: list[tuple[int, str]] = [
 
 
 TAG_VALIDATION_CASES: list[tuple[str, str, type[Exception], str]] = [
-    # The daemon's tag actuator owns validation and refuses before durable
-    # acceptance; the facade normalizes whitespace-only input itself.
-    ("", "empty string tag", DaemonOperationRejectedError, "add_tag rejects empty string"),
-    ("   ", "whitespace-only tag", ValueError, "add_tag rejects whitespace-only"),
+    # An empty tag fails the operation's declared request schema before it is
+    # sent; the daemon's tag actuator refuses the rest before durable acceptance.
+    ("", "empty string tag", ValueError, "add_tag rejects empty string"),
+    ("   ", "whitespace-only tag", DaemonOperationRejectedError, "add_tag rejects whitespace-only"),
     ("x" * 201, "201-char tag exceeds limit", DaemonOperationRejectedError, "add_tag rejects >200 char tag"),
 ]
 

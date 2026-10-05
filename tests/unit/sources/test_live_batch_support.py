@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import os
 import sqlite3
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Callable, Generator, Iterable
 from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -64,7 +65,7 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.convergence_debt import ConvergenceDebt
 from polylogue.sources.live.cursor import ConvergenceDebtSettlement, CursorStore
-from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, SETTLED_EXCLUSION_REASONS
+from polylogue.sources.live.metrics import REFUSED_CORRUPT_INPUT, REFUSED_NO_SESSIONS, SETTLED_EXCLUSION_REASONS
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.source_acquisition_components import stream_preserved_zip_entry_raw_data
 from polylogue.sources.source_parsing import has_decoded_session_evidence
@@ -86,6 +87,37 @@ from tests.infra.source_builders import (
     make_chatgpt_node,
     make_claude_chat_message,
 )
+
+
+def _retained_parse_by_path(
+    sessions_for: Callable[[Path], list[ParsedSession]],
+) -> Callable[..., Generator[ParsedSession, None, None]]:
+    """Stand in for retained preparation's stream parser, keyed by the raw's source path.
+
+    Retained preparation is the only parser on the live route, and a replay
+    re-parses the same retained raw, so the stub answers per path rather
+    than per call.
+    """
+
+    def parse(*_args: object, source_path: str, **_kwargs: object) -> Generator[ParsedSession, None, None]:
+        yield from sessions_for(Path(source_path))
+
+    return parse
+
+
+def _codex_shaped_bytes(tag: str) -> bytes:
+    """Distinct rollout bytes retained preparation admits as Codex session input."""
+    return (
+        json.dumps({"type": "session_meta", "payload": {"id": tag, "timestamp": "2026-06-02T00:00:00Z"}})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "response_item",
+                "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": tag}]},
+            }
+        )
+        + "\n"
+    ).encode()
 
 
 def _full_paths_sync(processor: LiveBatchProcessor, paths: list[Path], *, source_name: str, **kwargs: Any) -> Any:
@@ -579,7 +611,7 @@ def _cursor_hash_authority(payload: bytes) -> str:
     )
 
 
-def _append_plan(path: Path, payload: bytes, *, payload_hash: str) -> _AppendPlan:
+def _append_plan(path: Path, payload: bytes, *, payload_hash: str, native_id_hint: str | None = None) -> _AppendPlan:
     stat = path.stat()
     return _AppendPlan(
         path=path,
@@ -594,6 +626,7 @@ def _append_plan(path: Path, payload: bytes, *, payload_hash: str) -> _AppendPla
         payload_hash=payload_hash,
         cursor_fingerprint="base",
         bytes_read=len(payload),
+        native_id_hint=native_id_hint,
     )
 
 
@@ -927,9 +960,11 @@ def test_claude_append_retry_preserves_legacy_null_acquisition_identity(tmp_path
     assert plan.native_id_hint == native_id
     assert plan.acquisition_native_id_hint is None
 
-    legacy_plan = replace(plan, native_id_hint=None, acquisition_native_id_hint=None)
-    first = ingest_append_with_owner(owner, [legacy_plan])
-    assert first.succeeded == [legacy_plan]
+    # Claude append rows carry no acquisition identity (native_id NULL), and
+    # every plan carries its logical session: acquisition refuses a plan
+    # without one. A retry must keep the NULL-identity raw it acquired.
+    first = ingest_append_with_owner(owner, [plan])
+    assert first.succeeded == [plan]
     assert first.failed == []
     with sqlite3.connect(tmp_path / "source.db") as conn:
         before_retry = conn.execute("SELECT raw_id, native_id FROM raw_sessions WHERE source_index = -1").fetchall()
@@ -2488,6 +2523,7 @@ def test_full_ingest_heartbeats_small_file_groups_with_current_path(
     db_path = tmp_path / "archive.sqlite"
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))
     cursor = CursorStore(db_path)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -3465,62 +3501,6 @@ def test_unknown_zip_live_route_retains_declared_binary_and_markdown_artifacts(t
     assert {(row.path, row.source_index, row.revision) for row in baseline.accepted} == {
         (record.source_path, record.source_index, record.blob_hash) for _raw_id, record in records
     }
-
-
-def test_append_malformed_workflow_journal_retains_failure_without_artifact_authority(tmp_path: Path) -> None:
-    """A filename cannot turn a complete corrupt record into artifact proof."""
-    path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
-    path.parent.mkdir(parents=True)
-    payload = b'{"contentKey":"broken"\n'
-    path.write_bytes(payload)
-    plan = replace(_append_plan(path, payload, payload_hash="artifact"), source_name="claude-code")
-
-    result = ingest_append_with_owner(_append_owner(tmp_path), [plan])
-
-    assert result.succeeded == []
-    assert result.failed == [plan]
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        artifacts = conn.execute(
-            """
-            SELECT artifact_kind, classification_reason, parse_as_session
-            FROM raw_artifacts
-            """
-        ).fetchall()
-        raw = conn.execute("SELECT parse_error, parsed_at_ms FROM raw_sessions").fetchone()
-    assert artifacts == []
-    assert raw is not None and raw[0] is not None and raw[1] is None
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
-
-
-@pytest.mark.parametrize("artifact_count", [65, 257])
-def test_append_session_shaped_workflow_journal_enters_revision_repair(tmp_path: Path, artifact_count: int) -> None:
-    """Decoded session evidence bypasses path-only workflow-journal admission."""
-    path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
-    path.parent.mkdir(parents=True)
-    payload = b"".join(
-        b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n'
-        for index in range(artifact_count)
-    ) + (
-        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
-        b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
-        b'{"parentUuid":"journal-user","type":"assistant","message":{"role":"assistant",'
-        b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
-        b'"timestamp":"2025-01-01T00:00:01Z"}\n'
-    )
-    path.write_bytes(payload)
-    plan = replace(_append_plan(path, payload, payload_hash="session-shaped"), source_name="claude-code")
-
-    result = ingest_append_with_owner(_append_owner(tmp_path), [plan])
-
-    assert result.succeeded == []
-    assert result.failed == []
-    assert result.deferred == [plan]
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
-        assert conn.execute("SELECT revision_kind, revision_authority FROM raw_sessions").fetchall() == [
-            ("append", "quarantined")
-        ]
 
 
 def _write_plain_sqlite_db(path: Path) -> None:
@@ -4630,20 +4610,28 @@ def test_live_append_chain_survives_post_ingest_compaction(
         parser_fingerprint="test-parser",
     )
     original_publish = ArchiveBlobPublisher.write_from_bytes
-    original_stream_publish = ArchiveBlobPublisher.write_from_fileobj
+    original_writer_publish = ArchiveBlobPublisher.write_from_writer
     published_payloads: list[bytes] = []
 
     def counted_publish(publisher: ArchiveBlobPublisher, raw: bytes) -> tuple[str, int]:
         published_payloads.append(raw)
         return original_publish(publisher, raw)
 
-    def counted_stream_publish(publisher: ArchiveBlobPublisher, source: IO[bytes], **kwargs: object) -> tuple[str, int]:
-        # Full captures stream through the acquisition boundary.
-        published_payloads.append(Path(source.raw.name).read_bytes())  # type: ignore[attr-defined]
-        return original_stream_publish(publisher, source, **kwargs)  # type: ignore[arg-type]
+    def counted_writer_publish(
+        publisher: ArchiveBlobPublisher, write: Callable[[IO[bytes]], None], **kwargs: Any
+    ) -> tuple[str, int]:
+        # Full captures stream through the acquisition boundary's writer.
+        captured = io.BytesIO()
+        write(captured)
+        published_payloads.append(captured.getvalue())
+
+        def replay(sink: IO[bytes]) -> None:
+            sink.write(captured.getvalue())
+
+        return original_writer_publish(publisher, replay, **kwargs)
 
     monkeypatch.setattr(ArchiveBlobPublisher, "write_from_bytes", counted_publish)
-    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_fileobj", counted_stream_publish)
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_writer", counted_writer_publish)
     if not protect_chain:
         from polylogue.storage.raw_retention import RawRetentionAuthority
 
@@ -4996,6 +4984,7 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
         mtime_ns=captured_stat.st_mtime_ns,
         authority=fixture_cursor_authority(path),
     )
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         polylogue,
         (WatchSource(name="codex", root=root),),
@@ -5142,6 +5131,7 @@ def test_full_ingest_does_not_advance_cursor_across_same_size_replacement(
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
     polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         polylogue,
         (WatchSource(name="codex", root=root),),
@@ -5239,6 +5229,7 @@ def test_archive_cursor_reconciliation_rejects_restored_mtime_rewrite(
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
     polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         polylogue,
         (WatchSource(name="codex", root=root),),
@@ -5460,6 +5451,7 @@ def test_append_cursor_redetects_source_rewrite_after_handoff(
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
     polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         polylogue,
         (WatchSource(name="codex", root=root),),
@@ -5575,6 +5567,7 @@ def test_append_cursor_rejects_truncation_after_append_persistence(
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
     polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         polylogue,
         (WatchSource(name="codex", root=root),),
@@ -5626,6 +5619,7 @@ def test_rewrite_plus_growth_before_planning_fails_closed_to_full_route(tmp_path
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
     polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         polylogue,
         (WatchSource(name="codex", root=root),),
@@ -6290,34 +6284,42 @@ def test_append_parse_failure_retains_typed_raw_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = tmp_path / "append-bad.jsonl"
-    payload = b"{bad json}\n"
-    path.write_bytes(payload)
-    plan = _append_plan(path, payload, payload_hash="bad")
-    owner = _append_owner(tmp_path)
-    monkeypatch.setattr(
-        "polylogue.sources.dispatch.parse_stream_payload",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected append parse failure")),
-    )
+    # An append parses only once it chains off an accepted full; seed one.
+    _path, plan, owner, _processor = _seed_live_append_plan(tmp_path, native_id="append-bad")
+
+    def failing_parse(*_args: object, **_kwargs: object) -> Generator[ParsedSession, None, None]:
+        raise RuntimeError("injected append parse failure")
+        yield  # pragma: no cover - makes this a generator like the real parser
+
+    # Retained preparation is the only parser on the live route.
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_stream", failing_parse)
 
     result = ingest_append_with_owner(owner, [plan])
 
     assert result.succeeded == []
     assert result.failed == [plan]
-    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+    parsed_at_ms, parse_error = _append_raw_parse_state(tmp_path)
     assert parsed_at_ms is None
     assert isinstance(parse_error, str) and "injected append parse failure" in parse_error
     assert len(parse_error) <= 2000
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        raw_id = str(conn.execute("SELECT raw_id FROM raw_sessions").fetchone()[0])
+        raw_id = str(conn.execute("SELECT raw_id FROM raw_sessions WHERE source_index = -1").fetchone()[0])
         envelope = read_archive_raw_session_envelope(conn, raw_id)
     assert envelope.parse_error == parse_error
     assert envelope.detection_warnings == (parse_error[:500],)
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        # The accepted full stays; the failed append adds nothing.
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
 
 
-def test_append_declared_artifact_is_admitted_with_typed_authority(tmp_path: Path) -> None:
+def test_identity_less_append_plan_is_refused_before_any_raw_write(tmp_path: Path) -> None:
+    """Only a hook carrier may append without a declared session identity.
+
+    The planner never forms an identity-less append for a declared artifact
+    (it returns no plan and the full route admits the artifact, see
+    ``test_full_batch_declared_artifact_is_admitted_before_pending_raw_write``),
+    and acquisition refuses such a plan before writing any raw.
+    """
     path = tmp_path / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
     path.parent.mkdir(parents=True)
     payload = b'{"contentKey":"call-1","agentId":"agent-a"}\n'
@@ -6326,21 +6328,10 @@ def test_append_declared_artifact_is_admitted_with_typed_authority(tmp_path: Pat
 
     result = ingest_append_with_owner(_append_owner(tmp_path), [plan])
 
-    assert result.succeeded == [plan]
-    assert result.failed == []
+    assert result.succeeded == []
+    assert result.failed == [plan]
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        raw = conn.execute(
-            "SELECT raw_id, logical_source_key, revision_kind, revision_authority FROM raw_sessions"
-        ).fetchone()
-        artifact = conn.execute(
-            "SELECT artifact_kind, classification_reason, parse_as_session, raw_id FROM raw_artifacts"
-        ).fetchone()
-    assert raw is not None
-    assert raw[1:] == (None, "unknown", "quarantined")
-    assert artifact is not None
-    assert artifact[0] == "workflow_journal"
-    assert "OriginSpec" in artifact[1]
-    assert artifact[2:] == (0, raw[0])
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
 
 
 def test_full_batch_declared_artifact_is_admitted_before_pending_raw_write(
@@ -6476,12 +6467,16 @@ def test_full_batch_malformed_workflow_journal_remains_typed_evidence(tmp_path: 
 
     metrics = run_ingest_files(processor, [source], emit_event=False)
 
-    assert metrics.succeeded_file_count == 1
+    # The retained journal settles as a terminal corrupt-input exclusion.
+    assert metrics.succeeded_file_count == 0
     assert metrics.failed_file_count == 0
+    assert metrics.refused_bytes_by_reason == {REFUSED_CORRUPT_INPUT: source.stat().st_size}
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        # A filename cannot turn a complete corrupt record into artifact
+        # proof: the typed evidence is the corrupt input, not a journal.
         assert conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone() == (
-            "workflow_journal",
+            "terminal_corrupt_input",
             0,
         )
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -6658,7 +6653,8 @@ def test_append_archive_lock_propagates_for_watcher_retry(
     path = tmp_path / "append-locked.jsonl"
     payload = b'{"type":"session_meta","payload":{"id":"append-locked"}}\n'
     path.write_bytes(payload)
-    plan = _append_plan(path, payload, payload_hash="locked")
+    # A watcher plan carries the session identity it binds the append to.
+    plan = _append_plan(path, payload, payload_hash="locked", native_id_hint="append-locked")
     owner = _append_owner(tmp_path)
 
     monkeypatch.setattr(
@@ -6743,7 +6739,10 @@ def test_append_multi_session_payload_is_rejected_before_index_write(
             messages=[ParsedMessage(provider_message_id="multi-2-0", role=Role.USER, text="hello")],
         ),
     ]
-    monkeypatch.setattr("polylogue.sources.dispatch.parse_stream_payload", lambda *_args, **_kwargs: sessions)
+    # Retained preparation is the only parser on the live route.
+    monkeypatch.setattr(
+        "polylogue.sources.prepared_jsonl.iter_parsed_stream", _retained_parse_by_path(lambda _path: sessions)
+    )
     result = ingest_append_with_owner(owner, [plan])
 
     assert result.failed == [plan]
@@ -6761,7 +6760,8 @@ def test_full_multi_session_failure_retries_without_success_mapping(
     root = tmp_path / "sessions"
     root.mkdir()
     source = root / "full-multi.jsonl"
-    source.write_bytes(b"{}\n")
+    # Rollout bytes retained preparation admits; the parser stub decides the sessions.
+    source.write_bytes(_codex_shaped_bytes("full-multi"))
     index_db = tmp_path / "index.db"
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
@@ -6910,7 +6910,10 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True, None),
     )
-    monkeypatch.setattr("polylogue.sources.live.batch.parse_stream_payload", lambda *_args, **_kwargs: sessions)
+    # Retained preparation is the only parser on the live route.
+    monkeypatch.setattr(
+        "polylogue.sources.prepared_jsonl.iter_parsed_stream", lambda *_args, **_kwargs: iter(list(sessions))
+    )
 
     # Force both fixture files through the streaming blob-ref write path
     # (>= this threshold uses capture_bound_path + write_raw_blob_ref,
@@ -7471,8 +7474,8 @@ def test_single_session_full_terminally_supersedes_older_membership_prefix(
     root.mkdir()
     bundle = root / "bundle.jsonl"
     older = root / "older.jsonl"
-    bundle.write_bytes(b'{"bundle":true}\n')
-    older.write_bytes(b'{"older":true}\n')
+    bundle.write_bytes(_codex_shaped_bytes("bundle"))
+    older.write_bytes(_codex_shaped_bytes("older"))
     index_db = tmp_path / "index.db"
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
@@ -7493,27 +7496,23 @@ def test_single_session_full_terminally_supersedes_older_membership_prefix(
         )
 
     bundle_sessions = [session("shared", "base", "new"), session("safe", "one")]
-    parsed_batches = iter([bundle_sessions, [session("shared", "base")]])
+    older_sessions = [session("shared", "base")]
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True, None),
     )
     monkeypatch.setattr(
-        "polylogue.sources.live.batch.parse_stream_payload",
-        lambda *_args, **_kwargs: next(parsed_batches),
-    )
-    monkeypatch.setattr(
-        processor,
-        "_parse_retained_raw_sessions",
-        lambda _archive, _raw_id: bundle_sessions,
+        "polylogue.sources.prepared_jsonl.iter_parsed_stream",
+        _retained_parse_by_path(lambda path: bundle_sessions if path == bundle else older_sessions),
     )
 
-    assert _full_paths_sync(processor, [bundle], source_name="codex").failed == []
+    assert run_ingest_files(processor, [bundle], emit_event=False).failed_file_count == 0
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         rejected_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=older.read_bytes(),
             source_path=str(older),
+            canonical_source_path=str(older.resolve()),
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(
@@ -7526,23 +7525,24 @@ def test_single_session_full_terminally_supersedes_older_membership_prefix(
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-    older_result = _full_paths_sync(processor, [older], source_name="codex")
+    older_result = run_ingest_files(processor, [older], emit_event=False)
 
-    assert older_result.succeeded == [older]
-    assert older_result.failed == []
+    assert older_result.succeeded_file_count == 1
+    assert older_result.failed_file_count == 0
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT message_count FROM sessions WHERE native_id = 'shared'").fetchone() == (2,)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute(
             """
-            SELECT m.decision, r.parsed_at_ms IS NOT NULL, r.parse_error,
-                   r.logical_source_key, r.revision_kind
+            SELECT m.decision, r.parsed_at_ms IS NOT NULL, r.parse_error
             FROM raw_session_memberships AS m
             JOIN raw_sessions AS r USING (raw_id)
             WHERE r.source_path = ? AND m.logical_source_key = 'codex-session:shared'
             """,
             (str(older),),
-        ).fetchone() == ("superseded_prefix", 1, None, None, "unknown")
+        ).fetchone() == ("superseded_prefix", 1, None)
+    # Terminal supersession leaves the older full under membership authority
+    # alone: it no longer rebuilds through its byte-revision chain.
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         revision_keys = archive.raw_revision_rebuild_logical_keys([rejected_raw_id])
         _membership_raws, membership_keys = archive.expand_raw_membership_selection([rejected_raw_id])
@@ -7595,8 +7595,8 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
     root.mkdir()
     current = root / "current.jsonl"
     older_bundle = root / "older-bundle.jsonl"
-    current.write_bytes(b'{"current":true}\n')
-    older_bundle.write_bytes(b'{"bundle":true}\n')
+    current.write_bytes(_codex_shaped_bytes("current"))
+    older_bundle.write_bytes(_codex_shaped_bytes("bundle"))
     index_db = tmp_path / "index.db"
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
@@ -7618,25 +7618,17 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
 
     current_session = session("shared", "base", "new")
     bundle_sessions = [session("shared", *bundle_texts), session("safe", "one")]
-    parsed_batches = iter([[current_session], bundle_sessions])
     current_raw_id: list[str] = []
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True, None),
     )
     monkeypatch.setattr(
-        "polylogue.sources.live.batch.parse_stream_payload",
-        lambda *_args, **_kwargs: next(parsed_batches),
-    )
-    monkeypatch.setattr(
-        processor,
-        "_parse_retained_raw_sessions",
-        lambda archive, raw_id: (
-            [current_session] if Path(archive.raw_revision_material(raw_id)[2]) == current else bundle_sessions
-        ),
+        "polylogue.sources.prepared_jsonl.iter_parsed_stream",
+        _retained_parse_by_path(lambda path: [current_session] if path == current else bundle_sessions),
     )
 
-    assert _full_paths_sync(processor, [current], source_name="codex").failed == []
+    assert run_ingest_files(processor, [current], emit_event=False).failed_file_count == 0
     with sqlite3.connect(index_db) as conn:
         row = conn.execute(
             "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = 'codex-session:shared'"
@@ -7657,6 +7649,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
             provider=Provider.CODEX,
             payload=b'{"append":true}\n',
             source_path=str(current),
+            canonical_source_path=str(current.resolve()),
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -7686,14 +7679,14 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
         ).fetchone()
         assert head_before is not None
 
-    result = _full_paths_sync(processor, [older_bundle], source_name="codex")
+    result = run_ingest_files(processor, [older_bundle], emit_event=False)
 
     # A same-size divergent membership result is a decided authority conflict
     # with a complete source observation; attempted replacement through live
     # append evidence raises instead and must remain retryable.
     cursor_complete = succeeds or bundle_texts == ("base", "different")
-    assert result.failed == ([] if cursor_complete else [older_bundle])
-    assert result.succeeded == ([older_bundle] if cursor_complete else [])
+    assert result.failed_file_count == (0 if cursor_complete else 1)
+    assert result.succeeded_file_count == (1 if cursor_complete else 0)
     # Direct check of the persisted state backing both branches: the
     # succeeded/failed lists above are LiveBatchProcessor's own report, not
     # proof of what raw_sessions durably holds (this layer -- ``_ingest_full_
@@ -7794,8 +7787,8 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
     current = root / "rollout-growing.jsonl"
     incident_recovery = root.parent / "inbox" / "incident-recovery-rollout-growing.jsonl"
     incident_recovery.parent.mkdir(parents=True, exist_ok=True)
-    current.write_bytes(b'{"current":true}\n')
-    incident_recovery.write_bytes(b'{"bundle":true}\n')
+    current.write_bytes(_codex_shaped_bytes("current"))
+    incident_recovery.write_bytes(_codex_shaped_bytes("incident-recovery"))
     index_db = tmp_path / "index.db"
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
@@ -7840,32 +7833,18 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
     recovered_extension = session(native_id, *base_texts, "growth-generation-0025", "growth-generation-0026")
     recovered_unrelated = session("019f49d8-unrelated-safe-session", "one")
 
-    def _parse_stream_payload_stub(
-        _provider: Any, _records: Any, _fallback_id: Any, *, source_path: str
-    ) -> list[ParsedSession]:
-        if Path(source_path) == incident_recovery:
-            return [recovered_extension, recovered_unrelated]
-        return [current_session]
-
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True, None),
     )
     monkeypatch.setattr(
-        "polylogue.sources.live.batch.parse_stream_payload",
-        _parse_stream_payload_stub,
-    )
-    monkeypatch.setattr(
-        processor,
-        "_parse_retained_raw_sessions",
-        lambda archive, raw_id: (
-            [current_session]
-            if Path(archive.raw_revision_material(raw_id)[2]) == current
-            else [recovered_extension, recovered_unrelated]
+        "polylogue.sources.prepared_jsonl.iter_parsed_stream",
+        _retained_parse_by_path(
+            lambda path: [recovered_extension, recovered_unrelated] if path == incident_recovery else [current_session]
         ),
     )
 
-    assert _full_paths_sync(processor, [current], source_name="codex").failed == []
+    assert run_ingest_files(processor, [current], emit_event=False).failed_file_count == 0
     with sqlite3.connect(index_db) as conn:
         head_row = conn.execute(
             "SELECT accepted_raw_id, session_id FROM raw_revision_heads WHERE logical_source_key = ?",
@@ -7898,6 +7877,7 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
             provider=Provider.CODEX,
             payload=b'{"type":"response_item","payload":{"type":"message","id":"dangling"}}\n',
             source_path=str(current),
+            canonical_source_path=str(current.resolve()),
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -7925,11 +7905,11 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
         # does not match the real shape and would make the eventual
         # recovery below impossible to reproduce faithfully.
 
-    conflict_result = _full_paths_sync(processor, [incident_recovery], source_name="codex")
+    conflict_result = run_ingest_files(processor, [incident_recovery], emit_event=False)
 
     # Fail-closed is correct here: the guard must refuse to silently
     # replace a head with unresolved byte-append evidence hanging off it.
-    assert conflict_result.failed == [incident_recovery]
+    assert conflict_result.failed_file_count == 1
     with sqlite3.connect(tmp_path / "source.db") as conn:
         (parse_error,) = conn.execute(
             "SELECT parse_error FROM raw_sessions WHERE source_path = ?",
@@ -7996,9 +7976,9 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
     # ``incident_recovery`` in the same pass and so cannot demonstrate
     # this recovery in isolation here -- a real gap worth a follow-up
     # bead, not one this test's fixture can respect the scope of.
-    retry_result = _full_paths_sync(processor, [incident_recovery], source_name="codex")
-    assert retry_result.failed == []
-    assert retry_result.succeeded == [incident_recovery]
+    retry_result = run_ingest_files(processor, [incident_recovery], emit_event=False)
+    assert retry_result.failed_file_count == 0
+    assert retry_result.succeeded_file_count == 1
     with sqlite3.connect(tmp_path / "source.db") as conn:
         (retried_parse_error,) = conn.execute(
             "SELECT parse_error FROM raw_sessions WHERE source_path = ? ORDER BY acquired_at_ms DESC LIMIT 1",
@@ -8021,8 +8001,8 @@ def test_single_session_full_cannot_overwrite_divergent_membership_head(
     root.mkdir()
     bundle = root / "bundle.jsonl"
     divergent = root / "divergent.jsonl"
-    bundle.write_bytes(b'{"bundle":true}\n')
-    divergent.write_bytes(b'{"divergent":true}\n')
+    bundle.write_bytes(_codex_shaped_bytes("bundle"))
+    divergent.write_bytes(_codex_shaped_bytes("divergent"))
     index_db = tmp_path / "index.db"
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
@@ -8043,30 +8023,25 @@ def test_single_session_full_cannot_overwrite_divergent_membership_head(
         )
 
     bundle_sessions = [session("shared", "base", "left"), session("safe", "one")]
-    parsed_batches = iter([bundle_sessions, [session("shared", "base", "right", "extra")]])
+    divergent_sessions = [session("shared", "base", "right", "extra")]
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True, None),
     )
     monkeypatch.setattr(
-        "polylogue.sources.live.batch.parse_stream_payload",
-        lambda *_args, **_kwargs: next(parsed_batches),
-    )
-    monkeypatch.setattr(
-        processor,
-        "_parse_retained_raw_sessions",
-        lambda _archive, _raw_id: bundle_sessions,
+        "polylogue.sources.prepared_jsonl.iter_parsed_stream",
+        _retained_parse_by_path(lambda path: bundle_sessions if path == bundle else divergent_sessions),
     )
 
-    assert _full_paths_sync(processor, [bundle], source_name="codex").failed == []
-    divergent_result = _full_paths_sync(processor, [divergent], source_name="codex")
+    assert run_ingest_files(processor, [bundle], emit_event=False).failed_file_count == 0
+    divergent_result = run_ingest_files(processor, [divergent], emit_event=False)
 
     # Divergence remains fail-closed for the materialized head, but the source
     # bytes were acquired and parsed successfully. Treating this as a cursor
     # success prevents each daemon restart from reprocessing the same decided
     # conflict until the file actually changes.
-    assert divergent_result.succeeded == [divergent]
-    assert divergent_result.failed == []
+    assert divergent_result.succeeded_file_count == 1
+    assert divergent_result.failed_file_count == 0
     # Direct check of the persisted state backing "cursor success" above:
     # this layer (``_ingest_full_paths_sync``) has no CursorStore row of its
     # own, so the durable non-retry evidence is raw_sessions.parse_error
@@ -8110,8 +8085,8 @@ def test_single_session_full_advances_authorized_metadata_only_head(
     root.mkdir()
     bundle = root / "bundle.jsonl"
     metadata_update = root / "metadata-update.jsonl"
-    bundle.write_bytes(b'{"bundle":true}\n')
-    metadata_update.write_bytes(b'{"metadata_update":true}\n')
+    bundle.write_bytes(_codex_shaped_bytes("bundle"))
+    metadata_update.write_bytes(_codex_shaped_bytes("metadata-update"))
     index_db = tmp_path / "index.db"
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
@@ -8133,26 +8108,20 @@ def test_single_session_full_advances_authorized_metadata_only_head(
     older = session("shared", "old title", "2026-01-01T00:00:00Z")
     newer = session("shared", "new title", "2026-01-02T00:00:00Z")
     bundle_sessions = [older, session("safe", "safe", "2026-01-01T00:00:00Z")]
-    parsed_batches = iter([bundle_sessions, [newer]])
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True, None),
     )
     monkeypatch.setattr(
-        "polylogue.sources.live.batch.parse_stream_payload",
-        lambda *_args, **_kwargs: next(parsed_batches),
-    )
-    monkeypatch.setattr(
-        processor,
-        "_parse_retained_raw_sessions",
-        lambda _archive, _raw_id: bundle_sessions,
+        "polylogue.sources.prepared_jsonl.iter_parsed_stream",
+        _retained_parse_by_path(lambda path: bundle_sessions if path == bundle else [newer]),
     )
 
-    assert _full_paths_sync(processor, [bundle], source_name="codex").failed == []
-    update_result = _full_paths_sync(processor, [metadata_update], source_name="codex")
+    assert run_ingest_files(processor, [bundle], emit_event=False).failed_file_count == 0
+    update_result = run_ingest_files(processor, [metadata_update], emit_event=False)
 
-    assert update_result.succeeded == [metadata_update]
-    assert update_result.failed == []
+    assert update_result.succeeded_file_count == 1
+    assert update_result.failed_file_count == 0
     with sqlite3.connect(index_db) as conn:
         assert conn.execute(
             """
@@ -8173,8 +8142,8 @@ def test_bundle_promotes_prior_single_full_into_membership_authority(
     root.mkdir()
     single = root / "single.jsonl"
     bundle = root / "bundle.jsonl"
-    single.write_bytes(b'{"single":true}\n')
-    bundle.write_bytes(b'{"bundle":true}\n')
+    single.write_bytes(_codex_shaped_bytes("single"))
+    bundle.write_bytes(_codex_shaped_bytes("bundle"))
     index_db = tmp_path / "index.db"
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
@@ -8196,26 +8165,20 @@ def test_bundle_promotes_prior_single_full_into_membership_authority(
 
     single_session = session("shared", "base")
     bundle_sessions = [session("shared", "base", "new"), session("safe", "one")]
-    parsed_batches = iter([[single_session], bundle_sessions])
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True, None),
     )
     monkeypatch.setattr(
-        "polylogue.sources.live.batch.parse_stream_payload",
-        lambda *_args, **_kwargs: next(parsed_batches),
-    )
-    monkeypatch.setattr(
-        processor,
-        "_parse_retained_raw_sessions",
-        lambda _archive, _raw_id: [single_session],
+        "polylogue.sources.prepared_jsonl.iter_parsed_stream",
+        _retained_parse_by_path(lambda path: [single_session] if path == single else bundle_sessions),
     )
 
-    assert _full_paths_sync(processor, [single], source_name="codex").failed == []
-    bundle_result = _full_paths_sync(processor, [bundle], source_name="codex")
+    assert run_ingest_files(processor, [single], emit_event=False).failed_file_count == 0
+    bundle_result = run_ingest_files(processor, [bundle], emit_event=False)
 
-    assert bundle_result.succeeded == [bundle]
-    assert bundle_result.failed == []
+    assert bundle_result.succeeded_file_count == 1
+    assert bundle_result.failed_file_count == 0
     with sqlite3.connect(index_db) as conn:
         assert conn.execute(
             """
@@ -8226,15 +8189,22 @@ def test_bundle_promotes_prior_single_full_into_membership_authority(
             """
         ).fetchone() == (2, "semantic")
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute(
+        single_raw_id, decision = conn.execute(
             """
-            SELECT m.decision, r.logical_source_key, r.revision_kind
+            SELECT r.raw_id, m.decision
             FROM raw_session_memberships AS m
             JOIN raw_sessions AS r USING (raw_id)
             WHERE r.source_path = ? AND m.logical_source_key = 'codex-session:shared'
             """,
             (str(single),),
-        ).fetchone() == ("superseded_prefix", None, "unknown")
+        ).fetchone()
+    assert decision == "superseded_prefix"
+    # Promotion moves the prior full into membership authority alone: it no
+    # longer rebuilds through its byte-revision chain.
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        assert archive.raw_revision_rebuild_logical_keys([single_raw_id]) == ()
+        _membership_raws, membership_keys = archive.expand_raw_membership_selection([single_raw_id])
+    assert "codex-session:shared" in membership_keys
 
 
 def test_append_crash_after_index_commit_repairs_idempotently(
@@ -8245,31 +8215,21 @@ def test_append_crash_after_index_commit_repairs_idempotently(
         pass
 
     _path, plan, owner, _processor = _seed_live_append_plan(tmp_path, native_id="crash-retry")
-    # polylogue-1r9c: mark_raw_parse_succeeded is called internally by
-    # revision_governance.py (a direct module-internal function reference),
-    # not through ArchiveStore's `self.` dispatch -- patch it there.
-    original_mark_succeeded = archive_revision_governance.mark_raw_parse_succeeded
+    # The append replay commits its Index publication, then publishes the
+    # Source acknowledgement that marks the raw parsed. Crash between them.
+    original_publish_source = archive_revision_governance.publish_prepared_revision_source
     crashed = False
 
-    def crash_after_index(
-        archive: archive_revision_governance.RawRevisionGovernanceHost,
-        raw_id: str,
-        *,
-        provider: Provider,
-    ) -> None:
+    def crash_after_index(seal: Any, permit: Any) -> None:
         nonlocal crashed
-        source_index = (
-            archive._ensure_source_conn()
-            .execute("SELECT source_index FROM raw_sessions WHERE raw_id = ?", (raw_id,))
-            .fetchone()[0]
-        )
-        if source_index == -1 and not crashed:
-            assert archive._conn.execute("SELECT 1 FROM messages WHERE native_id = 'message-1'").fetchone() is not None
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index_committed = index.execute("SELECT 1 FROM messages WHERE native_id = 'message-1'").fetchone()
+        if index_committed is not None and not crashed:
             crashed = True
             raise SimulatedProcessCrash
-        original_mark_succeeded(archive, raw_id, provider=provider)
+        original_publish_source(seal, permit)
 
-    monkeypatch.setattr(archive_revision_governance, "mark_raw_parse_succeeded", crash_after_index)
+    monkeypatch.setattr(archive_revision_governance, "publish_prepared_revision_source", crash_after_index)
     with pytest.raises(SimulatedProcessCrash):
         ingest_append_with_owner(owner, [plan])
 
@@ -8278,7 +8238,7 @@ def test_append_crash_after_index_commit_repairs_idempotently(
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
 
-    monkeypatch.setattr(archive_revision_governance, "mark_raw_parse_succeeded", original_mark_succeeded)
+    monkeypatch.setattr(archive_revision_governance, "publish_prepared_revision_source", original_publish_source)
     retry = ingest_append_with_owner(owner, [plan])
 
     assert retry.succeeded == [plan]
@@ -8322,6 +8282,7 @@ def test_append_ingest_bootstraps_archive_root(
         payload_hash="payload-hash",
         cursor_fingerprint="base",
         bytes_read=len(payload),
+        native_id_hint="append-bootstrap",
     )
 
     result = ingest_append_with_owner(Owner(), [plan])

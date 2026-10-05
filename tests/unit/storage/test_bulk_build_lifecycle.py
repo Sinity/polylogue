@@ -26,6 +26,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
@@ -57,7 +58,8 @@ from polylogue.storage.sqlite.runtime_indexes import (
     defer_secondary_indexes_sync,
     restore_deferred_secondary_indexes_sync,
 )
-from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.index_writer import published_fixture_index_batch, write_fixture_index_session
 from tests.infra.revision_backfill_benchmark import (
     FinishedBuildMeasurement,
     build_large_parent_shared_prefix_sessions,
@@ -71,8 +73,10 @@ def _connect(path: Path) -> sqlite3.Connection:
     # archive write connection does. Keeping this fixture URI-capable makes
     # the combined fresh-shard path exercise SQLite's actual attachment mode.
     # Each Index is its archive root's active index.db; compared builds
-    # each get their own root.
+    # each get their own root. The root is bootstrapped before any build
+    # defers its secondary indexes.
     path.parent.mkdir(parents=True, exist_ok=True)
+    bootstrap_archive_root(path.parent)
     conn = connect_measured(path, uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -220,6 +224,21 @@ def _finished_output_digests(path: Path) -> dict[str, str]:
         **table_digests,
         "messages_fts": _canonical_rows_digest(fts_rows),
     }
+
+
+def _measure_batch(
+    batch: AbstractContextManager[list[str]], finish: Callable[[], object]
+) -> tuple[float, float, float]:
+    """Time a published batch's import, in-scope finish and committing exit."""
+    _, import_seconds = _measure(batch.__enter__)
+    try:
+        _, finish_seconds = _measure(finish)
+    except BaseException as failure:
+        if not batch.__exit__(type(failure), failure, failure.__traceback__):
+            raise
+        raise
+    _, checkpoint_seconds = _measure(lambda: batch.__exit__(None, None, None))
+    return import_seconds, finish_seconds, checkpoint_seconds
 
 
 def _finished_build_counts(path: Path, *, offered_count: int, deferred_count: int) -> tuple[int, int, int, int, int]:
@@ -584,9 +603,14 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
         boundaries: list[str] = []
 
         def record(statement: str) -> None:
-            normalized = statement.strip().upper()
-            if normalized in {"BEGIN", "COMMIT"}:
-                boundaries.append(normalized)
+            # The Index write scope opens its transaction as BEGIN IMMEDIATE,
+            # and its post-commit verification opens one it rolls back; only
+            # committed transactions are boundaries of the build.
+            keyword = statement.strip().upper().split(" ", 1)[0]
+            if keyword in {"BEGIN", "COMMIT"}:
+                boundaries.append(keyword)
+            elif keyword == "ROLLBACK" and boundaries and boundaries[-1] == "BEGIN":
+                boundaries.pop()
 
         conn.set_trace_callback(record)
         return boundaries
@@ -597,18 +621,10 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
         )
         boundaries = record_boundaries(conn)
         try:
-            conn.execute("BEGIN")
-            with conn:
-                _, import_seconds = _measure(
-                    lambda: [
-                        write_fixture_index_session(
-                            conn, session, content_hash=str(session_content_hash(session)), manage_transaction=False
-                        )
-                        for session in sessions
-                    ]
-                )
-                _, derived_fts_finalization_seconds = _measure(lambda: _finish_bulk_build(conn, checkpoint=False))
-                _, checkpoint_seconds = _measure(conn.commit)
+            batch = published_fixture_index_batch(conn, sessions, archive_root=tmp_path / "retained")
+            import_seconds, derived_fts_finalization_seconds, checkpoint_seconds = _measure_batch(
+                batch, lambda: _finish_bulk_build(conn, checkpoint=False)
+            )
             assert boundaries == ["BEGIN", "COMMIT"]
         finally:
             conn.close()
@@ -637,29 +653,26 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
         )
         seen: set[str] = set()
         boundaries = record_boundaries(conn)
+        restoration: list[float] = []
+
+        def restore_then_finish() -> None:
+            _, restored = _measure(lambda: restore_deferred_secondary_indexes_sync(conn))
+            restoration.append(restored)
+            _finish_bulk_build(conn, checkpoint=False)
+
         try:
-            conn.execute("BEGIN")
-            with conn:
-                _, import_seconds = _measure(
-                    lambda: (
-                        defer_secondary_indexes_sync(conn),
-                        [
-                            write_fixture_index_session(
-                                conn,
-                                session,
-                                content_hash=str(session_content_hash(session)),
-                                fresh_build=True,
-                                fresh_build_batch=seen,
-                                bulk_build=True,
-                                manage_transaction=False,
-                            )
-                            for session in sessions
-                        ],
-                    )
-                )
-                _, index_restoration_seconds = _measure(lambda: restore_deferred_secondary_indexes_sync(conn))
-                _, derived_fts_finalization_seconds = _measure(lambda: _finish_bulk_build(conn, checkpoint=False))
-                _, checkpoint_seconds = _measure(conn.commit)
+            batch = published_fixture_index_batch(
+                conn,
+                sessions,
+                archive_root=tmp_path / "deferred",
+                before_publish=lambda: defer_secondary_indexes_sync(conn),
+                fresh_build=True,
+                fresh_build_batch=seen,
+                bulk_build=True,
+            )
+            import_seconds, finish_seconds, checkpoint_seconds = _measure_batch(batch, restore_then_finish)
+            (index_restoration_seconds,) = restoration
+            derived_fts_finalization_seconds = finish_seconds - index_restoration_seconds
             assert boundaries == ["BEGIN", "COMMIT"]
         finally:
             conn.close()
@@ -697,27 +710,30 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
             with attached_session_shard(conn, open_session_shard(shard.path)) as schema:
                 bindings = bind_session_shard(schema, shard)
 
-                def import_shard() -> None:
+                def defer() -> None:
                     dropped = defer_secondary_indexes_sync(conn)
                     assert set(dropped) == set(DEFERRED_SECONDARY_INDEX_NAMES)
-                    for session in sessions:
-                        write_fixture_index_session(
-                            conn,
-                            session,
-                            content_hash=str(session_content_hash(session)),
-                            prepared_rows=bindings[_archive_session_id(session)],
-                            fresh_build=True,
-                            fresh_build_batch=seen,
-                            bulk_build=True,
-                            manage_transaction=False,
-                        )
 
-                conn.execute("BEGIN")
-                with conn:
-                    _, import_seconds = _measure(import_shard)
-                    _, index_restoration_seconds = _measure(lambda: restore_deferred_secondary_indexes_sync(conn))
-                    _, derived_fts_finalization_seconds = _measure(lambda: _finish_bulk_build(conn, checkpoint=False))
-                    _, checkpoint_seconds = _measure(conn.commit)
+                restoration: list[float] = []
+
+                def restore_then_finish() -> None:
+                    _, restored = _measure(lambda: restore_deferred_secondary_indexes_sync(conn))
+                    restoration.append(restored)
+                    _finish_bulk_build(conn, checkpoint=False)
+
+                batch = published_fixture_index_batch(
+                    conn,
+                    sessions,
+                    archive_root=tmp_path / "shard",
+                    before_publish=defer,
+                    prepared_rows=[bindings[_archive_session_id(session)] for session in sessions],
+                    fresh_build=True,
+                    fresh_build_batch=seen,
+                    bulk_build=True,
+                )
+                import_seconds, finish_seconds, checkpoint_seconds = _measure_batch(batch, restore_then_finish)
+                (index_restoration_seconds,) = restoration
+                derived_fts_finalization_seconds = finish_seconds - index_restoration_seconds
             assert boundaries == ["BEGIN", "COMMIT"]
         finally:
             conn.close()
