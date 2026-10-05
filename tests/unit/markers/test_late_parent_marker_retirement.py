@@ -111,6 +111,7 @@ async def test_late_parent_supersedes_the_childs_prefix_markers(
                 source,
                 origin=Origin.CODEX_SESSION,
                 source_path=f"late-parent-{name}.jsonl",
+                canonical_source_path=f"late-parent-{name}.jsonl",
                 source_index=0,
                 payload=payload_bytes,
                 acquired_at_ms=1,

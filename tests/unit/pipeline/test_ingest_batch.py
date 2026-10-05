@@ -357,6 +357,7 @@ def test_primary_mode_keeps_unconfirmed_revision_out_of_index_and_fts(
         raw_id="raw-primary",
         source_name="codex",
         source_path="/sources/primary.jsonl",
+        canonical_source_path="/sources/primary.jsonl",
         blob_size=16,
         acquired_at="2026-04-02T00:00:00Z",
     )
@@ -475,6 +476,7 @@ def test_primary_mode_projects_revision_after_allowed_durable_receipt(
         raw_id="raw-primary-confirmed",
         source_name="codex",
         source_path="/sources/primary-confirmed.jsonl",
+        canonical_source_path="/sources/primary-confirmed.jsonl",
         blob_size=16,
         acquired_at="2026-04-02T00:00:00Z",
     )
@@ -1406,12 +1408,14 @@ def test_write_session_binds_drive_revision_lineage(tmp_path: Path) -> None:
             provider=Provider.GEMINI,
             payload=first_payload,
             source_path="drive://file-1",
+            canonical_source_path="drive://file-1",
             acquired_at_ms=1_767_000_000_000,
         )
         second_raw_id = archive.write_raw_payload(
             provider=Provider.GEMINI,
             payload=second_payload,
             source_path="drive://file-1",
+            canonical_source_path="drive://file-1",
             acquired_at_ms=1_767_000_000_500,
         )
     assert first_raw_id != second_raw_id
@@ -1515,12 +1519,14 @@ def test_write_session_drive_lineage_proven_winner_bypasses_freshness_tie(tmp_pa
             provider=Provider.GEMINI,
             payload=first_payload,
             source_path="drive://file-tie",
+            canonical_source_path="drive://file-tie",
             acquired_at_ms=1_767_000_000_000,
         )
         second_raw_id = archive.write_raw_payload(
             provider=Provider.GEMINI,
             payload=second_payload,
             source_path="drive://file-tie",
+            canonical_source_path="drive://file-tie",
             acquired_at_ms=1_767_000_000_500,
         )
     assert first_raw_id != second_raw_id
@@ -3297,6 +3303,7 @@ async def test_process_ingest_batch_uses_archive_root_blob_store(
         raw_id="raw-1",
         source_name="chatgpt",
         source_path="/sources/session.json",
+        canonical_source_path="/sources/session.json",
         blob_size=17,
         acquired_at="2026-04-02T00:00:00Z",
     )
@@ -3380,6 +3387,7 @@ def test_process_ingest_batch_sync_indexes_changed_session_and_invalidates_searc
         raw_id=raw_id,
         source_name="codex",
         source_path=str(source_path),
+        canonical_source_path=str(source_path),
         blob_size=source_path.stat().st_size,
         acquired_at="2026-04-02T00:00:00Z",
     )
@@ -3491,6 +3499,7 @@ def test_process_ingest_batch_sync_reserves_inline_attachment_until_index_commit
         raw_id=raw_id,
         source_name="codex",
         source_path=str(source_path),
+        canonical_source_path=str(source_path),
         blob_size=source_path.stat().st_size,
         acquired_at="2026-04-02T00:00:00Z",
     )
@@ -3599,6 +3608,7 @@ def test_process_ingest_batch_sync_replaces_stale_sessions_for_same_raw_id(
         raw_id=raw_id,
         source_name="gemini",
         source_path=str(source_path),
+        canonical_source_path=str(source_path),
         blob_size=source_path.stat().st_size,
         acquired_at="2026-04-02T00:00:00Z",
     )
@@ -4056,6 +4066,7 @@ async def test_persist_batch_raw_state_updates_persists_terminal_worker_disposit
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="batch-unsupported.jsonl",
+            canonical_source_path="batch-unsupported.jsonl",
             source_index=7,
             payload=b"unsupported-shape",
             acquired_at_ms=1,
@@ -4149,6 +4160,7 @@ async def test_persist_batch_success_supersedes_deferred_cas_evidence_in_source_
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="batch-success.jsonl",
+            canonical_source_path="batch-success.jsonl",
             source_index=2,
             payload=b"batch-success",
             acquired_at_ms=1,
@@ -4224,6 +4236,7 @@ async def test_persist_batch_untyped_failure_retires_stale_terminal_evidence(tmp
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="untyped-successor.jsonl",
+            canonical_source_path="untyped-successor.jsonl",
             source_index=0,
             payload=b"untyped-successor",
             acquired_at_ms=1,
@@ -4301,6 +4314,7 @@ async def test_process_ingest_batch_public_route_retires_deferred_cas_resolution
             conn,
             origin=Origin.CHATGPT_EXPORT,
             source_path="public-batch.json",
+            canonical_source_path="public-batch.json",
             source_index=0,
             payload=payload,
             acquired_at_ms=1,
@@ -4374,6 +4388,7 @@ async def test_process_ingest_batch_off_mode_supports_repository_without_source_
             blob_hash=blob_hash,
             source_name=Provider.CODEX,
             source_path="/sources/index-only.jsonl",
+            canonical_source_path="/sources/index-only.jsonl",
             blob_size=blob_size,
             acquired_at="2026-04-02T00:00:00Z",
         ),
@@ -4483,6 +4498,7 @@ async def test_persist_batch_corrupt_input_remains_terminal_in_lifecycle(
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="batch-corrupt.jsonl",
+            canonical_source_path="batch-corrupt.jsonl",
             source_index=0,
             payload=payload,
             acquired_at_ms=1,
@@ -4555,6 +4571,7 @@ async def test_process_ingest_batch_public_route_persists_corrupt_input_readines
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="public-corrupt.jsonl",
+            canonical_source_path="public-corrupt.jsonl",
             source_index=0,
             payload=payload,
             acquired_at_ms=1,
@@ -4608,6 +4625,7 @@ async def test_persist_batch_raw_state_updates_rolls_back_typed_evidence_with_ra
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="batch-atomic.jsonl",
+            canonical_source_path="batch-atomic.jsonl",
             source_index=3,
             payload=b"unsupported-shape",
             acquired_at_ms=1,
@@ -4671,6 +4689,7 @@ def test_the_batch_index_transaction_holds_the_publisher_slot(tmp_path: Path, mo
         raw_id="raw-slot",
         source_name="codex",
         source_path="/sources/slot.jsonl",
+        canonical_source_path="/sources/slot.jsonl",
         blob_size=16,
         acquired_at="2026-04-02T00:00:00Z",
     )
@@ -4739,6 +4758,7 @@ def test_a_prepared_excision_refusal_is_a_typed_permanent_outcome(
         raw_id="raw-excised",
         source_name="codex",
         source_path="/sources/excised.jsonl",
+        canonical_source_path="/sources/excised.jsonl",
         blob_size=16,
         acquired_at="2026-04-02T00:00:00Z",
     )
@@ -4820,6 +4840,7 @@ def test_a_grouped_raw_with_one_excised_session_still_records_its_written_siblin
         raw_id="raw-grouped",
         source_name="codex",
         source_path="/sources/grouped.jsonl",
+        canonical_source_path="/sources/grouped.jsonl",
         blob_size=16,
         acquired_at="2026-04-02T00:00:00Z",
     )

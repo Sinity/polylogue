@@ -242,6 +242,7 @@ async def test_archive_lock_never_advances_or_excludes_cursor(
         stat = source.stat()
         plan = _AppendPlan(
             path=source,
+            canonical_source_path=str(source),
             source_name="codex",
             start_offset=0,
             last_complete_newline=stat.st_size,

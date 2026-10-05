@@ -137,6 +137,7 @@ def _ingest_and_converge_sources(
                     provider=Provider.from_string(source.name),
                     payload=source.path.read_bytes(),
                     source_path=str(source.path),
+                    canonical_source_path=str(source.path),
                     source_index=source_index,
                     acquired_at_ms=source_index + 1,
                 )

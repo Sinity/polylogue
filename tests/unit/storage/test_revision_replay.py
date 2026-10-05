@@ -242,6 +242,7 @@ def test_live_revision_binding_without_parser_evidence_does_not_issue_receipt(tm
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"live-receipt"}}\n',
             source_path="live/codex.jsonl",
+            canonical_source_path="live/codex.jsonl",
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(
@@ -293,6 +294,7 @@ def test_parser_receipt_fails_when_observed_identity_differs_from_binding(tmp_pa
             provider=Provider.CODEX,
             payload=payload,
             source_path="historical/mismatch.jsonl",
+            canonical_source_path="historical/mismatch.jsonl",
             acquired_at_ms=1,
             source_index=0,
         )
@@ -342,6 +344,7 @@ def test_terminal_non_session_failure_has_complete_empty_parser_census(tmp_path:
             provider=Provider.CODEX,
             payload=b"not valid codex jsonl",
             source_path="terminal-corrupt.jsonl",
+            canonical_source_path="terminal-corrupt.jsonl",
             acquired_at_ms=1,
         )
         archive.record_raw_failure_evidence(
@@ -389,6 +392,7 @@ def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys
             provider=Provider.CODEX,
             payload=b'{"append":true}\n',
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=1,
         )
@@ -435,6 +439,7 @@ def test_typed_non_session_receipt_preserves_durable_membership_on_restart(tmp_p
             provider=Provider.CODEX,
             payload=b"not valid codex jsonl",
             source_path="terminal-corrupt.jsonl",
+            canonical_source_path="terminal-corrupt.jsonl",
             acquired_at_ms=1,
         )
         archive.record_raw_failure_evidence(
@@ -489,6 +494,7 @@ def test_frozen_replay_skips_typed_terminal_non_session_raw(tmp_path: Path) -> N
             provider=Provider.CODEX,
             payload=b"not valid codex jsonl",
             source_path="terminal-replay-corrupt.jsonl",
+            canonical_source_path="terminal-replay-corrupt.jsonl",
             acquired_at_ms=1,
         )
         archive.record_raw_failure_evidence(
@@ -561,6 +567,7 @@ def test_membership_receipt_excludes_post_parse_pending_identity(tmp_path: Path)
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"post-parse-receipt"}}\n',
             source_path="live/pending.jsonl",
+            canonical_source_path="live/pending.jsonl",
             acquired_at_ms=1,
             post_parse=True,
         )
@@ -623,6 +630,7 @@ def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: P
                 provider=Provider.CODEX,
                 payload=raw_id.encode(),
                 source_path=f"{raw_id}.jsonl",
+                canonical_source_path=f"{raw_id}.jsonl",
                 acquired_at_ms=1,
                 raw_id=raw_id,
             )
@@ -719,6 +727,7 @@ def test_headless_cohort_keeps_equivalents_quarantined_ambiguous(tmp_path: Path)
                 provider=Provider.CODEX,
                 payload=raw_id.encode(),
                 source_path=f"{raw_id}.jsonl",
+                canonical_source_path=f"{raw_id}.jsonl",
                 acquired_at_ms=1,
                 raw_id=raw_id,
             )
@@ -858,6 +867,7 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
             provider=Provider.CODEX,
             payload=b"suffix",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=1,
         )
@@ -878,6 +888,7 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
             provider=Provider.CODEX,
             payload=b"baseline",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=2,
         )
         archive.bind_raw_revision(
@@ -921,6 +932,7 @@ def _write_full_raw(archive: ArchiveStore, *, raw_id: str, payload: bytes, acqui
         provider=Provider.CODEX,
         payload=payload,
         source_path="session.jsonl",
+        canonical_source_path="session.jsonl",
         acquired_at_ms=acquired_at_ms,
         raw_id=raw_id,
     )
@@ -1087,7 +1099,11 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=b"a" * 10, source_path="session.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX,
+            payload=b"a" * 10,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -1099,6 +1115,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
             provider=Provider.CODEX,
             payload=b"b" * 5,
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -1121,6 +1138,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
             provider=Provider.CODEX,
             payload=b"c" * 5,
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=3,
         )
@@ -1158,6 +1176,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
             provider=Provider.CODEX,
             payload=b"a" * 10 + b"b" * 5 + b"c" * 5,
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=4,
         )
         archive.bind_raw_revision(
@@ -1234,7 +1253,11 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_a = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"aaa-left", source_path="a.json", acquired_at_ms=1
+            provider=Provider.CHATGPT,
+            payload=b"aaa-left",
+            source_path="a.json",
+            canonical_source_path="a.json",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             raw_a,
@@ -1243,7 +1266,11 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
             ),
         )
         raw_b = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"bbb-right", source_path="b.json", acquired_at_ms=2
+            provider=Provider.CHATGPT,
+            payload=b"bbb-right",
+            source_path="b.json",
+            canonical_source_path="b.json",
+            acquired_at_ms=2,
         )
         archive.bind_raw_revision(
             raw_b,
@@ -1276,7 +1303,11 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
 
         # A THIRD raw for the same logical identity, discovered afterward.
         raw_c = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"ccc-solo", source_path="c.json", acquired_at_ms=3
+            provider=Provider.CHATGPT,
+            payload=b"ccc-solo",
+            source_path="c.json",
+            canonical_source_path="c.json",
+            acquired_at_ms=3,
         )
         archive.bind_raw_revision(
             raw_c,
@@ -1324,7 +1355,11 @@ def test_precedence_write_refuses_a_raw_recorded_ambiguous(tmp_path: Path) -> No
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"aaa-left", source_path="a.json", acquired_at_ms=1
+            provider=Provider.CHATGPT,
+            payload=b"aaa-left",
+            source_path="a.json",
+            canonical_source_path="a.json",
+            acquired_at_ms=1,
         )
         # Durable evidence that this raw's identity was already judged
         # ambiguous -- the shape ``replace_raw_membership_census`` /
@@ -1385,7 +1420,11 @@ def test_precedence_write_allows_a_non_ambiguous_sibling_membership_on_the_same_
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"two-sessions", source_path="bundle.json", acquired_at_ms=1
+            provider=Provider.CHATGPT,
+            payload=b"two-sessions",
+            source_path="bundle.json",
+            canonical_source_path="bundle.json",
+            acquired_at_ms=1,
         )
         with independent_source_connection(archive) as source_conn:
             # One raw, two memberships, arbitrated differently -- the live shape.
@@ -1464,7 +1503,11 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
         raws = []
         for label, payload in (("a", b"aaa-left"), ("b", b"bbb-right")):
             raw_id = archive.write_raw_payload(
-                provider=Provider.CHATGPT, payload=payload, source_path=f"{label}.json", acquired_at_ms=1
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path=f"{label}.json",
+                canonical_source_path=f"{label}.json",
+                acquired_at_ms=1,
             )
             archive.bind_raw_revision(
                 raw_id,
@@ -1519,7 +1562,11 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
         retired = []
         for label, payload, tail in (("a", b"aaa-left", "left"), ("b", b"bbb-right", "right")):
             raw_id = archive.write_raw_payload(
-                provider=Provider.CHATGPT, payload=payload, source_path=f"{label}.json", acquired_at_ms=1
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path=f"{label}.json",
+                canonical_source_path=f"{label}.json",
+                acquired_at_ms=1,
             )
             archive.bind_raw_revision(
                 raw_id,
@@ -1540,7 +1587,11 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
             retired.append(raw_id)
 
         raw_c = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"ccc-solo", source_path="c.json", acquired_at_ms=3
+            provider=Provider.CHATGPT,
+            payload=b"ccc-solo",
+            source_path="c.json",
+            canonical_source_path="c.json",
+            acquired_at_ms=3,
         )
         archive.bind_raw_revision(
             raw_c,
@@ -1587,7 +1638,11 @@ def test_retired_raw_stays_fail_closed_when_census_authority_is_unknown(tmp_path
         retired = []
         for label, payload, tail in (("a", b"aaa-left", "left"), ("b", b"bbb-right", "right")):
             raw_id = archive.write_raw_payload(
-                provider=Provider.CHATGPT, payload=payload, source_path=f"{label}.json", acquired_at_ms=1
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path=f"{label}.json",
+                canonical_source_path=f"{label}.json",
+                acquired_at_ms=1,
             )
             archive.bind_raw_revision(
                 raw_id,
@@ -1614,7 +1669,11 @@ def test_retired_raw_stays_fail_closed_when_census_authority_is_unknown(tmp_path
             )
 
         raw_c = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"ccc-solo", source_path="c.json", acquired_at_ms=3
+            provider=Provider.CHATGPT,
+            payload=b"ccc-solo",
+            source_path="c.json",
+            canonical_source_path="c.json",
+            acquired_at_ms=3,
         )
         archive.bind_raw_revision(
             raw_c,
@@ -1640,7 +1699,11 @@ def test_typed_retirement_authority_allows_detail_wording_to_change(
     )
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"payload", source_path="capture.json", acquired_at_ms=1
+            provider=Provider.CHATGPT,
+            payload=b"payload",
+            source_path="capture.json",
+            canonical_source_path="capture.json",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             raw_id,
@@ -1692,7 +1755,11 @@ def test_same_source_path_full_siblings_under_different_keys_are_not_independent
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_enriched = archive.write_raw_payload(
-            provider=Provider.GEMINI, payload=b"enriched-bytes", source_path="doc.json", acquired_at_ms=1
+            provider=Provider.GEMINI,
+            payload=b"enriched-bytes",
+            source_path="doc.json",
+            canonical_source_path="doc.json",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             raw_enriched,
@@ -1705,7 +1772,11 @@ def test_same_source_path_full_siblings_under_different_keys_are_not_independent
             ),
         )
         raw_bare = archive.write_raw_payload(
-            provider=Provider.GEMINI, payload=b"bare-bytes", source_path="doc.json", acquired_at_ms=2
+            provider=Provider.GEMINI,
+            payload=b"bare-bytes",
+            source_path="doc.json",
+            canonical_source_path="doc.json",
+            acquired_at_ms=2,
         )
         archive.bind_raw_revision(
             raw_bare,
@@ -1743,7 +1814,11 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
             merge_parsed_session_chunks([baseline_session, append_session])[0]
         ) != session_content_hash(folded_session)
         baseline = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=baseline_payload, source_path="session.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX,
+            payload=baseline_payload,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -1752,7 +1827,12 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
             ),
         )
         append = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=tail, source_path="session.jsonl", source_index=-1, acquired_at_ms=2
+            provider=Provider.CODEX,
+            payload=tail,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
         )
         append_revision = append_source_revision("base", hashlib.sha256(tail).hexdigest())
         archive.bind_raw_revision(
@@ -1777,7 +1857,11 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
             acquired_at_ms=0,
         )
         folded = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=folded_payload, source_path="session.jsonl", acquired_at_ms=3
+            provider=Provider.CODEX,
+            payload=folded_payload,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=3,
         )
         archive.bind_raw_revision(
             folded,
@@ -1824,7 +1908,11 @@ def test_claude_full_append_replay_persists_reduced_coverage_and_receipts(tmp_pa
     append_session = parsed("m2", "append", seen=5, persisted=4)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = archive.write_raw_payload(
-            provider=Provider.CLAUDE_CODE, payload=b"base", source_path="session.jsonl", acquired_at_ms=1
+            provider=Provider.CLAUDE_CODE,
+            payload=b"base",
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -1836,6 +1924,7 @@ def test_claude_full_append_replay_persists_reduced_coverage_and_receipts(tmp_pa
             provider=Provider.CLAUDE_CODE,
             payload=b"tail!",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -1909,7 +1998,11 @@ def test_fold_accepts_a_legacy_codex_append_payload_after_header_normalization(t
         folded_payload = baseline_payload + tail
         folded_session = _parse_codex_jsonl(folded_payload)
         baseline = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=baseline_payload, source_path="session.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX,
+            payload=baseline_payload,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -1922,6 +2015,7 @@ def test_fold_accepts_a_legacy_codex_append_payload_after_header_normalization(t
             provider=Provider.CODEX,
             payload=legacy_append_payload,
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -1947,7 +2041,11 @@ def test_fold_accepts_a_legacy_codex_append_payload_after_header_normalization(t
             acquired_at_ms=0,
         )
         folded = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=folded_payload, source_path="session.jsonl", acquired_at_ms=3
+            provider=Provider.CODEX,
+            payload=folded_payload,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=3,
         )
         archive.bind_raw_revision(
             folded,
@@ -2034,7 +2132,11 @@ def test_real_append_fold_proof_mutations_roll_back(
         assert len(candidate_payload) == len(baseline_payload + tail)
         folded_session = _parse_codex_jsonl(candidate_payload)
         baseline = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=baseline_payload, source_path="session.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX,
+            payload=baseline_payload,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -2043,7 +2145,12 @@ def test_real_append_fold_proof_mutations_roll_back(
             ),
         )
         append = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=tail, source_path="session.jsonl", source_index=-1, acquired_at_ms=2
+            provider=Provider.CODEX,
+            payload=tail,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
         )
         append_revision = append_source_revision("base", hashlib.sha256(tail).hexdigest())
         archive.bind_raw_revision(
@@ -2071,7 +2178,11 @@ def test_real_append_fold_proof_mutations_roll_back(
                 1 if mutation == "baseline" else 6 :
             ]
         folded = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=folded_payload, source_path="session.jsonl", acquired_at_ms=3
+            provider=Provider.CODEX,
+            payload=folded_payload,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=3,
         )
         archive.bind_raw_revision(
             folded,
@@ -2168,6 +2279,7 @@ def test_retained_replay_uses_persisted_file_mtime_for_timestamp_fallback(tmp_pa
             provider=Provider.CODEX,
             payload=b"retained raw",
             source_path="mtime-replay.jsonl",
+            canonical_source_path="mtime-replay.jsonl",
             acquired_at_ms=1,
             file_mtime_ms=file_mtime_ms,
         )
@@ -2223,6 +2335,7 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
             provider=Provider.CODEX,
             payload=label.encode(),
             source_path="session.json",
+            canonical_source_path="session.json",
             acquired_at_ms=generation,
         )
         archive.bind_raw_revision(
@@ -2326,6 +2439,7 @@ def _write_quarantined_member(archive: ArchiveStore, label: str, session: Parsed
         provider=Provider.CODEX,
         payload=label.encode(),
         source_path=f"{label}.json",
+        canonical_source_path=f"{label}.json",
         acquired_at_ms=1,
     )
     publish_membership_census(
@@ -2339,6 +2453,7 @@ def _write_chain_full(archive: ArchiveStore, label: str, generation: int) -> str
         provider=Provider.CODEX,
         payload=label.encode(),
         source_path="session.json",
+        canonical_source_path="session.json",
         acquired_at_ms=generation,
     )
     archive.bind_raw_revision(
@@ -2722,7 +2837,11 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=b"a" * 10, source_path="session.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX,
+            payload=b"a" * 10,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -2741,6 +2860,7 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
             provider=Provider.CODEX,
             payload=b"b" * 5,
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -2779,6 +2899,7 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
             provider=Provider.CODEX,
             payload=b"c" * 5,
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=3,
         )
@@ -2877,7 +2998,11 @@ def test_skip_already_applied_default_false_still_reindexes_whole_chain(
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=b"a" * 10, source_path="session.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX,
+            payload=b"a" * 10,
+            source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -2893,6 +3018,7 @@ def test_skip_already_applied_default_false_still_reindexes_whole_chain(
             provider=Provider.CODEX,
             payload=b"b" * 5,
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -2959,7 +3085,11 @@ def test_accepted_chain_indexes_one_composed_session_not_one_per_chunk(tmp_path:
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = archive.write_raw_payload(
-            provider=Provider.CLAUDE_CODE, payload=b"a" * 10, source_path="chat.jsonl", acquired_at_ms=1
+            provider=Provider.CLAUDE_CODE,
+            payload=b"a" * 10,
+            source_path="chat.jsonl",
+            canonical_source_path="chat.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -2975,6 +3105,7 @@ def test_accepted_chain_indexes_one_composed_session_not_one_per_chunk(tmp_path:
             provider=Provider.CLAUDE_CODE,
             payload=b"b" * 5,
             source_path="chat.jsonl",
+            canonical_source_path="chat.jsonl",
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -3105,7 +3236,11 @@ def test_tail_only_replay_stores_the_chain_reduction_not_the_prefix_summary_row(
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = archive.write_raw_payload(
-            provider=Provider.CLAUDE_CODE, payload=b"a" * 10, source_path="chat.jsonl", acquired_at_ms=1
+            provider=Provider.CLAUDE_CODE,
+            payload=b"a" * 10,
+            source_path="chat.jsonl",
+            canonical_source_path="chat.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             baseline,
@@ -3129,6 +3264,7 @@ def test_tail_only_replay_stores_the_chain_reduction_not_the_prefix_summary_row(
             provider=Provider.CLAUDE_CODE,
             payload=b"b" * 5,
             source_path="chat.jsonl",
+            canonical_source_path="chat.jsonl",
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -3229,6 +3365,7 @@ def test_terminal_failure_carrier_survives_ordinary_reclassification(tmp_path: P
             provider=Provider.CLAUDE_CODE,
             payload=b'{"type":"summary","summary":"only a summary"}\n',
             source_path=source_path,
+            canonical_source_path=source_path,
             acquired_at_ms=1,
         )
         archive.record_raw_failure_evidence(
@@ -3301,6 +3438,7 @@ def _headless_ambiguous_cohort(
             provider=Provider.CODEX,
             payload=raw_id.encode(),
             source_path=f"{raw_id}.jsonl",
+            canonical_source_path=f"{raw_id}.jsonl",
             acquired_at_ms=1,
             raw_id=raw_id,
         )

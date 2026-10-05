@@ -66,6 +66,7 @@ def test_revision_replay_receipts_the_parser_identity_of_a_retained_raw(tmp_path
             provider=Provider.CODEX,
             payload=PAYLOAD,
             source_path=SOURCE_PATH,
+            canonical_source_path=SOURCE_PATH,
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(
@@ -101,6 +102,7 @@ def test_reparse_of_accepted_head_keeps_head_and_session_content_hash_in_sync(tm
             provider=Provider.CODEX,
             payload=PAYLOAD,
             source_path=SOURCE_PATH,
+            canonical_source_path=SOURCE_PATH,
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(
@@ -161,6 +163,7 @@ def test_batched_reparse_rolls_back_receipt_and_head_with_failed_session_write(t
             provider=Provider.CODEX,
             payload=PAYLOAD,
             source_path=SOURCE_PATH,
+            canonical_source_path=SOURCE_PATH,
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(
@@ -209,6 +212,7 @@ def test_batched_retained_reparse_keeps_receipt_uncommitted_with_failed_session_
             provider=Provider.CODEX,
             payload=PAYLOAD,
             source_path=SOURCE_PATH,
+            canonical_source_path=SOURCE_PATH,
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(
@@ -257,6 +261,7 @@ def test_unchanged_reparse_of_accepted_head_issues_no_new_receipt(tmp_path: Path
             provider=Provider.CODEX,
             payload=PAYLOAD,
             source_path=SOURCE_PATH,
+            canonical_source_path=SOURCE_PATH,
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(

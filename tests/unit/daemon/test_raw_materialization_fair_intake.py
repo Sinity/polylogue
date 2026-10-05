@@ -64,6 +64,7 @@ async def test_fair_intake_converges_multiblob_component_with_profiles(tmp_path:
                     (("user", f"question {index}"), ("assistant", f"answer {index}")),
                 ),
                 source_path="large-component.jsonl",
+                canonical_source_path="large-component.jsonl",
                 acquired_at_ms=index + 1,
             )
 

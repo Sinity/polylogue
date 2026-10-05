@@ -215,6 +215,7 @@ def test_ingest_worker_decodes_a_capture_as_a_stream_and_spills_its_carriers(
         raw_id=raw_id,
         source_name="browser-capture",
         source_path=str(tmp_path / "spool" / "chatgpt" / "conv-spill-0123456789ab.json"),
+        canonical_source_path=str(tmp_path / "spool" / "chatgpt" / "conv-spill-0123456789ab.json"),
         payload_provider=Provider.CHATGPT,
         source_index=None,
         blob_size=blob_size,

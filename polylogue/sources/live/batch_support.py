@@ -247,9 +247,11 @@ class _AppendPlan:
     payload_hash: str
     cursor_fingerprint: str | None
     bytes_read: int
+    # The physical coordinate frozen from the opened file; every append raw
+    # records it.
+    canonical_source_path: str
     # Historical fixture/replay callers can preserve a source ordering index;
     # live watcher plans retain the legacy sentinel when no index is known.
-    canonical_source_path: str | None = None
     source_index: int = -1
     accepted_tail_hash: str | None = None
     ctime_ns: int | None = None

@@ -529,7 +529,7 @@ def _assert_existing_raw_identity(
     origin: str,
     native_id: str | None,
     source_path: str,
-    canonical_source_path: str | None,
+    canonical_source_path: str,
     captured_profile_key: str | None,
     new_profile_receipt: bool = False,
     source_index: int,
@@ -706,13 +706,24 @@ def write_source_blob_refs(
     _write_source_blob_refs(_ConnectionSourceProducer(conn), raw_id, refs)
 
 
+def _require_canonical_source_path(canonical_source_path: object) -> None:
+    """Refuse a raw row without its frozen canonical source path.
+
+    Live selection and frontier admission match raws by the canonical path
+    acquisition froze; a row without one makes that authority unavailable for
+    the whole archive, so the write boundary refuses it instead.
+    """
+    if not isinstance(canonical_source_path, str) or not canonical_source_path:
+        raise ValueError("a retained raw requires the canonical source path acquisition froze")
+
+
 def write_source_raw_session(
     conn: sqlite3.Connection,
     *,
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
-    canonical_source_path: str | None = None,
+    canonical_source_path: str,
     captured_profile_key: str | None = None,
     source_index: int,
     payload: bytes,
@@ -744,6 +755,7 @@ def write_source_raw_session(
     passes ``manage_transaction=False`` and owns the surrounding commit and any
     rollback-on-error itself.
     """
+    _require_canonical_source_path(canonical_source_path)
     conn.execute("PRAGMA foreign_keys = ON")
     origin_value = require_vocabulary(origin, Origin, field="origin")
     if origin_value is None:
@@ -1175,7 +1187,7 @@ def write_source_raw_session_blob_ref(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
-    canonical_source_path: str | None = None,
+    canonical_source_path: str,
     captured_profile_key: str | None = None,
     source_index: int,
     blob_hash: bytes,
@@ -1197,6 +1209,7 @@ def write_source_raw_session_blob_ref(
     """
     if len(blob_hash) != 32:
         raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
+    _require_canonical_source_path(canonical_source_path)
     conn.execute("PRAGMA foreign_keys = ON")
     origin_value = require_vocabulary(origin, Origin, field="origin")
     if origin_value is None:

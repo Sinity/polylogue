@@ -49,6 +49,7 @@ def _archive(tmp_path: Path, *, payload: bytes = _PAYLOAD) -> tuple[sqlite3.Conn
         origin=Origin.CLAUDE_CODE_SESSION,
         capture_mode=Provider.CLAUDE_CODE,
         source_path="/synthetic/capture.json",
+        canonical_source_path="/synthetic/capture.json",
         source_index=0,
         blob_hash=blob_hash,
         blob_size=len(payload),

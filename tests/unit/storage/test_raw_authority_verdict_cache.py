@@ -35,6 +35,7 @@ def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_so
         provider=Provider.CODEX,
         payload=payload,
         source_path="session.jsonl",
+        canonical_source_path="session.jsonl",
         acquired_at_ms=1,
         raw_id=raw_id,
     )
@@ -145,6 +146,7 @@ def test_append_authority_promotion_invalidates_the_cache(tmp_path: Path) -> Non
             provider=Provider.CODEX,
             payload=b"two\n",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=1,
             raw_id="append",
@@ -231,6 +233,7 @@ def test_warmup_is_bounded_and_caches_append_cohorts(tmp_path: Path) -> None:
             provider=Provider.CODEX,
             payload=b"append-payload",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=1,
             raw_id="append-only",
         )

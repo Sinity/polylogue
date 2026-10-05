@@ -20,6 +20,7 @@ def _large_raw_record() -> RawSessionRecord:
         raw_id="raw-large",
         source_name="codex",
         source_path="/tmp/raw-large.jsonl",
+        canonical_source_path="/tmp/raw-large.jsonl",
         blob_size=150 * 1024 * 1024,
         acquired_at="2026-04-02T00:00:00Z",
     )
@@ -86,6 +87,7 @@ def _raw_records(count: int) -> list[RawSessionRecord]:
             raw_id=f"raw-{index}",
             source_name="codex",
             source_path=f"/tmp/raw-{index}.jsonl",
+            canonical_source_path=f"/tmp/raw-{index}.jsonl",
             blob_size=12,
             acquired_at="2026-04-02T00:00:00Z",
         )

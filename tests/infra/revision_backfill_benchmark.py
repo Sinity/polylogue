@@ -239,6 +239,7 @@ def build_independent_raw_corpus(
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path=f"synthetic-amg1/session-{index:06d}.jsonl",
+                canonical_source_path=f"synthetic-amg1/session-{index:06d}.jsonl",
                 acquired_at_ms=index + 1,
                 native_id=native_id if authoritative_source or native_singletons else None,
             )
@@ -324,6 +325,7 @@ def build_large_parent_shared_prefix_raw_corpus(
                 provider=Provider.CODEX,
                 payload=payload(native_id, messages, parent_id=parent_id),
                 source_path=f"synthetic-amg1/lineage-{index:04d}.jsonl",
+                canonical_source_path=f"synthetic-amg1/lineage-{index:04d}.jsonl",
                 acquired_at_ms=10_000 + index,
                 native_id=native_id,
             )
@@ -393,6 +395,7 @@ def build_revision_chain_corpus(
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path="nh44-chain/session.jsonl",
+                canonical_source_path="nh44-chain/session.jsonl",
                 acquired_at_ms=index + 1,
                 native_id="nh44-chain-session" if native_singleton else None,
             )
@@ -424,6 +427,7 @@ def build_whale_bearing_corpus(
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path=f"synthetic-odm1/session-{index:06d}.jsonl",
+                canonical_source_path=f"synthetic-odm1/session-{index:06d}.jsonl",
                 acquired_at_ms=index + 1,
             )
             small_raw_ids.append(raw_id)
@@ -432,6 +436,7 @@ def build_whale_bearing_corpus(
             provider=Provider.CODEX,
             payload=whale_payload,
             source_path="synthetic-odm1/whale-session.jsonl",
+            canonical_source_path="synthetic-odm1/whale-session.jsonl",
             acquired_at_ms=small_raw_count + 1,
         )
     return small_raw_ids, whale_raw_id

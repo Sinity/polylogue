@@ -572,6 +572,7 @@ def _append_plan(path: Path, payload: bytes, *, payload_hash: str) -> _AppendPla
     stat = path.stat()
     return _AppendPlan(
         path=path,
+        canonical_source_path=str(path),
         source_name="codex",
         start_offset=0,
         last_complete_newline=stat.st_size,
@@ -3834,6 +3835,7 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
                 provider=Provider.CHATGPT,
                 payload=foreign_payload,
                 source_path=str(foreign_path),
+                canonical_source_path=str(foreign_path),
                 acquired_at_ms=1,
             )
             foreign_archive.commit()
@@ -4122,6 +4124,7 @@ def test_codex_append_plan_uses_append_only_session_identity(tmp_path: Path) -> 
             conn,
             origin="codex-session",
             source_path=str(path),
+            canonical_source_path=str(path),
             source_index=-1,
             payload=original,
             acquired_at_ms=1_770_000_000_000,
@@ -4201,6 +4204,7 @@ def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Pat
             conn,
             origin="codex-session",
             source_path=str(path),
+            canonical_source_path=str(path),
             source_index=0,
             payload=original,
             acquired_at_ms=1_770_000_000_000,
@@ -4289,6 +4293,7 @@ def test_codex_append_identity_rejects_mixed_origins_at_same_path(
             conn,
             origin=source_origin,
             source_path=str(path),
+            canonical_source_path=str(path),
             source_index=0,
             payload=payload,
             acquired_at_ms=1_770_000_000_000,
@@ -4329,6 +4334,7 @@ def test_codex_append_identity_rejects_mismatched_index_owner_before_global_fall
             conn,
             origin="codex-session",
             source_path=str(path),
+            canonical_source_path=str(path),
             source_index=0,
             payload=payload,
             acquired_at_ms=1_770_000_000_000,
@@ -4337,6 +4343,7 @@ def test_codex_append_identity_rejects_mismatched_index_owner_before_global_fall
             conn,
             origin="codex-session",
             source_path=str(root / "other.jsonl"),
+            canonical_source_path=str(root / "other.jsonl"),
             source_index=0,
             payload=payload,
             acquired_at_ms=1_770_000_000_001,
@@ -4385,6 +4392,7 @@ def test_codex_append_identity_rejects_global_fallback_when_ownership_query_erro
             conn,
             origin="codex-session",
             source_path=str(root / "unrelated.jsonl"),
+            canonical_source_path=str(root / "unrelated.jsonl"),
             source_index=0,
             payload=payload,
             acquired_at_ms=1_770_000_000_000,
@@ -4479,6 +4487,7 @@ def test_append_ingest_preserves_successes_when_other_plan_fails(
     plans = [
         _AppendPlan(
             path=tmp_path / "ok.jsonl",
+            canonical_source_path=str(tmp_path / "ok.jsonl"),
             source_name="codex",
             start_offset=0,
             last_complete_newline=8,
@@ -4493,6 +4502,7 @@ def test_append_ingest_preserves_successes_when_other_plan_fails(
         ),
         _AppendPlan(
             path=tmp_path / "bad.jsonl",
+            canonical_source_path=str(tmp_path / "bad.jsonl"),
             source_name="unknown",
             start_offset=0,
             last_complete_newline=9,
@@ -5883,6 +5893,7 @@ def test_raw_failure_cursor_guard_rejects_contradictory_or_mismatched_evidence(t
             provider=Provider.CODEX,
             payload=path.read_bytes(),
             source_path=str(path),
+            canonical_source_path=str(path),
             source_index=1,
             acquired_at_ms=1,
         )
@@ -5890,6 +5901,7 @@ def test_raw_failure_cursor_guard_rejects_contradictory_or_mismatched_evidence(t
             provider=Provider.CODEX,
             payload=path.read_bytes() + b"2",
             source_path=str(path),
+            canonical_source_path=str(path),
             source_index=0,
             acquired_at_ms=2,
         )
@@ -7133,6 +7145,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
             provider=Provider.CHATGPT,
             payload=json.dumps([conversation("shared", "base", "left")]).encode(),
             source_path="a.json",
+            canonical_source_path="a.json",
             acquired_at_ms=1,
         )
         store.bind_raw_revision(
@@ -7145,6 +7158,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
             provider=Provider.CHATGPT,
             payload=json.dumps([conversation("shared", "base", "right")]).encode(),
             source_path="b.json",
+            canonical_source_path="b.json",
             acquired_at_ms=2,
         )
         store.bind_raw_revision(
@@ -7294,6 +7308,7 @@ def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_p
             provider=Provider.CODEX,
             payload=b'{"native_id":"pending-vs-ambiguous"}\n',
             source_path=str(tmp_path / "pending-vs-ambiguous.jsonl"),
+            canonical_source_path=str(tmp_path / "pending-vs-ambiguous.jsonl"),
             acquired_at_ms=1,
         )
         archive.commit()
@@ -7369,6 +7384,7 @@ def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_hea
             provider=Provider.CHATGPT,
             payload=snapshot.read_bytes(),
             source_path=str(snapshot),
+            canonical_source_path=str(snapshot),
             acquired_at_ms=1,
         )
         archive.commit()
@@ -7458,6 +7474,7 @@ def test_single_session_full_terminally_supersedes_older_membership_prefix(
             provider=Provider.CODEX,
             payload=older.read_bytes(),
             source_path=str(older),
+            canonical_source_path=str(older),
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(
@@ -7600,6 +7617,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
             provider=Provider.CODEX,
             payload=b'{"append":true}\n',
             source_path=str(current),
+            canonical_source_path=str(current),
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -7840,6 +7858,7 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
             provider=Provider.CODEX,
             payload=b'{"type":"response_item","payload":{"type":"message","id":"dangling"}}\n',
             source_path=str(current),
+            canonical_source_path=str(current),
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -8250,6 +8269,7 @@ def test_append_ingest_bootstraps_archive_root(
     stat = path.stat()
     plan = _AppendPlan(
         path=path,
+        canonical_source_path=str(path),
         source_name="codex",
         start_offset=0,
         last_complete_newline=stat.st_size,
@@ -8404,6 +8424,7 @@ async def test_live_append_plans_flush_in_bounded_groups(
         del cursor, cursor_is_known
         return _AppendPlan(
             path=path,
+            canonical_source_path=str(path),
             source_name="codex",
             start_offset=0,
             last_complete_newline=10,

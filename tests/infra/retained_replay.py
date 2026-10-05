@@ -195,7 +195,11 @@ async def publish_retained_payload(
         bootstrap_archive_root(archive_root)
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             return archive.write_raw_payload(
-                provider=provider, payload=payload, source_path=source_path, acquired_at_ms=acquired_at_ms
+                provider=provider,
+                payload=payload,
+                source_path=source_path,
+                canonical_source_path=source_path,
+                acquired_at_ms=acquired_at_ms,
             )
 
     raw_id = await run_archive_fixture_write(archive_root, acquire)

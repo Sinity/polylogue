@@ -83,6 +83,7 @@ def _ingest_drive_cohort(
                     provider=Provider.GEMINI,
                     payload=json.dumps(_drive_revision_payload(revision, filler=filler)).encode("utf-8"),
                     source_path="Google AI Studio/chat.json",
+                    canonical_source_path="Google AI Studio/chat.json",
                     acquired_at_ms=1_767_000_000_000 + revision,
                 )
             )
@@ -171,12 +172,14 @@ def test_prepared_drive_source_commit_advances_only_its_retained_seal(tmp_path: 
                 provider=Provider.GEMINI,
                 payload=json.dumps(_drive_revision_payload(0)).encode(),
                 source_path="Google AI Studio/chat.json",
+                canonical_source_path="Google AI Studio/chat.json",
                 acquired_at_ms=1_767_000_000_000,
             )
             second_raw_id = archive.write_raw_payload(
                 provider=Provider.GEMINI,
                 payload=json.dumps(_drive_revision_payload(1)).encode(),
                 source_path="Google AI Studio/chat.json",
+                canonical_source_path="Google AI Studio/chat.json",
                 acquired_at_ms=1_767_000_000_500,
             )
 
@@ -218,6 +221,7 @@ def test_ingest_preparation_rejects_changes_since_its_original_seal(
                     provider=Provider.GEMINI,
                     payload=json.dumps(_drive_revision_payload(revision)).encode(),
                     source_path="Google AI Studio/chat.json",
+                    canonical_source_path="Google AI Studio/chat.json",
                     acquired_at_ms=1_767_000_000_000 + revision,
                 )
 

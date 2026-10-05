@@ -1096,6 +1096,7 @@ def _probe_raw_artifact_upsert(upsert: Callable[..., object]) -> str:
             probe,
             origin=Origin.CODEX_SESSION,
             source_path=source_path,
+            canonical_source_path=source_path,
             source_index=0,
             blob_hash=blob_hash,
             blob_size=len(payload),
@@ -1194,6 +1195,7 @@ def _probe_source_profile_identity(operation: Callable[..., object], *, writer: 
                 probe,
                 origin=Origin.UNKNOWN_EXPORT,
                 source_path=f"/durable-change-train/{raw_id}.json",
+                canonical_source_path=f"/durable-change-train/{raw_id}.json",
                 source_index=0,
                 blob_hash=hashlib.sha256(raw_id.encode()).digest(),
                 blob_size=len(raw_id),
@@ -1945,6 +1947,7 @@ def _probe_revision_provider_resolution(descriptor: Callable[..., object]) -> st
                 provider=Provider.CLAUDE_CODE,
                 payload=b'{"durable-change-train": "revision-probe"}\n',
                 source_path="/durable-change-train/revision-probe.jsonl",
+                canonical_source_path="/durable-change-train/revision-probe.jsonl",
                 acquired_at_ms=1_780_000_000_000,
             )
             archive._ensure_source_conn().execute(

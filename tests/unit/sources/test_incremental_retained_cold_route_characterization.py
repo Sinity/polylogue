@@ -202,6 +202,7 @@ def test_live_retained_and_owned_cold_routes_publish_one_interpretation(tmp_path
             provider=Provider.CODEX,
             payload=payload,
             source_path=source_path_string,
+            canonical_source_path=source_path_string,
             acquired_at_ms=1,
             revision=RawRevisionEnvelope(
                 str(logical_key),

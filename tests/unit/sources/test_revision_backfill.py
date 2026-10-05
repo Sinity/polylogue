@@ -150,6 +150,7 @@ def test_current_parser_source_census_keeps_progress_after_elapsed_frame_time(
             provider=Provider.CODEX,
             payload=f"not valid codex jsonl {index}".encode(),
             source_path=source_path,
+            canonical_source_path=source_path,
             acquired_at_ms=index + 1,
         )
         archive.record_raw_failure_evidence(
@@ -208,6 +209,7 @@ def test_current_parser_source_census_refuses_reused_rowid_frontier(
             provider=Provider.CODEX,
             payload=f"not valid codex jsonl {index}".encode(),
             source_path=source_path,
+            canonical_source_path=source_path,
             acquired_at_ms=index + 1,
         )
         archive.record_raw_failure_evidence(
@@ -289,6 +291,7 @@ def test_source_census_preserves_acquired_grouped_identity(
             provider=Provider.CHATGPT,
             payload=_bundle(*sessions),
             source_path="synthetic/conversations.json",
+            canonical_source_path="synthetic/conversations.json",
             native_id=native_id,
             acquired_at_ms=1,
         )
@@ -331,6 +334,7 @@ def test_owned_inactive_generation_replays_through_sealed_session_shards(tmp_pat
             provider=Provider.CHATGPT,
             payload=_bundle(_chatgpt_session("sealed-shard", "hello", "world")),
             source_path="export/conversations.json",
+            canonical_source_path="export/conversations.json",
             acquired_at_ms=1,
             revision=RawRevisionEnvelope(
                 logical_source_key="chatgpt-export:sealed-shard",
@@ -393,6 +397,7 @@ def test_previous_dynamic_parser_fingerprint_requires_reobservation(
             provider=Provider.CODEX,
             payload=b"previous-parser-semantics",
             source_path="previous-parser-semantics.jsonl",
+            canonical_source_path="previous-parser-semantics.jsonl",
             acquired_at_ms=1,
         )
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -445,6 +450,7 @@ def test_antigravity_trajectory_page_image_is_terminal_during_frozen_backfill(tm
             provider=Provider.ANTIGRAVITY,
             payload=page_image,
             source_path=str(trajectory_path),
+            canonical_source_path=str(trajectory_path),
             acquired_at_ms=1,
         )
         valid_raw_id = archive.write_raw_payload(
@@ -455,6 +461,7 @@ def test_antigravity_trajectory_page_image_is_terminal_during_frozen_backfill(tm
                 b'"content":[{"type":"input_text","text":"still processable"}]}}\n'
             ),
             source_path="after-page-image.jsonl",
+            canonical_source_path="after-page-image.jsonl",
             acquired_at_ms=2,
         )
 
@@ -505,6 +512,7 @@ def test_backfill_terminalizes_source_only_declared_artifact(tmp_path: Path) -> 
             provider=Provider.CLAUDE_CODE,
             payload=b'{"contentKey":"workflow-artifact","agentId":"agent"}\n',
             source_path=source_path,
+            canonical_source_path=source_path,
             acquired_at_ms=1,
         )
 
@@ -536,6 +544,7 @@ async def test_backfill_terminalizes_detected_unknown_empty_artifact(tmp_path: P
                 b'"sessionId":"history-only-session","snapshot":{"trackedFileBackups":{}}}\n'
             ),
             source_path=source_path,
+            canonical_source_path=source_path,
             acquired_at_ms=1,
         )
 
@@ -589,12 +598,14 @@ def test_backfill_preserves_latest_repeated_artifact_observation(tmp_path: Path)
             provider=Provider.CLAUDE_CODE,
             payload=payload_a,
             source_path=source_path,
+            canonical_source_path=source_path,
             acquired_at_ms=1,
         )
         raw_b = archive.write_raw_payload(
             provider=Provider.CLAUDE_CODE,
             payload=payload_b,
             source_path=source_path,
+            canonical_source_path=source_path,
             acquired_at_ms=2,
         )
         assert (
@@ -602,6 +613,7 @@ def test_backfill_preserves_latest_repeated_artifact_observation(tmp_path: Path)
                 provider=Provider.CLAUDE_CODE,
                 payload=payload_a,
                 source_path=source_path,
+                canonical_source_path=source_path,
                 acquired_at_ms=3,
             )
             == raw_a
@@ -631,18 +643,21 @@ def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_or
             provider=Provider.CODEX,
             payload=newest,
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=1,
         )
         baseline_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=baseline,
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=2,
         )
         legacy_append_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=b'{"type":"response_item","payload":{"type":"message","id":"legacy-suffix"}}\n',
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=3,
         )
@@ -739,6 +754,7 @@ def test_incremental_target_expands_new_logical_key_across_source_paths(tmp_path
             provider=Provider.CODEX,
             payload=baseline,
             source_path="first/shared.jsonl",
+            canonical_source_path="first/shared.jsonl",
             acquired_at_ms=1,
         )
     assert replay_retained_components(tmp_path, selected_raw_ids=[old_raw_id]).replayed_logical_sources == 1
@@ -748,6 +764,7 @@ def test_incremental_target_expands_new_logical_key_across_source_paths(tmp_path
             provider=Provider.CODEX,
             payload=newest,
             source_path="moved/shared.jsonl",
+            canonical_source_path="moved/shared.jsonl",
             acquired_at_ms=2,
         )
 
@@ -780,6 +797,7 @@ def test_backfill_resumes_after_only_some_source_markers_commit(
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path="session.jsonl",
+                canonical_source_path="session.jsonl",
                 acquired_at_ms=index,
             )
             for index, payload in enumerate((baseline, newest), start=1)
@@ -833,12 +851,14 @@ def test_cold_rebuild_restores_overlapping_multi_session_bundles(tmp_path: Path)
             provider=Provider.CHATGPT,
             payload=bundle_a,
             source_path="conversations.json",
+            canonical_source_path="conversations.json",
             acquired_at_ms=1,
         )
         raw_b = archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=bundle_b,
             source_path="conversations.json",
+            canonical_source_path="conversations.json",
             acquired_at_ms=2,
         )
 
@@ -878,12 +898,14 @@ def test_divergent_bundle_member_does_not_block_safe_members(tmp_path: Path) -> 
             provider=Provider.CHATGPT,
             payload=_bundle(_chatgpt_session("s1", "base", "left"), _chatgpt_session("s2", "safe")),
             source_path="conversations.json",
+            canonical_source_path="conversations.json",
             acquired_at_ms=1,
         )
         raw_b = archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=_bundle(_chatgpt_session("s1", "base", "right"), _chatgpt_session("s3", "safe")),
             source_path="conversations.json",
+            canonical_source_path="conversations.json",
             acquired_at_ms=2,
         )
 
@@ -932,12 +954,14 @@ def test_stale_pre_fix_identity_split_folds_into_one_ambiguous_cohort(tmp_path: 
             provider=Provider.CHATGPT,
             payload=_bundle(_chatgpt_session("s1", "base", "left")),
             source_path="conversations.json",
+            canonical_source_path="conversations.json",
             acquired_at_ms=1,
         )
         raw_stale = archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=_bundle(_chatgpt_session("s1", "base", "right")),
             source_path="conversations.json",
+            canonical_source_path="conversations.json",
             acquired_at_ms=2,
         )
 
@@ -1000,6 +1024,7 @@ def test_divergent_bundle_member_preserves_last_accepted_session(tmp_path: Path)
             provider=Provider.CHATGPT,
             payload=_bundle(_chatgpt_session("s1", "base", "accepted")),
             source_path="first.json",
+            canonical_source_path="first.json",
             acquired_at_ms=1,
         )
     replay_retained_components(tmp_path)
@@ -1016,6 +1041,7 @@ def test_divergent_bundle_member_preserves_last_accepted_session(tmp_path: Path)
             provider=Provider.CHATGPT,
             payload=_bundle(_chatgpt_session("s1", "base", "divergent")),
             source_path="second.json",
+            canonical_source_path="second.json",
             acquired_at_ms=2,
         )
     result = replay_retained_components(tmp_path)
@@ -1043,18 +1069,21 @@ def test_targeted_rebuild_expands_same_session_across_source_paths_only(
             provider=Provider.CHATGPT,
             payload=_bundle(_chatgpt_session("shared", "old")),
             source_path="first.json",
+            canonical_source_path="first.json",
             acquired_at_ms=1,
         )
         archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=_bundle(_chatgpt_session("shared", "old", "new")),
             source_path="second.json",
+            canonical_source_path="second.json",
             acquired_at_ms=2,
         )
         unrelated_raw = archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=_bundle(_chatgpt_session("unrelated", "no")),
             source_path="third.json",
+            canonical_source_path="third.json",
             acquired_at_ms=3,
         )
 
@@ -1106,6 +1135,7 @@ def test_membership_census_retains_only_one_logical_cohort_at_scale(tmp_path: Pa
                 provider=Provider.CHATGPT,
                 payload=payload,
                 source_path=f"bundle-{index}.json",
+                canonical_source_path=f"bundle-{index}.json",
                 acquired_at_ms=index + 1,
             )
         shared_payloads = [
@@ -1117,6 +1147,7 @@ def test_membership_census_retains_only_one_logical_cohort_at_scale(tmp_path: Pa
                 provider=Provider.CHATGPT,
                 payload=payload,
                 source_path=f"shared-{index}.json",
+                canonical_source_path=f"shared-{index}.json",
                 acquired_at_ms=independent_raw_count + index,
             )
     raw_count = independent_raw_count + len(shared_payloads)
@@ -1148,6 +1179,7 @@ def _append_chain_archive(root: Path) -> tuple[str, str]:
             provider=Provider.CODEX,
             payload=newest,
             source_path="chain.jsonl",
+            canonical_source_path="chain.jsonl",
             acquired_at_ms=1,
             native_id="chain",
         )
@@ -1155,6 +1187,7 @@ def _append_chain_archive(root: Path) -> tuple[str, str]:
             provider=Provider.CODEX,
             payload=baseline,
             source_path="chain.jsonl",
+            canonical_source_path="chain.jsonl",
             acquired_at_ms=2,
             native_id="chain",
         )
@@ -1193,6 +1226,7 @@ def _growing_chain_archive(root: Path, *, turns: int) -> list[str]:
                     provider=Provider.CODEX,
                     payload=capture,
                     source_path="chain.jsonl",
+                    canonical_source_path="chain.jsonl",
                     acquired_at_ms=acquired_at_ms,
                     native_id="chain",
                 )
@@ -1237,6 +1271,7 @@ def test_byte_proof_refuses_a_head_between_forks(monkeypatch: pytest.MonkeyPatch
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path="chain.jsonl",
+                canonical_source_path="chain.jsonl",
                 acquired_at_ms=index + 1,
                 native_id="chain",
             )
@@ -1346,6 +1381,7 @@ def _independent_growing_chains(root: Path, *, chains: int, turns: int) -> dict[
                     provider=Provider.CODEX,
                     payload=capture,
                     source_path=f"{session}.jsonl",
+                    canonical_source_path=f"{session}.jsonl",
                     acquired_at_ms=chain * 100 + acquired_at_ms,
                     native_id=session,
                 )
@@ -1467,6 +1503,7 @@ def test_census_quarantines_legacy_hermes_sqlite_page_images(tmp_path: Path) -> 
                 provider=Provider.HERMES,
                 payload=payload,
                 source_path=str(tmp_path / f"hermes-home-{index}" / "state.db"),
+                canonical_source_path=str(tmp_path / f"hermes-home-{index}" / "state.db"),
                 acquired_at_ms=index,
             )
 
@@ -1523,6 +1560,7 @@ def _write_append_raw_with_recovered_identity(
         provider=Provider.CODEX,
         payload=payload,
         source_path=source_path,
+        canonical_source_path=source_path,
         acquired_at_ms=acquired_at_ms,
         raw_id=raw_id,
         native_id=native_id,
@@ -1594,6 +1632,7 @@ def _pipeline_equivalence_corpus(root: Path) -> None:
                 provider=Provider.CHATGPT,
                 payload=payload,
                 source_path=f"pipe-{index}.json",
+                canonical_source_path=f"pipe-{index}.json",
                 acquired_at_ms=index,
             )
         bundle = _bundle(
@@ -1604,6 +1643,7 @@ def _pipeline_equivalence_corpus(root: Path) -> None:
             provider=Provider.CHATGPT,
             payload=bundle,
             source_path="pipe-bundle.json",
+            canonical_source_path="pipe-bundle.json",
             acquired_at_ms=100,
         )
 
@@ -1709,6 +1749,7 @@ def _seed_lineage_fixture(root: Path, *, n_children: int, timestamp_adversarial:
                 timestamp_adversarial=timestamp_adversarial,
             ),
             source_path=f"{parent_native_id}.jsonl",
+            canonical_source_path=f"{parent_native_id}.jsonl",
             acquired_at_ms=1,
             native_id=parent_native_id,
         )
@@ -1724,6 +1765,7 @@ def _seed_lineage_fixture(root: Path, *, n_children: int, timestamp_adversarial:
                     timestamp_adversarial=timestamp_adversarial,
                 ),
                 source_path=f"{child_native_id}.jsonl",
+                canonical_source_path=f"{child_native_id}.jsonl",
                 acquired_at_ms=2 + index,
                 native_id=child_native_id,
             )
@@ -1782,6 +1824,7 @@ def test_lineage_aware_replay_schedule_falls_back_for_unresolvable_parent(tmp_pa
                 provider=Provider.CODEX,
                 payload=_codex_session_payload(native_id, ["only-message"], forked_from_id="never-ingested-parent"),
                 source_path=f"{native_id}.jsonl",
+                canonical_source_path=f"{native_id}.jsonl",
                 acquired_at_ms=1,
                 native_id=native_id,
             )

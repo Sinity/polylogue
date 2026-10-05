@@ -155,6 +155,7 @@ async def _seed_live_cursor_authority_case(
             provider=Provider.CODEX,
             payload=prefix,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             acquired_at_ms=1,
             native_id="session-1",
         )
@@ -4282,6 +4283,7 @@ def test_decided_unresolved_membership_reconciles_the_cursor_instead_of_re_readi
             provider=Provider.CODEX,
             payload=payload,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             acquired_at_ms=1,
         )
     seed_membership_census(tmp_path, [(raw_id, [session])], parser_fingerprint="test-parser")
@@ -4361,12 +4363,14 @@ def test_cursor_reconciliation_restores_the_newest_archived_outcome(
             provider=Provider.CODEX,
             payload=materialized_payload,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             acquired_at_ms=materialized_at_ms,
         )
         decided = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=decided_payload,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             acquired_at_ms=decided_at_ms,
         )
         parsed = {materialized: session("m0"), decided: session("m0", "m1")}

@@ -48,6 +48,7 @@ def _write_unparsed_raw(archive_root: Path, *, source_path: Path, native_id: str
             provider=Provider.CHATGPT,
             payload=json.dumps(payload).encode(),
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             acquired_at_ms=1,
         )
 

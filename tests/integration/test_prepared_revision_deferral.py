@@ -36,6 +36,7 @@ async def test_original_prepared_deferral_keeps_incomparable_index_and_no_accept
                 provider=Provider.CHATGPT,
                 payload=acquired_payload,
                 source_path="same-key.json",
+                canonical_source_path="same-key.json",
                 acquired_at_ms=1,
             )
             return raw_id, session_id, original_hash
@@ -72,6 +73,7 @@ async def test_original_replay_validation_failure_retires_carrier_before_same_ow
                 provider=Provider.CHATGPT,
                 payload=payload,
                 source_path="same-owner.json",
+                canonical_source_path="same-owner.json",
                 acquired_at_ms=1,
             )
 
@@ -110,6 +112,7 @@ async def test_original_suppressed_byte_outcome_needs_no_membership_plan(tmp_pat
                 provider=Provider.CHATGPT,
                 payload=payload,
                 source_path="suppressed-key.json",
+                canonical_source_path="suppressed-key.json",
                 acquired_at_ms=1,
             )
             user = archive._open_user_write_connection(initialize=False)

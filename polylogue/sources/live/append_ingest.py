@@ -249,7 +249,7 @@ def ingest_append_plans(
                 or row[7] != plan.last_complete_newline
                 or row[8] != plan.acquisition_native_id_hint
                 or row[9] != bytes.fromhex(plan.payload_hash)
-                or row[10] != (plan.canonical_source_path or str(plan.path.resolve()))
+                or row[10] != plan.canonical_source_path
                 or row[11] is not None
             ):
                 return False, None

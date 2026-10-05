@@ -310,6 +310,7 @@ def test_writable_archive_store_releases_open_custody_and_gates_each_mutation(tm
             provider=Provider.CLAUDE_CODE,
             payload=b"{}",
             source_path="synthetic/session.jsonl",
+            canonical_source_path="synthetic/session.jsonl",
             acquired_at_ms=1,
         )
         assert raw_id
@@ -1586,6 +1587,7 @@ def test_persistent_store_refuses_replaced_archive_directory_before_sql(tmp_path
                 provider=Provider.CLAUDE_CODE,
                 payload=b"{}",
                 source_path="synthetic/directory-binding.jsonl",
+                canonical_source_path="synthetic/directory-binding.jsonl",
                 acquired_at_ms=1,
             )
         assert current_write_lease() is None

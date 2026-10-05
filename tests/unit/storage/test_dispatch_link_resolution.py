@@ -472,7 +472,11 @@ def test_retained_replay_binds_the_dispatch_the_sidecar_names(tmp_path: Path) ->
 
         def _retained(source_path: str, payload: bytes) -> str:
             return archive.write_raw_payload(
-                provider=Provider.CLAUDE_CODE, payload=payload, source_path=source_path, acquired_at_ms=1
+                provider=Provider.CLAUDE_CODE,
+                payload=payload,
+                source_path=source_path,
+                canonical_source_path=source_path,
+                acquired_at_ms=1,
             )
 
         parent_raw = _retained(parent_path, _jsonl(parent_records))

@@ -120,6 +120,7 @@ def _seed_byte_authority(root: Path, path: Path, *, native_id: str) -> None:
             provider=Provider.CODEX,
             payload=payload,
             source_path=str(path),
+            canonical_source_path=str(path),
             acquired_at_ms=1,
             native_id=native_id,
             revision=revision,

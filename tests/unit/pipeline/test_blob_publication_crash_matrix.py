@@ -172,6 +172,7 @@ def test_crash_after_reservation_before_blob_write_leaves_missing_classified_res
         raw_id=raw_id,
         source_name="codex",
         source_path=str(source_path),
+        canonical_source_path=str(source_path),
         blob_size=source_path.stat().st_size,
         acquired_at="2026-04-02T00:00:00Z",
     )
@@ -286,6 +287,7 @@ def test_crash_after_blob_write_before_index_write_lands_in_unresolved_bucket(
         raw_id=raw_id,
         source_name="codex",
         source_path=str(source_path),
+        canonical_source_path=str(source_path),
         blob_size=source_path.stat().st_size,
         acquired_at="2026-04-02T00:00:00Z",
     )
@@ -376,6 +378,7 @@ def test_crash_during_source_commit_transaction_rolls_back_atomically_to_unresol
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="raw.jsonl",
+            canonical_source_path="raw.jsonl",
             source_index=0,
             payload=payload,
             acquired_at_ms=1,
@@ -436,6 +439,7 @@ def test_crash_after_index_commit_keeps_receipt_until_explicit_terminal_abandonm
         raw_id=raw_id,
         source_name="codex",
         source_path=str(source_path),
+        canonical_source_path=str(source_path),
         blob_size=source_path.stat().st_size,
         acquired_at="2026-04-02T00:00:00Z",
     )
@@ -547,6 +551,7 @@ def test_finalization_transaction_is_atomic_across_multiple_receipts(
         raw_id=raw_id,
         source_name="codex",
         source_path=str(source_path),
+        canonical_source_path=str(source_path),
         blob_size=source_path.stat().st_size,
         acquired_at="2026-04-02T00:00:00Z",
     )

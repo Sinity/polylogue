@@ -494,6 +494,7 @@ def _acquire(archive_root: Path, native_id: str, payload: bytes, refs: tuple[byt
             conn,
             origin=Origin.CLAUDE_AI_EXPORT.value,
             source_path=f"/synthetic/{native_id}.json",
+            canonical_source_path=f"/synthetic/{native_id}.json",
             source_index=0,
             payload=payload,
             acquired_at_ms=1_000,

@@ -355,10 +355,18 @@ def test_native_attachment_preserves_semantics_lineage_and_retained_replay(
     initialize_active_archive_root(replay_root)
     with ArchiveStore.open_existing(replay_root, read_only=False) as archive:
         parent_raw = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=payload, source_path="parent.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="parent.jsonl",
+            canonical_source_path="parent.jsonl",
+            acquired_at_ms=1,
         )
         child_raw = archive.write_raw_payload(
-            provider=provider, payload=retained, source_path="child.json", acquired_at_ms=2
+            provider=provider,
+            payload=retained,
+            source_path="child.json",
+            canonical_source_path="child.json",
+            acquired_at_ms=2,
         )
     result = replay_retained_components(replay_root, selected_raw_ids=[parent_raw, child_raw])
     assert result.quarantined == result.adoption_deferred == 0
@@ -455,7 +463,11 @@ def test_native_web_attachment_preserves_kind_title_and_retained_replay(
     initialize_active_archive_root(replay_root)
     with ArchiveStore.open_existing(replay_root, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
-            provider=retained_provider, payload=retained, source_path="capture.json", acquired_at_ms=1
+            provider=retained_provider,
+            payload=retained,
+            source_path="capture.json",
+            canonical_source_path="capture.json",
+            acquired_at_ms=1,
         )
     result = replay_retained_components(replay_root, selected_raw_ids=[raw_id])
     assert result.quarantined == result.adoption_deferred == 0
@@ -521,7 +533,11 @@ def test_idless_native_attachment_keeps_native_message_ownership_and_retained_by
     initialize_active_archive_root(replay_root)
     with ArchiveStore.open_existing(replay_root, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
-            provider=provider, payload=retained, source_path="capture.json", acquired_at_ms=1
+            provider=provider,
+            payload=retained,
+            source_path="capture.json",
+            canonical_source_path="capture.json",
+            acquired_at_ms=1,
         )
     result = replay_retained_components(replay_root, selected_raw_ids=[raw_id])
     assert result.quarantined == result.adoption_deferred == 0

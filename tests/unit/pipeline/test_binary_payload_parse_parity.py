@@ -144,6 +144,7 @@ def _record(store: BlobStore, content: bytes, *, source_path: str) -> RawSession
         raw_id=raw_id,
         source_name="hermes",
         source_path=source_path,
+        canonical_source_path=source_path,
         payload_provider=Provider.HERMES,
         source_index=None,
         blob_size=blob_size,

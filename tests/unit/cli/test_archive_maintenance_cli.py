@@ -61,6 +61,7 @@ def _seed_raw_authority_blocker(
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path=f"{blocker_id}.jsonl",
+                canonical_source_path=f"{blocker_id}.jsonl",
                 acquired_at_ms=1000,
                 raw_id=raw_id,
             )
@@ -423,6 +424,7 @@ def _seed_blob_reference_debt(archive_root: Path, source: Path) -> None:
             conn,
             origin="chatgpt-export",
             source_path=str(source),
+            canonical_source_path=str(source),
             source_index=0,
             blob_hash=missing_raw_hash,
             blob_size=source.stat().st_size,

@@ -834,7 +834,7 @@ def _admit_live_full_raw(
             blob_hash_hex=blob_hash,
             blob_size=record.blob_size,
             source_path=record.source_path,
-            canonical_source_path=record.canonical_source_path,
+            canonical_source_path=record.frozen_canonical_source_path(),
             captured_profile_key=record.captured_profile_key,
             captured_zip_coordinate=record.captured_zip_coordinate,
             source_item=record.source_item,
@@ -862,7 +862,7 @@ def _admit_live_full_raw(
             capture_mode=record.capture_mode,
             payload=payload,
             source_path=record.source_path,
-            canonical_source_path=record.canonical_source_path,
+            canonical_source_path=record.frozen_canonical_source_path(),
             captured_profile_key=record.captured_profile_key,
             captured_zip_coordinate=record.captured_zip_coordinate,
             source_item=record.source_item,
@@ -5956,7 +5956,7 @@ class LiveBatchProcessor:
         assert stored_tail_hash is not None
         content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
         authority = CursorPathAuthority.observe(plan.path)
-        if plan.canonical_source_path is not None and authority.canonical_source_path != plan.canonical_source_path:
+        if authority.canonical_source_path != plan.canonical_source_path:
             # The path now names another file than the one the plan captured.
             return False
         updated = self._cursor.set(

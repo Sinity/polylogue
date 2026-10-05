@@ -51,6 +51,7 @@ def _write_record(
         raw_id=raw_id,
         source_name=source_name,
         source_path=source_path,
+        canonical_source_path=source_path,
         payload_provider=provider,
         source_index=None,
         blob_size=blob_size,

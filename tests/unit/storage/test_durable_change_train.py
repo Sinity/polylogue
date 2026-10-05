@@ -3044,6 +3044,7 @@ def test_source005_indexes_actual_dependency_reader_and_preserves_populated_sour
                     origin=Origin.CLAUDE_CODE_SESSION,
                     capture_mode=Provider.CLAUDE_CODE,
                     source_path=f"/{raw_id}.jsonl",
+                    canonical_source_path=f"/{raw_id}.jsonl",
                     source_index=0,
                     payload=b"{}",
                     acquired_at_ms=1,

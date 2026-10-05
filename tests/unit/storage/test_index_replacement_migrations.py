@@ -552,6 +552,7 @@ def test_released_source_train_admits_ordinary_acquisition_without_row_rescan(
             origin=Origin.CODEX_SESSION,
             capture_mode=Provider.CODEX,
             source_path="/synthetic/after-migration.jsonl",
+            canonical_source_path="/synthetic/after-migration.jsonl",
             source_index=0,
             payload=b'{"synthetic_record":"after release"}\n',
             acquired_at_ms=2,

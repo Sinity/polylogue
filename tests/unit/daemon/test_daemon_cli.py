@@ -1400,6 +1400,7 @@ def test_reconcile_blob_publications_clears_terminal_receipts_at_startup(
             conn,
             origin=Origin.CHATGPT_EXPORT,
             source_path="startup-referenced.json",
+            canonical_source_path="startup-referenced.json",
             source_index=0,
             blob_hash=bytes.fromhex(referenced_hash),
             blob_size=referenced_size,
@@ -3552,6 +3553,7 @@ def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
             provider=Provider.CHATGPT,
             payload=json.dumps(payload).encode(),
             source_path="cancelled-owner.json",
+            canonical_source_path="cancelled-owner.json",
             acquired_at_ms=1,
         )
 

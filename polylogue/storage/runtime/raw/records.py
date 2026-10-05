@@ -54,6 +54,12 @@ class RawSessionRecord(BaseModel):
     # is an explicit acquisition result. Neither permits ambient discovery.
     sidecar_snapshot: dict[str, object] | None = Field(default=None, exclude=True)
 
+    def frozen_canonical_source_path(self) -> str:
+        """The canonical path acquisition froze, which every raw writer requires."""
+        if not self.canonical_source_path:
+            raise ValueError(f"acquired record has no frozen canonical source path: {self.source_path}")
+        return self.canonical_source_path
+
     @field_validator("raw_id", "blob_hash", "blob_publication_receipt_id", "source_name", "source_path")
     @classmethod
     def non_empty_string(cls, v: str | None) -> str | None:

@@ -35,7 +35,11 @@ async def test_actual_ingest_publication_leaves_upkeep_to_its_owner(
         bootstrap_archive_root(root)
         with ArchiveStore.open_existing(root, read_only=False) as archive:
             return archive.write_raw_payload(
-                provider=Provider.CHATGPT, payload=payload, source_path="conversations.json", acquired_at_ms=1
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path="conversations.json",
+                canonical_source_path="conversations.json",
+                acquired_at_ms=1,
             )
 
     raw_id = await run_archive_fixture_write(root, acquire)

@@ -94,6 +94,7 @@ def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_
                 provider=Provider.CODEX,
                 payload=f"payload-{index}".encode(),
                 source_path="session.jsonl",
+                canonical_source_path="session.jsonl",
                 acquired_at_ms=1,
                 raw_id=raw_id,
             )
@@ -105,6 +106,7 @@ def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_
             provider=Provider.CODEX,
             payload=b"append-payload",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=1,
             raw_id="append-only",
         )
@@ -179,6 +181,7 @@ def test_raw_authority_verdict_cache_execution_keeps_warming_batches_within_its_
                 provider=Provider.CODEX,
                 payload=f"payload-{index}".encode(),
                 source_path="session.jsonl",
+                canonical_source_path="session.jsonl",
                 acquired_at_ms=1,
                 raw_id=raw_id,
             )
