@@ -3090,7 +3090,9 @@ def write_parsed_session_to_archive(
                 add_timing("index.tool_outcomes", t0)
                 t0 = time.perf_counter()
                 if not bulk_build:
-                    refresh_action_pairs(conn, session_id)
+                    # A first save holds no pairs: it issues no prelude delete
+                    # (polylogue-ctha5).
+                    refresh_action_pairs(conn, session_id, prior_rows=prior_session_rows)
                 add_timing("index.action_pairs", t0)
                 t0 = time.perf_counter()
                 _write_session_link(
