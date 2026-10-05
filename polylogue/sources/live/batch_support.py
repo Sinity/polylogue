@@ -1467,19 +1467,21 @@ def _classify_pre_acquisition(
         return PreAcquisitionDecision(None)
     if codex_member is not None:
         return PreAcquisitionDecision("declared out-of-scope or structurally unverified state database")
-    if source_only:
-        return PreAcquisitionDecision(None)
-    if sqlite_classification is not None:
-        return PreAcquisitionDecision("path rule refuses session parsing", fallback_provider)
     origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
     jsonl = is_jsonl_source_path(str(path))
-    if origin_artifact_rule is None and not jsonl:
+    if sqlite_classification is None and origin_artifact_rule is None and not jsonl:
         strong = strong_path_classification(path, provider=fallback_provider)
         if strong is not None and not strong.parse_as_session:
             # Only definitive sidecar paths are excluded before retained
             # acquisition. Weak locations reach the same parser at every
-            # size, where decoded evidence determines their disposition.
+            # size, where decoded evidence determines their disposition. A
+            # path rule reads no bytes, so source-only acquisition applies
+            # it too: intake retains exactly what the baseline requires.
             return PreAcquisitionDecision("path rule classifies this as non-session evidence")
+    if source_only:
+        return PreAcquisitionDecision(None)
+    if sqlite_classification is not None:
+        return PreAcquisitionDecision("path rule refuses session parsing", fallback_provider)
     if origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
         return PreAcquisitionDecision(None, fallback_provider)
     if jsonl:
