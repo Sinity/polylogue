@@ -576,7 +576,10 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
     ]
 
     parsed = parse(raw, "fallback")
-    conn = sqlite3.connect(tmp_path / "index.db")
+    from polylogue.storage.io_phase_metrics import connect_measured
+
+    # The Index seal requires the writer's original measured physical creator.
+    conn = connect_measured(tmp_path / "index.db")
     conn.row_factory = sqlite3.Row
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     session_id = write_fixture_index_session(conn, parsed)
