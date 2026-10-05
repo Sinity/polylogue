@@ -783,7 +783,7 @@ class CompletionRequest(_OperationPayload):
     """One shell-completion question.
 
     ``source`` selects the archive-backed value vocabularies (session ids,
-    user tags, repositories, tool names); every other ``kind`` is answered from
+    user tags, repositories, working directories, tool names); every other ``kind`` is answered from
     the declared query grammar alone and needs no archive. A completer runs on
     every TAB, so ``limit`` is part of the request rather than a server
     default: the shell wants a short list quickly, not a complete one.

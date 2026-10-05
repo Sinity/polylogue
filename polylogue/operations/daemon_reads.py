@@ -901,7 +901,7 @@ _COMPLETION_SESSION_SCAN = 100
 #: deliberately not among them: it is a declared vocabulary that must stay
 #: completable on an archive that does not exist yet, so the CLI answers it
 #: from ``sources.origin_specs`` without a read.
-ARCHIVE_COMPLETION_SOURCES: frozenset[str] = frozenset({"session_id", *_COMPLETION_VALUE_UNITS})
+ARCHIVE_COMPLETION_SOURCES: frozenset[str] = frozenset({"session_id", "cwd_prefix", *_COMPLETION_VALUE_UNITS})
 
 
 def completion_reads_archive(payload: Mapping[str, object]) -> bool:
@@ -946,6 +946,13 @@ def _completion_values(
     values: list[dict[str, object]]
     if source == "session_id":
         values = _session_id_completions(incomplete, archive=_require_archive(archive, source), limit=limit)
+    elif source == "cwd_prefix":
+        values = [
+            {"value": directory, "help": f"{count} sessions"}
+            for directory, count in _require_archive(archive, source).list_working_directory_completions(
+                incomplete, limit=limit
+            )
+        ]
     elif source in _COMPLETION_VALUE_UNITS:
         values = _grouped_completions(source, incomplete, archive=_require_archive(archive, source), limit=limit)
     else:

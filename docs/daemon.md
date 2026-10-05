@@ -1172,3 +1172,9 @@ Its original operation-read owner revalidates archive identity across the pin;
 a generation republished during that interval produces a typed retryable refusal.
 Pages retain `matched_annotation_count`, `next_offset` and
 `selection_truncated`; the page budget bounds delivery rather than total scope.
+
+### Working-directory completion
+
+The declared `completion` read accepts `source="cwd_prefix"`. It filters distinct paths from the original pinned Index's `session_working_dirs` before applying the requested candidate window, ordered by session count and then path. Windows separators are rendered as `/`, matching the canonical cwd query field. Literal `%` and `_` in a prefix remain path characters. The operation shares the resident read cancellation and snapshot lifetime.
+
+Shell `--cwd-prefix` and cwd query completion use this operation. They never open a local archive. A recent answer may be used from the selected archive's 24-hour advisory cache when the daemon is absent; a successful empty answer removes matching cached values. Cache publication skips a contended lock instead of blocking a TAB press.
