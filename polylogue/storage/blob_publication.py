@@ -645,8 +645,16 @@ class ArchiveBlobPublisher(BlobStore):
         with _archive_blob_publisher_slot(self.source_db_path):
             missing = [receipt.blob_hash for receipt in adoptions if not self._adopted_present(receipt)]
             if missing:
-                self.discard_pending()
-                raise AdoptedBlobEvictedError(missing)
+                # The excision ledger is consulted before absence is called a
+                # storage fault: excision removes the bytes on purpose, so an
+                # adopted blob that is gone and excised is refused as excised
+                # by the reservation below (no reservation, recorded like any
+                # flush refusal), never raised as an eviction.
+                excised_missing = self._ledger_excised(missing)
+                missing = [blob_hash for blob_hash in missing if blob_hash not in excised_missing]
+                if missing:
+                    self.discard_pending()
+                    raise AdoptedBlobEvictedError(missing)
             excised = (
                 BlobPublicationReservationStore(self.source_db_path).reserve_many(receipts)
                 if reference_seal is None
@@ -671,6 +679,14 @@ class ArchiveBlobPublisher(BlobStore):
     def refused_as_excised(self, blob_hash: str) -> bool:
         """Whether a flush() refused *blob_hash* because it is excised."""
         return blob_hash in self._refused_as_excised
+
+    def _ledger_excised(self, blob_hashes: Sequence[str]) -> frozenset[str]:
+        """Read the durable excision ledger for *blob_hashes* (caller holds the slot)."""
+        conn = open_readonly_connection(self.source_db_path, timeout_class="background-read", validate_schema=False)
+        try:
+            return _excised_hashes(conn, set(blob_hashes))
+        finally:
+            conn.close()
 
     def excised_now(self, blob_hash: str) -> bool:
         """Whether the durable ledger names *blob_hash*, read under publisher exclusion.

@@ -2071,6 +2071,11 @@ def _prepare_attachment_publications(
                         heartbeat=check_compute_cancelled,
                     )
                 except FileNotFoundError as failure:
+                    # Absent bytes are a storage fault only once the excision
+                    # ledger says they were not removed on purpose; excised
+                    # bytes leave the attachment to its unavailable outcome.
+                    if publisher.excised_now(expected_hash):
+                        continue
                     raise AdoptedBlobEvictedError((expected_hash,)) from failure
                 if (blob.hash_hex, blob.size_bytes) != (expected_hash, expected_size):
                     publisher.discard_prepared(blob)
