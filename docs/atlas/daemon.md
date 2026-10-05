@@ -168,3 +168,11 @@ retain their original runtime callbacks and options. Status makes one resident
 operation request and reports typed absence or refusal instead of recomputing a
 local view. The guided path keeps `polylogued run` in another terminal before
 issuing its resident transcript read.
+
+Cold command branches defer canonical Source vocabulary and coordination
+archive readers until their selected consumer needs them. Selected filters and
+archive reads retain their existing owners, validation and connection cleanup.
+Each process snapshot row classifies its executable and first Python module
+from one complete shell parse. Malformed quoting retains whitespace executable
+classification and refuses module inference; classification is local to that
+observation.

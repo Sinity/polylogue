@@ -9,13 +9,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from polylogue.sources.origin_specs import public_origin_tokens
-
 __all__ = ["public_origin_filter_tokens", "unknown_origin_filter_tokens"]
 
 
 def public_origin_filter_tokens() -> tuple[str, ...]:
     """Return origin tokens accepted by public filter arguments."""
+    from polylogue.sources.origin_specs import public_origin_tokens
+
     return public_origin_tokens()
 
 
