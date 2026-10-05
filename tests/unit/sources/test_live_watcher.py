@@ -58,6 +58,7 @@ from polylogue.storage.archive_readiness import raw_materialization_readiness_sn
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.raw_owner_routes import replay_retained_raws_async, seed_membership_census
 
@@ -4020,6 +4021,7 @@ async def test_archive_write_budget_leaves_unwritten_page_tail_retryable(
             ],
         )
     cursor = CursorStore(tmp_path / "live.sqlite")
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
         (WatchSource(name="codex", root=root),),
@@ -4135,6 +4137,7 @@ async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
 
     monkeypatch.setattr("polylogue.sources.live.batch.classify_pre_acquisition", slow_classify)
     cursor = CursorStore(tmp_path / "live.sqlite")
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
         (WatchSource(name="codex", root=root),),
@@ -4544,6 +4547,7 @@ async def test_a_budgeted_pass_with_a_no_session_file_stays_a_retryable_attempt(
             encoding="utf-8",
         )
     cursor = CursorStore(tmp_path / "live.sqlite")
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
         (WatchSource(name="claude-code", root=root),),

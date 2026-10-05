@@ -12,6 +12,7 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_observability import record_attempt_progress
 from polylogue.sources.live.batch_support import _AppendPlan
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.archive_templates import bootstrap_archive_root
 
 
 def test_cursor_progress_writes_do_not_raise_on_transient_sqlite_lock(
@@ -226,6 +227,7 @@ async def test_archive_lock_never_advances_or_excludes_cursor(
     payload = b'{"type":"session_meta","payload":{"id":"retry-me"}}\n'
     source.write_bytes(payload)
     cursor = CursorStore(tmp_path / "ops.db")
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="codex", root=root),),

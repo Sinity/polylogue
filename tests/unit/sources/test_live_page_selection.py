@@ -17,6 +17,7 @@ from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import _AppendPlan, encode_cursor_hash_authority
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
 
@@ -309,6 +310,7 @@ def test_codex_append_plan_recovers_identity_from_session_meta_when_source_row_m
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
     )
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="codex", root=root),),

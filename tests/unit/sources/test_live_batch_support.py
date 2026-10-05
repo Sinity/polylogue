@@ -642,6 +642,7 @@ def _seed_live_append_plan(
     ).encode()
     path.write_bytes(baseline)
     index_db = archive_root / "index.db"
+    bootstrap_archive_root(archive_root)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -723,6 +724,7 @@ def _seed_claude_live_append_plan(
     ).encode()
     path.write_bytes(baseline)
     index_db = archive_root / "index.db"
+    bootstrap_archive_root(archive_root)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="claude-code", root=root),),
@@ -989,6 +991,7 @@ def test_live_full_replay_streams_retained_jsonl_raw(
         b'"content":[{"type":"input_text","text":"zero"}]}}\n'
     )
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -1472,6 +1475,7 @@ def test_source_only_zip_replay_resolves_unknown_chatgpt_member_and_keeps_duplic
         zf.writestr("first/conversations.json", payload)
         zf.writestr("second/conversations.json", payload)
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="unknown", root=root),),
@@ -1562,6 +1566,7 @@ def test_zip_duplicate_member_coordinates_stay_distinct_on_the_member_route(tmp_
             zf.writestr(member_name, payload)
 
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -1828,6 +1833,7 @@ def test_full_ingest_acquires_when_index_is_genuinely_semantic_distance_stale(
     pointer = tmp_path / ".index-active-pointer"
     pointer.write_bytes(b"\xff")
 
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -1914,6 +1920,7 @@ def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
     path = root / "empty.jsonl"
     path.write_bytes(b"")
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="codex", root=root),),
@@ -1944,6 +1951,7 @@ def test_full_ingest_unknown_export_without_sessions_records_terminal_evidence(t
     path = root / "export.jsonl"
     path.write_bytes(b"")
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root),),
@@ -1967,6 +1975,7 @@ def test_full_ingest_unknown_weak_path_ndjson_records_terminal_evidence(tmp_path
     path.parent.mkdir(parents=True)
     path.write_bytes(b"")
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root, suffixes=(".jsonl", ".ndjson")),),
@@ -2005,6 +2014,7 @@ def test_full_ingest_unknown_weak_path_json_retains_terminal_evidence(
     assert not has_decoded_session_evidence(path, provider=Provider.UNKNOWN)
 
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root),),
@@ -2045,6 +2055,7 @@ def test_full_ingest_unknown_weak_directory_still_excludes_strong_sidecar(tmp_pa
     path.write_text('{"mapping":{"looks":"conversational"}}', encoding="utf-8")
     path_artifact = classify_artifact_path(path, provider=Provider.UNKNOWN)
     assert path_artifact is not None and path_artifact.kind.value == "metadata_document"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "ops.db"))),
         (WatchSource(name="unknown", root=root, suffixes=(".json",)),),
@@ -2067,6 +2078,7 @@ def test_full_ingest_unknown_malformed_jsonl_records_terminal_decode_and_stops_r
     path = root / "malformed.jsonl"
     path.write_bytes(b'{"broken":}\n{"also_broken":}\n')
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root),),
@@ -2096,6 +2108,7 @@ def test_full_ingest_unknown_malformed_final_jsonl_record_records_terminal_decod
     path = root / "malformed-final.jsonl"
     path.write_bytes(b'{"only_broken":}\n')
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root),),
@@ -2118,6 +2131,7 @@ def test_full_ingest_unknown_json_decode_records_terminal_decode_evidence(tmp_pa
     path = root / "export.json"
     path.write_bytes(b"{")
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root),),
@@ -2140,6 +2154,7 @@ def test_full_ingest_unknown_invalid_utf8_records_terminal_decode_evidence(tmp_p
     path = root / "export.json"
     path.write_bytes(b"\xff")
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root),),
@@ -2165,6 +2180,7 @@ def test_full_ingest_unknown_semantic_value_error_remains_unexplained(
     path = root / "export.json"
     path.write_bytes(b'{"unrelated": "payload"}')
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root),),
@@ -2205,6 +2221,7 @@ def test_full_ingest_defers_incomplete_jsonl_only_after_hot_prefix_proof(
     captured = b'{"type":"session_meta"'
     path.write_bytes(captured)
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="codex", root=root),),
@@ -2248,6 +2265,7 @@ def test_full_ingest_applies_incomplete_record_guard_to_jsonl_txt(
     path = root / "active.jsonl.txt"
     captured = b'{"type":"session_meta"'
     path.write_bytes(captured)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "archive.sqlite"))),
         (WatchSource(name="codex", root=root),),
@@ -2285,6 +2303,7 @@ def test_full_ingest_claude_partial_jsonl_has_provider_specific_evidence(
     captured = b'{"type":"assistant"'
     path.write_bytes(captured)
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="claude-code", root=root),),
@@ -2330,6 +2349,7 @@ def test_streamed_incomplete_jsonl_capture_defers_completed_source_until_authori
     path.write_bytes(captured)
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -2385,6 +2405,7 @@ def test_full_ingest_rejects_incomplete_jsonl_without_hot_prefix_proof(
     path = root / "static.jsonl"
     path.write_bytes(b'{"type":"session_meta"')
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="codex", root=root),),
@@ -2485,6 +2506,7 @@ def test_large_full_ingest_uses_archive(
         encoding="utf-8",
     )
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="codex", root=root),),
@@ -2521,6 +2543,7 @@ def test_streaming_sized_full_ingest_uses_archive(
         b'"content":[{"type":"input_text","text":"hello"}]}}\n' + (b" " * (9 * 1024 * 1024))
     )
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="codex", root=root),),
@@ -2592,6 +2615,7 @@ def test_large_weak_path_uses_streaming_route_before_decoded_evidence(
         + (b" " * (9 * 1024 * 1024))
     )
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="chatgpt", root=root, suffixes=(".json",)),),
@@ -2632,6 +2656,7 @@ def test_threshold_crossing_strong_sidecar_is_excluded_before_streaming(
     path = root / "sessions-index.json"
     path.write_bytes(b"{}")
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="chatgpt", root=root, suffixes=(".json",)),),
@@ -3131,6 +3156,7 @@ def test_full_ingest_bootstraps_archive_root(
     source.write_bytes(payload)
     db_path = tmp_path / "archive.sqlite"
     cursor = CursorStore(db_path)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="codex", root=root),),
@@ -3298,6 +3324,7 @@ def test_full_ingest_retains_sidecar_evidence_and_ingests_genuine_session(tmp_pa
     session_path.write_bytes(session_payload)
 
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="claude-code", root=root),),
@@ -3349,6 +3376,7 @@ def test_unknown_inbox_zip_source_only_route_retains_session_and_sidecars(tmp_pa
         archive.writestr("projects/project/tool-results/toolu.txt", sidecar_payload)
 
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="unknown", root=tmp_path),),
@@ -3515,6 +3543,7 @@ def test_append_plan_chunks_large_tail_without_full_ingest(tmp_path: Path) -> No
     appended = first_chunk + second_chunk
     path.write_bytes(original + appended)
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="chatgpt", root=root),),
@@ -3562,6 +3591,7 @@ def test_append_cursor_survives_source_disappearing_after_admission(
     original = b'{"a":1}\n'
     path.write_bytes(original + b'{"b":2}\n')
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="chatgpt", root=root),),
@@ -3601,6 +3631,7 @@ def test_append_plan_defers_when_tail_has_no_complete_line(tmp_path: Path) -> No
     original = b'{"a":1}\n'
     path.write_bytes(original + b'{"b":')
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="chatgpt", root=root),),
@@ -4048,6 +4079,7 @@ def test_jsonl_stream_retains_append_plan(tmp_path: Path) -> None:
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
     )
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="inbox", root=root, suffixes=(".jsonl",)),),
@@ -4068,6 +4100,7 @@ def test_incomplete_append_is_requeued_not_full_ingested(tmp_path: Path) -> None
     original = b'{"a":1}\n'
     path.write_bytes(original + b'{"b":')
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="chatgpt", root=root),),
@@ -4141,6 +4174,7 @@ def test_codex_append_plan_uses_append_only_session_identity(tmp_path: Path) -> 
         )
         conn.commit()
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -4219,6 +4253,7 @@ def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Pat
         )
         conn.commit()
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -4292,6 +4327,7 @@ def test_codex_append_identity_rejects_mixed_origins_at_same_path(
         )
         conn.commit()
 
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -4344,6 +4380,7 @@ def test_codex_append_identity_rejects_mismatched_index_owner_before_global_fall
         )
         conn.commit()
 
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -4388,6 +4425,7 @@ def test_codex_append_identity_rejects_global_fallback_when_ownership_query_erro
         )
         conn.commit()
 
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -4436,6 +4474,7 @@ def test_latest_raw_fingerprint_ignores_archive_source_row_with_missing_blob(tmp
         )
         conn.commit()
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -4801,6 +4840,7 @@ def test_full_ingest_cursor_hands_off_captured_prefix_after_growth_during_proof(
     path.write_bytes(captured)
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5204,6 +5244,7 @@ def test_rejected_full_cursor_frontier_requires_reauthorization(tmp_path: Path) 
     captured_stat = path.stat()
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5281,6 +5322,7 @@ def test_cursor_invalidation_lock_exhaustion_is_observable(
         mtime_ns=stat.st_mtime_ns,
         failure_count=2,
     )
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5321,6 +5363,7 @@ def test_append_plan_rejects_malformed_hash_authority(tmp_path: Path) -> None:
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
     )
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5598,6 +5641,7 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
     path.write_bytes(prefix + split_record[:split_at])
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5692,6 +5736,7 @@ def test_deferred_full_jsonl_with_prior_session_replays_completed_snapshot(
     path.write_bytes(baseline)
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5845,6 +5890,7 @@ def test_raw_failure_cursor_guard_uses_root_source_tier_for_pointer_index(tmp_pa
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
     )
+    bootstrap_archive_root(archive_root)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=path.parent),),
@@ -5912,6 +5958,7 @@ def test_raw_failure_cursor_guard_rejects_contradictory_or_mismatched_evidence(t
             ),
         )
         source_conn.commit()
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5938,6 +5985,7 @@ def test_captured_incomplete_jsonl_is_rejected_after_source_disappears(
     )
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5990,6 +6038,7 @@ def test_append_persistence_failure_preserves_frontier_for_next_tick(
     path.write_bytes(baseline)
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -6126,6 +6175,7 @@ def test_failed_parser_upgrade_preserves_accepted_parser_identity(
     )
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor_a = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -6142,6 +6192,7 @@ def test_failed_parser_upgrade_preserves_accepted_parser_identity(
             b'{"type":"response_item","payload":{"type":"message","id":"message-1",'
             b'"role":"assistant","content":[{"type":"output_text","text":"one"}]}}\n'
         )
+    bootstrap_archive_root(tmp_path)
     processor_b = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -6253,6 +6304,7 @@ def test_full_batch_declared_artifact_is_admitted_before_pending_raw_write(
     payload = b'{"contentKey":"call-2","agentId":"agent-b"}\n'
     source.write_bytes(payload)
     expected_mtime_ms = int(source.stat().st_mtime * 1000)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="claude-code", root=root),),
@@ -6294,6 +6346,7 @@ def test_full_batch_session_shaped_workflow_journal_reaches_parser_idempotently(
         b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
         b'"timestamp":"2025-01-01T00:00:01Z"}\n'
     )
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="claude-code", root=root),),
@@ -6335,6 +6388,7 @@ def test_large_full_batch_session_shaped_workflow_journal_reaches_parser_idempot
         b'"timestamp":"2025-01-01T00:00:01Z"}\n'
     )
     assert source.stat().st_size > _STREAMING_FULL_INGEST_BYTES
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="claude-code", root=root),),
@@ -6360,6 +6414,7 @@ def test_full_batch_malformed_workflow_journal_remains_typed_evidence(tmp_path: 
     source = root / "subagents" / "workflows" / "wf-batch" / "journal.jsonl"
     source.parent.mkdir(parents=True)
     source.write_bytes(b'{"contentKey":"broken"\n')
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="claude-code", root=root),),
@@ -6463,6 +6518,7 @@ def test_public_full_blob_batch_bind_failure_persists_bytes_and_allows_source_on
     )
     source.write_bytes(payload)
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -6572,6 +6628,7 @@ def test_full_parse_failure_retains_typed_raw_failure(
     source = root / "full-bad.jsonl"
     source.write_bytes(b"{bad json}\n")
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -6611,6 +6668,7 @@ def test_full_archive_lock_propagates_for_watcher_retry(
         b'"role":"user","content":[{"type":"input_text","text":"zero"}]}}\n'
     )
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -6689,6 +6747,7 @@ def test_full_multi_session_failure_retries_without_success_mapping(
     source = root / "full-multi.jsonl"
     source.write_bytes(b"{}\n")
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -6944,6 +7003,7 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
         encoding="utf-8",
     )
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="inbox", root=root, suffixes=(".json",)),),
@@ -7178,6 +7238,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
     third = root / "third.json"
     third.write_text(json.dumps([conversation("shared", "base", "left", "extra")]), encoding="utf-8")
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="inbox", root=root, suffixes=(".json",)),),
@@ -7372,6 +7433,7 @@ def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_hea
     # Byte-level formatting changes create a new retained raw while preserving
     # the provider session. The live route reparses the accepted raw too.
     snapshot.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="inbox", root=root, suffixes=(".json",)),),
@@ -7406,6 +7468,7 @@ def test_single_session_full_terminally_supersedes_older_membership_prefix(
     bundle.write_bytes(b'{"bundle":true}\n')
     older.write_bytes(b'{"older":true}\n')
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -7529,6 +7592,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
     current.write_bytes(b'{"current":true}\n')
     older_bundle.write_bytes(b'{"bundle":true}\n')
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -7727,6 +7791,7 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
     current.write_bytes(b'{"current":true}\n')
     incident_recovery.write_bytes(b'{"bundle":true}\n')
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -7953,6 +8018,7 @@ def test_single_session_full_cannot_overwrite_divergent_membership_head(
     bundle.write_bytes(b'{"bundle":true}\n')
     divergent.write_bytes(b'{"divergent":true}\n')
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -8041,6 +8107,7 @@ def test_single_session_full_advances_authorized_metadata_only_head(
     bundle.write_bytes(b'{"bundle":true}\n')
     metadata_update.write_bytes(b'{"metadata_update":true}\n')
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -8103,6 +8170,7 @@ def test_bundle_promotes_prior_single_full_into_membership_authority(
     single.write_bytes(b'{"single":true}\n')
     bundle.write_bytes(b'{"bundle":true}\n')
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -8284,6 +8352,7 @@ def test_live_raw_compaction_ignores_cursor_db_without_source_db(tmp_path: Path)
                 ('raw-old', '/tmp/old.jsonl', 0, 10, '2026-01-01T00:00:00+00:00');
             """
         )
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor_db))),
         (WatchSource(name="codex", root=root),),
@@ -8309,6 +8378,7 @@ async def test_live_full_ingest_skips_convergence_without_session_changes(
     path = root / "unchanged.json"
     path.write_text("{}", encoding="utf-8")
     cursor = CursorStore(tmp_path / "live.sqlite")
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path))),
         (WatchSource(name="sessions", root=root, suffixes=(".json",)),),
@@ -8486,6 +8556,7 @@ def test_gemini_cli_checkpoint_over_the_streaming_bound_reaches_the_archive(tmp_
     assert source.stat().st_size > _STREAMING_FULL_INGEST_BYTES
 
     cursor = CursorStore(tmp_path / "index.db")
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="gemini-cli", root=root),),
@@ -8605,6 +8676,7 @@ def test_codex_state_filename_alone_does_not_route_a_foreign_file_to_codex_acqui
 def _live_processor(tmp_path: Path, root: Path, *, source_name: str) -> tuple[LiveBatchProcessor, CursorStore]:
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name=source_name, root=root),),
@@ -9188,6 +9260,7 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
     for path in (first, second):
         path.write_text("{}", encoding="utf-8")
     cursor = CursorStore(tmp_path / "live.sqlite")
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path))),
         (WatchSource(name="sessions", root=root, suffixes=(".json",)),),
@@ -9417,6 +9490,7 @@ def _settled_proof_fixture(tmp_path: Path) -> tuple[Path, bytes, os.stat_result,
     path.write_bytes(captured)
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -9741,6 +9815,7 @@ def test_live_zip_crc_failure_preserves_pending_input_without_prefix_publication
     wire[second_header + 16] ^= 1  # Actual member read now fails its central CRC.
     bundle.write_bytes(wire)
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
