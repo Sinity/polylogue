@@ -34,7 +34,8 @@ def _accepted_ingest_state(tmp_path: Path) -> dict[str, object]:
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-await", archive_root=tmp_path):
+        publisher.flush()
     publication_id = publisher.receipt_id(blob_hash)
     assert publication_id is not None
     manifest = _leased_ingest_manifest(
