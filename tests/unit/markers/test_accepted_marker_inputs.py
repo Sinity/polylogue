@@ -31,7 +31,7 @@ from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.index_writer import fixture_index_mutation_scope, write_fixture_index_session
 from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
 
 
@@ -301,13 +301,17 @@ def test_prepared_fallback_append_and_lineage_coordinates_match_writer(workspace
         session = _session("::note: repeated")
         first = prepare_session_write(conn, session, merge_append=False)
         first_candidate = marker_candidates_for_prepared_write(first)[0]
-        write_fixture_index_session(conn, session, prepared_write=first, content_hash=first.input_content_hash.hex())
+        with fixture_index_mutation_scope(conn):
+            write_fixture_index_session(
+                conn, session, prepared_write=first, content_hash=first.input_content_hash.hex()
+            )
         second = prepare_session_write(conn, session, merge_append=True)
         second_candidate = marker_candidates_for_prepared_write(second)[0]
         assert first_candidate["provenance"] != second_candidate["provenance"]
-        write_fixture_index_session(
-            conn, session, prepared_write=second, merge_append=True, content_hash=second.input_content_hash.hex()
-        )
+        with fixture_index_mutation_scope(conn):
+            write_fixture_index_session(
+                conn, session, prepared_write=second, merge_append=True, content_hash=second.input_content_hash.hex()
+            )
         stored = {row[0] for row in conn.execute("SELECT block_id FROM blocks")}
         assert _nested(first_candidate, "provenance", "block_id") in stored
         assert _nested(second_candidate, "provenance", "block_id") in stored
@@ -327,9 +331,10 @@ def test_prepared_fallback_append_and_lineage_coordinates_match_writer(workspace
         prepared_child = prepare_session_write(conn, child, merge_append=False)
         candidates = marker_candidates_for_prepared_write(prepared_child)
         assert [_nested(candidate, "match", "body") for candidate in candidates] == ["child"]
-        write_fixture_index_session(
-            conn, child, prepared_write=prepared_child, content_hash=prepared_child.input_content_hash.hex()
-        )
+        with fixture_index_mutation_scope(conn):
+            write_fixture_index_session(
+                conn, child, prepared_write=prepared_child, content_hash=prepared_child.input_content_hash.hex()
+            )
         stored = {
             row[0] for row in conn.execute("SELECT block_id FROM blocks WHERE session_id = 'codex-session:child'")
         }
