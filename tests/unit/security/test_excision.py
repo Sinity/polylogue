@@ -199,6 +199,7 @@ class TestApplySessionExcision:
         # effect on the raw (raw row, parser census, blob ref); excision removes
         # every row naming the excised raw, however many the journal holds.
         with sqlite3.connect(tmp_path / "source.db") as source:
+            raw_ids = [str(row[0]) for row in source.execute("SELECT raw_id FROM raw_sessions")]
             journal_rows = source.execute(
                 "SELECT COUNT(*) FROM raw_existence_changes WHERE raw_id IN (SELECT raw_id FROM raw_sessions)"
             ).fetchone()[0]
@@ -210,7 +211,15 @@ class TestApplySessionExcision:
         assert receipt["counts"]["index_messages"] == 1
         assert receipt["counts"]["index_blocks"] == 1
         assert receipt["counts"]["source_raw_rows"] == 1
-        assert receipt["counts"]["source_raw_existence_changes"] == journal_rows
+        # Excision's own raw and blob-ref deletes append journal rows that it
+        # also removes, so the receipt counts at least the prior rows and none
+        # naming the raw survive.
+        assert receipt["counts"]["source_raw_existence_changes"] >= journal_rows
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            assert source.execute(
+                f"SELECT COUNT(*) FROM raw_existence_changes WHERE raw_id IN ({','.join('?' * len(raw_ids))})",
+                raw_ids,
+            ).fetchone() == (0,)
         assert receipt["counts"]["source_blob_refs"] == 1
         assert receipt["counts"]["embeddings_vectors"] == 1
         assert len(receipt["removed_blob_hashes"]) == 1
