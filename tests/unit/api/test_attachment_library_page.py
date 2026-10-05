@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -9,6 +10,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from polylogue import Polylogue
+from polylogue.storage.io_phase_metrics import connect_measured
 from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.index_writer import write_fixture_index_session
 
@@ -75,7 +77,8 @@ async def test_attachment_library_pages_keep_session_and_transcript_order(
     db_path = workspace_env["archive_root"] / "index.db"
 
     def seed() -> None:
-        with sqlite3.connect(db_path) as conn:
+        # The fixture writer prepares on its original measured physical creator.
+        with closing(connect_measured(db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             initialize_archive_tier(conn, ArchiveTier.INDEX)
             for native_id, timestamp in [("a-old", "2026-01-01T00:00:00Z"), ("z-new", "2026-01-02T00:00:00Z")]:

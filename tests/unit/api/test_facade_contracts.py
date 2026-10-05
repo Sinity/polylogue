@@ -179,6 +179,8 @@ READ_NULLARY_METHODS: frozenset[str] = frozenset(
         "origin_usage_report",
         "session_usage_reconciliation",
         "count_sessions",
+        "storage_counts",
+        "query_capability_readiness",
         "get_index_status",
         "get_stats_by",
         "parse_sources",
