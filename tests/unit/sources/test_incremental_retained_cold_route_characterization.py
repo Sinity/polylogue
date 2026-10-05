@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.sources.live import WatchSource
@@ -27,7 +28,9 @@ from polylogue.sources.live.cold_build import (
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.derived.raw import RawObservationDerivation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.live_ingest import prepared_live_convergence_owner
 
 
 def _payload() -> bytes:
@@ -136,18 +139,28 @@ def _replay_until_valid(archive_root: Path, raw_id: str) -> None:
     A byte-revision raw first owes its source classification; the next pass
     publishes the prepared carrier.
     """
-    derivation = RawObservationDerivation(archive_root)
-    for _attempt in range(3):
-        frame = raw_observation_frame(archive_root)
-        replacement = derivation.compute(frame, raw_id)
-        try:
-            derivation.publish(frame, replacement)
-        finally:
-            if replacement.scratch_owner is not None:
-                replacement.scratch_owner.cleanup()
-        if derivation.inspect(raw_observation_frame(archive_root), (raw_id,))[raw_id] == "valid":
-            return
-    raise AssertionError(f"retained replay did not converge for {raw_id}")
+
+    def replay(compute_adapter: BoundedComputeAdapter) -> bool:
+        derivation = RawObservationDerivation(archive_root, compute_adapter=compute_adapter)
+        for _attempt in range(3):
+            frame = raw_observation_frame(archive_root)
+            replacement = derivation.compute(frame, raw_id)
+            try:
+                with write_lease("test.retained-cold-route.publish", archive_root=archive_root):
+                    derivation.publish(frame, replacement)
+            finally:
+                if replacement.scratch_owner is not None:
+                    replacement.scratch_owner.cleanup()
+            if derivation.inspect(raw_observation_frame(archive_root), (raw_id,))[raw_id] == "valid":
+                return True
+        return False
+
+    async def run() -> bool:
+        async with prepared_live_convergence_owner(archive_root) as owner:
+            return await owner.run_convergence_sync("test.retained-cold-route", replay, owner._compute_adapter)
+
+    if not asyncio.run(run()):
+        raise AssertionError(f"retained replay did not converge for {raw_id}")
 
 
 def test_live_retained_and_owned_cold_routes_publish_one_interpretation(tmp_path: Path) -> None:

@@ -320,7 +320,8 @@ def test_w9_source_only_protobuf_does_not_invoke_converter(
     monkeypatch.setattr(source_parsing, "iter_antigravity_language_server_sessions", unexpected_converter)
     set_degraded(DegradedReason(code="schema_version_mismatch", message="derived tier unavailable", derived_only=True))
     try:
-        result = processor._ingest_full_paths_sync([source], source_name="antigravity")
+        # A protobuf trajectory is not a SQLite state path; it has no capture.
+        result = processor._ingest_full_paths_sync([source], source_name="antigravity", captured_sqlite_by_path={})
     finally:
         clear_degraded()
     assert result.succeeded == [source]

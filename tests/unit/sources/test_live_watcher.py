@@ -59,7 +59,7 @@ from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.frozen_clock import FrozenClock
-from tests.infra.raw_owner_routes import replay_retained_raws_async
+from tests.infra.raw_owner_routes import replay_retained_raws_async, seed_membership_census
 
 
 class _FullIngestMock:
@@ -4244,9 +4244,8 @@ def test_decided_unresolved_membership_reconciles_the_cursor_instead_of_re_readi
             source_path=str(source_path),
             acquired_at_ms=1,
         )
-        archive.replace_raw_membership_census(
-            raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
-        )
+    seed_membership_census(tmp_path, [(raw_id, [session])], parser_fingerprint="test-parser")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.apply_raw_membership_classification(
             "codex-session:decided-unresolved",
             MembershipClassification((), (), (raw_id,)),
@@ -4331,10 +4330,12 @@ def test_cursor_reconciliation_restores_the_newest_archived_outcome(
             acquired_at_ms=decided_at_ms,
         )
         parsed = {materialized: session("m0"), decided: session("m0", "m1")}
-        for raw_id, parsed_session in parsed.items():
-            archive.replace_raw_membership_census(
-                raw_id, [parsed_session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
-            )
+    seed_membership_census(
+        tmp_path,
+        [(raw_id, [parsed_session]) for raw_id, parsed_session in parsed.items()],
+        parser_fingerprint="test-parser",
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.apply_raw_membership_classification(
             "codex-session:newest-outcome",
             MembershipClassification((materialized,), (), (decided,)),

@@ -28,6 +28,7 @@ from tests.infra.archive_templates import run_archive_fixture_write
 from tests.infra.live_ingest import prepared_live_convergence_owner
 
 if TYPE_CHECKING:
+    from polylogue.archive.revision_authority import RawRevisionAuthority
     from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
     from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
     from polylogue.sources.live.metrics import LiveBatchMetrics
     from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
+    from polylogue.sources.parsers.base import ParsedSession
     from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 
 
@@ -207,6 +209,80 @@ def run_ingest_files(processor: LiveBatchProcessor, paths: Sequence[Path], **kwa
     return asyncio.run(ingest_files_with_owners(processor, paths, **kwargs))
 
 
+async def seed_membership_census_async(
+    archive_root: Path,
+    entries: Sequence[tuple[str, Sequence[ParsedSession]]],
+    *,
+    parser_fingerprint: str,
+    censused_at_ms: int = 1,
+    revision_authority: RawRevisionAuthority | None = None,
+) -> None:
+    """Record membership census receipts through the canonical prepared Source route.
+
+    Each census is prepared on one original source-only seal and published by
+    its own Source permit under the raw owner's admitted worker, the same
+    sequence production preparation uses. No eager census wrapper is involved.
+    """
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import replace_raw_membership_census
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    async with prepared_live_convergence_owner(archive_root) as raw_owner:
+        retained: list[PreparedIndexMutation] = []
+
+        def seed() -> None:
+            seal = PreparedIndexMutation.source_only(archive_root=archive_root)
+            retained.append(seal)
+            with seal:
+                with seal.original_read_snapshot(), seal.source_producer():
+                    for raw_id, sessions in entries:
+                        replace_raw_membership_census(
+                            seal,
+                            raw_id,
+                            list(sessions),
+                            parser_fingerprint=parser_fingerprint,
+                            censused_at_ms=censused_at_ms,
+                            revision_authority=revision_authority,
+                        )
+                permit = seal.prepare_source_mutation()
+
+                def publish() -> None:
+                    with permit.hold_authority(), permit.mutation_connection() as source:
+                        with closing(source.execute("BEGIN IMMEDIATE")):
+                            pass
+                        permit.apply_source_statements(source)
+                        permit.allow_commit(source)
+                        source.commit()
+                        seal.accept_known_tier_commit(permit.committed())
+
+                admit_stage_write("test.membership-census.seed", publish)
+            retained.remove(seal)
+
+        await raw_owner.run_prepared_sync(
+            "test.membership-census.prepare", seed, settlement_owners=lambda: tuple(retained), estimated_bytes=0
+        )
+
+
+def seed_membership_census(
+    archive_root: Path,
+    entries: Sequence[tuple[str, Sequence[ParsedSession]]],
+    *,
+    parser_fingerprint: str,
+    censused_at_ms: int = 1,
+    revision_authority: RawRevisionAuthority | None = None,
+) -> None:
+    """Synchronous form of :func:`seed_membership_census_async`."""
+    asyncio.run(
+        seed_membership_census_async(
+            archive_root,
+            entries,
+            parser_fingerprint=parser_fingerprint,
+            censused_at_ms=censused_at_ms,
+            revision_authority=revision_authority,
+        )
+    )
+
+
 __all__ = [
     "LiveOwnerSet",
     "cold_rebuilt_index",
@@ -218,5 +294,7 @@ __all__ = [
     "replay_retained_raws_async",
     "retained_raw_ids",
     "run_ingest_files",
+    "seed_membership_census",
+    "seed_membership_census_async",
     "supplied_live_owners",
 ]
