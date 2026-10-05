@@ -1168,7 +1168,7 @@ def test_profile_resume_retains_shrinking_required_page_suffix(tmp_path: Path, i
     )
     frame = make_session_profile_frame(index_db, archive_root=root, scope=None)
     prerequisites = (SESSION_SUMMARY_DOMAIN, SESSION_USAGE_ROLLUP_DOMAIN)
-    with write_lease("test.profile-resume"):
+    with write_lease("test.profile-resume", archive_root=root):
         converge(registry, frame, domains=prerequisites)
         assert profile.required_page(frame, cursor=None, limit=4)[0] == tuple(ids[:4])
         first = converge(registry, frame, domains=(SESSION_PROFILE_DOMAIN,), budget=Budget(page=4, publication=2))
@@ -1182,10 +1182,10 @@ def test_profile_resume_retains_shrinking_required_page_suffix(tmp_path: Path, i
         assert _materialize(index_db, ids[2])
         ids.append(seed("g"))
         _mutate(index_db, ids[0], "word_count", "word_count + 1")
-        with write_lease("test.profile-prerequisites"):
+        with write_lease("test.profile-prerequisites", archive_root=root):
             converge(registry, frame, domains=prerequisites)
 
-    with write_lease("test.profile-resume"):
+    with write_lease("test.profile-resume", archive_root=root):
         second = converge(
             registry,
             frame,
@@ -1196,7 +1196,7 @@ def test_profile_resume_retains_shrinking_required_page_suffix(tmp_path: Path, i
     assert second.failed == 0
     assert _status(index_db, ids[2]) == "valid"
     cursor = second.cursor
-    with write_lease("test.profile-resume"):
+    with write_lease("test.profile-resume", archive_root=root):
         while not cursor.position(SESSION_PROFILE_DOMAIN).swept:
             report = converge(
                 registry, frame, domains=(SESSION_PROFILE_DOMAIN,), budget=Budget(page=4, publication=2), cursor=cursor

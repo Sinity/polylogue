@@ -20,10 +20,12 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.archive_templates import run_off_event_loop, seeds_off_event_loop
 from tests.infra.identity import archive_message_id
 from tests.infra.storage_records import make_message, make_session, store_records
 
 
+@seeds_off_event_loop
 def _current_index_db(tmp_path: Path, name: str) -> Path:
     archive_root = tmp_path / name
     initialize_active_archive_root(archive_root)
@@ -560,66 +562,70 @@ async def test_targeted_session_insight_rebuild_async_refreshes_only_affected_gr
     block closes, with no caller-side ``commit()`` in between.
     """
     db_path = tmp_path / "refresh-async-targeted.db"
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session(
-                "conv-chatgpt-a",
-                source_name="chatgpt",
-                title="ChatGPT A",
-                created_at="2026-04-02T10:00:00+00:00",
-                updated_at="2026-04-02T10:05:00+00:00",
-            ),
-            messages=[
-                make_message(
-                    "conv-chatgpt-a:msg-1",
+
+    def _seed_0() -> None:
+        with open_connection(db_path) as conn:
+            store_records(
+                session=make_session(
                     "conv-chatgpt-a",
-                    text="ChatGPT A message",
-                    timestamp="2026-04-02T10:00:00+00:00",
-                )
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        store_records(
-            session=make_session(
-                "conv-claude-a",
-                source_name="claude-ai",
-                title="Claude A",
-                created_at="2026-04-03T09:00:00+00:00",
-                updated_at="2026-04-03T09:05:00+00:00",
-            ),
-            messages=[
-                make_message(
-                    "conv-claude-a:msg-1",
+                    source_name="chatgpt",
+                    title="ChatGPT A",
+                    created_at="2026-04-02T10:00:00+00:00",
+                    updated_at="2026-04-02T10:05:00+00:00",
+                ),
+                messages=[
+                    make_message(
+                        "conv-chatgpt-a:msg-1",
+                        "conv-chatgpt-a",
+                        text="ChatGPT A message",
+                        timestamp="2026-04-02T10:00:00+00:00",
+                    )
+                ],
+                attachments=[],
+                conn=conn,
+            )
+            store_records(
+                session=make_session(
                     "conv-claude-a",
-                    text="Claude A message",
-                    timestamp="2026-04-03T09:00:00+00:00",
-                )
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        rebuild_session_insights_sync(conn)
-        store_records(
-            session=make_session(
-                "conv-chatgpt-b",
-                source_name="chatgpt",
-                title="ChatGPT B",
-                created_at="2026-04-02T11:00:00+00:00",
-                updated_at="2026-04-02T11:05:00+00:00",
-            ),
-            messages=[
-                make_message(
-                    "conv-chatgpt-b:msg-1",
+                    source_name="claude-ai",
+                    title="Claude A",
+                    created_at="2026-04-03T09:00:00+00:00",
+                    updated_at="2026-04-03T09:05:00+00:00",
+                ),
+                messages=[
+                    make_message(
+                        "conv-claude-a:msg-1",
+                        "conv-claude-a",
+                        text="Claude A message",
+                        timestamp="2026-04-03T09:00:00+00:00",
+                    )
+                ],
+                attachments=[],
+                conn=conn,
+            )
+            rebuild_session_insights_sync(conn)
+            store_records(
+                session=make_session(
                     "conv-chatgpt-b",
-                    text="ChatGPT B message",
-                    timestamp="2026-04-02T11:00:00+00:00",
-                )
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        conn.commit()
+                    source_name="chatgpt",
+                    title="ChatGPT B",
+                    created_at="2026-04-02T11:00:00+00:00",
+                    updated_at="2026-04-02T11:05:00+00:00",
+                ),
+                messages=[
+                    make_message(
+                        "conv-chatgpt-b:msg-1",
+                        "conv-chatgpt-b",
+                        text="ChatGPT B message",
+                        timestamp="2026-04-02T11:00:00+00:00",
+                    )
+                ],
+                attachments=[],
+                conn=conn,
+            )
+            conn.commit()
+
+    run_off_event_loop(_seed_0)
 
     async with aiosqlite.connect(db_path) as async_conn:
         async_conn.row_factory = sqlite3.Row
@@ -1250,25 +1256,29 @@ async def test_async_large_session_rebuild_uses_bounded_degraded_profile(
     db_path = tmp_path / "large-session-degraded-async.db"
     native = "conv-large-bounded-async"
     session_id = _sid(native, "codex-session")
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session(native, source_name="codex", title="Large async bounded profile"),
-            messages=[
-                make_message(f"{native}:msg-1", native, text="first prompt"),
-                make_message(f"{native}:msg-2", native, role="assistant", text="answer"),
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        conn.execute(
-            """
-            UPDATE sessions
-            SET message_count = ?, word_count = ?, tool_use_count = ?, thinking_count = ?
-            WHERE session_id = ?
-            """,
-            (50, 1234, 7, 3, session_id),
-        )
-        conn.commit()
+
+    def _seed_1() -> None:
+        with open_connection(db_path) as conn:
+            store_records(
+                session=make_session(native, source_name="codex", title="Large async bounded profile"),
+                messages=[
+                    make_message(f"{native}:msg-1", native, text="first prompt"),
+                    make_message(f"{native}:msg-2", native, role="assistant", text="answer"),
+                ],
+                attachments=[],
+                conn=conn,
+            )
+            conn.execute(
+                """
+                UPDATE sessions
+                SET message_count = ?, word_count = ?, tool_use_count = ?, thinking_count = ?
+                WHERE session_id = ?
+                """,
+                (50, 1234, 7, 3, session_id),
+            )
+            conn.commit()
+
+    run_off_event_loop(_seed_1)
 
     monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 10)
 

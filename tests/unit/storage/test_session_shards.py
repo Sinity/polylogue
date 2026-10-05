@@ -41,6 +41,7 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -62,7 +63,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 def _connect(path: Path) -> sqlite3.Connection:
     # ``uri=True`` matches the archive's own write connection: it is what
     # lets the shard be ATTACHed read-only.
-    conn = sqlite3.connect(path, uri=True)
+    conn = connect_measured(path, uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
