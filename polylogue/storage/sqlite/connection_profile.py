@@ -1329,17 +1329,25 @@ def write_connection_local_pragma_statements(profile: SQLiteConnectionProfile) -
     )
 
 
-def initialize_tier_database_mode(conn: sqlite3.Connection) -> None:
-    """Set a tier's shared writer journal mode while its bootstrap owns the file.
+#: The embeddings tier is published as sealed generation files: the lifecycle
+#: copies bytes and validates them immutably, refusing any -wal/-shm sidecar.
+#: A WAL-mode file grows those sidecars on any read-only open, so the tier is
+#: created in rollback-journal mode, the mode its generation contract declares.
+EMBEDDINGS_TIER_JOURNAL_MODE = "DELETE"
+
+
+def initialize_tier_database_mode(conn: sqlite3.Connection, *, embeddings: bool = False) -> None:
+    """Set a tier's declared journal mode while its bootstrap owns the file.
 
     This is deliberately separate from every writer open: a later open may
     run while a publication or GC transaction owns the tier's mode-transition
     lock, and a mode pragma rewrites the header under a prepared seal. Every
-    tier is created in the writer profile's mode (WAL/NORMAL; source.db's
-    power-loss guarantee remains the durable publication/cursor boundary), so
-    an ordinary open never has a mode to change.
+    tier except embeddings is created in the writer profile's mode (WAL/NORMAL;
+    source.db's power-loss guarantee remains the durable publication/cursor
+    boundary); embeddings uses ``EMBEDDINGS_TIER_JOURNAL_MODE``. An ordinary
+    open therefore never has a mode to change.
     """
-    journal_mode = WRITE_CONNECTION_PROFILE.journal_mode
+    journal_mode = EMBEDDINGS_TIER_JOURNAL_MODE if embeddings else WRITE_CONNECTION_PROFILE.journal_mode
     if journal_mode is None:
         raise RuntimeError("the tier writer profile must declare a journal mode")
     execute_pragma_statement(conn, f"PRAGMA journal_mode={journal_mode}")
