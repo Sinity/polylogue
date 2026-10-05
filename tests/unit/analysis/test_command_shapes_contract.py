@@ -16,6 +16,28 @@ from polylogue.analysis.command_shapes import (
 )
 
 
+def _patch_scratch_creator(monkeypatch: pytest.MonkeyPatch, factory: type[Any]) -> None:
+    """Create the fold's scratch on a measured subclass the law instruments.
+
+    The fold opens scratch through ``scratch_connection_context``; patching its
+    creator keeps the canonical custody owner and measured-creator stamps.
+    """
+    import os
+    import sqlite3
+    import threading
+
+    from polylogue.storage import io_phase_metrics
+    from polylogue.storage.sqlite import connection_profile
+
+    def measured(database: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        conn: io_phase_metrics._MeasuredConnection = sqlite3.connect(str(database), *args, factory=factory, **kwargs)
+        conn._metric_tier = io_phase_metrics.tier_for_path(database)
+        conn._native_creator = (os.getpid(), threading.current_thread())
+        return conn
+
+    monkeypatch.setattr(connection_profile, "connect_measured", measured)
+
+
 def test_command_shape_library_preserves_shell_semantics_before_aggregation() -> None:
     """A SQL-style grouping would lose pipeline and wrapper boundaries."""
 
@@ -117,7 +139,9 @@ def test_scratch_sql_cancellation_settles_connection_and_preserves_failure(
                 aggregate_started = True
             return super().execute(sql, parameters)
 
-    class Connection(sqlite3.Connection):
+    from polylogue.storage.io_phase_metrics import _MeasuredConnection
+
+    class Connection(_MeasuredConnection):
         def cursor(self, factory: Any = None) -> Any:
             return super().cursor(Cursor if factory is None else factory)
 
@@ -126,7 +150,7 @@ def test_scratch_sql_cancellation_settles_connection_and_preserves_failure(
             super().close()
             closed = True
 
-    monkeypatch.setattr(module, "connect_scratch_database", lambda path: sqlite3.connect(path, factory=Connection))
+    _patch_scratch_creator(monkeypatch, Connection)
 
     def checkpoint() -> None:
         if aggregate_started:
@@ -144,7 +168,6 @@ def test_scratch_sql_cancellation_settles_connection_and_preserves_failure(
 def test_scratch_cleanup_preserves_primary_and_distinct_faults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_failure: bool
 ) -> None:
-    import sqlite3
     import tempfile
 
     import polylogue.analysis.command_shapes as module
@@ -154,14 +177,16 @@ def test_scratch_cleanup_preserves_primary_and_distinct_faults(
     cleanup = primary if same_failure else RuntimeError("injected cleanup failure")
     closed = False
 
-    class Connection(sqlite3.Connection):
+    from polylogue.storage.io_phase_metrics import _MeasuredConnection
+
+    class Connection(_MeasuredConnection):
         def close(self) -> None:
             nonlocal closed
             super().close()
             closed = True
             raise cleanup
 
-    monkeypatch.setattr(module, "connect_scratch_database", lambda path: sqlite3.connect(path, factory=Connection))
+    _patch_scratch_creator(monkeypatch, Connection)
 
     def rows() -> Iterator[dict[str, object]]:
         yield {"origin": "codex", "session_id": "s", "tool_command": "foo"}

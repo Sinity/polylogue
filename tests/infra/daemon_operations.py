@@ -141,9 +141,10 @@ def running_daemon_operations(
     """
 
     archive_root = archive_root.resolve()
-    initialize_active_archive_root(archive_root)
+    run_off_event_loop(lambda: initialize_active_archive_root(archive_root))
     if seed_archive is not None:
-        seed_archive(archive_root)
+        seeder = seed_archive
+        run_off_event_loop(lambda: seeder(archive_root))
     socket_path = socket_path or (Path("/tmp") / f"plg-op-{os.getpid()}-{uuid4().hex}.sock")
     if socket_path.parent != Path("/tmp"):
         ensure_private_socket_dir(socket_path.parent)
@@ -410,3 +411,6 @@ def execute_bound_delete(
             )
 
     return stack.write_bridge.run_sync("test.delete.bound-actuator", execute)
+
+
+from tests.infra.archive_templates import run_off_event_loop
