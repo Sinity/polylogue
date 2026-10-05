@@ -3690,6 +3690,7 @@ async def test_full_drive_capture_retains_acquisition_mode_after_gemini_detectio
         encoding="utf-8",
     )
     archive = Polylogue(archive_root=tmp_path / "archive")
+    run_off_event_loop(lambda: bootstrap_archive_root(archive.archive_root))
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="drive", root=root, suffixes=(".json",)),),
@@ -3751,6 +3752,7 @@ async def test_inbox_browser_capture_json_replacement_uses_full_ingest(tmp_path:
     }
     path.write_text(json.dumps(capture([first_turn])), encoding="utf-8")
     archive = Polylogue(archive_root=tmp_path / "archive")
+    run_off_event_loop(lambda: bootstrap_archive_root(archive.archive_root))
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="inbox", root=root, suffixes=(".json", ".jsonl")),),
@@ -3834,6 +3836,7 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
     }
     path.write_text(json.dumps(capture([first_turn])), encoding="utf-8")
     archive = Polylogue(archive_root=tmp_path / "archive")
+    run_off_event_loop(lambda: bootstrap_archive_root(archive.archive_root))
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
@@ -4031,6 +4034,7 @@ async def test_browser_capture_provider_timestamp_advances_reordered_native_snap
     tool = {"provider_turn_id": "tool", "role": "assistant", "text": "tool output", "ordinal": 1}
     path.write_text(json.dumps(capture([prompt, context], updated_at="2026-07-16T00:00:00Z")), encoding="utf-8")
     archive = Polylogue(archive_root=tmp_path / "archive")
+    run_off_event_loop(lambda: bootstrap_archive_root(archive.archive_root))
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
