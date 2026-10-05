@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -29,6 +30,7 @@ from polylogue.core.enums import AssertionKind, BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import write_index_session
 
@@ -138,7 +140,7 @@ class TestWithClauseParsing:
 # ---------------------------------------------------------------------------
 
 
-def _seed_session_with_assertion(root: Path) -> str:
+def _seed_session_with_assertion_sync(root: Path) -> str:
     with ArchiveStore(root) as archive_db:
         write_index_session(
             archive_db,
@@ -176,6 +178,11 @@ def _seed_session_with_assertion(root: Path) -> str:
     finally:
         conn.close()
     return session_id
+
+
+def _seed_session_with_assertion(*args: Any, **kwargs: Any) -> str:
+    """Run setup off the event loop: a synchronous write lease may not block it."""
+    return run_off_event_loop(lambda: _seed_session_with_assertion_sync(*args, **kwargs))
 
 
 class TestAttachBehaviour:

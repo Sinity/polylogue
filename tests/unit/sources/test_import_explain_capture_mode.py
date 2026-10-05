@@ -15,19 +15,20 @@ from typing import get_args
 
 from polylogue.core.enums import Origin, Provider
 from polylogue.sources.import_explain import explain_import_archive
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.surfaces.payloads import CaptureModeResolutionStatus
+from tests.infra.archive_templates import bootstrap_archive_root
 
 _PAYLOAD = b'{"chunkedPrompt": {"chunks": []}}'
 
 
 def _source_db(path: Path) -> sqlite3.Connection:
+    # The archive bootstrap stamps the source tier at its current migrated
+    # version; readers refuse a bare v1 tier as schema skew.
+    bootstrap_archive_root(path.parent)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, ArchiveTier.SOURCE)
     return conn
 
 

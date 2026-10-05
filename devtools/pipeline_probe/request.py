@@ -319,21 +319,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Pipeline stage to execute (default: all)",
     )
     parser.add_argument(
-        "--raw-batch-size",
-        type=int,
-        default=None,
-        help="Use this raw-record batch size for the probe.",
-    )
-    parser.add_argument(
         "--ingest-workers",
         type=int,
         default=None,
         help="Use this worker count for the probe ingest stage.",
-    )
-    parser.add_argument(
-        "--measure-ingest-result-size",
-        action="store_true",
-        help="Measure serialized IngestRecordResult sizes for this probe.",
     )
     parser.add_argument(
         "--workdir",
@@ -417,9 +406,7 @@ def _request_from_args(args: argparse.Namespace) -> PipelineProbeRequest:
         source_blob_root=str(args.source_blob_root) if args.source_blob_root is not None else None,
         manifest_out=str(args.manifest_out) if args.manifest_out is not None else None,
         manifest_in=str(args.manifest_in) if args.manifest_in is not None else None,
-        raw_batch_size=args.raw_batch_size,
         ingest_workers=args.ingest_workers,
-        measure_ingest_result_size=bool(args.measure_ingest_result_size),
         workdir=str(args.workdir) if args.workdir is not None else None,
         json_out=str(args.json_out) if args.json_out is not None else None,
         max_total_ms=args.max_total_ms,

@@ -638,6 +638,7 @@ class TestFunctionsExecLowering:
         """
         import sqlite3
 
+        from polylogue.storage.io_phase_metrics import connect_measured
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
         from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
@@ -661,7 +662,7 @@ class TestFunctionsExecLowering:
             ],
             "functions-exec-fabricated-write",
         )
-        conn = sqlite3.connect(tmp_path / "index.db")
+        conn = connect_measured(tmp_path / "index.db")
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         initialize_archive_tier(conn, ArchiveTier.INDEX)

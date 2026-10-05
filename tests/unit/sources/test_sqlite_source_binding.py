@@ -337,7 +337,7 @@ def test_sink_failure_reaps_the_reader_blocked_on_its_ack(
                 if operation == "bytes":
                     _write_bound_input(binding, FailingSink())
                 elif operation == "preflight_bytes":
-                    source_staging.preflight_bound_bytes(binding, label=source.name, check_stop=fail_callback)
+                    source_staging.preflight_bound_bytes(binding, check_stop=fail_callback)
                 elif operation == "copy":
                     source_staging.copy_bound_input(binding, tmp_path / "copy", heartbeat=fail_callback)
                 else:
@@ -658,7 +658,7 @@ def test_malformed_callback_ack_refuses_reaps_and_removes_private_scratch(
                 if operation == "bytes":
                     _write_bound_input(binding, io.BytesIO())
                 elif operation == "preflight_bytes":
-                    source_staging.preflight_bound_bytes(binding, label=source.name, check_stop=lambda: None)
+                    source_staging.preflight_bound_bytes(binding, check_stop=lambda: None)
                 elif operation == "copy":
                     source_staging.copy_bound_input(binding, tmp_path / "copy", heartbeat=lambda: None)
                 else:
@@ -762,7 +762,8 @@ def test_failed_receipt_publication_preserves_the_previous_generation_and_retry(
     assert set(staging.iterdir()) == initial_entries
     with single_staged_binding(first) as binding:
         assert binding.source_path == original
-        assert sqlite_snapshot.member_export_scope(binding.source_path).tables == ("threads", "thread_spawn_edges")
+        scope = sqlite_snapshot.member_export_scope(binding.source_path)
+        assert (scope.member, scope.origin) == ("state_5.sqlite", "codex-session")
     monkeypatch.setattr(os, "replace", replace)
     second = source_staging.stage_source_input(replacement, staging, check_stop=lambda: None)
     with single_staged_binding(second) as binding:

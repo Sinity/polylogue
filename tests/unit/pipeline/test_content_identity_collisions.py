@@ -40,8 +40,9 @@ from polylogue.sources.parsers.base_models import (
     ParsedSession,
     ParsedSessionEvent,
 )
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome
-from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.index_writer import close_fixture_index_connection, write_fixture_index_session
 
 _NULL_LITERAL = "__POLYLOGUE_NULL__"
 _EMPTY_LITERAL = "__POLYLOGUE_EMPTY__"
@@ -533,7 +534,7 @@ def test_lossy_identity_lowerings_are_injective_and_declared_equivalences_remain
 
 
 def _write(db_path: Path, session: ParsedSession) -> dict[str, object]:
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     outcomes: list[ArchiveWriteOutcome] = []
     try:
@@ -553,7 +554,7 @@ def _write(db_path: Path, session: ParsedSession) -> dict[str, object]:
             )
         ]
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
     assert outcomes and outcomes[0].wrote
     return {"hash": bytes(stored[0]), "address": bytes(message[0]), "tool_inputs": tool_inputs}
 

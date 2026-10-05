@@ -135,7 +135,7 @@ class TestDiscoverSidecarsFromZip:
 
     def test_high_ratio_json_sidecar_remains_available(self, tmp_path: Path) -> None:
         zip_path = tmp_path / "sidecar.zip"
-        sidecar = [{"file_id": "file-abc", "file_name": "notes.md", "padding": "x" * (2 * 1024 * 1024)}]
+        sidecar = [{"file_id": "file-abc", "file_name": "notes.md", "padding": "x" * (4 * 1024 * 1024)}]
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("library_files.json", json.dumps(sidecar))
         with zipfile.ZipFile(zip_path) as archive:

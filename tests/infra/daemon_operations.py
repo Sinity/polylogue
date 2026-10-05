@@ -34,6 +34,7 @@ from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.operation_context import prepare_operation_journals
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import run_off_event_loop
 
 if TYPE_CHECKING:
     from polylogue.operations.mutation_transaction import (
@@ -141,9 +142,15 @@ def running_daemon_operations(
     """
 
     archive_root = archive_root.resolve()
-    initialize_active_archive_root(archive_root)
-    if seed_archive is not None:
-        seed_archive(archive_root)
+
+    def prepare_archive() -> None:
+        initialize_active_archive_root(archive_root)
+        if seed_archive is not None:
+            seed_archive(archive_root)
+
+    # Async tests enter this synchronous stack from their event loop; setup's
+    # synchronous write lease must not block that loop.
+    run_off_event_loop(prepare_archive)
     socket_path = socket_path or (Path("/tmp") / f"plg-op-{os.getpid()}-{uuid4().hex}.sock")
     if socket_path.parent != Path("/tmp"):
         ensure_private_socket_dir(socket_path.parent)
@@ -260,10 +267,21 @@ def cli_daemon_archive(
     at the developer's real home.
     """
 
+    from polylogue.daemon.cli import _acquire_pidfile
+
     archive_root = archive_root.resolve()
-    with running_daemon_operations(
-        archive_root, seed_archive=seed_archive, session_derivation=session_derivation
-    ) as stack:
+    with (
+        contextlib.ExitStack() as residency,
+        running_daemon_operations(
+            archive_root, seed_archive=seed_archive, session_derivation=session_derivation
+        ) as stack,
+    ):
+        # Claim residency exactly as ``polylogued run`` does, and release it
+        # only after the stack drains its writer. The CLI decides whether it is
+        # an offline writer from this lock; without it, an in-process CLI arms
+        # its process-wide offline-writer probe, which then takes archive
+        # custody on the daemon's own operation threads.
+        residency.callback(os.close, _acquire_pidfile(archive_root / "daemon.pid"))
         monkeypatch.setattr("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: stack.socket_path)
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
