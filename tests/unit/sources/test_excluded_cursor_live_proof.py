@@ -13,6 +13,7 @@ import pytest
 import polylogue.sources.live.watcher as live_watcher
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.excluded_cursor_live_proof import run_excluded_cursor_live_proof, verify_receipt
 
 
@@ -78,6 +79,7 @@ def test_parser_fingerprint_revival_calls_real_actuator_and_excludes_unchanged_r
         mtime_ns=stat.st_mtime_ns,
         failure_count=5,
         excluded=True,
+        authority=fixture_cursor_authority(path),
     )
     watcher = LiveWatcher(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
@@ -122,6 +124,7 @@ def test_parser_fingerprint_revival_calls_real_actuator_and_excludes_unchanged_r
         mtime_ns=stat.st_mtime_ns,
         failure_count=5,
         excluded=True,
+        authority=fixture_cursor_authority(path),
     )
     unchanged_watcher = LiveWatcher(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
@@ -173,6 +176,7 @@ def test_full_retry_invalidation_clears_a_stale_exclusion(tmp_path: Path) -> Non
         st_ino=stale.st_ino,
         mtime_ns=stale.st_mtime_ns,
         excluded=True,
+        authority=fixture_cursor_authority(path),
     )
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),

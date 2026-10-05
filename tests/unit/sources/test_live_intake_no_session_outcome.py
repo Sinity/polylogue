@@ -21,7 +21,7 @@ from polylogue.logging import capture
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
-from tests.infra.raw_owner_routes import live_owner_set, replay_retained_raws_async
+from tests.infra.raw_owner_routes import live_owner_set
 
 _MAX_DEFERRED_PAGES = 20
 
@@ -225,8 +225,7 @@ async def test_an_undecodable_json_document_is_excluded_as_corrupt_input(
     with sqlite3.connect(archive_root / "source.db") as conn:
         raw_ids = [str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")]
     assert raw_ids, "live refusal did not retain its accepted raw"
-    # The owner's preparatory census phase runs on replay of the retained refusal.
-    await replay_retained_raws_async(archive_root, raw_ids)
+    # The live pass settles the refusal through its census phase in one pass.
     assert uncensused_historical_revision_raw_ids(archive_root, raw_ids) == ()
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT status FROM raw_authority_parser_census").fetchall() == [("complete",)]

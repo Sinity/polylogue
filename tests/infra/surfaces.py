@@ -10,9 +10,12 @@ substrate and an adapter is caught by the same semantic assertions.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import sqlite3
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -284,6 +287,23 @@ class FacadeSurface:
         await self._archive.close()
 
 
+def _off_event_loop(work: Callable[[], object]) -> None:
+    """Run ``work`` to completion on a worker thread, re-raising its failure."""
+    failures: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            work()
+        except BaseException as failure:
+            failures.append(failure)
+
+    thread = threading.Thread(target=run, name="cli-surface-daemon-start")
+    thread.start()
+    thread.join()
+    if failures:
+        raise failures[0]
+
+
 class CLISurface:
     """Click-CLI adapter projection.
 
@@ -294,14 +314,26 @@ class CLISurface:
     Requires ``workspace_env`` (or equivalent ``POLYLOGUE_ARCHIVE_ROOT`` /
     ``XDG_DATA_HOME`` env vars) so the CLI process resolves the same
     backing database as the substrate surfaces.
+
+    The CLI's read verbs are served by ``polylogued run`` (#5805), and some
+    (``insights.list``) have no in-process transport at all. The surface
+    therefore owns the resident daemon an operator's CLI reaches: the
+    production operation stack on the archive's own socket, stopped by
+    :meth:`close`.
     """
 
     name = "cli"
 
-    def __init__(self, *, db_path: Path) -> None:
+    def __init__(self, *, archive_root: Path, db_path: Path) -> None:
+        from tests.infra.daemon_operations import daemon_serving_archive
+
         # db_path is held for diagnostics; the CLI resolves it via env vars.
         self._db_path = db_path
         self._runner = CliRunner()
+        self._daemon = contextlib.ExitStack()
+        # The stack bootstraps the archive under the synchronous write lease,
+        # which refuses to block a running event loop; start it off the loop.
+        _off_event_loop(lambda: self._daemon.enter_context(daemon_serving_archive(archive_root)))
 
     def _invoke_args(self, args: list[str]) -> tuple[int, str]:
         from polylogue.cli.click_app import cli
@@ -434,7 +466,7 @@ class CLISurface:
         return len(await self.query_ids(query_case))
 
     async def close(self) -> None:
-        return None
+        await asyncio.to_thread(self._daemon.close)
 
 
 class MCPSurface:
@@ -673,7 +705,7 @@ def build_adapter_surface_set(
     surfaces: tuple[ArchiveSurfaceAdapter, ...] = (
         RepositorySurface(db_path),
         FacadeSurface(archive_root=archive_root, db_path=db_path),
-        CLISurface(db_path=db_path),
+        CLISurface(archive_root=archive_root, db_path=db_path),
         MCPSurface(db_path=db_path),
         DaemonHTTPSurface(db_path=db_path),
     )

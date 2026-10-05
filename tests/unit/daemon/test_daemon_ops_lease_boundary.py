@@ -50,6 +50,7 @@ from polylogue.storage.sqlite.write_lease import (
     write_lease,
 )
 from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.cursor_authority import fixture_cursor_authority
 
 
 def _bootstrapped_root(tmp_path: Path) -> Path:
@@ -91,7 +92,7 @@ def test_ops_tier_writes_still_require_the_write_lease(tmp_path: Path) -> None:
     probe = root / "corpus" / "session.jsonl"
 
     with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
-        store.set(probe, 128, record_count=1, source_name="claude-code")
+        store.set(probe, 128, record_count=1, source_name="claude-code", authority=fixture_cursor_authority(probe))
 
 
 @pytest.mark.asyncio

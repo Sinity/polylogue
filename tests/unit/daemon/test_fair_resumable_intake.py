@@ -60,6 +60,7 @@ from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
+from tests.infra.cursor_authority import fixture_cursor_authority
 
 
 class FakeAdapter:
@@ -968,7 +969,7 @@ async def test_durable_retry_alias_is_retired_after_symlink_swap(tmp_path: Path,
     target.write_text("{}")
     source = WatchSource(name="capture", root=root, suffixes=(".json",))
     cursor = CursorStore(tmp_path / "index.db")
-    cursor.set(carrier, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    cursor.set(carrier, 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(carrier))
     parked = root / "parked.json"
     carrier.rename(parked)
     carrier.symlink_to(target)
@@ -1014,7 +1015,7 @@ async def test_escaping_retry_alias_has_bounded_cost_and_distinct_source_identit
         WatchSource(name="target", root=target_root, suffixes=(".json",)),
     )
     cursor = CursorStore(tmp_path / "index.db")
-    cursor.set(alias, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    cursor.set(alias, 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(alias))
     watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
     context = DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=sources)  # type: ignore[arg-type]
     alias_adapter = FileIntakeAdapter(context, sources[0])
@@ -1040,7 +1041,7 @@ async def test_durable_alias_retirement_respects_cursor_authority(tmp_path: Path
     target.write_text("{}")
     source = WatchSource(name="capture", root=root, suffixes=(".json",))
     cursor = CursorStore(tmp_path / "index.db")
-    cursor.set(carrier, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    cursor.set(carrier, 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(carrier))
     carrier.unlink()
     carrier.symlink_to(target)
 
@@ -1075,7 +1076,7 @@ async def test_durable_alias_retirement_skips_path_scoped_refusal(tmp_path: Path
     alias.symlink_to(sibling)
     source = WatchSource(name="capture", root=root, suffixes=(".json",))
     cursor = CursorStore(tmp_path / "index.db")
-    cursor.set(alias, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    cursor.set(alias, 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(alias))
 
     class PartialRefusalProcessor:
         _refused_paths: frozenset[Path] = frozenset()
@@ -1117,7 +1118,7 @@ async def test_path_scoped_refusal_skips_regular_candidate_selection(tmp_path: P
     allowed.write_text("{}")
     source = WatchSource(name="capture", root=root, suffixes=(".json",))
     cursor = CursorStore(tmp_path / "index.db")
-    cursor.set(blocked, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    cursor.set(blocked, 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(blocked))
 
     class PartialRefusalProcessor:
         _refused_paths: frozenset[Path] = frozenset()
@@ -2727,14 +2728,25 @@ async def test_deferred_file_is_reoffered_when_cursor_retry_is_due(tmp_path: Pat
         async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
             self.batches.append(list(paths))
             if len(self.batches) == 1:
-                cursor.set(deferred_path, 2, next_retry_at="2999-01-01T00:00:00+00:00")
+                cursor.set(
+                    deferred_path,
+                    2,
+                    next_retry_at="2999-01-01T00:00:00+00:00",
+                    authority=fixture_cursor_authority(deferred_path),
+                )
                 return SimpleNamespace(
                     succeeded_paths=(str(sibling_path),),
                     deferred_paths=(str(deferred_path),),
                     failed_paths=(str(deferred_path),),
                     source_payload_read_bytes=2,
                 )
-            cursor.set(deferred_path, 2, content_fingerprint="admitted", next_retry_at=None)
+            cursor.set(
+                deferred_path,
+                2,
+                content_fingerprint="admitted",
+                next_retry_at=None,
+                authority=fixture_cursor_authority(deferred_path),
+            )
             return SimpleNamespace(succeeded_paths=(str(deferred_path),), source_payload_read_bytes=2)
 
     watcher = DeferredWatcher()
@@ -2750,7 +2762,9 @@ async def test_deferred_file_is_reoffered_when_cursor_retry_is_due(tmp_path: Pat
     assert (await dispatcher.run_once()).require_report("capture").discovered == 0
     assert watcher.batches == [[deferred_path, sibling_path]]
 
-    cursor.set(deferred_path, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    cursor.set(
+        deferred_path, 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(deferred_path)
+    )
     retried = await dispatcher.run_once()
     assert retried.require_report("capture").admitted == 1
     assert watcher.batches == [[deferred_path, sibling_path], [deferred_path]]
@@ -2937,7 +2951,7 @@ async def test_retry_page_does_not_skip_fresh_files_or_starve_discovery(tmp_path
         path.write_text("{}")
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
     cursor = CursorStore(tmp_path / "index.db")
-    cursor.set(paths[-1], 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    cursor.set(paths[-1], 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(paths[-1]))
     watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
@@ -2962,7 +2976,7 @@ async def test_retry_cursor_keeps_unoffered_page_tail_under_a_byte_budget(tmp_pa
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
     cursor = CursorStore(tmp_path / "index.db")
     for path in paths[:3]:
-        cursor.set(path, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+        cursor.set(path, 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(path))
     watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
@@ -2977,7 +2991,7 @@ async def test_retry_cursor_keeps_unoffered_page_tail_under_a_byte_budget(tmp_pa
     assert adapter._retry_after == str(paths[0])
 
     paths[3].write_text("{}")
-    cursor.set(paths[3], 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    cursor.set(paths[3], 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(paths[3]))
     adapter._retry_turn = True
     tail = await adapter.discover(limit=3)
     assert [item.payload for item in tail] == paths[1:3]
@@ -2992,7 +3006,7 @@ async def test_cooldown_only_retry_page_rotates_within_a_finite_sweep(tmp_path: 
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
     cursor = CursorStore(tmp_path / "index.db")
     for path in paths:
-        cursor.set(path, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+        cursor.set(path, 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(path))
     watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
@@ -3031,7 +3045,7 @@ async def test_parent_retry_query_filters_nested_source_before_limit(tmp_path: P
     child = WatchSource(name="child", root=child_root, suffixes=(".json",))
     cursor = CursorStore(tmp_path / "index.db")
     for path in (*child_paths, parent_path):
-        cursor.set(path, 2, next_retry_at="1970-01-01T00:00:00+00:00")
+        cursor.set(path, 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(path))
     watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(parent, child)),  # type: ignore[arg-type]
@@ -3075,12 +3089,31 @@ def test_due_retry_discovery_is_bounded_scoped_and_read_only(tmp_path: Path) -> 
     root = tmp_path / "source"
     cursor = CursorStore(tmp_path / "index.db")
     for name in ("a.json", "b.json"):
-        cursor.set(root / name, 2, next_retry_at="1970-01-01T00:00:00+00:00")
-    cursor.set(root / "future.json", 2, next_retry_at="2999-01-01T00:00:00+00:00")
-    cursor.set(root / "done.json", 2, content_fingerprint="done")
-    cursor.set(root / "excluded.json", 2, next_retry_at="1970-01-01T00:00:00+00:00")
+        cursor.set(
+            root / name, 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(root / name)
+        )
+    cursor.set(
+        root / "future.json",
+        2,
+        next_retry_at="2999-01-01T00:00:00+00:00",
+        authority=fixture_cursor_authority(root / "future.json"),
+    )
+    cursor.set(
+        root / "done.json", 2, content_fingerprint="done", authority=fixture_cursor_authority(root / "done.json")
+    )
+    cursor.set(
+        root / "excluded.json",
+        2,
+        next_retry_at="1970-01-01T00:00:00+00:00",
+        authority=fixture_cursor_authority(root / "excluded.json"),
+    )
     cursor.mark_excluded(root / "excluded.json")
-    cursor.set(tmp_path / "source-other" / "a.json", 2, next_retry_at="1970-01-01T00:00:00+00:00")
+    cursor.set(
+        tmp_path / "source-other" / "a.json",
+        2,
+        next_retry_at="1970-01-01T00:00:00+00:00",
+        authority=fixture_cursor_authority(tmp_path / "source-other" / "a.json"),
+    )
     assert cursor.list_due_retry_paths(root, after=None, limit=1) == (root / "a.json",)
     assert cursor.list_due_retry_paths(root, after=str(root / "a.json"), limit=2) == (root / "b.json",)
     assert cursor.list_due_retry_paths(root, after=None, limit=0) == ()
