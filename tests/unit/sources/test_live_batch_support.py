@@ -64,7 +64,7 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.convergence_debt import ConvergenceDebt
 from polylogue.sources.live.cursor import ConvergenceDebtSettlement, CursorStore
-from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, SETTLED_EXCLUSION_REASONS
+from polylogue.sources.live.metrics import REFUSED_CORRUPT_INPUT, REFUSED_NO_SESSIONS, SETTLED_EXCLUSION_REASONS
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.source_acquisition_components import stream_preserved_zip_entry_raw_data
 from polylogue.sources.source_parsing import has_decoded_session_evidence
@@ -6477,12 +6477,16 @@ def test_full_batch_malformed_workflow_journal_remains_typed_evidence(tmp_path: 
 
     metrics = run_ingest_files(processor, [source], emit_event=False)
 
-    assert metrics.succeeded_file_count == 1
+    # The retained journal settles as a terminal corrupt-input exclusion.
+    assert metrics.succeeded_file_count == 0
     assert metrics.failed_file_count == 0
+    assert metrics.refused_bytes_by_reason == {REFUSED_CORRUPT_INPUT: source.stat().st_size}
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        # A filename cannot turn a complete corrupt record into artifact
+        # proof: the typed evidence is the corrupt input, not a journal.
         assert conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone() == (
-            "workflow_journal",
+            "terminal_corrupt_input",
             0,
         )
     with sqlite3.connect(tmp_path / "index.db") as conn:
