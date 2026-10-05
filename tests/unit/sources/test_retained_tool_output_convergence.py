@@ -221,7 +221,7 @@ def _processor(
     sources: tuple[WatchSource, ...],
 ) -> tuple[Polylogue, CursorStore, LiveBatchProcessor]:
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "index.db")
-    cursor = CursorStore(workspace_env["data_root"] / "cursor.db")
+    cursor = CursorStore(workspace_env["data_root"] / "cursor.db", ops_db_path=workspace_env["archive_root"] / "ops.db")
     processor = LiveBatchProcessor(
         archive,
         sources,

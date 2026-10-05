@@ -29,6 +29,7 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     seal_prepared_source_manifest,
 )
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.source_builders import prepared_ingest_manifest
@@ -44,7 +45,8 @@ def test_new_acceptance_streams_manifest_beyond_former_input_cap(tmp_path: Path)
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic shared input")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
     manifest = prepared_ingest_manifest(
@@ -87,7 +89,8 @@ def test_ingest_acceptance_replays_identity_without_acquiring(tmp_path: Path, ph
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     publication_id = publisher.receipt_id(blob_hash)
     assert publication_id is not None
     manifest = prepared_ingest_manifest(
@@ -134,7 +137,8 @@ def test_startup_reclaims_interrupted_preaccept_pages_and_unattached_reservation
     first_hash, _ = publisher.write_from_bytes(b"first page")
     first_receipt = publisher.receipt_id(first_hash)
     assert first_receipt is not None
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     with sqlite3.connect(tmp_path / "source.db") as source:
         source.execute("BEGIN IMMEDIATE")
         begin_prepared_source_manifest(
@@ -156,7 +160,8 @@ def test_startup_reclaims_interrupted_preaccept_pages_and_unattached_reservation
         source.commit()
     # The next page's publication can commit before its member batch does.
     publisher.write_from_bytes(b"unattached second page")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
 
     recover_interrupted_operations(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:
@@ -177,7 +182,8 @@ def test_sealed_manifest_acceptance_promotes_every_member_atomically(tmp_path: P
         receipt_id = publisher.receipt_id(blob_hash)
         assert receipt_id is not None
         inputs.append(FrozenSourceInput(f"input:{ordinal}", f"/synthetic/{ordinal}", blob_hash, receipt_id))
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     with sqlite3.connect(tmp_path / "source.db") as source:
         source.execute("BEGIN IMMEDIATE")
         begin_prepared_source_manifest(
@@ -242,7 +248,8 @@ def test_malformed_runtime_authority_never_prepares_source_manifest(tmp_path: Pa
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
     manifest = prepared_ingest_manifest(
@@ -282,7 +289,8 @@ def test_runtime_authority_replay_preserves_frozen_ids_and_machine_part(
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
     manifest = prepared_ingest_manifest(
@@ -373,7 +381,8 @@ def test_runtime_authority_normal_accept_commits_linked_run(tmp_path: Path, froz
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
     manifest = prepared_ingest_manifest(
@@ -434,7 +443,8 @@ def test_deterministically_failed_accept_ingest_leaves_a_recoverable_archive(tmp
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     publication_id = publisher.receipt_id(blob_hash)
     assert publication_id is not None
     manifest = prepared_ingest_manifest(
