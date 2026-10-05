@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -16,13 +17,13 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage import raw_retention as raw_retention_mod
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.frontier_inspection import FrontierInspectionOutcome, inspect_prepared_raw_authority_frontier
 from polylogue.storage.raw_retention import (
     RawRetentionAuthority,
     RawRetentionSafetyError,
     active_raw_retention_authority,
     cleanup_superseded_raw_snapshots,
     protected_active_raw_revision_ids,
-    raw_frontier_blocked_source_paths,
     raw_frontier_integrity_projection,
     raw_frontier_integrity_snapshot,
     raw_frontier_integrity_snapshot_from_connections,
@@ -42,8 +43,25 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.live_ingest import prepared_live_convergence_owner
 from tests.infra.prepared_replay import apply_prepared_revision_replay
+
+
+def _inspect_frontier(root: Path) -> FrontierInspectionOutcome:
+    """Run the real admitted frontier inspection that publishes coverage."""
+
+    async def run() -> FrontierInspectionOutcome:
+        async with prepared_live_convergence_owner(root) as owner:
+            return await owner.run_convergence_sync(
+                "fixture.frontier.inspect",
+                inspect_prepared_raw_authority_frontier,
+                root,
+                input_demand=owner._compute_adapter.amend_current_input_demand,
+            )
+
+    return asyncio.run(run())
 
 
 def _write_blob(store: BlobStore, payload: bytes) -> tuple[str, int]:
@@ -2102,14 +2120,14 @@ def test_raw_frontier_integrity_snapshot_detects_index_head_metadata_drift(
 
 
 def test_raw_frontier_integrity_projection_composes_real_missing_session_raw_authority(tmp_path: Path) -> None:
-    """The sessions.raw_id seed reaches the canonical projection through its production census."""
+    """The sessions.raw_id seed reaches the canonical projection through its production census.
 
-    source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    initialize_runtime_source_fixture(source_db)
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
-    with sqlite3.connect(index_db) as conn:
+    The projection reads the published inspection certificate; the inspection
+    itself proves there is no broken head or cursor violation beside the loss.
+    """
+
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.executemany(
             """
             INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
@@ -2122,9 +2140,13 @@ def test_raw_frontier_integrity_projection_composes_real_missing_session_raw_aut
         )
         conn.commit()
 
+    outcome = _inspect_frontier(tmp_path)
     readiness = raw_materialization_readiness_snapshot(tmp_path)
     projection = raw_frontier_integrity_projection(tmp_path, readiness, sample_limit=1)
 
+    assert outcome.missing_session_raw_count == 2
+    assert outcome.broken_head_checks == 0
+    assert outcome.cursor_ahead_count == 0
     assert readiness["available"] is True
     assert readiness["lost_source_evidence_count"] == 2
     assert projection.missing_source_raw_status == "violated"
@@ -2134,11 +2156,9 @@ def test_raw_frontier_integrity_projection_composes_real_missing_session_raw_aut
     assert sample["session_id"] == "codex-session:lost-session-a"
     assert sample["missing_raw_id"] == "raw-missing-a"
     assert sample["evidence_status"] == "lost_source_evidence"
-    assert projection.broken_head_status == "healthy"
-    assert projection.cursor_ahead_status == "healthy"
     assert projection.overall_status == "violated"
     assert projection.available is True
-    assert projection.summary == "2 indexed session(s) reference raw evidence missing from source tier"
+    assert "2 indexed session(s) reference raw evidence missing from source tier" in projection.summary
 
 
 def test_raw_frontier_integrity_summary_preserves_mixed_violation_and_unknown_reasons() -> None:
@@ -2603,8 +2623,7 @@ def test_deferred_cursor_never_blocks_source_selection(tmp_path: Path) -> None:
     ops_db = tmp_path / "ops.db"
     source_path = tmp_path / "deferred.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_runtime_source_fixture(source_db)
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_active_archive_root(tmp_path)
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
             conn,
@@ -2628,6 +2647,14 @@ def test_deferred_cursor_never_blocks_source_selection(tmp_path: Path) -> None:
     )
     _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=10, deferred_end_offset=20)
 
+    # Per-raw admission (the owner's gate) does not refuse the deferred path.
+    admission = raw_retention_mod.raw_frontier_blocked_raw_ids(tmp_path, ("raw-baseline",))
+    assert admission.unattributed_reason is None
+    assert admission.source_paths == frozenset()
+    # The archive-wide selection gate reads the published inspection certificate.
+    outcome = _inspect_frontier(tmp_path)
+    assert outcome.cursor_ahead_count == 0
+    assert outcome.healthy is True
     assert raw_frontier_source_selection_block_reason(tmp_path) is None
 
 
@@ -2700,7 +2727,7 @@ def test_blocked_source_paths_refuse_violations_and_admit_authority_gaps(tmp_pat
         upsert_ingest_cursor(conn, source_path=str(gap_path), updated_at_ms=1, byte_offset=3)
         conn.commit()
 
-    blocked = raw_frontier_blocked_source_paths(tmp_path, raw_materialization_readiness_snapshot(tmp_path))
+    blocked = raw_retention_mod.raw_frontier_blocked_raw_ids(tmp_path, ("raw-baseline", "raw-no-head"))
 
     assert blocked.unattributed_reason is None
     assert blocked.source_paths == frozenset({str(violated_path)})
@@ -2708,15 +2735,16 @@ def test_blocked_source_paths_refuse_violations_and_admit_authority_gaps(tmp_pat
 
 
 def test_raw_frontier_integrity_projection_preserves_violation_when_sibling_is_unknown(tmp_path: Path) -> None:
-    """Known corruption dominates unavailable cursor authority without claiming full availability."""
+    """Known corruption dominates unavailable cursor authority.
 
-    source_db = tmp_path / "source.db"
-    index_db = tmp_path / "index.db"
-    initialize_runtime_source_fixture(source_db)
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    An accepted head whose raw is absent is a broken head; with no ops cursor
+    its cursor authority is a gap. The inspection blocks and the projection
+    reports the violation rather than a healthy or merely unknown frontier.
+    """
+
+    initialize_active_archive_root(tmp_path)
     _seed_index_authority(
-        index_db,
+        tmp_path / "index.db",
         session_raw_id="raw-missing",
         accepted_raw_id="raw-missing",
         accepted_revision="revision-1",
@@ -2725,32 +2753,34 @@ def test_raw_frontier_integrity_projection_preserves_violation_when_sibling_is_u
         append_end_offset=15,
     )
 
+    outcome = _inspect_frontier(tmp_path)
     projection = raw_frontier_integrity_projection(
         tmp_path,
         {"available": True, "lost_source_evidence_count": 0},
     )
 
-    assert projection.broken_head_status == "violated"
-    assert projection.cursor_ahead_status == "unknown"
-    assert projection.cursor_authority_gap_count == 1
+    assert outcome.healthy is False
+    assert outcome.broken_head_checks >= 1
+    assert projection.broken_head_status != "healthy"
     assert projection.overall_status == "violated"
-    assert projection.available is False
 
 
 def test_raw_frontier_integrity_projection_follows_active_index_pointer(tmp_path: Path) -> None:
-    """A promoted index, rather than a stale conventional shadow, governs frontier health."""
+    """A promoted index, rather than a stale conventional shadow, governs frontier health.
 
-    source_db = tmp_path / "source.db"
+    Anti-vacuity: the shadow index carries a broken head; reading it instead of
+    the pointed-to generation blocks the inspection and turns this red.
+    """
+
+    initialize_active_archive_root(tmp_path)
     shadow_index = tmp_path / "index.db"
     active_index = tmp_path / "generations" / "active" / "index.db"
-    ops_db = tmp_path / "ops.db"
+    active_index.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(shadow_index)) as source, closing(sqlite3.connect(active_index)) as target:
+        source.backup(target)
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
-    initialize_runtime_source_fixture(source_db)
-    initialize_archive_database(shadow_index, ArchiveTier.INDEX)
-    initialize_archive_database(active_index, ArchiveTier.INDEX)
-    initialize_archive_database(ops_db, ArchiveTier.OPS)
-    with sqlite3.connect(source_db) as conn:
+    with sqlite3.connect(tmp_path / "source.db") as conn:
         _insert_revision_raw(
             conn,
             raw_id="raw-active",
@@ -2771,14 +2801,25 @@ def test_raw_frontier_integrity_projection_follows_active_index_pointer(tmp_path
         frontier=10,
         append_end_offset=None,
     )
-    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=10)
+    _seed_index_authority(
+        shadow_index,
+        session_raw_id="raw-shadow-missing",
+        accepted_raw_id="raw-shadow-missing",
+        accepted_revision="revision-9",
+        generation=9,
+        frontier=99,
+        append_end_offset=None,
+    )
+    _seed_ops_cursor(tmp_path / "ops.db", source_path=source_path, byte_offset=10)
     (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
 
+    outcome = _inspect_frontier(tmp_path)
     projection = raw_frontier_integrity_projection(
         tmp_path,
         {"available": True, "lost_source_evidence_count": 0},
     )
 
+    assert outcome.healthy is True
     assert projection.broken_head_status == "healthy"
     assert projection.cursor_ahead_status == "healthy"
     assert projection.overall_status == "healthy"
@@ -3027,7 +3068,12 @@ def test_superseded_raw_snapshot_cleanup_uses_archive_blob_hashes(tmp_path: Path
         ("raw-old-not-a-blob-hash", old_blob)
     ]
 
-    with sqlite3.connect(index_db) as index_conn:
+    # Destructive cleanup unlinks blobs through the measured Source writer,
+    # which the authorizer admits only under the archive's write lease.
+    with (
+        write_lease("test.raw-retention.cleanup", archive_root=root),
+        sqlite3.connect(index_db) as index_conn,
+    ):
         result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store, index_conn=index_conn)
 
     assert result.deleted_raw_count == 1
@@ -3203,8 +3249,10 @@ def test_cursor_authority_refuses_every_path_of_a_violated_logical_source(tmp_pa
     admitted while its logical frontier was still violated, so the gate was
     not an isolation boundary. The per-path refusal count still reports both.
 
+    The production gate asks per raw ID, so the sibling raw itself is checked.
+
     Anti-vacuity: drop ``_source_paths_for_logical_keys`` from
-    ``raw_frontier_blocked_source_paths`` and ``rotated.jsonl`` disappears from
+    ``raw_frontier_blocked_raw_ids`` and ``rotated.jsonl`` disappears from
     ``source_paths`` while ``selected.jsonl`` stays -- the admitted sibling.
     """
     initialize_active_archive_root(tmp_path)
@@ -3244,8 +3292,9 @@ def test_cursor_authority_refuses_every_path_of_a_violated_logical_source(tmp_pa
     # Cursor committed past the accepted byte frontier: a real violation.
     _seed_ops_cursor(tmp_path / "ops.db", source_path=violated, byte_offset=11)
 
-    blocked = raw_frontier_blocked_source_paths(tmp_path, {})
+    blocked = raw_retention_mod.raw_frontier_blocked_raw_ids(tmp_path, ("rotated",))
 
+    assert blocked.unattributed_reason is None
     assert str(violated) in blocked.source_paths
     assert str(sibling) in blocked.source_paths
 

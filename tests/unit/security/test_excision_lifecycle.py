@@ -277,6 +277,9 @@ class TestPrimaryInvalidatesOnlyAfterConfirmation:
             index_conn.close()
 
         conn = sqlite3.connect(user_db)
+        # The resident writer profile keeps user.db in WAL, so a stale reader
+        # snapshot does not block the confirming commit.
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             with conn:
                 assertion_id = submit_lifecycle_request(

@@ -29,8 +29,9 @@ excision:
    ``(origin, session_native_id)`` and carry no ``raw_sessions`` row, so no
    raw target above reaches them; without this step a completed excision
    left every PreToolUse/PostToolUse payload readable (polylogue-bhhsa).
-   Whatever is still readable after the commit is named on the receipt as
-   ``retained_hook_events`` and makes ``ExcisionReceipt.complete`` false.
+   Every hook deletion is a declared Source effect; an undeclared write
+   that would keep a payload readable (a reinstating trigger, say) is refused
+   by the writer's authorizer and the whole excision fails closed.
 4. Disposes the manifest containers holding those raw acquisitions per
    member (``source_item_raw_members`` + ``source_items``), and drops any
    ``blob_publication_reservations`` still reserving a now-excised hash.

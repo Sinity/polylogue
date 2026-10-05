@@ -1045,9 +1045,13 @@ def raw_frontier_integrity_projection(
     from polylogue.storage.tier_access import capture_sqlite_read
 
     coverage: dict[str, object]
+    from polylogue.storage.archive_identity import ArchiveLocationError
+
     try:
         read = capture_sqlite_read(lambda: read_frontier_coverage_for_archive(archive_root))
-    except (OSError, ValueError) as failure:
+    except (OSError, ValueError, ArchiveLocationError) as failure:
+        # An incoherent active Index pointer is unavailable status evidence,
+        # not a crash: known Source loss must still be reported beside it.
         coverage = {"available": False, "current": False, "healthy": False, "detail": str(failure)}
     else:
         if isinstance(read, Measured):
@@ -1337,7 +1341,14 @@ def raw_frontier_blocked_raw_ids(archive_root: Path, raw_ids: Sequence[str]) -> 
             status, count, _checked, _comparisons, _ahead, samples, gaps, gap_samples, _deferred, reason = cursor
             if status == "unknown" and not gaps:
                 return RawFrontierBlockedPaths(frozenset(), reason)
-            refused = frozenset(sample.source_path for sample in samples)
+            # A violated logical source is refused through every path that
+            # carries it (rotated/resumed files, ZIP members), not only the
+            # path its cursor sample named; otherwise a sibling raw publishes
+            # while its logical frontier is still violated.
+            ahead_keys = {sample.logical_source_key for sample in samples if sample.logical_source_key}
+            refused = frozenset(
+                {sample.source_path for sample in samples} | _source_paths_for_logical_keys(conn, ahead_keys)
+            )
             return RawFrontierBlockedPaths(
                 refused,
                 None,
