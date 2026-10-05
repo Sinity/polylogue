@@ -470,12 +470,17 @@ def _hash_prefix(descriptor: int, size: int, path: Path) -> str:
 def _root_identity(root: Path) -> SourceRootIdentity:
     """Identify the actual root an explicit declaration names.
 
-    A declared root may be an alias (the snapshot route accepts one); its
-    identity is the resolved actual root, so a retargeted alias reads as a
-    changed root. Members enumerated under the root are never followed.
+    A declared file root may be an alias (the snapshot route accepts one for
+    a SQLite database); its identity is the resolved actual file, so a
+    retargeted alias reads as a changed root. A directory root is never an
+    alias: its members would be enumerated through the link.
     """
     try:
-        info = root.resolve(strict=True).lstat()
+        info = root.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            info = root.resolve(strict=True).lstat()
+            if not stat.S_ISREG(info.st_mode):
+                raise SourceSnapshotError(f"source root alias does not name a regular file: {root}")
     except OSError as exc:
         raise SourceSnapshotError(f"source root is unreadable: {root}") from exc
     if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
