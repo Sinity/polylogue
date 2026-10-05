@@ -613,3 +613,12 @@ available to the composer. It removes transient page parts after success or
 failure. The advertised `attachment_chunk_bytes` describes a transfer unit,
 not a maximum attachment size. Provider upload constraints remain observable
 provider failures; Polylogue does not impose the former 16 MiB attachment cap.
+
+Receiver configuration, pairing-code exchange, reset, and health-result persistence
+share the worker's storage mutation owner. A response from an earlier
+configuration cannot recreate its pairing or credential after configuration
+changes. The provider proof snapshots the endpoint, token, and pairing together
+and restores them through `polylogue.configureReceiver`; it waits for an
+in-flight configuration mutation before restoration. Its configure response
+carries the admitted configuration revision, so restoration refuses independent
+reset or configure even when endpoint and token values match. Restoration does not resume automatic capture.

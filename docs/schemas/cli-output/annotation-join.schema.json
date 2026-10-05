@@ -1,0 +1,357 @@
+{
+  "$defs": {
+    "AnnotationJoinDiagnostic": {
+      "additionalProperties": false,
+      "description": "One bounded reason a selected annotation did not join cleanly.",
+      "properties": {
+        "assertion_ref": {
+          "title": "Assertion Ref",
+          "type": "string"
+        },
+        "code": {
+          "enum": [
+            "missing_target",
+            "ambiguous_target",
+            "schema_drift",
+            "invalid_value"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "detail": {
+          "maxLength": 512,
+          "title": "Detail",
+          "type": "string"
+        },
+        "target_ref": {
+          "title": "Target Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "assertion_ref",
+        "target_ref",
+        "detail"
+      ],
+      "title": "AnnotationJoinDiagnostic",
+      "type": "object"
+    },
+    "AnnotationStructuralGroup": {
+      "additionalProperties": false,
+      "description": "Deterministic aggregate over successfully joined label rows.",
+      "properties": {
+        "dimensions": {
+          "additionalProperties": true,
+          "title": "Dimensions",
+          "type": "object"
+        },
+        "distinct_target_count": {
+          "minimum": 1,
+          "title": "Distinct Target Count",
+          "type": "integer"
+        },
+        "label_count": {
+          "minimum": 1,
+          "title": "Label Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "dimensions",
+        "label_count",
+        "distinct_target_count"
+      ],
+      "title": "AnnotationStructuralGroup",
+      "type": "object"
+    },
+    "AnnotationStructuralJoinRow": {
+      "additionalProperties": false,
+      "description": "One label joined to one exact target without collapsing label identity.",
+      "properties": {
+        "adjudicator_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Adjudicator Ref"
+        },
+        "assertion_ref": {
+          "title": "Assertion Ref",
+          "type": "string"
+        },
+        "batch_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Batch Ref"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "judgment_decision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Judgment Decision"
+        },
+        "judgment_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Judgment Reason"
+        },
+        "judgment_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Judgment Ref"
+        },
+        "labeler_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Labeler Ref"
+        },
+        "schema_id": {
+          "title": "Schema Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_assertion_ref": {
+          "title": "Source Assertion Ref",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/AssertionStatus"
+        },
+        "structural": {
+          "additionalProperties": true,
+          "title": "Structural",
+          "type": "object"
+        },
+        "supersedes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Supersedes",
+          "type": "array"
+        },
+        "target_ref": {
+          "title": "Target Ref",
+          "type": "string"
+        },
+        "value": {
+          "additionalProperties": true,
+          "title": "Value",
+          "type": "object"
+        }
+      },
+      "required": [
+        "assertion_ref",
+        "batch_ref",
+        "schema_id",
+        "schema_version",
+        "status",
+        "labeler_ref",
+        "adjudicator_ref",
+        "source_assertion_ref",
+        "judgment_ref",
+        "judgment_decision",
+        "judgment_reason",
+        "supersedes",
+        "target_ref",
+        "value",
+        "evidence_refs",
+        "structural"
+      ],
+      "title": "AnnotationStructuralJoinRow",
+      "type": "object"
+    },
+    "AssertionStatus": {
+      "description": "Closed lifecycle state vocabulary for assertion rows.",
+      "enum": [
+        "active",
+        "candidate",
+        "accepted",
+        "rejected",
+        "deferred",
+        "superseded",
+        "deleted",
+        "inactive"
+      ],
+      "title": "AssertionStatus",
+      "type": "string"
+    }
+  },
+  "$id": "https://polylogue.dev/schemas/cli-output/annotation-join.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A bounded structural annotation join page with exact label and non-join accounting.\n\nGenerated from `polylogue.annotations.join_contracts.AnnotationStructuralJoinResult` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "properties": {
+    "ambiguous_target_count": {
+      "minimum": 0,
+      "title": "Ambiguous Target Count",
+      "type": "integer"
+    },
+    "diagnostics": {
+      "items": {
+        "$ref": "#/$defs/AnnotationJoinDiagnostic"
+      },
+      "title": "Diagnostics",
+      "type": "array"
+    },
+    "diagnostics_truncated": {
+      "title": "Diagnostics Truncated",
+      "type": "boolean"
+    },
+    "duplicate_label_count": {
+      "minimum": 0,
+      "title": "Duplicate Label Count",
+      "type": "integer"
+    },
+    "groups": {
+      "items": {
+        "$ref": "#/$defs/AnnotationStructuralGroup"
+      },
+      "title": "Groups",
+      "type": "array"
+    },
+    "invalid_value_count": {
+      "minimum": 0,
+      "title": "Invalid Value Count",
+      "type": "integer"
+    },
+    "joined_count": {
+      "minimum": 0,
+      "title": "Joined Count",
+      "type": "integer"
+    },
+    "matched_annotation_count": {
+      "minimum": 0,
+      "title": "Matched Annotation Count",
+      "type": "integer"
+    },
+    "missing_target_count": {
+      "minimum": 0,
+      "title": "Missing Target Count",
+      "type": "integer"
+    },
+    "multi_label_target_count": {
+      "minimum": 0,
+      "title": "Multi Label Target Count",
+      "type": "integer"
+    },
+    "next_offset": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Offset"
+    },
+    "offset": {
+      "minimum": 0,
+      "title": "Offset",
+      "type": "integer"
+    },
+    "qualified_schema_id": {
+      "title": "Qualified Schema Id",
+      "type": "string"
+    },
+    "requested_statuses": {
+      "items": {
+        "$ref": "#/$defs/AssertionStatus"
+      },
+      "title": "Requested Statuses",
+      "type": "array"
+    },
+    "rows": {
+      "items": {
+        "$ref": "#/$defs/AnnotationStructuralJoinRow"
+      },
+      "title": "Rows",
+      "type": "array"
+    },
+    "schema_drift_count": {
+      "minimum": 0,
+      "title": "Schema Drift Count",
+      "type": "integer"
+    },
+    "selected_annotation_count": {
+      "minimum": 0,
+      "title": "Selected Annotation Count",
+      "type": "integer"
+    },
+    "selection_truncated": {
+      "title": "Selection Truncated",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "qualified_schema_id",
+    "requested_statuses",
+    "selected_annotation_count",
+    "matched_annotation_count",
+    "offset",
+    "selection_truncated",
+    "joined_count",
+    "missing_target_count",
+    "ambiguous_target_count",
+    "schema_drift_count",
+    "invalid_value_count",
+    "multi_label_target_count",
+    "duplicate_label_count",
+    "diagnostics_truncated",
+    "diagnostics",
+    "rows",
+    "groups"
+  ],
+  "title": "Structural Annotation Join",
+  "type": "object",
+  "x-polylogue-cli-surfaces": [
+    "polylogue annotations join"
+  ],
+  "x-polylogue-source-model": "AnnotationStructuralJoinResult"
+}

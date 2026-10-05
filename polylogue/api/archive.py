@@ -18,8 +18,8 @@ from polylogue.analysis.archive import (
     SessionProfileInsight,
     SessionProfileInsightQuery,
 )
-from polylogue.analysis.archive_models import ArchiveInsightModel
 from polylogue.analysis.feedback import LearningCorrection, parse_correction_kind
+from polylogue.analysis.insight_reads import read_insight_page
 from polylogue.api.archive_reads import ArchiveReadCapability
 from polylogue.api.facade_client import submit_facade_product
 from polylogue.archive.actions.actions import Action
@@ -66,7 +66,10 @@ from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import session_web_url
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionIdentity, ArchiveSessionSummary, IndexStatus
-from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
+from polylogue.storage.sqlite.archive_tiers.context_delivery_write import (
+    ArchiveContextDeliveryEnvelope,
+    ArchiveContextDeliveryPage,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
@@ -100,19 +103,20 @@ from polylogue.surfaces.temporal_evidence import (
 
 if TYPE_CHECKING:
     from polylogue.analysis.audit import InsightRigorAuditQuery, InsightRigorAuditReport
-    from polylogue.analysis.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
-    from polylogue.analysis.fable_packet import FableDelegationPacket
-    from polylogue.analysis.hermes_integration_health import HermesIntegrationHealth
+    from polylogue.analysis.export_bundle_contracts import InsightExportBundleRequest, InsightExportBundleResult
+    from polylogue.analysis.fable_packet_contracts import FableDelegationPacket
+    from polylogue.analysis.hermes_health_contracts import HermesIntegrationHealth
     from polylogue.analysis.judgment.types import ComparativeJudgment
     from polylogue.analysis.orchestration_evidence import SessionOrchestrationEvidence
     from polylogue.analysis.pathology import PathologyReport
     from polylogue.analysis.portfolio import PortfolioBundle
     from polylogue.analysis.postmortem import PostmortemBundle
     from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadinessReport
-    from polylogue.analysis.resume import ResumeBrief, ResumeCandidate
+    from polylogue.analysis.resume import ResumeBrief
+    from polylogue.analysis.resume_contracts import ResumeCandidate
     from polylogue.analysis.transforms import SessionDigest
     from polylogue.annotations.importer import AnnotationBatchImportRequest, AnnotationBatchImportResult
-    from polylogue.annotations.join import AnnotationStructuralJoinResult
+    from polylogue.annotations.join_contracts import AnnotationStructuralJoinResult
     from polylogue.annotations.schema import AnnotationSchemaRegistry
     from polylogue.api import Polylogue
     from polylogue.archive.context_models import ContextImage, ContextOmission, ContextSpec
@@ -1379,14 +1383,17 @@ def _archive_list_context_deliveries(
     *,
     recipient_ref: str | None,
     assertion_ref: str | None,
-    limit: int | None,
-) -> list[ArchiveContextDeliveryEnvelope]:
-    """List bounded delivery-receipt envelopes, most recent first."""
+    limit: int,
+    offset: int,
+) -> ArchiveContextDeliveryPage:
+    """Read one receipt-summary page, most recent first."""
 
     from polylogue.storage.sqlite.archive_tiers.context_delivery_write import list_context_deliveries
 
     with _readable_user_tier(config) as conn:
-        return list_context_deliveries(conn, recipient_ref=recipient_ref, assertion_ref=assertion_ref, limit=limit)
+        return list_context_deliveries(
+            conn, recipient_ref=recipient_ref, assertion_ref=assertion_ref, limit=limit, offset=offset
+        )
 
 
 def _archive_list_context_injection_ledger(
@@ -1573,56 +1580,6 @@ def _archive_reconcile_codex_spawn_edges(config: Config) -> CodexSpawnEdgeReconc
             error_detail=str(exc),
         )
         return None
-
-
-def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealth:
-    """Compose the bounded Hermes integration health rollup (polylogue-fs1.15).
-
-    Resolves the Hermes runtime root from the configured source list (the
-    same discovery ``resolve_runtime_config`` performs -- a "hermes" source
-    only appears there when its root exists on this host) and falls back to
-    the conventional ``~/.hermes`` path so a not-yet-discovered root still
-    renders an explicit "disabled" verdict rather than raising. All
-    composition is read-only; see
-    :mod:`polylogue.analysis.hermes_integration_health` for the primitives
-    this reuses.
-    """
-    from polylogue.analysis.hermes_integration_health import build_hermes_integration_health
-    from polylogue.daemon.convergence_debt_alert import source_family_for_subject, watchsource_name_to_family
-    from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
-    from polylogue.paths import hermes_sessions_path
-
-    hermes_root = next(
-        (source.path for source in config.sources if source.name == "hermes" and source.path is not None),
-        None,
-    )
-    if hermes_root is None:
-        hermes_root = hermes_sessions_path()
-
-    archive_root = _active_archive_root(config)
-    # ``polylogue.analysis`` may not import ``polylogue.daemon`` directly
-    # (docs/plans/layering.yaml); this surface-adapter layer owns the
-    # daemon-touching convergence-debt bucketing and passes plain counts in.
-    hermes_family = watchsource_name_to_family("hermes")
-    debt = convergence_debt_summary_info(archive_root / "source.db")
-    family_summary = next((item for item in debt.family_summaries if item.family == hermes_family), None)
-    convergence_debt_failed_count = family_summary.failed_count if family_summary is not None else 0
-    convergence_debt_deferred_count = family_summary.deferred_count if family_summary is not None else 0
-    convergence_debt_retry_due_count = sum(
-        1
-        for item in debt.recent
-        if item.retry_due and source_family_for_subject(item.subject_type, item.subject_id) == hermes_family
-    )
-
-    return build_hermes_integration_health(
-        archive_root,
-        hermes_root=hermes_root,
-        convergence_debt_available=debt.available,
-        convergence_debt_error=debt.error,
-        convergence_debt_failed_count=convergence_debt_failed_count,
-        convergence_debt_deferred_count=convergence_debt_deferred_count,
-        convergence_debt_retry_due_count=convergence_debt_retry_due_count,
-    )
 
 
 @contextmanager
@@ -2141,73 +2098,6 @@ def _archive_search_hit_to_payload(
     )
 
 
-class _ArchiveInsightExportOperations:
-    """Async operations adapter for registry-backed archive insight exports."""
-
-    def __init__(self, archive: Any) -> None:
-        self._archive = archive
-
-    async def get_insight_readiness_report(self, query: object | None = None) -> InsightReadinessReport:
-        from polylogue.analysis.readiness import InsightReadinessQuery
-
-        request = query if isinstance(query, InsightReadinessQuery) else None
-        return cast("InsightReadinessReport", self._archive.insight_readiness_report(request))
-
-    async def list_session_profile_insights(self, query: object) -> list[ArchiveInsightModel]:
-        return list(
-            self._archive.list_session_profile_insights(
-                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
-                workflow_shape=getattr(query, "workflow_shape", None),
-                terminal_state=getattr(query, "terminal_state", None),
-                query=getattr(query, "query", None),
-                since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
-                until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
-                first_message_since=getattr(query, "first_message_since", None),
-                first_message_until=getattr(query, "first_message_until", None),
-                session_date_since=getattr(query, "session_date_since", None),
-                session_date_until=getattr(query, "session_date_until", None),
-                tier=str(getattr(query, "tier", "merged")),
-                limit=getattr(query, "limit", None),
-                offset=int(getattr(query, "offset", 0)),
-            )
-        )
-
-    async def list_thread_insights(self, query: object) -> list[ArchiveInsightModel]:
-        return list(
-            self._archive.list_thread_insights(
-                query=getattr(query, "query", None),
-                since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
-                until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
-                limit=getattr(query, "limit", None),
-                offset=int(getattr(query, "offset", 0)),
-            )
-        )
-
-    async def list_session_tag_rollup_insights(self, query: object) -> list[ArchiveInsightModel]:
-        return list(
-            self._archive.list_session_tag_rollup_insights(
-                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
-                query=getattr(query, "query", None),
-                since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
-                until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
-                limit=getattr(query, "limit", None),
-                offset=int(getattr(query, "offset", 0)),
-            )
-        )
-
-    async def list_archive_coverage_insights(self, query: object) -> list[ArchiveInsightModel]:
-        return list(
-            self._archive.list_archive_coverage_insights(
-                group_by=str(getattr(query, "group_by", "origin")),
-                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
-                since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
-                until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
-                limit=getattr(query, "limit", None),
-                offset=int(getattr(query, "offset", 0)),
-            )
-        )
-
-
 class _ArchiveNeighborRuntime:
     """Minimal neighbor discovery store adapter for archive neighbor discovery.
 
@@ -2401,12 +2291,14 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         registry: AnnotationSchemaRegistry | None = None,
     ) -> AnnotationBatchImportResult:
-        """Import bounded, provenance-stamped annotation candidates.
+        """Import annotation candidates and return the committed batch summary.
 
         This is the library binding for the shared annotation-import product
         operation used by the CLI and MCP surfaces. ``registry`` lets callers
         use a deliberately constructed schema registry without bypassing the
-        facade.
+        facade. Exact assertions and validation errors are paged by resolving
+        the returned batch_ref with limit/offset. A readback failure does not
+        undo the completed import.
         """
         from polylogue.annotations.importer import AnnotationBatchImportResult
         from polylogue.annotations.schema import ANNOTATION_SCHEMA_REGISTRY
@@ -2809,6 +2701,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         kinds: Sequence[str | AssertionKind] | None = None,
         target_ref: str | None = None,
+        session_id: str | None = None,
         target_refs: Collection[str] | None = None,
         scope_ref: str | None = None,
         statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
@@ -2818,7 +2711,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         """List assertion-backed lifecycle claims for read-surface consumers.
 
         ``target_refs`` narrows the read to any of several targets inside the
-        storage query.
+        storage query. ``session_id`` includes exact session and composed-message
+        targets, refusing incomplete lineage rather than hiding missing evidence.
         """
 
         from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CLAIM_KINDS, list_assertion_claims
@@ -2833,6 +2727,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                     schema="user_tier",
                     kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
                     target_ref=target_ref,
+                    session_id=session_id,
                     target_refs=target_refs,
                     scope_ref=scope_ref,
                     statuses=statuses,
@@ -2855,6 +2750,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             arguments={
                 "kinds": tuple(str(kind) for kind in kinds) if kinds is not None else None,
                 "target_ref": target_ref,
+                "session_id": session_id,
                 "target_refs": tuple(sorted(target_refs)) if target_refs is not None else None,
                 "scope_ref": scope_ref,
                 "statuses": tuple(str(status) for status in statuses) if statuses is not None else None,
@@ -2886,21 +2782,22 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         recipient_ref: str | None = None,
         assertion_ref: str | None = None,
-        limit: int | None = 50,
-    ) -> list[ArchiveContextDeliveryEnvelope]:
-        """List bounded delivery-receipt envelopes, most recent first.
+        limit: int = 50,
+        offset: int = 0,
+    ) -> ArchiveContextDeliveryPage:
+        """Read one counted receipt-summary page from durable user authority.
 
-        Read-only audit seam over the durable user-tier ledger, filterable by
-        recipient and/or assertion ref. Callers that need full disclosure of
-        one receipt's exact content still go through :meth:`get_context_delivery`,
-        which scopes disclosure to the recorded recipient.
+        Count and rows come from one SQLite snapshot. Summaries never read the
+        context image; exact recipient-scoped disclosure uses get_context_delivery.
+        Follow next_offset until it is null to enumerate the requested scope.
         """
 
         return _archive_list_context_deliveries(
             self.config,
             recipient_ref=recipient_ref,
             assertion_ref=assertion_ref,
-            limit=None if limit is None else max(1, min(limit, 200)),
+            limit=limit,
+            offset=offset,
         )
 
     async def list_context_injection_ledger(
@@ -3096,13 +2993,16 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         paths.
         """
 
-        return _archive_hermes_integration_health(self.config)
+        from polylogue.operations.hermes_health import configured_hermes_health
+
+        return configured_hermes_health(self.config)
 
     async def list_assertion_claim_payloads(
         self,
         *,
         kinds: Sequence[str | AssertionKind] | None = None,
         target_ref: str | None = None,
+        session_id: str | None = None,
         scope_ref: str | None = None,
         statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
         context_inject: bool | None = None,
@@ -3121,6 +3021,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         claims = await self.list_assertion_claims(
             kinds=kinds,
             target_ref=target_ref,
+            session_id=session_id,
             scope_ref=scope_ref,
             statuses=statuses,
             context_inject=context_inject,
@@ -3371,11 +3272,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     ) -> AnnotationStructuralJoinResult:
         """Join selected typed annotations to exact structural targets."""
 
-        from polylogue.annotations.join import (
-            AnnotationStructuralJoinRequest,
-            StructuralJoinArchive,
-            join_typed_annotations,
-        )
+        from polylogue.annotations.join_contracts import AnnotationJoinOperationResult, AnnotationStructuralJoinRequest
+        from polylogue.operations.annotation_join import execute_annotation_join, open_annotation_join_read
 
         request = AnnotationStructuralJoinRequest(
             schema_id=schema_id,
@@ -3386,7 +3284,22 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             limit=limit,
             offset=offset,
         )
-        return await join_typed_annotations(cast(StructuralJoinArchive, self), request)
+        payload = request.model_dump(mode="json")
+
+        def read_join(archive: ArchiveStore) -> dict[str, object]:
+            return execute_annotation_join(payload, archive=archive, checkpoint=archive.check_operation_read)
+
+        response = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="annotation.join",
+            arguments=payload,
+            work=read_join,
+            page_size=limit,
+            offset=offset,
+            projection="annotation-join",
+            read_owner=lambda context: open_annotation_join_read(_active_archive_root(self.config), context),
+        )
+        return AnnotationJoinOperationResult.model_validate(response).result
 
     async def _compile_context_seed_query(
         self,
@@ -3470,6 +3383,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         from polylogue.api.facade_client import FacadeDaemonRequiredError, submit_facade_writer
         from polylogue.context.product_image import compile_context_image
 
+        observed_at_ms = int(datetime.now(UTC).timestamp() * 1000)
         image = await compile_context_image(self, spec)
         with suppress(OSError, sqlite3.Error, DatabaseError, FacadeDaemonRequiredError):
             await submit_facade_writer(
@@ -3478,6 +3392,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 {
                     "build_ref": image.build_ref,
                     "ledger_rows": [cast(ContextLedgerRecord, row).as_dict() for row in image.ledger],
+                    "observed_at_ms": observed_at_ms,
                 },
             )
         return image
@@ -3844,7 +3759,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             include_message_text=include_message_text,
         )
 
-    async def resolve_ref(self, ref: str) -> PublicRefResolutionPayload:
+    async def resolve_ref(
+        self, ref: str, *, limit: int = 50, offset: int = 0, continuation: str | None = None
+    ) -> PublicRefResolutionPayload:
         """Resolve one public object/evidence ref into a bounded read payload.
 
         The resolution itself is ``polylogue/operations/ref_resolution.py``,
@@ -3858,7 +3775,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         from polylogue.operations.ref_resolution import plan_ref_resolution
 
         archive_root = _active_archive_root(self.config)
-        plan = plan_ref_resolution(ref, archive_root=archive_root)
+        plan = plan_ref_resolution(
+            ref, archive_root=archive_root, limit=limit, offset=offset, continuation=continuation
+        )
         if plan.payload is not None:
             return plan.payload
         assert plan.read is not None
@@ -4032,6 +3951,43 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         from polylogue.archive.query.miss_diagnostics import diagnose_query_miss
 
         return await diagnose_query_miss(self, spec, config=self.config, full=full)
+
+    async def storage_counts(self) -> dict[str, int]:
+        """Read canonical session and message counts without full statistics."""
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.storage_counts",
+            arguments={},
+            work=lambda archive: archive.counts(),
+            projection="counts",
+        )
+
+    async def query_capability_readiness(self) -> dict[str, object]:
+        """Read standing query-binding metadata and aggregate-only debt evidence.
+
+        This certifies only that measured scope. Missing binding evidence stays
+        unknown instead of triggering an archive-wide inspection.
+        """
+        from polylogue.daemon.convergence_debt_status import convergence_debt_stage_counts_info
+        from polylogue.operations.fts_derivation import bound_archive_fts_surface
+        from polylogue.readiness.capability import component_from_query_binding
+
+        root = _active_archive_root(self.config)
+        binding = await run_archive_read(
+            root,
+            operation="archive.query_capability_readiness",
+            arguments={},
+            work=lambda archive: bound_archive_fts_surface(archive._conn),
+            projection="query-binding",
+        )
+        debt = convergence_debt_stage_counts_info(root / "index.db", ops_db=root / "ops.db")
+        return dict(
+            component_from_query_binding(
+                binding,
+                debt_available=debt.available,
+                debt_count=sum(count for _, _, count in debt.counts) if debt.available else None,
+            ).to_dict()
+        )
 
     async def storage_stats(self) -> StorageArchiveStats:
         """Lightweight archive stats without recent-session hydration.
@@ -4305,26 +4261,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 "tier": request.tier,
                 "query": request.query,
             },
-            work=lambda archive: archive.list_session_profile_insights(
-                origin=request.origin,
-                workflow_shape=request.workflow_shape,
-                terminal_state=request.terminal_state,
-                tag=request.tag,
-                repo=request.repo,
-                since_ms=_archive_query_date_ms("since", request.since),
-                until_ms=_archive_query_date_ms("until", request.until),
-                first_message_since=request.first_message_since,
-                first_message_until=request.first_message_until,
-                session_date_since=request.session_date_since,
-                session_date_until=request.session_date_until,
-                tier=request.tier,
-                query=request.query,
-                limit=request.limit,
-                offset=request.offset,
-                min_wallclock_seconds=request.min_wallclock_seconds,
-                max_wallclock_seconds=request.max_wallclock_seconds,
-                sort=request.sort,
-            ),
+            work=lambda archive: cast(list[SessionProfileInsight], read_insight_page(archive, request)),
             page_size=request.limit,
             offset=request.offset,
             projection="session-profile",
@@ -5306,17 +5243,13 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         request: InsightExportBundleRequest,
     ) -> InsightExportBundleResult:
         """Write a versioned archive-insight export bundle."""
-        import asyncio
-
         from polylogue.analysis.export_bundles import export_insight_bundle
 
         return await run_archive_read(
             _active_archive_root(self.config),
             operation="insights.export_bundle",
             arguments={"request": request},
-            work=lambda archive: asyncio.run(
-                export_insight_bundle(_ArchiveInsightExportOperations(archive), self.config, request)
-            ),
+            work=lambda archive: export_insight_bundle(archive, request, checkpoint=archive.check_operation_read),
             page_size=1,
             projection="insight-export",
             workload_class="scan",
@@ -5637,7 +5570,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         if (
             not isinstance(preview_ref, str)
             or not preview_ref
-            or state.get("preview_refs") != [preview_ref]
             or not isinstance(sample, list)
             or len(sample) != 1
             or not isinstance(sample[0], str)

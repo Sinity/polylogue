@@ -25,6 +25,7 @@ import pytest
 from pydantic import BaseModel
 
 from polylogue import Polylogue
+from polylogue.analysis import insight_reads
 from polylogue.analysis.archive import (
     ArchiveCoverageInsightQuery,
     ArchiveDebtInsightQuery,
@@ -325,8 +326,8 @@ async def test_facade_conserves_every_request_field(
     global _ACTIVE_RUNNER
     _ACTIVE_RUNNER = runner
     monkeypatch.setattr(spec.module, "run_archive_read", _run_archive_read_spy)
-    monkeypatch.setattr(insights_api, "synthesize_origin_tag_rollups", lambda *args, **kwargs: [])
-    monkeypatch.setattr(insights_api, "enrich_session_cost_insights", lambda archive, rows: rows)
+    monkeypatch.setattr(insight_reads, "synthesize_origin_tag_rollups", lambda *args, **kwargs: [])
+    monkeypatch.setattr(insight_reads, "enrich_session_cost_insights", lambda archive, rows: rows)
 
     await cast(Callable[[BaseModel], Awaitable[object]], getattr(facade, spec.method_name))(request)
 

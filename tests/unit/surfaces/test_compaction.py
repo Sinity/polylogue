@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import pytest
 
@@ -276,3 +277,87 @@ def test_long_unbroken_runs_are_weighted_by_their_size() -> None:
     assert estimate_tokens(run) >= 10_000
     assert estimate_serialized_tokens(f'{{"text":"{run}"}}') >= 10_000
     assert estimate_tokens("one two three") == 3
+
+
+def _repeated_messages(count: int, text: str) -> list[dict[str, object]]:
+    return [
+        {
+            "id": "s",
+            "messages": [
+                {
+                    "id": str(index),
+                    "text": text,
+                    "material_origin": "assistant_authored",
+                    "content_hash": f"{index:064x}",
+                }
+                for index in range(count)
+            ],
+        }
+    ]
+
+
+def test_clipped_source_tokens_partition_the_original_prose() -> None:
+    from polylogue.surfaces.compaction import estimate_tokens
+
+    text = "evidence " * 1000
+    pack = compact_sessions(_repeated_messages(1, text), spec=CompactProjectionSpec(max_tokens=600))
+    assert len(pack.items) == 1 and pack.items[0].degradation == "clip"
+    included = pack.manifest.included_tokens_by_session["s"]
+    dropped = pack.manifest.dropped_tokens_by_session["s"]
+    assert included > 0 and dropped > 0
+    assert included + dropped == estimate_tokens(text)
+    assert included == estimate_tokens(pack.items[0].text.removesuffix(" …"))
+    assert pack.token_estimate == _wire_tokens(pack) <= 600
+
+
+@pytest.mark.parametrize("budget,stage", [(800, "collapse_runs_to_counts"), (620, "skeleton_only")])
+def test_budget_ladder_retains_run_counts_and_source_references(budget: int, stage: str) -> None:
+    from polylogue.surfaces.compaction import estimate_tokens
+
+    text = "decision " * 1000
+    pack = compact_sessions(_repeated_messages(20, text), spec=CompactProjectionSpec(max_tokens=budget))
+    assert len(pack.items) == 1
+    item = pack.items[0]
+    assert item.degradation == stage
+    assert item.occurrence_count == 20
+    assert {ref.message_id for ref in item.refs} == {str(index) for index in range(20)}
+    assert item.anchor.ref in item.refs and item.anchor.content_hash == "0" * 64
+    assert pack.manifest.drop_counts["budget_collapsed"] == 19
+    assert pack.manifest.included_tokens_by_session["s"] + pack.manifest.dropped_tokens_by_session["s"] == (
+        20 * estimate_tokens(text)
+    )
+    assert pack.outcome.state == "degraded"
+    assert pack.token_estimate == _wire_tokens(pack) <= budget
+    markdown = pack.render_markdown()
+    assert f"Occurrences: 20; degradation: {stage}" in markdown
+    assert all(ref.format() in markdown for ref in item.refs)
+    if stage == "skeleton_only":
+        assert item.text == "" and pack.manifest.included_tokens_by_session["s"] == 0
+
+
+def test_index_only_budget_pack_reports_source_loss_instead_of_empty_selection() -> None:
+    from polylogue.surfaces.compaction import estimate_tokens
+
+    text = "decision " * 1000
+    pack = compact_sessions(_repeated_messages(20, text), spec=CompactProjectionSpec(max_tokens=400))
+    assert pack.items == ()
+    assert pack.manifest.dropped_tokens_by_session["s"] == 20 * estimate_tokens(text)
+    assert pack.manifest.drop_counts["budget_skeleton"] == 1
+    assert pack.manifest.drop_counts["budget_drop"] == 1
+    assert "index_only_pack_failure" in pack.manifest.unknown
+    assert pack.outcome.state == "degraded"
+    gaps = pack.outcome.detail["gaps"]
+    assert isinstance(gaps, list)
+    assert "index_only_pack_failure" in gaps
+    assert pack.token_estimate == _wire_tokens(pack) <= 400
+    with pytest.raises(CompactionBudgetTooSmallError):
+        compact_sessions(_repeated_messages(20, text), spec=CompactProjectionSpec(max_tokens=60))
+
+
+def test_collapse_uses_original_adjacent_text_not_equal_clipped_prefixes() -> None:
+    sessions = _repeated_messages(2, "same words " * 1000)
+    messages = cast(list[dict[str, str]], sessions[0]["messages"])
+    messages[1]["text"] += "different ending"
+    pack = compact_sessions(sessions, spec=CompactProjectionSpec(max_tokens=800))
+    assert "budget_collapsed" not in pack.manifest.drop_counts
+    assert all(item.occurrence_count == 1 for item in pack.items)

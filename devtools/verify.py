@@ -90,7 +90,7 @@ from devtools.verify_runs import (
     git_worktree_content_sha256,
     prune_successful_verify_runs,
     pytest_command_worker_request,
-    reconcile_and_record_abandoned_verify_runs,
+    reconcile_and_record_verify_runs,
     verify_history_path,
 )
 from devtools.verify_test_collection import collect_selection
@@ -1335,7 +1335,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     # to any earlier one whose process is gone. A verification killed outright
     # runs no handler of its own, so the next reader is the only thing that can
     # close it out.
-    reconcile_and_record_abandoned_verify_runs(runs_root=ROOT / VERIFY_RUNS_DIR)
+    reconcile_and_record_verify_runs(runs_root=ROOT / VERIFY_RUNS_DIR)
     validate_authority_matrix()
     started = time.monotonic()
     selection = "all" if args.all_tests else "affected"

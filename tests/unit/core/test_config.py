@@ -66,6 +66,7 @@ class TestConfig:
                 "embedding_model": "fixture-model",
                 "embedding_dimension": 16,
                 "judgment_automation_interval_s": 123,
+                "sinex_mode": "primary",
             },
         )
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "ambient"))
@@ -78,6 +79,7 @@ class TestConfig:
         assert config.embedding_model == "fixture-model"
         assert config.embedding_dimension == 16
         assert config.judgment_automation_interval_s == 123
+        assert config.sinex_mode == config.with_sources([]).sinex_mode == "primary"
         assert config.drive_config == runtime.drive_config
         assert config.index_config == runtime.index_config
         assert tuple(config.sources) == runtime.sources

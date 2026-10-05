@@ -48,6 +48,32 @@ Public filters in these contracts are `origin`-typed (`polylogue/core/enums.py:8
 `RawOrigin` is a separate narrow literal for raw-source reads. No MCP request
 field takes a `Provider` (`polylogue/operations/session_contracts.py:9-16`).
 
+## Capability evidence
+
+`explain(subject="capability")` reads only canonical session and message
+counters through `Polylogue.storage_counts()`. It does not hydrate recent
+sessions or compute archive statistics breakdowns. If an archive tier is
+unavailable or its schema is refused, declarations and profile identities
+remain available with unknown counts and freshness. The shared outcome is
+`degraded` with `archive_counts_unavailable`; a successful empty archive has
+measured zero counts. Cancellation and other read errors retain their normal
+operation error behavior.
+
+Capability pages carry public `OriginSpec` evidence once in page-level
+`evidence.origins`; individual declarations reference the shared snapshot.
+Origins whose declaration excludes public filtering are omitted. Session
+counts do not prove field values, and message counts do not prove blocks or
+actions: only matching canonical observations are reported, with unknown for
+unmeasured declarations.
+
+Freshness uses the injected archive's standing FTS query binding and
+aggregate-only convergence debt projection. This measured scope certifies
+query binding and debt evidence, not whole-archive materializer readiness.
+An unavailable binding stays unknown without an exact inspection fallback;
+outstanding debt produces `stale_or_degraded` item/page evidence and the
+shared degraded outcome. A measured current binding with no debt permits
+`request-current`. The count reducer remains unchanged.
+
 ## Read-view discovery
 
 `explain(subject="capability")` returns `read_view_profile_ids`: the `view_id`
@@ -58,6 +84,28 @@ query declarations only. Full profile metadata stays on its own facade and
 daemon route (`/api/read-view-profiles`). `read_views` remains the distinct
 session-list projection vocabulary. The self-inspection continuity scenario
 compares every profile identity against its fixture oracle.
+
+## Evidence pages and runtime configuration
+
+`read("delegation:subtree:<id>", limit=...)` selects nodes in the canonical
+storage reader. Its nested subtree payload carries the whole `node_count`
+and `max_depth`, page `limit` and `offset`, and `next_offset` plus an opaque
+`continuation`. Follow the continuation to enumerate the full subtree. The
+cursor seeks by depth, session identity and traversal path; its shared query
+frame refuses a changed delegation relation. Object references cover the
+returned nodes only. The Python `resolve_ref` and daemon `/api/refs/resolve`
+routes accept the same page arguments and run the shared resolution plan.
+
+`context(recipient_ref=...)` passes its limit and offset to the durable user
+reader. That reader counts and selects summary columns in one SQLite
+snapshot, without reading or decoding `context_image_json`. The facade
+returns a counted summary page; `get_context_delivery` remains the exact,
+recipient-scoped image read. Receipt pages preserve `next_offset` and observe
+the current ledger on each request.
+
+Both `status(scope="sinex")` and the Sinex section of
+`status(scope="archive")` use `sinex_mode` from the injected runtime config
+projection, together with that projection's source-tier path.
 
 ## Insight projections
 
@@ -93,3 +141,7 @@ have no target transaction while remaining live write-gated tools
 is not the same as not a tool; the manual lists them.
 
 MCP insight maintenance forwards an explicit session-ID selection to the sealed daemon planner. Omission selects the full scope; an empty list remains an empty explicit scope. Orchestration `get` preserves its owner’s terminal verdict and gaps in the shared object-shaped outcome envelope, while leaving the evidence fields unchanged.
+
+MCP messages-view authority measures elapsed time from the read operation
+boundary with the shared monotonic authority clock, including the transcript
+window read. Serialization preserves that authority value.

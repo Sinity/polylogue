@@ -426,3 +426,19 @@ def test_replace_rule_recognizes_public_directory_barrier_and_refuses_missing_ba
     matches = verify_patterns._scan(tmp_path, rule)
     assert sum(matches.values()) == 1
     assert {anchor[0] for anchor in matches} == {"polylogue/unsealed.py"}
+
+
+@pytest.mark.parametrize("barrier", ["sync_directory", "_fsync_directory", "_fsync_dir", None])
+def test_parent_sync_rule_recognizes_canonical_barriers(tmp_path: Path, barrier: str | None) -> None:
+    source = tmp_path / "polylogue/example.py"
+    source.parent.mkdir()
+    suffix = "" if barrier is None else f"    {barrier}(target.parent)\n"
+    source.write_text("def publish(source, target):\n    os.replace(source, target)\n" + suffix, encoding="utf-8")
+    rule = verify_patterns.Rule(
+        "replace-without-parent-fsync",
+        Path(__file__).parents[3] / "devtools/patterns/replace-without-parent-fsync.yml",
+        tmp_path / "unused-baseline.txt",
+        "fhikb",
+        "enforcing",
+    )
+    assert sum(verify_patterns._scan(tmp_path, rule).values()) == (1 if barrier is None else 0)

@@ -7,11 +7,8 @@ profiles`` works without re-specifying the filter on the subcommand.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
-from dataclasses import asdict
 from pathlib import Path
-from typing import Any, cast
 
 import click
 
@@ -20,23 +17,28 @@ from polylogue.analysis.audit import (
     DEFAULT_AUDIT_SAMPLE_LIMIT,
     InsightRigorAuditQuery,
     InsightRigorAuditReport,
-    build_insight_rigor_audit_report,
 )
-from polylogue.analysis.export_bundles import (
+from polylogue.analysis.export_bundle_contracts import (
     InsightExportBundleError,
     InsightExportBundleRequest,
     InsightExportBundleResult,
     InsightExportFormat,
 )
-from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadinessReport, known_insight_readiness_names
+from polylogue.analysis.readiness import (
+    InsightReadinessQuery,
+    InsightReadinessReport,
+    known_insight_readiness_names,
+    normalize_insight_readiness_name,
+)
 from polylogue.analysis.registry import (
     INSIGHT_REGISTRY,
     InsightQueryError,
     InsightType,
-    fetch_insights,
+    build_insight_query,
     render_insight_items,
 )
-from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.cli.operation_kernel import OperationRequest
+from polylogue.cli.read_dispatch import dispatch_read
 from polylogue.cli.shared.helper_support import fail
 from polylogue.cli.shared.insight_command_contracts import (
     InsightCommandInputError,
@@ -131,10 +133,21 @@ def _make_callback(pt: InsightType) -> Callable[..., None]:
                 kwargs=kwargs,
                 inherited_root_keys=accepted_root_keys,
             )
-            items = fetch_insights(pt, env.polylogue, **request.query_kwargs)
+            build_insight_query(pt, **request.query_kwargs)
+            result, _served_by = dispatch_read(
+                env.config,
+                OperationRequest("insights.list", {"page": {"insight": pt.name, "query": request.query_kwargs}}),
+            )
+            from polylogue.operations.insight_contracts import InsightListResult
+
+            parsed = InsightListResult.model_validate(result)
+            page = parsed.page
+            if page.insight != pt.name:
+                raise click.ClickException("resident insight page belongs to a different query type")
+            items = page.items
         except (ArchiveInsightUnavailableError, InsightCommandInputError, InsightQueryError) as exc:
             fail(f"insights {pt.resolved_cli_command_name}", str(exc))
-        render_insight_items(items, pt, json_mode=request.wants_json)
+        render_insight_items(items, pt, json_mode=request.wants_json, outcome=parsed.outcome)
 
     return callback
 
@@ -295,12 +308,20 @@ def insights_status_command(
             since=filters["since"] if isinstance(filters["since"], str) else None,
             until=filters["until"] if isinstance(filters["until"], str) else None,
         )
-        report = run_coroutine_sync(env.polylogue.insight_readiness_report(query))
+        for name in query.insights:
+            normalize_insight_readiness_name(name)
+        result, _served_by = dispatch_read(
+            env.config, OperationRequest("insights.readiness", {"query": query.model_dump(mode="json")})
+        )
+        from polylogue.operations.insight_contracts import InsightReadinessResult
+
+        selected = InsightReadinessResult.model_validate(result)
+        report = selected.report
     except (InsightCommandInputError, ValueError) as exc:
         valid = ", ".join(known_insight_readiness_names())
         fail("insights status", f"{exc}. Known insights: {valid}")
     if _status_wants_json(ctx, output_format=output_format):
-        emit_success(cast(dict[str, object], report.model_dump(mode="json")))
+        emit_success({**report.model_dump(mode="json"), "outcome": selected.outcome.to_dict()})
         return
     _render_status_plain(report)
 
@@ -318,15 +339,21 @@ def insights_hermes_health_command(ctx: click.Context, output_format: str | None
     disabled/unavailable/degraded/healthy verdict rather than a silent zero.
     """
     env: AppEnv = ctx.obj
-    health = run_coroutine_sync(env.polylogue.hermes_integration_health())
+    from polylogue.operations.hermes_health_contracts import decode_hermes_health_result
+
+    result_payload, _served_by = dispatch_read(
+        env.config, OperationRequest(operation="insights.hermes_health", payload={})
+    )
+    result = decode_hermes_health_result(result_payload)
+    health = result.report
     if _status_wants_json(ctx, output_format=output_format):
-        emit_success(health.to_dict())
+        emit_success({**health.to_dict(), "outcome": result.outcome.to_dict()})
         return
     _render_hermes_health_plain(health)
 
 
 def _render_hermes_health_plain(health: object) -> None:
-    from polylogue.analysis.hermes_integration_health import HermesIntegrationHealth
+    from polylogue.analysis.hermes_health_contracts import HermesIntegrationHealth
 
     assert isinstance(health, HermesIntegrationHealth)
     click.echo(f"Hermes integration: {health.verdict} (enabled={health.enabled})")
@@ -409,7 +436,7 @@ def insights_export_command(
             }
         )
         request = InsightExportBundleRequest(
-            output_path=output_path,
+            output_path=output_path.absolute(),
             insights=insights,
             origin=filters["origin"] if isinstance(filters["origin"], str) else None,
             since=filters["since"] if isinstance(filters["since"], str) else None,
@@ -417,11 +444,17 @@ def insights_export_command(
             output_format=export_format,
             overwrite=overwrite,
         )
-        result = run_coroutine_sync(env.polylogue.export_insight_bundle(request))
+        from polylogue.operations.insight_export_contracts import decode_insight_export_result
+
+        payload, _served_by = dispatch_read(
+            env.config, OperationRequest("insights.export_bundle", {"request": request.model_dump(mode="json")})
+        )
+        selected = decode_insight_export_result(payload)
+        result = selected.bundle
     except (InsightCommandInputError, InsightExportBundleError) as exc:
         fail("insights export", str(exc))
     if output_format == "json" or ctx.find_root().params.get("output_format") == "json":
-        emit_success(cast(dict[str, object], result.model_dump(mode="json")))
+        emit_success({**result.model_dump(mode="json"), "outcome": selected.outcome.to_dict()})
         return
     _render_export_plain(result)
 
@@ -446,19 +479,21 @@ def insights_fable_packet_command(
 ) -> None:
     """Cold-regenerate the private, descriptive Fable delegation packet."""
     env: AppEnv = ctx.obj
-    try:
-        packet = run_coroutine_sync(
-            env.polylogue.regenerate_private_fable_packet(
-                seed=seed,
-                requested_size=requested_size,
-                schema_id=schema_id,
-                schema_version=schema_version,
-                exact_template_cap=exact_template_cap,
-            )
-        )
-    except ValueError as exc:
-        fail("insights fable-packet", str(exc))
-    payload = _packet_json_document(packet)
+    from polylogue.operations.fable_packet_contracts import FablePacketRequest, decode_fable_packet_result
+
+    request = FablePacketRequest(
+        seed=seed,
+        requested_size=requested_size,
+        schema_id=schema_id,
+        schema_version=schema_version,
+        exact_template_cap=exact_template_cap,
+    )
+    result_payload, _served_by = dispatch_read(
+        env.config, OperationRequest(operation="insights.fable_packet", payload=request.model_dump(mode="json"))
+    )
+    result = decode_fable_packet_result(result_payload)
+    packet = result.packet
+    payload = {**result.model_dump(mode="json")["packet"], "outcome": result.outcome.to_dict()}
     if output_format == "json" or ctx.find_root().params.get("output_format") == "json":
         emit_success(payload)
         return
@@ -479,14 +514,6 @@ def _format_pct(count: int, sample: int) -> str:
     if sample <= 0:
         return "-"
     return f"{(count * 100) // sample}%"
-
-
-def _packet_json_document(packet: Any) -> dict[str, object]:
-    """Lower the packet dataclass's tuples to JSON-native arrays."""
-    payload = json.loads(json.dumps(asdict(packet)))
-    if not isinstance(payload, dict):
-        raise TypeError("Fable packet did not lower to a JSON object")
-    return cast(dict[str, object], payload)
 
 
 def _render_audit_plain(report: InsightRigorAuditReport) -> None:
@@ -571,12 +598,18 @@ def insights_audit_command(
     env: AppEnv = ctx.obj
     try:
         query = InsightRigorAuditQuery(insights=insights, sample_limit=sample_limit)
-        report = run_coroutine_sync(build_insight_rigor_audit_report(env.polylogue, query))
-    except ArchiveInsightUnavailableError as exc:
+        from polylogue.operations.insight_contracts import InsightRigorResult
+
+        result_payload, _served_by = dispatch_read(
+            env.config, OperationRequest("insights.rigor", {"query": query.model_dump(mode="json")})
+        )
+        result = InsightRigorResult.model_validate(result_payload)
+        report = result.report
+    except (ArchiveInsightUnavailableError, ValueError, InsightQueryError) as exc:
         fail("insights audit", str(exc))
     wants_json = output_format == "json" or ctx.find_root().params.get("output_format") == "json"
     if wants_json:
-        emit_success(report.model_dump(mode="json"))
+        emit_success({**report.model_dump(mode="json"), "outcome": result.outcome.to_dict()})
         return
     _render_audit_plain(report)
 

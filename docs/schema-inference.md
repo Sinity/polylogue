@@ -44,7 +44,16 @@ the pass's own receipts or the committed packages, so a subject the pass never
 reached is recorded as `not_run` instead of disappearing, and it binds the
 matrix to the baseline digest, the provider declaration digest, the code
 revision, the generator semantics revision and the resolved inference
-configuration.
+configuration. Generation results record the full resolved privacy policy, including
+custom thresholds and ordered rules. JSON `field_overrides` uses an ordered list
+of `{pattern, action}` objects so sorted JSON object keys cannot change the
+first matching rule. TOML configuration retains its ordered field table. Reconciliation verifies every receipt
+against the policy selected by its own `--privacy` and `--privacy-config`
+options. Omitted options mean the same standard default as generation. Missing,
+malformed, mixed, or mismatched policies refuse reconciliation before matrix
+publication; pass the matching explicit policy for a nonstandard generation.
+Receipt argv alone does not certify the effective policy. Dry runs and
+`zero_eligible_material` results carry the same policy evidence.
 
 ## Inputs and reuse
 

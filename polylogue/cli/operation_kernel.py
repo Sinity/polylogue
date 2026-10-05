@@ -166,8 +166,6 @@ class OperationKernel:
             # settles the write.
             raise OperationIndeterminateError(str(exc), request_id=exc.request_id) from exc
         except DaemonOperationProtocolError as exc:
-            if "size" in str(exc):
-                raise OperationFailedError("result_too_large", str(exc)) from exc
             raise OperationFailedError("daemon_transport_error", str(exc)) from exc
         except Exception as exc:
             raise OperationFailedError("daemon_transport_error", str(exc)) from exc

@@ -8,6 +8,7 @@ The capability owns only the read SQL and its row-to-insight mapping.
 from __future__ import annotations
 
 import sqlite3
+from builtins import BaseExceptionGroup
 from collections.abc import Callable
 from contextlib import closing
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsa
 from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
 from polylogue.analysis.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.archive.query.spec import parse_query_date
+from polylogue.storage.io_phase_metrics import close_connection_cursor
 from polylogue.storage.sqlite.archive_tiers.archive_query_reads import _ACTION_FOLLOWUP_RELATION_SQL
 from polylogue.storage.sqlite.queries.tool_usage import ToolUsageOriginCoverageRow, ToolUsageRow
 
@@ -44,11 +46,13 @@ class ArchiveReadInsights:
         self,
         conn: sqlite3.Connection,
         *,
+        checkpoint: Callable[[], None],
         normalize_origin: OriginNormalizer,
         iso_from_milliseconds: IsoFromMilliseconds,
         tags_relation: str = "session_tags",
     ) -> None:
         self._conn = conn
+        self._checkpoint = checkpoint
         self._normalize_origin = normalize_origin
         self._iso_from_milliseconds = iso_from_milliseconds
         self._tags_relation = tags_relation
@@ -256,11 +260,18 @@ class ArchiveReadInsights:
         if until_ms is not None:
             where.append(f"{event_ms} <= ?")
             params.append(until_ms)
+        repository_projection = (
+            "?"
+            if request.repository
+            else "(SELECT r.repo_name FROM session_repos sr JOIN repos r ON r.repo_id = sr.repo_id "
+            "WHERE sr.session_id = a.session_id ORDER BY r.repo_name LIMIT 1)"
+        )
+        if request.repository:
+            params.insert(0, request.repository)
         rows = self._conn.execute(
             f"""
             SELECT a.tool_command, a.session_id, s.origin,
-                   (SELECT r.repo_name FROM session_repos sr JOIN repos r ON r.repo_id = sr.repo_id
-                    WHERE sr.session_id = a.session_id ORDER BY r.repo_name LIMIT 1) AS repository,
+                   {repository_projection} AS repository,
                    {event_ms} AS occurred_at_ms
             FROM actions a
             JOIN sessions s ON s.session_id = a.session_id
@@ -268,9 +279,28 @@ class ArchiveReadInsights:
             WHERE {" AND ".join(where)}
             """,
             tuple(params),
-        ).fetchall()
-        raw_rows = [dict(row) for row in rows]
-        return build_command_shape_usage(raw_rows, request, materialized_at=datetime.now(UTC).isoformat())
+        )
+        primary: BaseException | None = None
+        try:
+            return build_command_shape_usage(
+                (dict(row) for row in rows),
+                request,
+                materialized_at=datetime.now(UTC).isoformat(),
+                checkpoint=self._checkpoint,
+            )
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            try:
+                close_connection_cursor(self._conn, rows)
+            except BaseException as cleanup:
+                if primary is None:
+                    raise
+                if cleanup is not primary:
+                    raise BaseExceptionGroup(
+                        "command-shape read and cursor cleanup failed", [primary, cleanup]
+                    ) from None
 
     def _tool_usage_rows(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageRow]:
         request = query or ToolUsageInsightQuery()

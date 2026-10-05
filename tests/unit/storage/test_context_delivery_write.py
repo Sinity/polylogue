@@ -79,8 +79,12 @@ def test_context_delivery_round_trips_exact_image_and_identity() -> None:
     assert written.omissions[0]["detail"] == "lower rank"
     assert replay.outcome == "idempotent"
     assert read_context_delivery(conn, record.snapshot_ref) == written
-    assert list_context_deliveries(conn, recipient_ref="agent:codex-main") == [written]
-    assert list_context_deliveries(conn, assertion_ref="assertion:a1") == [written]
+    assert [item.snapshot_ref for item in list_context_deliveries(conn, recipient_ref="agent:codex-main").items] == [
+        written.snapshot_ref
+    ]
+    assert [item.snapshot_ref for item in list_context_deliveries(conn, assertion_ref="assertion:a1").items] == [
+        written.snapshot_ref
+    ]
 
 
 @pytest.mark.parametrize(

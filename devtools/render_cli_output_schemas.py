@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from devtools.command_catalog import control_plane_command
 from devtools.render_support import write_if_changed
+from polylogue.annotations.join_contracts import AnnotationStructuralJoinResult
 from polylogue.archive.query.metadata import terminal_query_cli_surfaces, terminal_query_source_list
 from polylogue.operations.action_contracts import ActionAffordanceListPayload
 from polylogue.surfaces.payloads import (
@@ -61,6 +62,13 @@ class CliOutputSchema:
 
 
 SCHEMAS: tuple[CliOutputSchema, ...] = (
+    CliOutputSchema(
+        name="annotation-join",
+        title="Structural Annotation Join",
+        description="A bounded structural annotation join page with exact label and non-join accounting.",
+        model=AnnotationStructuralJoinResult,
+        surfaces=("polylogue annotations join",),
+    ),
     CliOutputSchema(
         name="session-list-row",
         title="Session List Row",

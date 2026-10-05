@@ -16,9 +16,11 @@ from functools import cache
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, GetJsonSchemaHandler, ValidationError, model_validator
+from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import SchemaValidator, core_schema
 
+from polylogue.analysis.resume_contracts import ResumeCandidate
 from polylogue.core.annotation_limits import MAX_ANNOTATION_IMPORT_BYTES
 from polylogue.core.enums import OperationStatus
 from polylogue.operations.machine_receipts import IngestTerminalReceipt
@@ -33,7 +35,6 @@ from polylogue.operations.read_contracts import (
 
 DAEMON_OPERATION_PROTOCOL = "polylogue.daemon-operation/v1"
 MAX_OPERATION_BODY_BYTES = 64 * 1024
-MAX_OPERATION_RESULT_BYTES = 8 * 1024 * 1024
 
 
 class DaemonAuthority(StrEnum):
@@ -99,6 +100,289 @@ class _OperationPayload(BaseModel):
     """Base for a concrete machine-operation payload type."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+class InsightReadRequest(_OperationPayload):
+    """Import-light wire boundary; selected insight owns nested validation."""
+
+    page: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_insight_query(cls, value: object) -> object:
+        from polylogue.operations.insight_contracts import InsightListRequest
+
+        InsightListRequest.model_validate(value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_contracts import InsightListRequest
+
+        return handler.resolve_ref_schema(handler(InsightListRequest.__pydantic_core_schema__))
+
+
+class InsightReadResult(_OperationPayload):
+    """Validate the exact registry page without loading it on unrelated routes."""
+
+    page: dict[str, object]
+    outcome: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_insight_page(cls, value: object) -> object:
+        from polylogue.operations.insight_contracts import InsightListResult
+
+        _validate_json_result_model(InsightListResult, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_contracts import InsightListResult
+
+        return handler.resolve_ref_schema(handler(InsightListResult.__pydantic_core_schema__))
+
+
+class InsightReadinessWireRequest(_OperationPayload):
+    query: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_selected_readiness(cls, value: object) -> object:
+        from polylogue.operations.insight_contracts import InsightReadinessRequest
+
+        InsightReadinessRequest.model_validate(value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_contracts import InsightReadinessRequest
+
+        return handler.resolve_ref_schema(handler(InsightReadinessRequest.__pydantic_core_schema__))
+
+
+class InsightReadinessWireResult(_OperationPayload):
+    report: dict[str, object]
+    outcome: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_readiness_report(cls, value: object) -> object:
+        from polylogue.operations.insight_contracts import InsightReadinessResult
+
+        _validate_json_result_model(InsightReadinessResult, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_contracts import InsightReadinessResult
+
+        return handler.resolve_ref_schema(handler(InsightReadinessResult.__pydantic_core_schema__))
+
+
+class InsightRigorWireRequest(_OperationPayload):
+    query: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_selected_rigor(cls, value: object) -> object:
+        from polylogue.operations.insight_contracts import InsightRigorRequest
+
+        InsightRigorRequest.model_validate(value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_contracts import InsightRigorRequest
+
+        return handler.resolve_ref_schema(handler(InsightRigorRequest.__pydantic_core_schema__))
+
+
+class InsightRigorWireResult(_OperationPayload):
+    report: dict[str, object]
+    outcome: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_rigor_report(cls, value: object) -> object:
+        from polylogue.operations.insight_contracts import InsightRigorResult
+
+        _validate_json_result_model(InsightRigorResult, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_contracts import InsightRigorResult
+
+        return handler.resolve_ref_schema(handler(InsightRigorResult.__pydantic_core_schema__))
+
+
+class HermesHealthWireRequest(_OperationPayload):
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.hermes_health_contracts import HermesHealthRequest
+
+        return handler.resolve_ref_schema(handler(HermesHealthRequest.__pydantic_core_schema__))
+
+
+class HermesHealthWireResult(_OperationPayload):
+    report: dict[str, object]
+    outcome: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_health(cls, value: object) -> object:
+        from polylogue.operations.hermes_health_contracts import HermesHealthResult
+
+        _validate_json_result_model(HermesHealthResult, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.hermes_health_contracts import HermesHealthResult
+
+        return handler.resolve_ref_schema(handler(HermesHealthResult.__pydantic_core_schema__))
+
+
+class InsightExportWireRequest(_OperationPayload):
+    request: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_request(cls, value: object) -> object:
+        from polylogue.operations.insight_export_contracts import InsightExportRequest
+
+        _validate_json_result_model(InsightExportRequest, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_export_contracts import InsightExportRequest
+
+        return handler.resolve_ref_schema(handler(InsightExportRequest.__pydantic_core_schema__))
+
+
+class InsightExportWireResult(_OperationPayload):
+    bundle: dict[str, object]
+    outcome: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_bundle(cls, value: object) -> object:
+        from polylogue.operations.insight_export_contracts import InsightExportResult
+
+        _validate_json_result_model(InsightExportResult, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_export_contracts import InsightExportResult
+
+        return handler.resolve_ref_schema(handler(InsightExportResult.__pydantic_core_schema__))
+
+
+class AnnotationJoinWireRequest(_OperationPayload):
+    schema_id: str
+    schema_version: int
+    statuses: list[str]
+    target_kind: str | None = None
+    group_by: list[str] = Field(default_factory=list)
+    limit: int = 500
+    offset: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_join_request(cls, value: object) -> object:
+        from polylogue.annotations.join_contracts import AnnotationStructuralJoinRequest
+
+        _validate_json_result_model(AnnotationStructuralJoinRequest, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.annotations.join_contracts import AnnotationStructuralJoinRequest
+
+        return handler.resolve_ref_schema(handler(AnnotationStructuralJoinRequest.__pydantic_core_schema__))
+
+
+class AnnotationJoinWireResult(_OperationPayload):
+    result: dict[str, object]
+    outcome: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_join_result(cls, value: object) -> object:
+        from polylogue.annotations.join_contracts import AnnotationJoinOperationResult
+
+        _validate_json_result_model(AnnotationJoinOperationResult, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.annotations.join_contracts import AnnotationJoinOperationResult
+
+        return handler.resolve_ref_schema(handler(AnnotationJoinOperationResult.__pydantic_core_schema__))
+
+
+class FablePacketWireRequest(_OperationPayload):
+    seed: str
+    requested_size: int = Field(ge=0)
+    schema_id: str = "delegation.discourse"
+    schema_version: int = Field(default=1, ge=1)
+    exact_template_cap: int = Field(default=1, ge=1)
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.fable_packet_contracts import FablePacketRequest
+
+        return handler.resolve_ref_schema(handler(FablePacketRequest.__pydantic_core_schema__))
+
+
+class FablePacketWireResult(_OperationPayload):
+    packet: dict[str, object]
+    outcome: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_packet(cls, value: object) -> object:
+        from polylogue.operations.fable_packet_contracts import FablePacketResult
+
+        _validate_json_result_model(FablePacketResult, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.fable_packet_contracts import FablePacketResult
+
+        return handler.resolve_ref_schema(handler(FablePacketResult.__pydantic_core_schema__))
 
 
 class StatusRequest(_OperationPayload):
@@ -225,6 +509,22 @@ class ContextImageReadRequest(_OperationPayload):
     redact_paths: bool = True
 
 
+class ContinuationRouteRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    selection_epoch: str | None = Field(default=None, min_length=1)
+
+
+class ContinuationContextRequest(ContinuationRouteRequest):
+    observed_at_ms: int = Field(ge=1)
+
+
+class ContinuationCandidatesRequest(_OperationPayload):
+    repo_path: str = Field(min_length=1)
+    cwd: str | None = None
+    recent_files: list[str] = Field(default_factory=list)
+    limit: int = 10
+
+
 class AssertionClaimsListRequest(_OperationPayload):
     kinds: list[str] | None = None
     statuses: list[str] | None = Field(default_factory=lambda: ["active", "candidate"])
@@ -255,6 +555,10 @@ class UserOverlayListRequest(_OperationPayload):
 
 class UserOverlayGetRequest(_OperationPayload):
     id: str = Field(min_length=1)
+
+
+class UserSettingGetRequest(_OperationPayload):
+    setting_key: str = Field(min_length=1)
 
 
 class UserMarkMutationRequest(_OperationPayload):
@@ -489,14 +793,14 @@ class ContextLedgerRowRequest(_OperationPayload):
 class FacadeContextLedgerRequest(_OperationPayload):
     build_ref: str = Field(min_length=1)
     ledger_rows: list[ContextLedgerRowRequest] = Field(default_factory=list)
-    observed_at_ms: int = Field(default=0, ge=0)
+    observed_at_ms: int = Field(ge=0)
 
 
 class CompletionRequest(_OperationPayload):
     """One shell-completion question.
 
     ``source`` selects the archive-backed value vocabularies (session ids,
-    user tags, repositories, tool names); every other ``kind`` is answered from
+    user tags, repositories, working directories, tool names); every other ``kind`` is answered from
     the declared query grammar alone and needs no archive. A completer runs on
     every TAB, so ``limit`` is part of the request rather than a server
     default: the shell wants a short list quickly, not a complete one.
@@ -576,24 +880,48 @@ class InsightRebuildRequest(_OperationPayload):
 DELETE_SELECTION_MAX_BODY_BYTES = 64 * 1024 * 1024
 
 
+class MutationSelectionRequest(_OperationPayload):
+    """The resident operation owns matching and its explicit cardinality intent."""
+
+    params: dict[str, object] = Field(default_factory=dict)
+    mode: Literal["single", "first", "all", "page"] = "single"
+
+    @model_validator(mode="after")
+    def preserve_selection_intent(self) -> MutationSelectionRequest:
+        from polylogue.operations.query_lowering import cli_query_spec
+
+        spec = cli_query_spec(self.params)
+        if self.mode != "page" and (spec.limit is not None or spec.offset or spec.cursor or spec.sample is not None):
+            raise ValueError("whole-set mutation cardinality does not accept a query display window")
+        if self.mode == "all" and spec.latest:
+            raise ValueError("latest and all select different scopes")
+        return self
+
+
 class DeletePreviewRequest(_OperationPayload):
-    # No count cap: the preview splits any selection into bounded audit
-    # chunks, and the operation's ``max_body_bytes`` bounds the transport.
-    session_ids: list[str] = Field(min_length=1)
+    session_ids: list[str] | None = Field(default=None, min_length=1)
+    selection: MutationSelectionRequest | None = None
+
+    @model_validator(mode="after")
+    def exact_selection(self) -> DeletePreviewRequest:
+        if (self.session_ids is None) == (self.selection is None):
+            raise ValueError("supply exactly one explicit selection or resident query selection")
+        if self.session_ids is not None:
+            if any(not value for value in self.session_ids):
+                raise ValueError("session identifiers must be nonempty")
+            if len(set(self.session_ids)) != len(self.session_ids):
+                raise ValueError("selection_is_not_canonical")
+        return self
 
 
 class DeleteAuthorizeRequest(_OperationPayload):
     preview_ref: str | None = Field(default=None, min_length=1)
-    preview_refs: list[str] | None = Field(default=None, min_length=1)
+    preview_request_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def exact_reference_shape(self) -> DeleteAuthorizeRequest:
-        if (self.preview_ref is None) == (self.preview_refs is None):
-            raise ValueError("supply exactly one of preview_ref or preview_refs")
-        if self.preview_refs is not None and (
-            any(not ref for ref in self.preview_refs) or len(set(self.preview_refs)) != len(self.preview_refs)
-        ):
-            raise ValueError("preview_refs must be distinct nonempty references")
+        if (self.preview_ref is None) == (self.preview_request_id is None):
+            raise ValueError("supply exactly one preview reference or preview operation reference")
         return self
 
 
@@ -603,17 +931,12 @@ class DeleteCancelRequest(DeleteAuthorizeRequest):
 
 class DeleteExecuteRequest(_OperationPayload):
     authorization_ref: str | None = Field(default=None, min_length=1)
-    authorization_refs: list[str] | None = Field(default=None, min_length=1)
+    authorization_request_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def exact_reference_shape(self) -> DeleteExecuteRequest:
-        if (self.authorization_ref is None) == (self.authorization_refs is None):
-            raise ValueError("supply exactly one of authorization_ref or authorization_refs")
-        if self.authorization_refs is not None and (
-            any(not ref for ref in self.authorization_refs)
-            or len(set(self.authorization_refs)) != len(self.authorization_refs)
-        ):
-            raise ValueError("authorization_refs must be distinct nonempty references")
+        if (self.authorization_ref is None) == (self.authorization_request_id is None):
+            raise ValueError("supply exactly one authorization reference or authorization operation reference")
         return self
 
 
@@ -657,29 +980,44 @@ class SessionMetadataRequest(_OperationPayload):
 
 
 class SessionMarkRequest(_OperationPayload):
-    """Star/pin/archive marks over whole sessions.
+    """One combined User change over explicit API IDs or a resident query scope."""
 
-    Session-scoped by name and by contract: a message- or block-targeted mark
-    needs the async insight-target resolver that still lives on the Python
-    facade, so this operation deliberately carries session ids only and the
-    handler resolves each one against the index with the durable user-tier
-    alias fallback.
-    """
-
-    session_ids: list[str] = Field(min_length=1, max_length=10_000)
+    session_ids: list[str] | None = Field(default=None, min_length=1)
+    selection: MutationSelectionRequest | None = None
     add_marks: list[str] = Field(default_factory=list)
     remove_marks: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    remove_tags: list[str] = Field(default_factory=list)
+    pairs: list[list[str]] = Field(default_factory=list)
+    note_text: str | None = None
 
     @model_validator(mode="after")
-    def nonempty_disjoint_marks(self) -> SessionMarkRequest:
-        if not self.add_marks and not self.remove_marks:
-            raise ValueError("supply at least one mark to add or remove")
-        if any(not value.strip() for value in (*self.add_marks, *self.remove_marks)):
-            raise ValueError("mark types must be nonempty")
+    def validate_all_intents(self) -> SessionMarkRequest:
+        from polylogue.core.user_state_targets import validate_mark_type
+        from polylogue.surfaces.payloads import validate_metadata_key
+
+        if (self.session_ids is None) == (self.selection is None):
+            raise ValueError("supply exactly one explicit session selection or resident query selection")
+        if self.session_ids is not None and any(not value for value in self.session_ids):
+            raise ValueError("session identifiers must be nonempty")
+        for value in (*self.add_marks, *self.remove_marks):
+            validate_mark_type(value)
         if set(self.add_marks) & set(self.remove_marks):
             raise ValueError("a mark cannot be added and removed in one request")
-        if any(not value for value in self.session_ids):
-            raise ValueError("session identifiers must be nonempty")
+        if any(not value.strip() for value in (*self.tags, *self.remove_tags)):
+            raise ValueError("tags must be nonempty")
+        if set(self.tags) & set(self.remove_tags):
+            raise ValueError("a tag cannot be added and removed in one request")
+        for pair in self.pairs:
+            if len(pair) != 2:
+                raise ValueError("metadata pairs must contain exactly a key and value")
+            error = validate_metadata_key(pair[0])
+            if error is not None:
+                raise ValueError(error)
+        if self.note_text is not None and not self.note_text.strip():
+            raise ValueError("note text must be nonblank")
+        if not (self.add_marks or self.remove_marks or self.tags or self.remove_tags or self.pairs or self.note_text):
+            raise ValueError("supply at least one User change")
         return self
 
 
@@ -908,6 +1246,8 @@ class EmbeddingFailureResolveRequest(_OperationPayload):
 
 class OperationStatusRequest(_OperationPayload):
     request_id: str = Field(min_length=1)
+    parts_offset: int = Field(default=0, ge=0)
+    parts_limit: int = Field(default=40, ge=1, le=40)
 
 
 class OperationAwaitRequest(OperationStatusRequest):
@@ -961,6 +1301,14 @@ class AssertionClaimsListResult(UserOverlayListResult):
 class UserOverlayGetResult(_OperationResult):
     found: bool
     item: dict[str, object] | None
+
+
+class UserSettingGetResult(UserOverlayGetResult):
+    outcome: dict[str, object]
+
+
+class UserSettingListResult(UserOverlayListResult):
+    outcome: dict[str, object]
 
 
 class StatusResult(_OperationResult):
@@ -1097,6 +1445,29 @@ class ContextImageReadResult(_OperationResult):
     payload: dict[str, object]
 
 
+class ContinuationRouteResult(_OperationResult):
+    status: Literal["supported", "unsupported"]
+    origin: str
+    native_session_id: str
+    argv: list[str]
+    cwd: str | None
+    detail: str | None
+    open_state: Literal["open", "closed", "unknown"]
+    command: str | None
+
+
+class ContinuationCandidatesResult(_OperationResult):
+    candidates: list[ResumeCandidate]
+    returned: int = Field(ge=0)
+    limit: int
+
+    @model_validator(mode="after")
+    def _exact_window(self) -> ContinuationCandidatesResult:
+        if self.returned != len(self.candidates):
+            raise ValueError("returned must equal the candidate window length")
+        return self
+
+
 class CompletionCandidateResult(_OperationPayload):
     value: str
     insert: str
@@ -1204,15 +1575,20 @@ class MutationResult(_OperationPayload):
     status: Literal["prepared", "authorized", "cancelled"] | None = None
     operation: str | None = None
     preview_ref: str | None = None
-    preview_refs: list[str] | None = None
     authorization_ref: str | None = None
-    authorization_refs: list[str] | None = None
     session_ids_sample: list[str] | None = None
     session_count: int | None = Field(default=None, ge=0)
     expires_at_ms: int | None = None
     outcome: str | None = None
     sequence: int | None = Field(default=None, ge=0)
-    reference: dict[str, object] | None = None
+    reference: AcceptedOperationReference | None = None
+    source_request_id: str | None = None
+    tag_count: int | None = Field(default=None, ge=0)
+    applied_count: int | None = Field(default=None, ge=0)
+    not_attempted_count: int | None = Field(default=None, ge=0)
+    parts_total: int | None = Field(default=None, ge=0)
+    parts_offset: int | None = Field(default=None, ge=0)
+    next_parts_offset: int | None = Field(default=None, ge=0)
     effect: Literal["committed", "no-effect", "indeterminate"] | None = None
     completed_chunks: int | None = Field(default=None, ge=0)
     affected_count: int | None = Field(default=None, ge=0)
@@ -1255,20 +1631,20 @@ class MutationResult(_OperationPayload):
         elif self.status == "prepared":
             from polylogue.operations.mutation_transaction import DELETE_PREVIEW_SAMPLE_IDS
 
-            if not self.preview_refs or self.preview_ref != self.preview_refs[0] or self.session_ids_sample is None:
-                raise ValueError("prepared result requires exact preview references and selection sample")
-            if (
-                self.session_count is None
-                or self.session_count < 1
-                or len(self.session_ids_sample) != min(self.session_count, DELETE_PREVIEW_SAMPLE_IDS)
-                or self.expires_at_ms is None
-            ):
-                raise ValueError("prepared result requires selection count, its leading sample and expiry")
+            if self.session_count is None or self.session_ids_sample is None:
+                raise ValueError("prepared result requires its measured selection")
+            if len(self.session_ids_sample) != min(self.session_count, DELETE_PREVIEW_SAMPLE_IDS):
+                raise ValueError("prepared result requires the declared bounded selection sample")
+            if self.session_count:
+                if self.reference is None or self.expires_at_ms is None:
+                    raise ValueError("nonempty preview requires its durable operation reference and expiry")
+                if self.reference.artifact_kind != "preview-batch":
+                    raise ValueError("prepared result does not name sealed preview authority")
         elif self.status == "authorized":
-            if not self.authorization_refs or self.authorization_ref != self.authorization_refs[0]:
-                raise ValueError("authorized result requires exact authorization references")
-        elif not self.preview_refs:
-            raise ValueError("cancelled preview result requires exact preview references")
+            if self.reference is None or self.reference.artifact_kind != "authorization-batch":
+                raise ValueError("authorized result requires its durable operation reference")
+        elif self.reference is None or self.reference.artifact_kind != "cancelled-preview-batch":
+            raise ValueError("cancelled result requires its durable operation reference")
         return self
 
 
@@ -1318,7 +1694,7 @@ class AcceptedOperationReference(_OperationPayload):
     accepted_deadline_unix_ms: int | None
 
     def to_dict(self) -> dict[str, object]:
-        return self.model_dump(mode="json")
+        return cast(dict[str, object], self.model_dump(mode="json"))
 
     @classmethod
     def from_record(cls, record: Mapping[str, object]) -> AcceptedOperationReference:
@@ -1554,6 +1930,75 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         deadline_s=2.0,
     ),
     DaemonOperationSpec(
+        "insights.list",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="insights.list.request/v1",
+        result_contract="insights.list.result/v1",
+        request_type="InsightReadRequest",
+        result_type="InsightReadResult",
+        request_model=InsightReadRequest,
+        result_model=InsightReadResult,
+    ),
+    DaemonOperationSpec(
+        "insights.readiness",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="insights.readiness.request/v1",
+        result_contract="insights.readiness.result/v1",
+        request_type="InsightReadinessWireRequest",
+        result_type="InsightReadinessWireResult",
+        request_model=InsightReadinessWireRequest,
+        result_model=InsightReadinessWireResult,
+    ),
+    DaemonOperationSpec(
+        "annotation.join",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="annotation.join.request/v1",
+        result_contract="annotation.join.result/v1",
+        request_model=AnnotationJoinWireRequest,
+        result_model=AnnotationJoinWireResult,
+    ),
+    DaemonOperationSpec(
+        "insights.rigor",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="insights.rigor.request/v1",
+        result_contract="insights.rigor.result/v1",
+        request_type="InsightRigorWireRequest",
+        result_type="InsightRigorWireResult",
+        request_model=InsightRigorWireRequest,
+        result_model=InsightRigorWireResult,
+    ),
+    DaemonOperationSpec(
+        "insights.export_bundle",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="insights.export_bundle.request/v1",
+        result_contract="insights.export_bundle.result/v1",
+        request_model=InsightExportWireRequest,
+        result_model=InsightExportWireResult,
+    ),
+    DaemonOperationSpec(
+        "insights.fable_packet",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="insights.fable_packet.request/v1",
+        result_contract="insights.fable_packet.result/v1",
+        request_model=FablePacketWireRequest,
+        result_model=FablePacketWireResult,
+    ),
+    DaemonOperationSpec(
+        "insights.hermes_health",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="insights.hermes_health.request/v1",
+        result_contract="insights.hermes_health.result/v1",
+        request_model=HermesHealthWireRequest,
+        result_model=HermesHealthWireResult,
+    ),
+    DaemonOperationSpec(
         "cli.query",
         DaemonAuthority.READ,
         DaemonFallback.NEVER,
@@ -1691,6 +2136,27 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_model=ContextImageReadResult,
     ),
     DaemonOperationSpec(
+        "continuation.route",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_model=ContinuationRouteRequest,
+        result_model=ContinuationRouteResult,
+    ),
+    DaemonOperationSpec(
+        "continuation.context",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_model=ContinuationContextRequest,
+        result_model=ContextImageReadResult,
+    ),
+    DaemonOperationSpec(
+        "continuation.candidates",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_model=ContinuationCandidatesRequest,
+        result_model=ContinuationCandidatesResult,
+    ),
+    DaemonOperationSpec(
         "user.assertions.list",
         DaemonAuthority.READ,
         DaemonFallback.NEVER,
@@ -1698,6 +2164,24 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="user.assertions.list.result/v1",
         request_model=AssertionClaimsListRequest,
         result_model=AssertionClaimsListResult,
+    ),
+    DaemonOperationSpec(
+        "user.settings.get",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.settings.get.request/v1",
+        result_contract="user.settings.get.result/v1",
+        request_model=UserSettingGetRequest,
+        result_model=UserSettingGetResult,
+    ),
+    DaemonOperationSpec(
+        "user.settings.list",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.settings.list.request/v1",
+        result_contract="user.settings.list.result/v1",
+        request_model=UserOverlayListRequest,
+        result_model=UserSettingListResult,
     ),
     DaemonOperationSpec(
         "user.marks.list",
@@ -2435,7 +2919,13 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonAuthority.WRITE,
         DaemonFallback.NEVER,
         capability="archive.add_mark",
-        additional_capabilities=("archive.remove_mark",),
+        additional_capabilities=(
+            "archive.remove_mark",
+            "archive.add_tag",
+            "archive.remove_tag",
+            "archive.set_metadata",
+            "archive.save_annotation",
+        ),
         deadline_s=120.0,
         request_contract="mutation.session.mark.request/v1",
         result_contract="mutation.result/v1",
@@ -2443,7 +2933,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="MutationResult",
         request_model=SessionMarkRequest,
         result_model=MutationResult,
-        handler="mutation_session_mark",
+        handler="execute_session_mark_operation",
     ),
     DaemonOperationSpec(
         "mutation.annotation.save",
@@ -2855,12 +3345,20 @@ def _json_result_validator(model: type[BaseModel]) -> SchemaValidator:
             result["strict"] = True
         if kind == "model":
             result["config"] = {**result.get("config", {}), "strict": True}
+        if kind == "dataclass":
+            # JSON objects fill the declared dataclass fields. Its closed
+            # config and nested strict scalar schemas still govern admission.
+            result["strict"] = False
         if kind in {"tuple", "list"}:
             # The wire walker admits only arrays (native server tuples are
             # arrays at delivery). Item schemas retain strict scalar checks.
             result["strict"] = False
+        # Named definitions belong to the wrapping validator, so reused refs
+        # keep resolving to the same adapted strict schema.
         elif kind == "dict":
-            return core_schema.no_info_before_validator_function(_json_result_object, result)
+            return core_schema.no_info_before_validator_function(
+                _json_result_object, result, ref=result.pop("ref", None)
+            )
         elif kind == "enum":
             enum_type = result["cls"]
 
@@ -2869,7 +3367,7 @@ def _json_result_validator(model: type[BaseModel]) -> SchemaValidator:
                     raise ValueError("JSON enum value must be a string")
                 return enum_type(item)
 
-            return core_schema.no_info_before_validator_function(enum_value, result)
+            return core_schema.no_info_before_validator_function(enum_value, result, ref=result.pop("ref", None))
         elif kind == "datetime":
             datetime_validator = SchemaValidator(core_schema.datetime_schema(strict=False))
 
@@ -2878,7 +3376,7 @@ def _json_result_validator(model: type[BaseModel]) -> SchemaValidator:
                     raise ValueError("JSON datetime value must be a string")
                 return datetime_validator.validate_python(item)
 
-            return core_schema.no_info_before_validator_function(datetime_value, result)
+            return core_schema.no_info_before_validator_function(datetime_value, result, ref=result.pop("ref", None))
         return result
 
     # pydantic_core's rebuild option prevents reuse of the model's original
@@ -3145,7 +3643,6 @@ __all__ = [
     "MUTATION_OPERATION_NAMES",
     "MAX_DECLARED_OPERATION_BODY_BYTES",
     "MAX_OPERATION_BODY_BYTES",
-    "MAX_OPERATION_RESULT_BYTES",
     "DaemonAuthority",
     "DAEMON_OPERATION_OUTCOMES",
     "DaemonFallback",

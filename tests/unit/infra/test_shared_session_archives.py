@@ -10,7 +10,9 @@ entries to the loop variable instead of a default argument and
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -129,3 +131,67 @@ def test_seeded_archive_fixture_resolves_through_the_registry(
     seeded_archive: SeededArchiveArtifact,
 ) -> None:
     assert seeded_archive.manifest.key == registry.schema_coverage_archive().manifest.key
+
+
+@pytest.mark.parametrize("fixture_name", ["seeded_archive", "named_seeded_artifact", "pilot_artifact"])
+def test_session_fixture_pins_cache_before_acquisition_until_finalization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fixture_name: str
+) -> None:
+    """Removing the original cache-domain hold deletes an aged artifact under the actual fixture."""
+    import dataclasses
+    import io
+    import json
+    import os
+
+    from devtools import seeded_archive_cache_gc as command
+    from tests.infra import corpus_fixtures, integration_profile, pilot_resources, workload_artifacts
+    from tests.infra.workload_declarations import c03_semantic_corpus_spec
+
+    cache = tmp_path / "cache"
+    artifact = workload_artifacts.build_seeded_archive(
+        (
+            dataclasses.replace(
+                c03_semantic_corpus_spec(), seed=997, count=2, session_native_ids=("c03-target", "c03-irrelevant-000")
+            ),
+        ),
+        cache_root=cache,
+    )
+    os.utime(artifact.root, (0, 0))
+    os.utime(artifact.root / "manifest.json", (0, 0))
+    monkeypatch.setattr(workload_artifacts, "default_cache_root", lambda: cache)
+
+    def collect() -> dict[str, object]:
+        output = io.StringIO()
+        assert (
+            command.main(["--cache-root", str(cache), "--grace-period-s", "1", "--apply", "--json"], stdout=output) == 0
+        )
+        return cast(dict[str, object], json.loads(output.getvalue()))
+
+    def acquire(*_args: object, **_kwargs: object) -> SeededArchiveArtifact:
+        assert collect()["dispositions"] == {"active-lock": 1}
+        assert artifact.root.exists()
+        return artifact
+
+    if fixture_name == "seeded_archive":
+        monkeypatch.setattr(corpus_fixtures, "schema_coverage_archive", acquire)
+        fixture = cast(Callable[[], Generator[object, None, None]], inspect.unwrap(corpus_fixtures.seeded_archive))()
+    elif fixture_name == "named_seeded_artifact":
+        monkeypatch.setattr(corpus_fixtures, "build_seeded_archive", acquire)
+        fixture = cast(
+            Callable[[], Generator[object, None, None]], inspect.unwrap(corpus_fixtures.named_seeded_artifact)
+        )()
+    else:
+        monkeypatch.setattr(integration_profile, "build_integration_archive", acquire)
+        fixture = cast(Callable[[], Generator[object, None, None]], inspect.unwrap(pilot_resources.pilot_artifact))()
+    try:
+        value = next(fixture)
+        if fixture_name == "named_seeded_artifact":
+            assert callable(value) and value(NAMED_WORKLOAD_PROFILES[0].name) is artifact
+        else:
+            assert value is artifact
+        assert collect()["dispositions"] == {"active-lock": 1}
+        assert artifact.root.exists()
+    finally:
+        fixture.close()
+    assert collect()["dispositions"] == {"deleted": 1}
+    assert not artifact.root.exists()

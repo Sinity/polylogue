@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
 from polylogue.analysis.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
-from polylogue.analysis.fable_packet import (
-    DelegationPacketLabel,
-    DelegationPacketRow,
-    compile_private_fable_packet,
-)
+from polylogue.analysis.fable_packet import compile_private_fable_packet
+from polylogue.analysis.fable_packet_contracts import DelegationPacketLabel, DelegationPacketRow
 
 
 def _manifest() -> CohortManifest:
@@ -76,3 +78,41 @@ def test_private_packet_fails_closed_when_accepted_labels_lack_evidence() -> Non
         "accepted_label_missing_evidence",
         "selected_refs_missing_from_structural_population",
     )
+
+
+def test_all_edge_coverage_cancels_inside_sqlite_and_closes_physical_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tempfile
+    from pathlib import Path
+
+    import pytest
+
+    manifest = _manifest()
+    original = tempfile.TemporaryDirectory
+    directories: list[Path] = []
+    exhausted = False
+
+    def track_directory(*, prefix: str) -> tempfile.TemporaryDirectory[str]:
+        directory = original(prefix=prefix, dir=tmp_path)
+        directories.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", track_directory)
+
+    def rows() -> Iterator[DelegationPacketRow]:
+        nonlocal exhausted
+        for index in range(1000):
+            yield DelegationPacketRow(f"delegation:edge-{index}", "edge", "edge_only", None)
+        exhausted = True
+
+    def checkpoint() -> None:
+        if exhausted:
+            raise InterruptedError("original coverage cancellation")
+
+    with pytest.raises(InterruptedError):
+        compile_private_fable_packet(
+            manifest=manifest, rows=rows(), annotation_schema_id=None, labels=(), checkpoint=checkpoint
+        )
+    assert exhausted
+    assert directories and all(not directory.exists() for directory in directories)

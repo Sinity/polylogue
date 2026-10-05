@@ -39,6 +39,32 @@ class _MetadataContext(_DeleteContext):
         return self
 
 
+class _MarkContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    target_type: str = Field(min_length=1)
+    target_id: str = Field(min_length=1)
+    mark_type: str = Field(min_length=1)
+    owner_session_id: str | None
+
+
+class _AnnotationContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    annotation_id: str = Field(min_length=1)
+    target_type: str = Field(min_length=1)
+    target_id: str = Field(min_length=1)
+    note_text: str = Field(min_length=1)
+    owner_session_id: str | None
+
+
+class _TagRemoveContext(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    session_id: str = Field(min_length=1)
+    tag: str = Field(min_length=1)
+
+
 class _InsightTargetContext(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -126,6 +152,10 @@ class _ExcisionContext(BaseModel):
 _CONTEXT_MODELS: dict[str, type[BaseModel]] = {
     "mutate-delete-session": _DeleteContext,
     "mutate-session-excision": _ExcisionContext,
+    "mutate-add-mark": _MarkContext,
+    "mutate-remove-mark": _MarkContext,
+    "mutate-save-annotation": _AnnotationContext,
+    "mutate-remove-tag": _TagRemoveContext,
     "mutate-bulk-tag-sessions": _TagContext,
     "mutate-bulk-set-metadata": _MetadataContext,
     "mutate-rebuild-insights": _InsightContext,

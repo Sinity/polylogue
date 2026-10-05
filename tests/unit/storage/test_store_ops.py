@@ -1666,7 +1666,7 @@ class _VectorSpy:
 
 
 class TestRepositoryVectorAsyncBoundary:
-    async def test_search_similar_offloads_vector_query(
+    async def test_search_similar_delegates_snapshot_and_session_grain(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
@@ -1674,6 +1674,11 @@ class TestRepositoryVectorAsyncBoundary:
         backend = SQLiteBackend(db_path=tmp_path / "vectors.db")
         repo = SessionRepository(backend=backend)
         import threading
+
+        async def forbidden_get_many(*args: object, **kwargs: object) -> Never:
+            raise AssertionError("hydration must finish in the provider snapshot")
+
+        monkeypatch.setattr(repo, "get_many", forbidden_get_many)
 
         from polylogue.core.compute import compute_adapter, current_cancellation
         from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider

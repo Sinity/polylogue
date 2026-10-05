@@ -9,8 +9,6 @@ from polylogue.archive.query.retrieval import search_limit
 from polylogue.archive.query.retrieval import search_query_text as plan_search_query_text
 from polylogue.archive.query.search_contract import SearchExecution
 from polylogue.archive.query.support import session_to_summary
-from polylogue.storage.archive_identity import archive_file_set_root
-from polylogue.storage.sqlite.archive_tiers.archive_query_reads import HYBRID_RRF_K
 
 if TYPE_CHECKING:
     from polylogue.archive.query.plan import SessionQueryPlan
@@ -234,6 +232,8 @@ def _hybrid_score_components(
     (``None`` when no lane contributed). The constant ``k=60`` matches
     the archive SQL lane-rank settlement owner.
     """
+    from polylogue.storage.sqlite.archive_tiers.archive_query_reads import HYBRID_RRF_K
+
     components: dict[str, float] = {}
     fused = 0.0
     any_lane = False
@@ -294,6 +294,7 @@ async def search_hits_for_plan(
     """Return the native ranked read and its lane evidence through one projection."""
     from polylogue.archive.query.archive_execution import archive_search_hits
     from polylogue.archive.query.transaction import run_archive_read
+    from polylogue.storage.archive_identity import archive_file_set_root
 
     if not plan_has_search_hit_evidence(plan):
         return SearchHitResults([], SearchExecution((), ()))

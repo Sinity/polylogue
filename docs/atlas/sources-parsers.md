@@ -205,6 +205,10 @@ provider (`docs/provider-origin-identity.md:15-30`;
   with matching native role/text to produce private owner coordinates. The
   parser refuses absent or conflicting evidence instead of inventing an ID.
 
+- Grok native and export human/user sender records establish human authorship,
+  including prose that resembles runtime instructions. Textual message type
+  stays independently classified; native tool and reasoning blocks retain
+  their structural classification.
 - Detection is shape-based and ordered by declared tightness, per payload mode.
 - Parsing preserves structured tool-result outcome and exit-code fields;
   prose is not an outcome oracle.
@@ -226,6 +230,22 @@ provider (`docs/provider-origin-identity.md:15-30`;
   parser evidence before short admitted publication; the matching writer
   consumes attachment reservations with the same prepared receipt. Physical
   cleanup stays with that preparation creator through publication and failure.
+- Batch ingest keeps source membership and precedence checks read-only:
+  `_core.py` opens one read-only `source.db` handle per batch, and
+  `revision_authority_refuses_write` reads `raw_session_memberships` through
+  it, while index publication and later blob-publication receipt consumption
+  each open their own archive-root-bound write connection
+  (`_process_ingest_batch_sync` in
+  `polylogue/pipeline/services/ingest_batch/_core.py:3528-3543`;
+  `revision_authority_refuses_write` in
+  `polylogue/storage/sqlite/archive_tiers/ingest_precedence.py:182-277`;
+  `_open_sync_connection` in
+  `polylogue/pipeline/services/ingest_batch/_core.py:215-245`). After index
+  commit, `_process_ingest_batch_sync` opens the source-tier transaction with
+  `archive_root=archive_root` and calls `consume_blob_publication_receipt`
+  for each pending attachment receipt
+  (`polylogue/pipeline/services/ingest_batch/_core.py:3656-3673`;
+  `polylogue/storage/blob_publication.py:553-564`).
 
 ## Gotchas
 
@@ -260,3 +280,7 @@ entry. Intake, batch byte accounting and dispatcher events expose the partial;
 the attempt carries `batch:partial_admission` and its event is degraded. No-session
 and settled corrupt observations remain excluded. The literal raw retains the
 unfinished tail so a later completed observation can advance normally.
+
+Grok native tool results declare `not_reported` when outcome evidence is absent
+and `unsupported_construct` when a supplied outcome has an unsupported shape.
+Both reasons remain typed unknown outcomes through storage and readback.

@@ -5619,6 +5619,12 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         from polylogue.config import load_polylogue_config
 
         operation_settings = load_polylogue_config()
+        from polylogue.paths import hermes_sessions_path
+
+        hermes_root = next(
+            (source.root for source in self.watch_sources or () if source.name == "hermes"),
+            hermes_sessions_path(),
+        )
         if archive_root is None:
             configured_archive_root = operation_settings.archive_root
             if configured_archive_root is None:
@@ -5680,6 +5686,7 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
                 vector_binding=vector_binding,
                 runtime_status=get_status_snapshot_payload(),
                 status_config=operation_settings,
+                hermes_root=hermes_root,
             ),
         )
         # Startup recovery has run under this writer (``polylogued`` before

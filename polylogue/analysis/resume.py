@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import os
 from collections import Counter
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
-from pydantic import Field, field_validator
+from pydantic import Field
 
 from polylogue.analysis.archive import (
     ArchiveInsightUnavailableError,
@@ -21,6 +21,7 @@ from polylogue.analysis.archive import (
 )
 from polylogue.analysis.archive_models import ArchiveInsightModel, ObjectivePosturePayload
 from polylogue.analysis.objective_posture import ASSERTION_TIER_KINDS, derive_objective_posture
+from polylogue.analysis.resume_contracts import ResumeCandidate, ResumeOverlapBasis, ResumePathOverlap
 from polylogue.analysis.work_evidence import WorkEvidenceNode
 from polylogue.archive.actions.actions import build_tool_calls_from_content_blocks
 from polylogue.archive.session.domain_models import Session
@@ -324,17 +325,6 @@ def classify_resume_context_evidence(
     return evidence("unavailable", unavailable_reason="topology relation is not an explicit resume or continuation")
 
 
-class ResumePathOverlap(ArchiveInsightModel):
-    candidate_path: str
-    recent_file: str
-
-
-class ResumeOverlapBasis(ArchiveInsightModel):
-    exact: tuple[ResumePathOverlap, ...] = ()
-    dir: tuple[ResumePathOverlap, ...] = ()
-    dead_excluded: tuple[str, ...] = ()
-
-
 class ResumeBrief(ArchiveInsightModel):
     session_id: str
     facts: ResumeFacts
@@ -349,34 +339,6 @@ class ResumeBrief(ArchiveInsightModel):
             computed_at=_utc_now_iso(),
         )
     )
-
-
-class ResumeCandidate(ArchiveInsightModel):
-    logical_session_id: str
-    canonical_session_date: str | None = None
-    last_message_at: str | None = None
-    title: str
-    terminal_state: str = "unknown"
-    # polylogue-37t.23: structural_inference-tier objective posture (the
-    # strongest posture across the logical session's member profiles). Not
-    # overlaid with the assertion tier here -- that would require a live
-    # user.db query per candidate on every ranking call. Callers that need
-    # the full authority-blended posture for one candidate should follow up
-    # with `resume_brief`, whose `inferences.objective_posture` overlays it.
-    objective_posture: str = "unknown"
-    workflow_shape: str = "unknown"
-    file_overlap: tuple[str, ...] = ()
-    overlap_basis: ResumeOverlapBasis = Field(default_factory=ResumeOverlapBasis)
-    score: float
-    score_breakdown: dict[str, float]
-    brief_url: str
-
-    @field_validator("logical_session_id", "title", "brief_url")
-    @classmethod
-    def _non_empty(cls, value: str) -> str:
-        if not value or not value.strip():
-            raise ValueError("field cannot be empty")
-        return value
 
 
 class ResumeOperations(Protocol):
@@ -1314,6 +1276,7 @@ def _rank_resume_profiles(
     recent_files: Sequence[str] = (),
     limit: int = 10,
     overlap_mode: _ResumeOverlapMode = "refactor-aware",
+    checkpoint: Callable[[], None] | None = None,
 ) -> tuple[ResumeCandidate, ...]:
     normalized_repo = _normalize_path(repo_path)
     normalized_cwd = _normalize_path(cwd or "")
@@ -1321,6 +1284,8 @@ def _rank_resume_profiles(
     path_context = _PathResolutionContext.from_repo_path(normalized_repo)
     grouped: dict[str, list[SessionProfileInsight]] = {}
     for profile in profiles:
+        if checkpoint is not None:
+            checkpoint()
         logical_id = str(profile.logical_session_id or profile.session_id)
         grouped.setdefault(logical_id, []).append(profile)
 
@@ -1343,6 +1308,8 @@ def _rank_resume_profiles(
 
     candidates: list[ResumeCandidate] = []
     for logical_id, members in grouped.items():
+        if checkpoint is not None:
+            checkpoint()
         representative = max(
             members,
             key=lambda profile: (
@@ -1429,13 +1396,13 @@ def _rank_resume_profiles(
         # == "clean_finish"` filter, which the polylogue-ve9z ladder
         # decision made permanently dead (that state is no longer emitted).
         candidates = [candidate for candidate in candidates if candidate.objective_posture != "completed"]
-    candidates.sort(
-        key=lambda candidate: (
-            -candidate.score,
-            candidate.last_message_at or "",
-            candidate.logical_session_id,
-        )
-    )
+
+    def rank_key(candidate: ResumeCandidate) -> tuple[float, str, str]:
+        if checkpoint is not None:
+            checkpoint()
+        return (-candidate.score, candidate.last_message_at or "", candidate.logical_session_id)
+
+    candidates.sort(key=rank_key)
     return tuple(candidates[: max(0, int(limit))])
 
 
@@ -1468,7 +1435,6 @@ async def find_resume_candidates(
 __all__ = [
     "RESUME_BRIEF_MATERIALIZER_VERSION",
     "ResumeBrief",
-    "ResumeCandidate",
     "ResumeContextArm",
     "ResumeContextDeliveryEvidence",
     "ResumeContextEvidence",
@@ -1477,8 +1443,6 @@ __all__ = [
     "ResumeLastMessage",
     "ObjectivePostureOperations",
     "ResumeOperations",
-    "ResumeOverlapBasis",
-    "ResumePathOverlap",
     "ResumeProvenance",
     "ResumeRelatedSession",
     "ResumeUncertainty",

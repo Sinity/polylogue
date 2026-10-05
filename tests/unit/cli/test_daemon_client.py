@@ -289,7 +289,7 @@ def test_daemon_mutation_timeout_is_typed_indeterminate(monkeypatch: pytest.Monk
 
     with pytest.raises(DaemonMutationIndeterminateError, match="POST /api/operation"):
         DaemonClient(socket_path, timeout_s=0.01).operation(
-            "mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}
+            "mutation.session.delete.execute", {"authorization_ref": "ref-1"}
         )
 
 
@@ -324,7 +324,7 @@ def test_daemon_mutation_interrupt_after_connect_is_typed_indeterminate(
     monkeypatch.setattr("polylogue.daemon_client._UnixHTTPConnection", InterruptedConnection)
 
     with pytest.raises(DaemonMutationIndeterminateError, match="POST /api/operation"):
-        DaemonClient(socket_path).operation("mutation.session.delete.execute", {"authorization_refs": ["ref-1"]})
+        DaemonClient(socket_path).operation("mutation.session.delete.execute", {"authorization_ref": "ref-1"})
 
 
 def test_initial_post_interrupt_signals_the_same_request_without_claiming_no_effect(
@@ -344,7 +344,7 @@ def test_initial_post_interrupt_signals_the_same_request_without_claiming_no_eff
     monkeypatch.setattr(client, "cancel", lambda request_id, **kwargs: cancelled.append(request_id))
     with pytest.raises(DaemonMutationIndeterminateError):
         client.operation_to_completion(
-            "mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}, archive_root=str(tmp_path)
+            "mutation.session.delete.execute", {"authorization_ref": "ref-1"}, archive_root=str(tmp_path)
         )
     assert cancelled == ["interrupt-request"]
 
@@ -362,9 +362,7 @@ def test_write_deadline_does_not_mutate_a_shared_clients_read_timeout(
         return None
 
     monkeypatch.setattr(client, "_request_json_response", request)
-    assert (
-        client.operation("mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}, deadline_ms=1500) is None
-    )
+    assert client.operation("mutation.session.delete.execute", {"authorization_ref": "ref-1"}, deadline_ms=1500) is None
     assert captured == [(0.25, 2.5)]
     assert client.timeout_s == 0.25
 
@@ -391,7 +389,7 @@ def test_await_interrupt_cancels_the_original_request_not_the_control_exchange(
     monkeypatch.setattr(client, "cancel", lambda request_id, **kwargs: cancelled.append(request_id))
     with pytest.raises(DaemonMutationIndeterminateError) as raised:
         client.operation_to_completion(
-            "mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}, archive_root=str(tmp_path)
+            "mutation.session.delete.execute", {"authorization_ref": "ref-1"}, archive_root=str(tmp_path)
         )
     assert cancelled == ["accepted-mutation"]
     assert raised.value.request_id == "accepted-mutation"
@@ -420,7 +418,7 @@ def test_await_disconnect_reports_the_accepted_mutation_id(monkeypatch: pytest.M
     monkeypatch.setattr(client, "await_operation", disconnected)
     with pytest.raises(DaemonMutationIndeterminateError) as raised:
         client.operation_to_completion(
-            "mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}, archive_root=str(tmp_path)
+            "mutation.session.delete.execute", {"authorization_ref": "ref-1"}, archive_root=str(tmp_path)
         )
     assert raised.value.request_id == "accepted-mutation"
 
@@ -452,7 +450,12 @@ def test_an_accepted_write_is_never_called_indeterminate_without_one_receipt_rea
         "request_id": "accepted-write",
         "archive_identity": "archive-identity",
         "principal_ref": "principal",
-        "fingerprint": "fingerprint",
+        "fingerprint": "a" * 64,
+        "artifact_kind": "fixture-accepted-request",
+        "artifact_ref": "fixture-acceptance",
+        "accepted_at_ms": 0,
+        "part_count": 1,
+        "accepted_deadline_unix_ms": None,
         "operation_name": "mutation.session.tag",
     }
     accepted = {
@@ -508,7 +511,12 @@ def _accepted_ingest() -> tuple[dict[str, object], dict[str, object]]:
         "request_id": "accepted-ingest",
         "archive_identity": "archive-identity",
         "principal_ref": "principal",
-        "fingerprint": "fingerprint",
+        "fingerprint": "a" * 64,
+        "artifact_kind": "fixture-accepted-request",
+        "artifact_ref": "fixture-acceptance",
+        "accepted_at_ms": 0,
+        "part_count": 1,
+        "accepted_deadline_unix_ms": None,
         "operation_name": "ingest",
     }
     accepted: dict[str, object] = {
@@ -597,7 +605,12 @@ def test_progress_frames_are_delivered_before_terminal_and_renderer_failures_are
         "request_id": "embedding-progress",
         "archive_identity": "archive-identity",
         "principal_ref": "principal",
-        "fingerprint": "fingerprint",
+        "fingerprint": "a" * 64,
+        "artifact_kind": "fixture-accepted-request",
+        "artifact_ref": "fixture-acceptance",
+        "accepted_at_ms": 0,
+        "part_count": 1,
+        "accepted_deadline_unix_ms": None,
         "operation_name": "maintenance.embeddings.backfill",
     }
     accepted = {
@@ -688,7 +701,7 @@ def test_progress_frames_are_delivered_before_terminal_and_renderer_failures_are
     assert result["result"]["result"] == {"done": 1, "pending": 0, "failed": 0}
 
 
-_MUTATION: tuple[str, dict[str, object]] = ("mutation.session.delete.execute", {"authorization_refs": ["ref-1"]})
+_MUTATION: tuple[str, dict[str, object]] = ("mutation.session.delete.execute", {"authorization_ref": "ref-1"})
 
 
 def _captured_operation_envelope(tmp_path: Path, operation: str, request_id: str) -> tuple[dict[str, object], str]:
@@ -900,15 +913,25 @@ def test_invalid_chronicle_payloads_reach_execution_for_their_typed_refusal() ->
 
 
 @pytest.mark.parametrize(
-    ("operation", "payload", "bound"),
+    ("operation", "payload", "bound", "daemon_bound"),
     [
-        ("cli.query", {}, True),
-        ("mutation.session.delete.preview", {"session_ids": ["sample"]}, True),
-        ("mutation.session.delete.cancel", {"preview_ref": "preview"}, True),
-        ("mutation.session.delete.execute", {"authorization_ref": "authorization"}, True),
-        ("status", {}, False),
-        ("operation.status", {"request_id": "original"}, False),
-        ("operation.cancel", {"request_id": "original"}, False),
+        ("cli.query", {}, True, True),
+        ("mutation.session.delete.preview", {"session_ids": ["sample"]}, True, True),
+        ("mutation.session.delete.cancel", {"preview_ref": "preview"}, True, True),
+        ("mutation.session.delete.execute", {"authorization_ref": "authorization"}, True, True),
+        ("maintenance.backup", {"output_dir": "/synthetic/backups"}, False, True),
+        (
+            "maintenance.restore_verified_backup",
+            {"backup_dir": "/synthetic/package", "destination": "/synthetic/new"},
+            False,
+            True,
+        ),
+        ("user.settings.get", {"setting_key": "subscription_tier"}, False, True),
+        ("user.settings.list", {}, False, True),
+        ("insights.hermes_health", {}, False, True),
+        ("status", {}, False, False),
+        ("operation.status", {"request_id": "original"}, False, False),
+        ("operation.cancel", {"request_id": "original"}, False, False),
     ],
 )
 def test_connected_operation_binds_versions_without_a_discovery_exchange(
@@ -917,6 +940,7 @@ def test_connected_operation_binds_versions_without_a_discovery_exchange(
     operation: str,
     payload: dict[str, object],
     bound: bool,
+    daemon_bound: bool,
 ) -> None:
     from polylogue.daemon_client import (
         DaemonClient,
@@ -944,13 +968,29 @@ def test_connected_operation_binds_versions_without_a_discovery_exchange(
     assert len(requests) == 1
     assert requests[0]["request_id"] == "original"
     assert requests[0]["index_schema_version"] == (INDEX_SCHEMA_VERSION if bound else None)
-    assert requests[0]["daemon_version"] == (POLYLOGUE_VERSION if bound else None)
+    assert requests[0]["daemon_version"] == (POLYLOGUE_VERSION if daemon_bound else None)
 
 
+@pytest.mark.parametrize(
+    ("operation", "payload"),
+    [
+        ("cli.query", {}),
+        ("user.settings.get", {"setting_key": "subscription_tier"}),
+        ("user.settings.list", {}),
+        ("insights.hermes_health", {}),
+        ("maintenance.backup", {"output_dir": "/synthetic/backups"}),
+        ("maintenance.restore_verified_backup", {"backup_dir": "/synthetic/package", "destination": "/synthetic/new"}),
+    ],
+)
 def test_explicit_operation_version_preconditions_are_preserved(
-    monkeypatch: pytest.MonkeyPatch, _short_uds_runtime_dir: Path
+    monkeypatch: pytest.MonkeyPatch, _short_uds_runtime_dir: Path, operation: str, payload: dict[str, object]
 ) -> None:
-    from polylogue.daemon_client import DaemonClient, DaemonOperationProtocolError, _UnixHTTPConnection
+    from polylogue.daemon_client import (
+        DaemonClient,
+        DaemonMutationIndeterminateError,
+        DaemonOperationProtocolError,
+        _UnixHTTPConnection,
+    )
 
     requests: list[dict[str, object]] = []
     original = _UnixHTTPConnection.request
@@ -962,9 +1002,9 @@ def test_explicit_operation_version_preconditions_are_preserved(
     monkeypatch.setattr(_UnixHTTPConnection, "request", record)
     socket_path = _short_uds_runtime_dir / "explicit.sock"
     with _raw_unix_http_responder(socket_path, status=200, payload={}):
-        with pytest.raises(DaemonOperationProtocolError):
+        with pytest.raises((DaemonOperationProtocolError, DaemonMutationIndeterminateError)):
             DaemonClient(socket_path).operation(
-                "cli.query", {}, index_schema_version=999, daemon_version="selected-build"
+                operation, payload, index_schema_version=999, daemon_version="selected-build"
             )
     assert len(requests) == 1
     assert requests[0]["index_schema_version"] == 999

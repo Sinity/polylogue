@@ -45,7 +45,7 @@ def receipt_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(verify, "_declared_agentctl_operation", lambda _argv: None)
     monkeypatch.setattr(verify, "sync_testmon_graph", lambda _root: False)
     monkeypatch.setattr(verify, "validate_authority_matrix", lambda: None)
-    monkeypatch.setattr(verify, "reconcile_and_record_abandoned_verify_runs", lambda **_kwargs: [])
+    monkeypatch.setattr(verify, "reconcile_and_record_verify_runs", lambda **_kwargs: [])
     monkeypatch.setattr(verify, "_git_changed_paths", lambda _root: frozenset({"polylogue/example.py"}))
     from polylogue.context import failure_seed
 
@@ -279,26 +279,28 @@ def test_successful_abandoned_adoption_retries_an_interrupted_publication(
     (state / "job-adopted.outcome").write_text('{"exit_code":0,"outcome":"completed"}', encoding="utf-8")
     monkeypatch.setattr(verify_runs, "_process_owns_receipt", lambda *_args, **_kwargs: False)
     history, evidence = receipt_workspace / "history.jsonl", receipt_workspace / "evidence.jsonl"
-    original_append = verify_runs.append_verify_history
+    original_append = verify_runs._append_jsonl_batch
 
-    def interrupted_publication(*_args: Any, **_kwargs: Any) -> None:
-        raise OSError("injected publication interruption")
+    def interrupted_publication(entries: Any, *, path: Path) -> None:
+        if path == history:
+            raise OSError("injected publication interruption")
+        original_append(entries, path=path)
 
-    monkeypatch.setattr(verify_runs, "append_verify_history", interrupted_publication)
+    monkeypatch.setattr(verify_runs, "_append_jsonl_batch", interrupted_publication)
     arguments: dict[str, Any] = {
         "runs_root": receipt_workspace / verify_runs.VERIFY_RUNS_DIR,
         "state_root": state,
         "history_path": history,
         "evidence_path": evidence,
     }
-    first = verify_runs.reconcile_and_record_abandoned_verify_runs(**arguments)
+    first = verify_runs.reconcile_and_record_verify_runs(**arguments)
     assert first[0]["status"] == "success"
     assert not list(verify_runs._iter_history_pinned(history))
-    monkeypatch.setattr(verify_runs, "append_verify_history", original_append)
-    second = verify_runs.reconcile_and_record_abandoned_verify_runs(**arguments)
+    monkeypatch.setattr(verify_runs, "_append_jsonl_batch", original_append)
+    second = verify_runs.reconcile_and_record_verify_runs(**arguments)
     assert second and list(verify_runs._iter_history_pinned(history))[0]["run_id"] == run.run_id
     assert len(verify_runs.read_verification_evidence(evidence)) == 1
-    verify_runs.reconcile_and_record_abandoned_verify_runs(**arguments)
+    verify_runs.reconcile_and_record_verify_runs(**arguments)
     assert len(list(verify_runs._iter_history_pinned(history))) == 1
 
 
@@ -536,3 +538,144 @@ def test_clean_evidence_still_publishes_success(receipt_workspace: Path) -> None
     assert "evidence_error" not in result
     assert json.loads(artifacts.statistics_path.read_text())["ok"] is True
     assert json.loads((receipt_workspace / verify_runs.CURRENT_STATISTICS_PATH).read_text())["ok"] is True
+
+
+@pytest.mark.parametrize("cut", ["history", "evidence"])
+@pytest.mark.parametrize("exit_code", [0, 1, 143])
+def test_terminal_finish_recovers_interrupted_publication(
+    receipt_workspace: Path, monkeypatch: pytest.MonkeyPatch, cut: str, exit_code: int
+) -> None:
+    """Removing terminal recovery loses a real finish verdict at either append boundary."""
+    run = verify_runs.VerifyRun(tier="quick", argv=[], git_head="a" * 40, root=receipt_workspace)
+    writer = "append_verify_history" if cut == "history" else "append_verification_evidence"
+
+    def interrupt(*_args: Any, **_kwargs: Any) -> None:
+        raise SystemExit(143)
+
+    monkeypatch.setattr(verify, writer, interrupt)
+    with pytest.raises(SystemExit):
+        verify._finish_and_record_verification(
+            run=run,
+            exit_code=exit_code,
+            duration_s=1.0,
+            diagnosis="interrupted" if exit_code == 143 else None,
+            final_git_head="a" * 40,
+            workload_receipt={},
+        )
+    payload = _only_receipt(receipt_workspace)
+    expected = verify_runs.canonical_verification_receipt(payload)
+    arguments = {
+        "runs_root": receipt_workspace / verify_runs.VERIFY_RUNS_DIR,
+        "history_path": receipt_workspace / "history.jsonl",
+        "evidence_path": receipt_workspace / "evidence.jsonl",
+    }
+    verify_runs.reconcile_and_record_verify_runs(**arguments)
+    verify_runs.reconcile_and_record_verify_runs(**arguments)
+    history = list(verify_runs._iter_history_pinned(receipt_workspace / "history.jsonl"))
+    assert len(history) == 1
+    assert history[0]["semantic_receipt"] == expected
+    assert verify_runs.read_verification_evidence(receipt_workspace / "evidence.jsonl") == [expected]
+    assert _only_receipt(receipt_workspace) == payload
+
+
+def test_history_recovers_evidence_after_terminal_detail_pruning(receipt_workspace: Path) -> None:
+    """The existing history receipt must suffice after its removable details are gone."""
+    run = verify_runs.VerifyRun(tier="quick", argv=[], git_head="a" * 40, root=receipt_workspace)
+    payload = run.finish(exit_code=0, duration_s=1.0, final_git_head="a" * 40)
+    history = receipt_workspace / "history.jsonl"
+    evidence = receipt_workspace / "evidence.jsonl"
+    verify_runs.append_verify_history(payload, path=history)
+    expected = verify_runs.canonical_verification_receipt(payload)
+    result = verify_runs.prune_successful_verify_runs(root=receipt_workspace, history_path=history, max_successful=0)
+    assert result["pruned_run_ids"] == [run.run_id]
+    assert not (receipt_workspace / str(payload["artifact_dir"]) / "run.json").exists()
+    arguments = {
+        "runs_root": receipt_workspace / verify_runs.VERIFY_RUNS_DIR,
+        "history_path": history,
+        "evidence_path": evidence,
+    }
+    verify_runs.reconcile_and_record_verify_runs(**arguments)
+    verify_runs.reconcile_and_record_verify_runs(**arguments)
+    assert verify_runs.read_verification_evidence(evidence) == [expected]
+
+
+def test_concurrent_receipt_publication_is_unique(receipt_workspace: Path) -> None:
+    """Finish and recovery share the append identity check under the lane lock."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    run = verify_runs.VerifyRun(tier="quick", argv=[], git_head="a" * 40, root=receipt_workspace)
+    payload = run.finish(exit_code=0, duration_s=1.0, final_git_head="a" * 40)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(verify_runs.append_verification_evidence, payload) for _ in range(2)]
+        for future in futures:
+            future.result()
+    assert verify_runs.read_verification_evidence(receipt_workspace / "evidence.jsonl") == [
+        verify_runs.canonical_verification_receipt(payload)
+    ]
+
+
+def test_many_missing_terminal_receipts_scan_each_lane_once(
+    receipt_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-row dedup would make this original recovery route scan quadratically."""
+    from collections import Counter
+
+    expected = []
+    for _ in range(25):
+        run = verify_runs.VerifyRun(tier="quick", argv=[], git_head="a" * 40, root=receipt_workspace)
+        payload = run.finish(exit_code=0, duration_s=1.0, final_git_head="a" * 40)
+        expected.append(verify_runs.canonical_verification_receipt(payload))
+    history, evidence = receipt_workspace / "history.jsonl", receipt_workspace / "evidence.jsonl"
+    scans: Counter[Path] = Counter()
+    original = verify_runs._iter_history_pinned
+
+    def counted(path: Path) -> Any:
+        scans[path] += 1
+        return original(path)
+
+    monkeypatch.setattr(verify_runs, "_iter_history_pinned", counted)
+    arguments = {
+        "runs_root": receipt_workspace / verify_runs.VERIFY_RUNS_DIR,
+        "history_path": history,
+        "evidence_path": evidence,
+    }
+    verify_runs.reconcile_and_record_verify_runs(**arguments)
+    assert scans == {history: 2, evidence: 1}  # dedup plus history-to-evidence projection
+    verify_runs.reconcile_and_record_verify_runs(**arguments)
+    assert scans == {history: 4, evidence: 2}
+    rows = verify_runs.read_verification_evidence(evidence)
+    assert {row["run_id"] for row in rows} == {row["run_id"] for row in expected}
+    assert len(rows) == len(expected)
+
+
+def test_interrupted_recovery_batch_keeps_durable_prefix_and_resumes(
+    receipt_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exception after one batch row leaves that row and resumes the rest without duplication."""
+    for _ in range(3):
+        run = verify_runs.VerifyRun(tier="quick", argv=[], git_head="a" * 40, root=receipt_workspace)
+        run.finish(exit_code=0, duration_s=1.0, final_git_head="a" * 40)
+    original = verify_runs._semantic_history_row
+    calls = 0
+
+    def interrupt(entry: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected interruption after durable batch prefix")
+        return original(entry)
+
+    history, evidence = receipt_workspace / "history.jsonl", receipt_workspace / "evidence.jsonl"
+    arguments = {
+        "runs_root": receipt_workspace / verify_runs.VERIFY_RUNS_DIR,
+        "history_path": history,
+        "evidence_path": evidence,
+    }
+    monkeypatch.setattr(verify_runs, "_semantic_history_row", interrupt)
+    verify_runs.reconcile_and_record_verify_runs(**arguments)
+    assert len(list(verify_runs._iter_history_pinned(history))) == 1
+    assert len(verify_runs.read_verification_evidence(evidence)) == 3
+    monkeypatch.setattr(verify_runs, "_semantic_history_row", original)
+    verify_runs.reconcile_and_record_verify_runs(**arguments)
+    assert len(list(verify_runs._iter_history_pinned(history))) == 3
+    assert len(verify_runs.read_verification_evidence(evidence)) == 3

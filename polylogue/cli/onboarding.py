@@ -66,17 +66,17 @@ GUIDED_PATH_STEPS: tuple[GuidedStep, ...] = (
     ),
     GuidedStep(
         number=4,
-        title="Search and read one demo session",
-        program="polylogue",
-        argv=("find", _DEMO_READ_QUERY, "then", "read"),
-        note="One `find`, one `read`, chained with `then`.",
+        title="Start the resident daemon in another terminal",
+        program="polylogued",
+        argv=("run",),
+        note="Keep this foreground service running while using the CLI; it also ingests the sources `init` detected.",
     ),
     GuidedStep(
         number=5,
-        title="Enable real ingestion from your own chat history",
-        program="polylogued",
-        argv=("run",),
-        note="Starts the background daemon against the sources `init` detected; rerun `polylogue tutorial` after.",
+        title="Search and read one demo session",
+        program="polylogue",
+        argv=("find", _DEMO_READ_QUERY, "then", "read"),
+        note="Return to this terminal. One `find`, one `read`, chained with `then`.",
     ),
 )
 

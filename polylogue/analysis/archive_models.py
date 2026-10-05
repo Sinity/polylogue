@@ -9,7 +9,7 @@ from polylogue.analysis.fallback import FallbackReason
 from polylogue.analysis.temporal_source import TimeConfidence
 from polylogue.core.sources import source_name_to_origin
 
-ARCHIVE_INSIGHT_CONTRACT_VERSION = 11
+ARCHIVE_INSIGHT_CONTRACT_VERSION = 12
 
 
 class ArchiveInsightModel(BaseModel):
@@ -31,7 +31,9 @@ class ArchiveInsightModel(BaseModel):
 
 
 class ArchiveInsightProvenance(ArchiveInsightModel):
-    materializer_version: int
+    # No materialized profile means no observed version; query-time producers
+    # may still declare their own known projection version.
+    materializer_version: int | None
     # Materialization is freshness metadata. A legacy row without its shared
     # materialization marker must remain absent, rather than acquiring a
     # synthetic epoch timestamp that callers could mistake for event time.
@@ -44,12 +46,12 @@ class ArchiveInsightProvenance(ArchiveInsightModel):
 
 
 class ArchiveInferenceProvenance(ArchiveInsightProvenance):
-    inference_version: int
+    inference_version: int | None
     inference_family: str
 
 
 class ArchiveEnrichmentProvenance(ArchiveInsightProvenance):
-    enrichment_version: int
+    enrichment_version: int | None
     enrichment_family: str
 
 

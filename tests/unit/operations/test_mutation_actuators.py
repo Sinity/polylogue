@@ -247,7 +247,7 @@ class TestSessionDeleteActuator:
         """The real delete actuator reaches the gateway after index mutation.
 
         Anti-vacuity: bypassing ``ArchiveStore.delete_sessions``' gateway
-        commit leaves this cache invalidation observation empty even though
+        commit leaves this cache-invalidation observation empty even though
         the session row was deleted.
         """
         archive_root = tmp_path / "archive"

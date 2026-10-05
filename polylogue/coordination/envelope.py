@@ -12,7 +12,7 @@ import threading
 from collections.abc import Callable, MutableMapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
@@ -47,14 +47,6 @@ from polylogue.coordination.payloads import (
 from polylogue.logging import get_logger
 from polylogue.operations.status_protocol import StatusComponentRegistry, StatusComponentSpec
 from polylogue.paths import archive_root
-from polylogue.storage.archive_identity import resolve_active_index_path
-from polylogue.storage.derived.topology import TopologyNodeInput, compose_session_topology
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-from polylogue.storage.sqlite.run_projection_relations import (
-    context_snapshot_relation_sql,
-    observed_event_relation_sql,
-    run_relation_sql,
-)
 
 logger = get_logger(__name__)
 
@@ -99,6 +91,22 @@ class _ProcessRow:
     comm: str
     cgroup: str
     command: str
+    executable: str = field(init=False)
+    python_module: str | None = field(init=False)
+
+    def __post_init__(self) -> None:
+        module: str | None
+        try:
+            tokens = shlex.split(self.command)
+        except ValueError:
+            # Executable classification has always used whitespace splitting
+            # for malformed shell text; a Python module needs valid quoting.
+            tokens = self.command.split()
+            module = None
+        else:
+            module = next((tokens[index + 1].lower() for index, token in enumerate(tokens[:-1]) if token == "-m"), None)
+        object.__setattr__(self, "executable", Path(tokens[0]).name.lower() if tokens else "")
+        object.__setattr__(self, "python_module", module)
 
 
 def build_coordination_envelope(
@@ -373,6 +381,8 @@ def _coordination_fingerprint(root_cwd: Path) -> str:
     the cached envelope itself is reused; a mismatch forces a fresh build
     regardless of TTL age.
     """
+    from polylogue.storage.archive_identity import resolve_active_index_path
+
     parts: list[str] = []
     for candidate in (
         root_cwd / ".git" / "HEAD",
@@ -1508,7 +1518,7 @@ def _logical_peer_payloads(
 
 def _agent_kind_for_process(row: _ProcessRow) -> str | None:
     comm = Path(row.comm).name.lower()
-    executable = _executable_name(row.command)
+    executable = row.executable
     for name in _AGENT_NAMES:
         if comm == name or comm.startswith(f"{name}-") or executable == name or executable.startswith(f"{name}-"):
             return name
@@ -1522,7 +1532,7 @@ def _agent_kind_for_process(row: _ProcessRow) -> str | None:
 
 def _is_agent_component(row: _ProcessRow) -> bool:
     text = f"{row.comm} {row.command}".lower()
-    executable = _executable_name(row.command)
+    executable = row.executable
     wrapper = any(executable.endswith(suffix) for suffix in ("-browser", "-deepseek", "-full", "-lean", "-local"))
     return wrapper or any(
         marker in text for marker in ("mcp-server", "--spare-daemon", "code-mode-host", "claude-code-acp")
@@ -1637,7 +1647,7 @@ def _resource_owns_archive(row: _ProcessRow, unit: str | None) -> bool:
 
 def _classify_resource(row: _ProcessRow) -> str | None:
     comm = Path(row.comm).name.lower()
-    executable = _executable_name(row.command)
+    executable = row.executable
     unit = (_systemd_unit(row.cgroup) or "").lower()
     if comm in _SYSTEM_RESOURCE_NAMES or executable in _SYSTEM_RESOURCE_NAMES or "/system.slice/" in row.cgroup:
         return None
@@ -1649,33 +1659,12 @@ def _classify_resource(row: _ProcessRow) -> str | None:
         return "work"
     if executable == "polylogued" or comm == "polylogued":
         return "daemon"
-    if executable == "pytest" or comm == "pytest" or _python_module(row.command) == "pytest":
+    if executable == "pytest" or comm == "pytest" or row.python_module == "pytest":
         return "test"
     if executable in {"nix", "cargo", "rustc"} or comm in {"cargo", "rustc"}:
         return "build"
     if executable == "uv" and any(token in row.command for token in ("pytest", "devtools verify", "devtools test")):
         return "test"
-    return None
-
-
-def _executable_name(command: str) -> str:
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        tokens = command.split()
-    if not tokens:
-        return ""
-    return Path(tokens[0]).name.lower()
-
-
-def _python_module(command: str) -> str | None:
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return None
-    for index, token in enumerate(tokens[:-1]):
-        if token == "-m":
-            return tokens[index + 1].lower()
     return None
 
 
@@ -1791,6 +1780,8 @@ def _assertion_handoff_payloads(
 ) -> tuple[CoordinationHandoffPayload, ...]:
     if not user_db.exists() or limit <= 0:
         return ()
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
     try:
         with closing(open_readonly_connection(user_db, timeout=0.2, validate_schema=False)) as conn:
             tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -1853,6 +1844,8 @@ def _handoff_matches_repo(*, body: str, scope_ref: str, target_ref: str, repo_to
 
 
 def _archive_payload(resources: tuple[CoordinationResourceEpisodePayload, ...]) -> CoordinationArchivePayload | None:
+    from polylogue.storage.archive_identity import resolve_active_index_path
+
     try:
         archive = archive_root().resolve()
         index = resolve_active_index_path(archive).resolve()
@@ -1903,6 +1896,8 @@ def _archive_payload(resources: tuple[CoordinationResourceEpisodePayload, ...]) 
 def _sqlite_user_version(path: Path) -> int | None:
     if not path.exists():
         return None
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
     try:
         with closing(open_readonly_connection(path, timeout=0.2, validate_schema=False)) as conn:
             row = conn.execute("PRAGMA user_version").fetchone()
@@ -1944,6 +1939,8 @@ def _archive_evidence_payloads(
     ] = ((), (), (), (), ())
     if archive is None or not archive.index_exists or archive.index_user_version is None:
         return (*empty, None)
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
     index = Path(archive.index_db)
     try:
         conn = open_readonly_connection(index, timeout=0.2, validate_schema=False)
@@ -2115,6 +2112,8 @@ def _session_tree_payload(
     Every edge, its type, composability and provenance comes from
     ``session_links``; the bound is reported rather than hidden.
     """
+    from polylogue.storage.derived.topology import TopologyNodeInput, compose_session_topology
+
     node_bound = max(1, limit)
     target = conn.execute(
         """
@@ -2252,6 +2251,8 @@ def _archive_activity_rows(
     *,
     limit: int,
 ) -> list[sqlite3.Row]:
+    from polylogue.storage.sqlite.run_projection_relations import observed_event_relation_sql, run_relation_sql
+
     params: list[object] = []
     where = _archive_scope_where(target_session_id, repo, params, alias="r")
     run_rows = conn.execute(
@@ -2319,6 +2320,8 @@ def _archive_subagent_exchange_rows(
     *,
     limit: int,
 ) -> list[sqlite3.Row]:
+    from polylogue.storage.sqlite.run_projection_relations import observed_event_relation_sql, run_relation_sql
+
     params: list[object] = []
     where = _archive_scope_where(target_session_id, repo, params, alias="r")
     if where:
@@ -2368,6 +2371,8 @@ def _archive_proof_rows(
     *,
     limit: int,
 ) -> list[sqlite3.Row]:
+    from polylogue.storage.sqlite.run_projection_relations import observed_event_relation_sql
+
     params: list[object] = []
     where = _archive_scope_where(target_session_id, repo, params, alias="e")
     if where:
@@ -2413,6 +2418,8 @@ def _archive_context_flow_rows(
     *,
     limit: int,
 ) -> list[sqlite3.Row]:
+    from polylogue.storage.sqlite.run_projection_relations import context_snapshot_relation_sql
+
     params: list[object] = []
     where = _archive_scope_where(target_session_id, repo, params, alias="c")
     rows = conn.execute(

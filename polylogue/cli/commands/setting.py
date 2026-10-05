@@ -8,13 +8,13 @@ belongs to the w8db epic; this command is only the liveness surface.
 
 from __future__ import annotations
 
-import asyncio
 import json
 
 import click
 
+from polylogue.cli.operation_kernel import OperationRequest
+from polylogue.cli.read_dispatch import dispatch_read
 from polylogue.cli.shared.types import AppEnv
-from polylogue.paths import archive_root
 
 
 def _print_setting(row: dict[str, object], *, output_format: str) -> None:
@@ -32,21 +32,6 @@ def _print_setting(row: dict[str, object], *, output_format: str) -> None:
     )
 
 
-def _print_envelope(env: object, *, output_format: str) -> None:
-    from polylogue.storage.sqlite.archive_tiers.user_settings_write import ArchiveUserSettingEnvelope
-
-    assert isinstance(env, ArchiveUserSettingEnvelope)
-    _print_setting(
-        {
-            "setting_key": env.setting_key,
-            "value": env.value,
-            "updated_at_ms": env.updated_at_ms,
-            "author_ref": env.author_ref,
-        },
-        output_format=output_format,
-    )
-
-
 @click.group("setting")
 def setting_command() -> None:
     """Get, set, and list durable user settings (e.g. ``subscription_tier``)."""
@@ -55,23 +40,18 @@ def setting_command() -> None:
 @setting_command.command("get")
 @click.argument("setting_key")
 @click.option("-f", "--format", "output_format", type=click.Choice(("text", "json")), default="text", show_default=True)
-def setting_get_command(setting_key: str, output_format: str) -> None:
-    """Print one setting's stored value, or report it as unset."""
-
-    from polylogue.api import Polylogue
-
-    async def run() -> object | None:
-        async with Polylogue(archive_root=archive_root()) as poly:
-            return await poly.get_setting(setting_key)
-
-    envelope = asyncio.run(run())
-    if envelope is None:
+@click.pass_obj
+def setting_get_command(env: AppEnv, setting_key: str, output_format: str) -> None:
+    """Print one durable setting through the resident User-only read."""
+    result, _served_by = dispatch_read(env.config, OperationRequest("user.settings.get", {"setting_key": setting_key}))
+    row = result.get("item")
+    if not isinstance(row, dict):
         if output_format == "json":
             click.echo(json.dumps({"setting_key": setting_key, "value": None}))
         else:
             click.echo(f"{setting_key} is unset")
         return
-    _print_envelope(envelope, output_format=output_format)
+    _print_setting(row, output_format=output_format)
 
 
 @setting_command.command("set")
@@ -104,37 +84,21 @@ def setting_set_command(env: AppEnv, setting_key: str, value: str, output_format
 
 @setting_command.command("list")
 @click.option("-f", "--format", "output_format", type=click.Choice(("text", "json")), default="text", show_default=True)
-def setting_list_command(output_format: str) -> None:
-    """List every stored setting row."""
-
-    from polylogue.api import Polylogue
-
-    async def run() -> list[object]:
-        async with Polylogue(archive_root=archive_root()) as poly:
-            return list(await poly.list_settings())
-
-    envelopes = asyncio.run(run())
+@click.pass_obj
+def setting_list_command(env: AppEnv, output_format: str) -> None:
+    """List stored settings through the resident User-only read."""
+    result, _served_by = dispatch_read(env.config, OperationRequest("user.settings.list", {}))
+    rows = result["items"]
+    assert isinstance(rows, list)
     if output_format == "json":
-        from polylogue.storage.sqlite.archive_tiers.user_settings_write import ArchiveUserSettingEnvelope
-
-        payload = []
-        for env in envelopes:
-            assert isinstance(env, ArchiveUserSettingEnvelope)
-            payload.append(
-                {
-                    "setting_key": env.setting_key,
-                    "value": env.value,
-                    "updated_at_ms": env.updated_at_ms,
-                    "author_ref": env.author_ref,
-                }
-            )
-        click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        click.echo(json.dumps(rows, ensure_ascii=False, sort_keys=True))
         return
-    if not envelopes:
+    if not rows:
         click.echo("no settings stored")
         return
-    for env in envelopes:
-        _print_envelope(env, output_format="text")
+    for row in rows:
+        assert isinstance(row, dict)
+        _print_setting(row, output_format="text")
 
 
 __all__ = ["setting_command"]

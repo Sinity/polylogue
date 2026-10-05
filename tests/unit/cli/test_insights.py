@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -16,7 +18,7 @@ from polylogue.analysis.archive import ArchiveCoverageInsight
 from polylogue.analysis.archive_models import (
     ARCHIVE_INSIGHT_CONTRACT_VERSION,
 )
-from polylogue.analysis.registry import get_insight_type, insight_items_payload
+from polylogue.analysis.registry import INSIGHT_REGISTRY, get_insight_type, insight_items_payload
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.insights import _make_callback
 from polylogue.storage.derived.session.rebuild import rebuild_archive_session_insights
@@ -24,6 +26,7 @@ from polylogue.storage.derived.session.runtime import SessionInsightCounts, Sess
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
 from tests.infra.archive_scenarios import native_session_id_for, open_index_db
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.json_contracts import (
     extract_json_result,
     json_array,
@@ -48,6 +51,49 @@ NID_EPOCH = native_session_id_for("claude-code", "conv-epoch")
 NID_HEAVY = native_session_id_for("codex", "conv-heavy")
 
 
+@pytest.fixture(autouse=True)
+def resident_insight_reader(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Existing materialized insight controls exercise the actual resident route."""
+    if "cli_workspace" not in request.fixturenames:
+        yield
+        return
+    workspace = request.getfixturevalue("cli_workspace")
+    with cli_daemon_archive(workspace["archive_root"], monkeypatch):
+        yield
+
+
+@pytest.mark.parametrize(
+    ("command", "operation"),
+    [
+        (["analyze", "insights", "profiles"], "insights.list"),
+        (["ops", "insights", "status"], "insights.readiness"),
+        (["ops", "insights", "export", "--out", "neutral-bundle"], "insights.export_bundle"),
+        (["ops", "insights", "audit"], "insights.rigor"),
+        (["ops", "insights", "hermes-health"], "insights.hermes_health"),
+        (["ops", "insights", "fable-packet", "--seed", "neutral", "--requested-size", "1"], "insights.fable_packet"),
+    ],
+)
+def test_registered_insight_read_refuses_without_daemon(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: list[str],
+    operation: str,
+) -> None:
+    from polylogue.cli.machine_main import run_machine_entry
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "absent-archive"))
+    argv = [*command, "--json"]
+    monkeypatch.setattr(sys, "argv", ["polylogue", *argv])
+    with pytest.raises(SystemExit) as exited:
+        run_machine_entry(cli, argv)
+    assert exited.value.code == 1
+    refusal = json.loads(capsys.readouterr().out)
+    assert refusal["code"] == "daemon_required", refusal
+    assert refusal["details"]["operation"] == operation
+    assert not (tmp_path / "absent-archive").exists()
+
+
 def test_fable_packet_is_available_under_ops_insights() -> None:
     result = CliRunner().invoke(cli, ["ops", "insights", "fable-packet", "--help"])
 
@@ -56,18 +102,28 @@ def test_fable_packet_is_available_under_ops_insights() -> None:
     assert "--seed TEXT" in result.output
 
 
-def test_packet_json_projection_converts_nested_tuples_to_lists() -> None:
-    from polylogue.cli.commands.insights import _packet_json_document
+def test_packet_json_projection_converts_declared_nested_tuples_to_lists() -> None:
+    from polylogue.analysis.cohorts import CohortCandidate, CohortSpec, compile_cohort_manifest
+    from polylogue.analysis.fable_packet import compile_private_fable_packet
+    from polylogue.analysis.fable_packet_contracts import DelegationPacketRow
+    from polylogue.operations.fable_packet_contracts import FablePacketResult
+    from polylogue.surfaces.outcome import decide_outcome
 
-    @dataclass
-    class Packet:
-        selected_refs: tuple[str, ...]
-        manifest: tuple[tuple[str, int], ...]
-
-    assert _packet_json_document(Packet(("session:x",), (("count", 1),))) == {
-        "selected_refs": ["session:x"],
-        "manifest": [["count", 1]],
-    }
+    manifest = compile_cohort_manifest(
+        CohortSpec("neutral", "original-frame", "seed", 1, strata=("origin",)), [CohortCandidate("delegation:neutral")]
+    )
+    packet = compile_private_fable_packet(
+        manifest=manifest,
+        rows=[DelegationPacketRow("delegation:neutral", "action", "resolved", None)],
+        annotation_schema_id=None,
+        labels=[],
+    )
+    payload = FablePacketResult(
+        packet=packet, outcome=decide_outcome(matched=1, degraded=packet.not_supported_reasons)
+    ).model_dump(mode="json")["packet"]
+    assert payload["selected_refs"] == ["delegation:neutral"]
+    assert payload["manifest"]["spec"]["strata"] == ["origin"]
+    assert payload["manifest"]["stratum_counts"][0]["key"] == [["origin", "unknown"]]
 
 
 def _rebuild_insights(db_path: Path, **kwargs: Any) -> SessionInsightCounts:
@@ -651,6 +707,7 @@ def test_insights_hermes_health_json_reports_disabled_without_a_hermes_root(
     assert payload["verdict"] == "disabled"
     assert payload["sources"] == []
     assert payload["parser_failures"] == []
+    assert json_object(payload["outcome"])["state"] == "ok"
 
 
 def test_insights_hermes_health_plain_reports_disabled_without_a_hermes_root(
@@ -676,7 +733,8 @@ def test_insights_audit_json(cli_workspace: CliWorkspace) -> None:
     assert result.exit_code == 0, _exception_message(result)
     payload = extract_json_result(result.output)
     entries = {item["insight_name"]: item for item in json_object_list(payload["entries"])}
-    assert "session_profiles" in entries
+    assert set(entries) == set(INSIGHT_REGISTRY)
+    assert json_object(payload["outcome"])["state"] == "ok"
     profiles = entries["session_profiles"]
     assert profiles["has_evidence_payload"] is True
     assert profiles["has_inference_payload"] is True
@@ -1145,3 +1203,27 @@ def test_session_insight_status_marks_missing_profile_rows_not_ready(cli_workspa
 
     assert status.profile_row_count == 1
     assert status.missing_profile_row_count == 1
+
+
+def test_fable_packet_json_uses_resident_not_supported_verdict(cli_workspace: CliWorkspace) -> None:
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "ops",
+            "insights",
+            "fable-packet",
+            "--seed",
+            "neutral",
+            "--requested-size",
+            "1",
+            "--schema-id",
+            "neutral.absent",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = extract_json_result(result.output)
+    assert payload["status"] == "not_supported"
+    assert "missing_annotation_schema" in json_array(payload["not_supported_reasons"])
+    assert json_object(payload["outcome"])["state"] == "degraded"

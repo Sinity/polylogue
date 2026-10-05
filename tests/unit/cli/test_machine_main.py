@@ -11,7 +11,10 @@ from tests.infra.json_contracts import json_object, parse_json_object
 TRACEBACK_SENTINEL = "Traceback (most recent call last)"
 
 
-def test_daemon_required_envelope_preserves_resolved_archive_root(capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize("format_args", [["--format", "json"], ["--json"]])
+def test_daemon_required_envelope_preserves_resolved_archive_root(
+    capsys: pytest.CaptureFixture[str], format_args: list[str]
+) -> None:
     """Machine refusal retains the archive route already resolved by dispatch.
 
     Anti-vacuity: dropping ``OperationUnavailableError.archive_root`` leaves
@@ -23,7 +26,7 @@ def test_daemon_required_envelope_preserves_resolved_archive_root(capsys: pytest
         raise OperationUnavailableError("start daemon", operation="archive.facets", archive_root="/archives/old")
 
     with pytest.raises(SystemExit) as exc_info:
-        run_machine_entry(unavailable, ["facets", "--format", "json"])
+        run_machine_entry(unavailable, ["facets", *format_args])
 
     # #5700 made a daemon-absent refusal exit with the failed-read code.
     from polylogue.cli.render.outcome import FAILED_READ_EXIT_CODE

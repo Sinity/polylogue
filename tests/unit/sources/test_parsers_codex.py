@@ -3883,3 +3883,156 @@ def test_lookahead_signature_keys_are_fixed_size_digests() -> None:
         assert ("user", long_text + "x") not in index
         assert "not a signature" not in index
         index.close()
+
+
+@pytest.mark.parametrize("record_type", ["tool_search_output", "function_call_output"])
+@pytest.mark.parametrize("present", [True, False])
+def test_codex_empty_tool_output_survives_parser_and_reopened_index(
+    tmp_path: Path, record_type: str, present: bool
+) -> None:
+    """An empty provider vector remains evidence, independently of a reported verdict."""
+    import sqlite3
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import open_connection as open_owned_connection
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    payload: dict[str, object] = {"type": record_type, "call_id": "empty-call"}
+    if record_type == "tool_search_output":
+        payload.update({"status": "completed", "execution": "client"})
+    if present:
+        payload["tools" if record_type == "tool_search_output" else "output"] = []
+    records = [{"type": "response_item", "payload": payload}]
+    expected = "[]" if present else None
+    for label, parsed in (
+        ("eager", parse(records, "empty-session")),
+        ("streamed", parse_stream(iter(records), "empty-session")),
+    ):
+        assert parsed is not None
+        results = [
+            block for message in parsed.messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+        ]
+        assert len(results) == 1
+        assert results[0].tool_id == "empty-call"
+        assert results[0].text == expected
+        assert results[0].is_error is None
+        assert results[0].outcome_unknown_reason == "not_reported"
+        index_path = tmp_path / label / "index.db"
+        index_path.parent.mkdir()
+        with write_lease("Codex parser persistence fixture", archive_root=index_path.parent):
+            initialize_active_archive_root(index_path.parent)
+            with closing(
+                open_owned_connection(index_path, tier=ArchiveTier.INDEX, archive_root=index_path.parent)
+            ) as index:
+                index.row_factory = sqlite3.Row
+                with index:
+                    session_id = write_fixture_index_session(index, parsed, content_hash=session_content_hash(parsed))
+        with closing(sqlite3.connect(index_path)) as index:
+            stored = index.execute(
+                "SELECT tool_id,text,tool_outcome FROM blocks WHERE session_id=? AND block_type='tool_result'",
+                (session_id,),
+            ).fetchall()
+        assert stored == [("empty-call", expected, "unknown")]
+
+
+@pytest.mark.parametrize(
+    ("result", "expected_error", "expected_reason"),
+    [
+        ({"Ok": {"content": [{"type": "text", "text": "neutral output"}]}}, False, None),
+        ({"Ok": {"content": [], "isError": None}}, False, None),
+        ({"Ok": {"content": [], "isError": False}}, False, None),
+        ({"Ok": {"content": [{"type": "text", "text": "failed"}], "isError": True}}, True, None),
+        *[
+            (
+                {"Ok": {"content": [{"type": "text", "text": "retained"}], "isError": value}},
+                None,
+                "unsupported_construct",
+            )
+            for value in cast(tuple[object, ...], ("true", 0, 1, [], {}))
+        ],
+        ({"Err": "transport unavailable"}, True, None),
+        ({"Ok": 0}, None, "unsupported_construct"),
+        ({"Ok": {}}, None, "unsupported_construct"),
+        *[
+            ({"Ok": {"content": value}}, None, "unsupported_construct")
+            for value in cast(tuple[object, ...], (None, "invalid", {}, False, 0))
+        ],
+        ({"Ok": {"content": [], "future_field": "neutral extension"}}, False, None),
+    ],
+)
+def test_codex_mcp_application_verdict_survives_parser_and_reopened_index(
+    tmp_path: Path, result: dict[str, object], expected_error: bool | None, expected_reason: str | None
+) -> None:
+    """Outer transport success cannot replace the provider's typed inner verdict."""
+    import sqlite3
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import open_connection as open_owned_connection
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    records = [
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "mcp_tool_call_end",
+                "call_id": "mcp-call",
+                "invocation": {"server": "fixture", "tool": "count", "arguments": {}},
+                "result": result,
+            },
+        }
+    ]
+    for label, parsed in (
+        ("eager", parse(records, "mcp-session")),
+        ("streamed", parse_stream(iter(records), "mcp-session")),
+    ):
+        assert parsed is not None
+        use, output = parsed.messages
+        assert use.blocks[0].tool_id == output.blocks[0].tool_id == "mcp-call"
+        assert use.blocks[0].tool_name == "mcp__fixture__count"
+        assert output.blocks[0].is_error is expected_error
+        assert output.blocks[0].outcome_unknown_reason == expected_reason
+        if "Err" in result:
+            assert output.blocks[0].text == "transport unavailable"
+        else:
+            assert output.blocks[0].text is not None
+            assert json.loads(output.blocks[0].text) == result["Ok"]
+        index_path = tmp_path / label / "index.db"
+        index_path.parent.mkdir()
+        with write_lease("Codex parser persistence fixture", archive_root=index_path.parent):
+            initialize_active_archive_root(index_path.parent)
+            with closing(
+                open_owned_connection(index_path, tier=ArchiveTier.INDEX, archive_root=index_path.parent)
+            ) as index:
+                index.row_factory = sqlite3.Row
+                with index:
+                    session_id = write_fixture_index_session(index, parsed, content_hash=session_content_hash(parsed))
+        with closing(sqlite3.connect(index_path)) as index:
+            rows = index.execute(
+                "SELECT tool_id,text,tool_result_is_error,tool_outcome FROM blocks "
+                "WHERE session_id=? AND block_type='tool_result'",
+                (session_id,),
+            ).fetchall()
+        assert len(rows) == 1
+        tool_id, text, is_error, outcome = rows[0]
+        assert tool_id == "mcp-call"
+        assert is_error == expected_error
+        assert outcome == ("unknown" if expected_error is None else "error" if expected_error else "ok")
+        assert text == output.blocks[0].text
+        if "Err" not in result:
+            assert json.loads(text) == result["Ok"]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [(None, None), (False, "false"), (0, "0"), ([], "[]"), ({}, "{}"), ("", "")]
+)
+def test_codex_structured_output_representation_distinguishes_falsy_values_from_absence(
+    value: object, expected: str | None
+) -> None:
+    """Representation law only; scalar values do not assert MCP producer fidelity."""
+    from polylogue.sources.parsers.codex import _codex_tool_output_text
+
+    assert _codex_tool_output_text(value) == expected

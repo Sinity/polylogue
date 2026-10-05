@@ -21,6 +21,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic import (
+    JsonValue as PydanticJsonValue,
+)
 from typing_extensions import Self, TypedDict
 
 from polylogue.analysis.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
@@ -96,8 +99,6 @@ MutationOperation: TypeAlias = Literal[
 if TYPE_CHECKING:
     from collections.abc import Container
 
-    from polylogue.annotations.batch import AnnotationBatch
-
     # ``ArchiveMessageRow`` is re-exported by the canonical hydration owner:
     # this package projects what a read already resolved and does not import
     # storage internals directly.
@@ -112,6 +113,7 @@ if TYPE_CHECKING:
         ArchiveDelegationAncestryRow,
         ArchiveDelegationCard,
         ArchiveDelegationQueryRow,
+        ArchiveDelegationSubtreePage,
         ArchiveDelegationSubtreeRow,
         ArchiveFileQueryRow,
         ArchiveMessageQueryRow,
@@ -1170,10 +1172,10 @@ def message_topology_from_domain(message: Message) -> dict[str, object]:
 
 
 def _session_terminal_state(session: Session) -> str:
-    """Read terminal state from the canonical derived session profile."""
-    from polylogue.archive.session.session_profile import build_session_profile
+    """Read terminal state from the narrow canonical structural classifier."""
+    from polylogue.archive.session.session_profile import build_session_terminal_state
 
-    return build_session_profile(session).terminal_state
+    return build_session_terminal_state(session)[0]
 
 
 def message_render_envelope_from_domain(
@@ -2550,8 +2552,6 @@ class PublicRefResolutionPayload(SurfacePayloadModel):
         return tuple(normalize_public_ref_text(ref) for ref in value)
 
 
-ANNOTATION_BATCH_ASSERTION_REF_LIMIT = 20
-ANNOTATION_BATCH_VALIDATION_FAILURE_LIMIT = 5
 ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT = 256
 ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT = 96
 ANNOTATION_BATCH_INPUT_REF_BYTE_LIMIT = 256
@@ -2690,8 +2690,28 @@ class AnnotationBatchJSONPreviewPayload(SurfacePayloadModel):
         return self
 
 
+class AnnotationBatchAssertionItemPayload(SurfacePayloadModel):
+    kind: Literal["assertion"] = "assertion"
+    ordinal: int = Field(ge=0)
+    assertion_ref: str
+
+
+class AnnotationBatchValidationErrorItemPayload(SurfacePayloadModel):
+    kind: Literal["validation-error"] = "validation-error"
+    failure_ordinal: int = Field(ge=0)
+    error_ordinal: int = Field(ge=0)
+    failure: dict[str, PydanticJsonValue]
+    error: PydanticJsonValue
+
+
+class AnnotationBatchValidationFailureItemPayload(SurfacePayloadModel):
+    kind: Literal["validation-failure"] = "validation-failure"
+    failure_ordinal: int = Field(ge=0)
+    failure: dict[str, PydanticJsonValue]
+
+
 class AnnotationBatchPayload(SurfacePayloadModel):
-    """Bounded durable provenance returned for an ``annotation-batch:`` ref."""
+    """Immutable provenance and a pageable exact assertion/error collection."""
 
     unit: Literal["annotation-batch"] = "annotation-batch"
     batch_id: AnnotationBatchTextPreviewPayload
@@ -2708,112 +2728,47 @@ class AnnotationBatchPayload(SurfacePayloadModel):
     valid_count: int
     invalid_count: int
     abstained_count: int
-    assertion_refs: tuple[AnnotationBatchTextPreviewPayload, ...] = Field(
-        default=(),
-        max_length=ANNOTATION_BATCH_ASSERTION_REF_LIMIT,
-    )
-    assertion_refs_total_count: int = Field(ge=0)
-    assertion_refs_omitted_count: int = Field(ge=0)
-    assertion_refs_truncated: bool
-    assertion_ref_values_truncated_count: int = Field(ge=0)
-    validation_failures: tuple[AnnotationBatchJSONPreviewPayload, ...] = Field(
-        default=(),
-        max_length=ANNOTATION_BATCH_VALIDATION_FAILURE_LIMIT,
-    )
-    validation_failures_total_count: int = Field(ge=0)
-    validation_failures_omitted_count: int = Field(ge=0)
-    validation_failures_truncated: bool
+    items: tuple[
+        AnnotationBatchAssertionItemPayload
+        | AnnotationBatchValidationErrorItemPayload
+        | AnnotationBatchValidationFailureItemPayload,
+        ...,
+    ]
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    next_offset: int | None = Field(default=None, ge=0)
     metadata: AnnotationBatchJSONPreviewPayload
     created_at_ms: int
 
-    @model_validator(mode="after")
-    def _validate_exact_bounded_counts(self) -> AnnotationBatchPayload:
-        assertion_refs_omitted = self.assertion_refs_total_count - len(self.assertion_refs)
-        if self.assertion_refs_total_count != self.valid_count or assertion_refs_omitted < 0:
-            raise ValueError("annotation batch assertion-ref totals must match valid_count")
-        if self.assertion_refs_omitted_count != assertion_refs_omitted:
-            raise ValueError("annotation batch assertion-ref omitted count must be exact")
-        if self.assertion_refs_truncated != (assertion_refs_omitted > 0):
-            raise ValueError("annotation batch assertion-ref truncation must match omitted count")
-        truncated_ref_values = sum(item.truncated for item in self.assertion_refs)
-        if self.assertion_ref_values_truncated_count != truncated_ref_values:
-            raise ValueError("annotation batch assertion-ref value truncation count must be exact")
-
-        validation_failures_omitted = self.validation_failures_total_count - len(self.validation_failures)
-        if self.validation_failures_total_count != self.invalid_count or validation_failures_omitted < 0:
-            raise ValueError("annotation batch validation-failure totals must match invalid_count")
-        if self.validation_failures_omitted_count != validation_failures_omitted:
-            raise ValueError("annotation batch validation-failure omitted count must be exact")
-        if self.validation_failures_truncated != (validation_failures_omitted > 0):
-            raise ValueError("annotation batch validation-failure truncation must match omitted count")
-        return self
-
     @classmethod
-    def from_batch(cls, batch: AnnotationBatch) -> AnnotationBatchPayload:
-        assertion_refs = tuple(
-            AnnotationBatchTextPreviewPayload.from_text(ref)
-            for ref in batch.assertion_refs[:ANNOTATION_BATCH_ASSERTION_REF_LIMIT]
+    def from_page(
+        cls, header: JSONDocument, items: Sequence[JSONDocument], *, total: int, offset: int, next_offset: int | None
+    ) -> AnnotationBatchPayload:
+        values: dict[str, object] = dict(header)
+        for name in (
+            "batch_id",
+            "batch_ref",
+            "schema_id",
+            "qualified_schema_id",
+            "target_ref",
+            "source_result_ref",
+            "actor_ref",
+            "model_ref",
+            "prompt_ref",
+        ):
+            value = header[name]
+            if not isinstance(value, str):
+                raise ValueError(f"annotation batch {name} must be a string")
+            values[name] = AnnotationBatchTextPreviewPayload.from_text(value)
+        values["metadata"] = AnnotationBatchJSONPreviewPayload.from_document(
+            require_json_document(header["metadata"], context="annotation batch metadata")
         )
-        validation_failures = tuple(
-            AnnotationBatchJSONPreviewPayload.from_document(document)
-            for document in batch.validation_failures[:ANNOTATION_BATCH_VALIDATION_FAILURE_LIMIT]
-        )
-        return cls(
-            batch_id=AnnotationBatchTextPreviewPayload.from_text(batch.batch_id),
-            batch_ref=AnnotationBatchTextPreviewPayload.from_text(batch.batch_ref),
-            schema_id=AnnotationBatchTextPreviewPayload.from_text(batch.schema_id),
-            schema_version=batch.schema_version,
-            qualified_schema_id=AnnotationBatchTextPreviewPayload.from_text(batch.qualified_schema_id),
-            target_ref=AnnotationBatchTextPreviewPayload.from_text(batch.target_ref),
-            source_result_ref=AnnotationBatchTextPreviewPayload.from_text(batch.source_result_ref),
-            actor_ref=AnnotationBatchTextPreviewPayload.from_text(batch.actor_ref),
-            model_ref=AnnotationBatchTextPreviewPayload.from_text(batch.model_ref),
-            prompt_ref=AnnotationBatchTextPreviewPayload.from_text(batch.prompt_ref),
-            total_count=batch.total_count,
-            valid_count=batch.valid_count,
-            invalid_count=batch.invalid_count,
-            abstained_count=batch.abstained_count,
-            assertion_refs=assertion_refs,
-            assertion_refs_total_count=len(batch.assertion_refs),
-            assertion_refs_omitted_count=len(batch.assertion_refs) - len(assertion_refs),
-            assertion_refs_truncated=len(assertion_refs) < len(batch.assertion_refs),
-            assertion_ref_values_truncated_count=sum(item.truncated for item in assertion_refs),
-            validation_failures=validation_failures,
-            validation_failures_total_count=len(batch.validation_failures),
-            validation_failures_omitted_count=len(batch.validation_failures) - len(validation_failures),
-            validation_failures_truncated=len(validation_failures) < len(batch.validation_failures),
-            metadata=AnnotationBatchJSONPreviewPayload.from_document(batch.metadata),
-            created_at_ms=batch.created_at_ms,
-        )
+        values.update(items=tuple(items), total=total, offset=offset, next_offset=next_offset)
+        return cls.model_validate(values)
 
     def truncation_caveats(self) -> tuple[str, ...]:
-        """Return explicit bounded-read caveats for omitted or clipped data."""
-
+        """Only scalar/metadata previews are partial; collection pages are exact."""
         caveats: list[str] = []
-        if self.assertion_refs_truncated:
-            caveats.append(
-                "annotation_batch_assertion_refs_capped: "
-                f"returned={len(self.assertion_refs)} total={self.assertion_refs_total_count} "
-                f"omitted={self.assertion_refs_omitted_count}"
-            )
-        if self.assertion_ref_values_truncated_count:
-            caveats.append(
-                "annotation_batch_assertion_ref_values_capped: "
-                f"clipped={self.assertion_ref_values_truncated_count} "
-                f"json_byte_cap={ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT}"
-            )
-        if self.validation_failures_truncated:
-            caveats.append(
-                "annotation_batch_validation_failures_capped: "
-                f"returned={len(self.validation_failures)} total={self.validation_failures_total_count} "
-                f"omitted={self.validation_failures_omitted_count}"
-            )
-        clipped_failure_count = sum(item.truncated for item in self.validation_failures)
-        if clipped_failure_count:
-            caveats.append(
-                "annotation_batch_validation_failure_json_capped: "
-                f"clipped={clipped_failure_count} byte_cap={ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT}"
-            )
         if self.metadata.truncated:
             caveats.append(
                 "annotation_batch_metadata_json_capped: "
@@ -2837,8 +2792,7 @@ class AnnotationBatchPayload(SurfacePayloadModel):
         if clipped_scalar_fields:
             caveats.append(
                 "annotation_batch_scalar_values_capped: "
-                f"fields={','.join(clipped_scalar_fields)} "
-                f"json_byte_cap={ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT}"
+                f"fields={','.join(clipped_scalar_fields)} json_byte_cap={ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT}"
             )
         return tuple(caveats)
 
@@ -3092,22 +3046,33 @@ class DelegationAncestryPayload(SurfacePayloadModel):
 
 
 class DelegationSubtreePayload(SurfacePayloadModel):
-    """Full dispatch subtree rooted at one session (polylogue-qsb4)."""
+    """One page of the dispatch subtree rooted at one session."""
 
     unit: Literal["delegation-subtree"] = "delegation-subtree"
     session_id: str
     max_depth: int
     node_count: int
     nodes: tuple[DelegationSubtreeNodePayload, ...]
+    limit: int
+    offset: int
+    next_offset: int | None
+    continuation: str | None
+    outcome: OutcomeEnvelope
 
     @classmethod
-    def from_rows(cls, session_id: str, rows: Sequence[ArchiveDelegationSubtreeRow]) -> DelegationSubtreePayload:
-        nodes = tuple(DelegationSubtreeNodePayload.from_row(row) for row in rows)
+    def from_page(
+        cls, session_id: str, page: ArchiveDelegationSubtreePage, *, continuation: str | None
+    ) -> DelegationSubtreePayload:
         return cls(
             session_id=session_id,
-            max_depth=max((node.depth for node in nodes), default=0),
-            node_count=len(nodes),
-            nodes=nodes,
+            max_depth=page.max_depth,
+            node_count=page.total,
+            nodes=tuple(DelegationSubtreeNodePayload.from_row(row) for row in page.rows),
+            limit=page.limit,
+            offset=page.offset,
+            next_offset=page.offset + len(page.rows) if page.next_cursor is not None else None,
+            continuation=continuation,
+            outcome=decide_outcome(matched=len(page.rows)),
         )
 
 
@@ -4430,6 +4395,8 @@ class MutationResultPayload(SurfacePayloadModel):
     applied_count: int | None = None
     operation: MutationOperation | None = None
     """Closed mutation discriminator for surfaces that expose operation names."""
+    session_ids_sample: tuple[str, ...] | None = None
+    reference: dict[str, object] | None = None
     session_ids: tuple[str, ...] | None = None
     """Session ids enumerated by a CLI bulk operation (e.g. the delete dry-run
     preview lists the sessions that *would* be deleted). ``None`` for
@@ -4553,10 +4520,8 @@ __all__ = [
     "ProviderPackageCompletenessPayload",
     "ProviderPackageCompletenessRowPayload",
     "ProviderPackageCompletenessTotalsPayload",
-    "ANNOTATION_BATCH_ASSERTION_REF_LIMIT",
     "ANNOTATION_BATCH_JSON_PREFIX_BYTE_LIMIT",
     "ANNOTATION_BATCH_TEXT_PREFIX_JSON_BYTE_LIMIT",
-    "ANNOTATION_BATCH_VALIDATION_FAILURE_LIMIT",
     "AnnotationBatchJSONPreviewPayload",
     "AnnotationBatchPayload",
     "AnnotationBatchTextPreviewPayload",

@@ -427,6 +427,7 @@ def test_source002_constructor_preserves_populated_baseline_on_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from polylogue.core.errors import SchemaSkew
     from polylogue.storage.sqlite import durable_change_train
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -444,20 +445,23 @@ def test_source002_constructor_preserves_populated_baseline_on_restart(
     finally:
         conn.close()
     monkeypatch.setattr(durable_change_train, "execute_durable_change_train", execute)
-    initialize_active_archive_root(tmp_path)
+    with pytest.raises(SchemaSkew):
+        initialize_active_archive_root(tmp_path)
 
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         assert tuple(tuple(row) for row in conn.execute("SELECT * FROM raw_sessions ORDER BY raw_id")) == rows
         assert {row[0] for row in conn.execute("SELECT raw_id FROM raw_sessions")} == set(raw_ids)
         upsert_raw_artifact(conn, raw_ids[0], missing_coordinates_artifact(raw_ids[0]))
         upsert_raw_artifact(conn, raw_ids[1], missing_coordinates_artifact(raw_ids[1]))
-    initialize_active_archive_root(tmp_path)
+    with pytest.raises(SchemaSkew):
+        initialize_active_archive_root(tmp_path)
 
 
 def test_populated_baseline_train_cancellation_rolls_back_and_restarts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from polylogue.core.errors import SchemaSkew
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     bootstrap_baseline_archive(tmp_path, monkeypatch)
@@ -492,7 +496,8 @@ def test_populated_baseline_train_cancellation_rolls_back_and_restarts(
         assert migration_runner._durable_literal_rows_digest(conn) == before
         assert conn.execute("SELECT 1 FROM sqlite_schema WHERE name='idx_raw_artifacts_source_identity'").fetchone()
     monkeypatch.setattr(migration_runner, "_execute_migration_sql", execute)
-    initialize_active_archive_root(tmp_path)
+    with pytest.raises(SchemaSkew):
+        initialize_active_archive_root(tmp_path)
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
         assert tuple(tuple(row) for row in conn.execute("SELECT * FROM raw_sessions ORDER BY raw_id")) == raw_rows
@@ -682,7 +687,7 @@ def test_literal_row_proof_streams_large_cells_and_primary_keys_inside_write_tra
             _retained, peak = tracemalloc.get_traced_memory()
         finally:
             tracemalloc.stop()
-        assert peak < size // 4
+        assert peak < size // 4, (peak, size)
         # The original row is still uncommitted. A different connection or a
         # stale on-disk snapshot cannot prove its last literal byte.
         target_type = "TEXT" if storage_class == "text" else "BLOB"
@@ -853,7 +858,7 @@ def test_source002_retains_large_marker_payloads_with_incremental_row_evidence(t
         finally:
             tracemalloc.stop()
         assert result.applied_versions == (2,)
-        assert peak < size // 4
+        assert peak < size // 4, (peak, size)
         assert migration_runner._durable_literal_rows_digest(conn) == before
     finally:
         conn.close()

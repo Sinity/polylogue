@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 import polylogue.storage.blob_gc as blob_gc
-from polylogue.storage.blob_liveness import BlobLiveness
+from polylogue.storage.blob_liveness import BlobLiveness, LivenessState
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -517,13 +517,14 @@ def test_pending_member_blocks_on_unreadable_shard_not_object_absence(
 
 
 @pytest.mark.uses_real_clock("backdates temporary blobs to pass production GC's age gate")
-def test_direct_unlink_resumes_pending_generation_before_planning_new_work(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("include_pending,empty_request", [(False, False), (True, False), (False, True)])
+def test_direct_unlink_resumes_pending_generation_then_attributes_only_requested_members(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, include_pending: bool, empty_request: bool
 ) -> None:
-    """Raw-retention's direct entry point shares recurring GC's pending gate."""
+    """Recovery preserves the pending gate without stealing its deletion receipt."""
     bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
-    pending_hash, _ = store.write_from_bytes(b"pending direct gate")
+    pending_hash, pending_size = store.write_from_bytes(b"pending direct gate")
     _backdate(store, pending_hash)
     original_final = blob_gc._final_gc_member_liveness
 
@@ -531,21 +532,38 @@ def test_direct_unlink_resumes_pending_generation_before_planning_new_work(
         raise RuntimeError("pending direct gate")
 
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", crash_after_intent)
-    with pytest.raises(RuntimeError, match="pending direct gate"):
+    with write_lease("test.blob_gc", archive_root=tmp_path), pytest.raises(RuntimeError, match="pending direct gate"):
         blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", original_final)
-    next_hash, _ = store.write_from_bytes(b"next direct gate")
+    next_hash, next_size = store.write_from_bytes(b"next direct gate has distinct bytes")
     _backdate(store, next_hash)
+    requested = set() if empty_request else {next_hash}
+    if include_pending:
+        requested.add(pending_hash)
 
-    deleted, _bytes, errors = blob_gc.unlink_unreferenced_blob_hashes_under_exclusion(
-        tmp_path / "source.db", tmp_path / "index.db", store.root, {next_hash}
-    )
+    with write_lease("test.blob_gc", archive_root=tmp_path):
+        deleted, deleted_bytes, errors = blob_gc.unlink_unreferenced_blob_hashes_under_exclusion(
+            tmp_path / "source.db", tmp_path / "index.db", store.root, requested
+        )
 
-    assert (deleted, errors) == (1, ())
+    assert errors == ()
+    assert deleted == (0 if empty_request else 1 + int(include_pending))
+    assert deleted_bytes == (0 if empty_request else next_size + (pending_size if include_pending else 0))
     assert not store.exists(pending_hash)
-    assert store.exists(next_hash)
+    assert store.exists(next_hash) is empty_request
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM gc_generations").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM gc_generations").fetchone() == (1 if empty_request else 2,)
+        assert conn.execute("SELECT COUNT(*) FROM gc_generations WHERE completed_at_ms IS NULL").fetchone() == (0,)
+        assert conn.execute("SELECT SUM(reclaimed_count),SUM(reclaimed_bytes) FROM gc_generations").fetchone() == (
+            1 if empty_request else 2,
+            pending_size if empty_request else pending_size + next_size,
+        )
+
+    # Repeated requested absence reports no new unlink or reclaimed bytes.
+    with write_lease("test.blob_gc", archive_root=tmp_path):
+        assert blob_gc.unlink_unreferenced_blob_hashes_under_exclusion(
+            tmp_path / "source.db", tmp_path / "index.db", store.root, requested
+        ) == (0, 0, ())
 
 
 @pytest.mark.uses_real_clock("backdates temporary blobs to pass production GC's age gate")
@@ -743,3 +761,54 @@ def test_gc_refuses_a_missing_source_tier_before_planning(tmp_path: Path) -> Non
 
     assert report.blocked_reason is not None
     assert "source tier is unavailable" in report.blocked_reason
+
+
+@pytest.mark.uses_real_clock("backdates temporary blobs to pass production GC's age gate")
+@pytest.mark.parametrize("include_removed", [False, True])
+def test_direct_unlink_blocked_recovery_preserves_requested_partial_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, include_removed: bool
+) -> None:
+    """A late liveness refusal preserves scoped effects and the sole pending plan."""
+    bootstrap_archive_root(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    pending = sorted(store.write_from_bytes(payload) for payload in (b"pending alpha", b"pending beta larger"))
+    for blob_hash, _size in pending:
+        _backdate(store, blob_hash)
+    original_final = blob_gc._final_gc_member_liveness
+
+    def crash_after_intent(*args: object, **kwargs: object) -> tuple[BlobLiveness, BlobLiveness]:
+        raise RuntimeError("pending partial recovery")
+
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", crash_after_intent)
+    with (
+        write_lease("test.blob_gc", archive_root=tmp_path),
+        pytest.raises(RuntimeError, match="pending partial recovery"),
+    ):
+        blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
+    next_hash, _next_size = store.write_from_bytes(b"requested next plan")
+    first_hash, first_size = pending[0]
+    blocked_hash, _blocked_size = pending[1]
+
+    def block_second(
+        source_conn: sqlite3.Connection, index_conn: sqlite3.Connection | None, blob_hash: str
+    ) -> tuple[BlobLiveness, BlobLiveness]:
+        if blob_hash == blocked_hash:
+            return BlobLiveness(LivenessState.BLOCKED, blockers=("injected final liveness gap",)), BlobLiveness(
+                LivenessState.UNREFERENCED
+            )
+        return original_final(source_conn, index_conn, blob_hash)
+
+    monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", block_second)
+    requested = {next_hash, first_hash} if include_removed else {next_hash}
+    with write_lease("test.blob_gc", archive_root=tmp_path):
+        deleted, deleted_bytes, errors = blob_gc.unlink_unreferenced_blob_hashes_under_exclusion(
+            tmp_path / "source.db", tmp_path / "index.db", store.root, requested
+        )
+    assert (deleted, deleted_bytes) == ((1, first_size) if include_removed else (0, 0))
+    assert errors == ("injected final liveness gap",)
+    assert not store.exists(first_hash)
+    assert store.exists(blocked_hash)
+    assert store.exists(next_hash)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM gc_generations").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM gc_generations WHERE completed_at_ms IS NULL").fetchone() == (1,)

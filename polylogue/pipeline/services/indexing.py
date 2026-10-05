@@ -54,25 +54,15 @@ async def rebuild_index(
     progress_callback: ProgressCallback | None = None,
 ) -> None:
     """Rebuild the entire FTS5 index from persisted message rows."""
-    full_rebuild = session_ids is None
-    session_id_list = (
-        session_ids if session_ids is not None else [session_id async for session_id in backend.iter_session_ids()]
-    )
     async with backend.connection() as conn:
         del phase_count
-        phase_total = len(session_id_list)
-        if progress_callback is not None and session_id_list:
-            progress_callback(
-                0,
-                desc=f"Indexing: full-text search 0/{phase_total:,}",
-            )
+        if session_ids is not None and progress_callback is not None and session_ids:
+            progress_callback(0, desc=f"Indexing: full-text search 0/{len(session_ids):,}")
         await rebuild_fts_index_async(
             conn,
-            session_ids=None if full_rebuild else session_id_list,
+            session_ids=session_ids,
             progress_callback=progress_callback,
-            progress_desc=(
-                _fts_progress_desc_factory(phase_total=phase_total) if progress_callback is not None else None
-            ),
+            progress_desc=_fts_progress_desc_factory() if progress_callback is not None else None,
         )
         await conn.commit()
     invalidate_search_cache()
@@ -100,9 +90,7 @@ async def update_index_for_sessions(
             conn,
             session_id_list,
             progress_callback=progress_callback,
-            progress_desc=(
-                _fts_progress_desc_factory(phase_total=phase_total) if progress_callback is not None else None
-            ),
+            progress_desc=(_fts_progress_desc_factory() if progress_callback is not None else None),
         )
         await conn.commit()
     if changed:
@@ -119,10 +107,9 @@ async def _iter_ids(items: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[
         yield item
 
 
-def _fts_progress_desc_factory(*, phase_total: int) -> Callable[[int, int], str]:
+def _fts_progress_desc_factory() -> Callable[[int, int], str]:
     def describe(processed: int, total: int) -> str:
-        del total
-        return f"Indexing: full-text search {processed:,}/{phase_total:,}"
+        return f"Indexing: full-text search {processed:,}/{total:,}"
 
     return describe
 
@@ -205,16 +192,13 @@ class IndexService:
             return False
 
         try:
-            session_id_list = [session_id async for session_id in self.backend.iter_session_ids()]
             if progress_callback is None:
                 await rebuild_index(
                     self.backend,
-                    session_ids=session_id_list,
                 )
             else:
                 await rebuild_index(
                     self.backend,
-                    session_ids=session_id_list,
                     progress_callback=progress_callback,
                 )
             return True

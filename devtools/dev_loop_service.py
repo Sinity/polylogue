@@ -10,11 +10,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import socket
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
@@ -36,24 +36,6 @@ _CHILD_ERROR_TAIL_CHARS = 384
 _DETERMINISTIC_PROVIDERS = ("chatgpt", "claude-ai")
 
 
-def _free_loopback_ports(count: int) -> list[int]:
-    """Reserve distinct free loopback ports, then release them for the children.
-
-    The listeners are held open together so the kernel cannot hand out the same
-    port twice within one proof.
-    """
-    sockets = []
-    try:
-        for _index in range(count):
-            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            listener.bind(("127.0.0.1", 0))
-            sockets.append(listener)
-        return [listener.getsockname()[1] for listener in sockets]
-    finally:
-        for listener in sockets:
-            listener.close()
-
-
 def _require_agentctl_operation_context() -> None:
     """Reject accidental shell execution outside the declared operation context.
 
@@ -71,7 +53,7 @@ def _service_paths() -> tuple[Path, Path]:
     return root / "archive", root / "artifacts"
 
 
-def _proof_environment(*, archive_root: Path, artifact_root: Path, api_port: int, capture_port: int) -> dict[str, str]:
+def _proof_environment(*, archive_root: Path, artifact_root: Path) -> dict[str, str]:
     """The proof daemon's environment, isolated from the host's sources.
 
     The daemon watches every origin at its canonical location under ``HOME``,
@@ -81,12 +63,12 @@ def _proof_environment(*, archive_root: Path, artifact_root: Path, api_port: int
     home = artifact_root / "home"
     home.mkdir(parents=True, exist_ok=True)
     environment = isolated_home_environment(os.environ, home=home)
+    environment.pop("POLYLOGUE_DAEMON_URL", None)
     environment.update(
         {
             "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
-            "POLYLOGUE_API_PORT": str(api_port),
-            "POLYLOGUE_BROWSER_CAPTURE_PORT": str(capture_port),
-            "POLYLOGUE_DAEMON_URL": f"http://127.0.0.1:{api_port}",
+            "POLYLOGUE_API_PORT": "0",
+            "POLYLOGUE_BROWSER_CAPTURE_PORT": "0",
         }
     )
     return environment
@@ -181,10 +163,11 @@ def run_receiver_smoke(*, spool_path: Path) -> dict[str, object]:
     }
 
 
-def _await_api(*, base_url: str, timeout_s: float) -> None:
+def _await_api(*, base_url: str, timeout_s: float, daemon: subprocess.Popen[Any]) -> None:
     deadline = time.monotonic() + timeout_s
     last_error = "API did not answer"
     while time.monotonic() <= deadline:
+        _require_daemon_alive(daemon)
         try:
             status, payload = _http_get_json(f"{base_url}/healthz/live", timeout_s=2.0)
         except OSError as error:
@@ -197,8 +180,51 @@ def _await_api(*, base_url: str, timeout_s: float) -> None:
     raise RuntimeError(f"Polylogue API convergence did not complete: {last_error}")
 
 
+def _require_daemon_alive(daemon: subprocess.Popen[Any]) -> None:
+    exit_code = daemon.poll()
+    if exit_code is not None:
+        raise RuntimeError(f"proof daemon exited during startup: {exit_code}")
+
+
+def _await_listener_ports(
+    *, daemon: subprocess.Popen[Any], listener_info_path: Path, timeout_s: float
+) -> tuple[int, int]:
+    """Read only this child's atomically published bound listener identities."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() <= deadline:
+        _require_daemon_alive(daemon)
+        try:
+            payload = json.loads(listener_info_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            time.sleep(0.1)
+            continue
+        if (
+            not isinstance(payload, dict)
+            or not isinstance(payload.get("pid"), int)
+            or isinstance(payload.get("pid"), bool)
+            or payload["pid"] != daemon.pid
+        ):
+            raise RuntimeError("listener readback does not belong to the proof daemon")
+        listeners = payload.get("listeners")
+        if not isinstance(listeners, dict):
+            raise RuntimeError("proof daemon listener readback is malformed")
+        ports: list[int] = []
+        for name in ("api", "browser_capture"):
+            address = listeners.get(name)
+            if not isinstance(address, dict) or address.get("host") != "127.0.0.1":
+                raise RuntimeError(f"proof daemon {name} listener is not loopback")
+            port = address.get("port")
+            if not isinstance(port, int) or isinstance(port, bool) or not 0 < port <= 65535:
+                raise RuntimeError(f"proof daemon {name} listener port is malformed")
+            ports.append(port)
+        if ports[0] == ports[1]:
+            raise RuntimeError("proof daemon listener ports overlap")
+        return ports[0], ports[1]
+    raise RuntimeError("proof daemon did not publish bound listeners")
+
+
 def _start_daemon(
-    *, repo_root: Path, environment: dict[str, str], artifact_root: Path, api_port: int, capture_port: int
+    *, repo_root: Path, environment: dict[str, str], artifact_root: Path, listener_info_path: Path
 ) -> subprocess.Popen[Any]:
     """Start the fixed product daemon as a child of AgentCTL's service cgroup.
 
@@ -209,12 +235,14 @@ def _start_daemon(
     command = [
         sys.executable,
         "-c",
-        "from polylogue.daemon.cli import main; main()",
+        "from polylogue.daemon.commands import main; main()",
         "run",
         "--api-port",
-        str(api_port),
+        "0",
         "--port",
-        str(capture_port),
+        "0",
+        "--listener-info-path",
+        str(listener_info_path),
         "--browser-capture-auth-token",
         _RECEIVER_TOKEN,
         "--api-auth-token",
@@ -387,26 +415,21 @@ def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.
     receiver_auth = run_receiver_smoke(spool_path=artifact_root / "receiver-auth")
     if receiver_auth.get("ok") is not True:
         raise RuntimeError("receiver authentication proof failed")
-    # Reserve ports as late as possible, after archive initialization and the
-    # receiver smoke, to minimize the handoff interval before daemon bind.
-    api_port, capture_port = _free_loopback_ports(2)
-    environment = _proof_environment(
-        archive_root=archive_root,
-        artifact_root=artifact_root,
-        api_port=api_port,
-        capture_port=capture_port,
-    )
+    listener_info_path = artifact_root / f"listeners-{uuid.uuid4().hex}.json"
+    environment = _proof_environment(archive_root=archive_root, artifact_root=artifact_root)
     daemon = _start_daemon(
         repo_root=checkout,
         environment=environment,
         artifact_root=artifact_root,
-        api_port=api_port,
-        capture_port=capture_port,
+        listener_info_path=listener_info_path,
     )
-    api_url = f"http://127.0.0.1:{api_port}"
-    receiver_url = f"http://127.0.0.1:{capture_port}"
     try:
-        _await_api(base_url=api_url, timeout_s=readiness_timeout_s)
+        api_port, capture_port = _await_listener_ports(
+            daemon=daemon, listener_info_path=listener_info_path, timeout_s=readiness_timeout_s
+        )
+        api_url = f"http://127.0.0.1:{api_port}"
+        receiver_url = f"http://127.0.0.1:{capture_port}"
+        _await_api(base_url=api_url, timeout_s=readiness_timeout_s, daemon=daemon)
         session_id = f"polylogue-agentctl-proof-{api_port}-{capture_port}"
         _run_shared_chrome_control(repo_root=checkout)
         providers = _validated_provider_captures(

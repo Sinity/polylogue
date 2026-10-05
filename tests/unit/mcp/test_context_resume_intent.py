@@ -125,7 +125,7 @@ class TestComposeContextPreambleHappyPath:
     @pytest.mark.asyncio
     async def test_recent_sessions_project_overlap_basis(self, mcp_server: MCPServerUnderTest) -> None:
         """SessionStart context keeps the ranking explanation instead of dropping it."""
-        from polylogue.analysis.resume import ResumeOverlapBasis, ResumePathOverlap
+        from polylogue.analysis.resume_contracts import ResumeOverlapBasis, ResumePathOverlap
 
         candidate = _make_candidate()
         candidate.overlap_basis = ResumeOverlapBasis(

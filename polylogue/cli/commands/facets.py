@@ -19,7 +19,6 @@ _NARROW_FACETS = "narrow the facets with --query or --origin, or drop --include-
 _FACETS_READ_REMEDIES: dict[str, str] = {
     "QueryTimeoutError": _NARROW_FACETS,
     "deadline_exceeded": _NARROW_FACETS,
-    "result_too_large": _NARROW_FACETS,
 }
 
 

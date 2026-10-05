@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.surfaces.machine_envelope import (
@@ -13,7 +13,9 @@ from polylogue.surfaces.machine_envelope import (
     emit_success,
     success,
 )
-from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
+
+if TYPE_CHECKING:
+    from polylogue.surfaces.outcome import OutcomeEnvelope
 
 
 class MachineErrorEnvelope(TypedDict):
@@ -244,6 +246,7 @@ def error_mutation_partially_applied(
     completed_chunks: int,
     affected_count: int,
     not_attempted: tuple[int, ...],
+    not_attempted_count: int | None,
     stop_reason: str | None,
 ) -> MachineError:
     """Build the machine envelope for a batched write that applied in part."""
@@ -252,6 +255,7 @@ def error_mutation_partially_applied(
         "completed_chunks": completed_chunks,
         "affected_count": affected_count,
         "not_attempted": list(not_attempted),
+        "not_attempted_count": not_attempted_count,
     }
     if stop_reason is not None:
         details["stop_reason"] = stop_reason
@@ -310,6 +314,8 @@ def error_no_results(
     filters: list[str] | None = None,
     diagnostics: JSONDocument | None = None,
 ) -> MachineError:
+    from polylogue.surfaces.outcome import decide_outcome
+
     details: JSONDocument = {}
     if filters:
         details["filters"] = list(filters)
@@ -348,6 +354,8 @@ _JSON_FORMAT_FLAGS = ("--format", "--output-format", "-f")
 def wants_json(argv: list[str]) -> bool:
     """Detect JSON machine-output intent from raw argv before Click parses."""
     for index, arg in enumerate(argv):
+        if arg == "--json":
+            return True
         for flag in _JSON_FORMAT_FLAGS:
             if arg == flag and index + 1 < len(argv) and argv[index + 1] == "json":
                 return True

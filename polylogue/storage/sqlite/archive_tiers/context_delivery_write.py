@@ -43,6 +43,30 @@ class ArchiveContextDeliveryEnvelope:
     outcome: ContextDeliveryWriteOutcome = "recorded"
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveContextDeliverySummary:
+    snapshot_ref: str
+    recipient_ref: str
+    run_ref: str | None
+    boundary: str
+    inheritance_mode: str
+    context_image_sha256: str
+    segment_refs: tuple[str, ...]
+    assertion_refs: tuple[str, ...]
+    caveats: tuple[str, ...]
+    delivered_by_ref: str
+    delivered_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveContextDeliveryPage:
+    items: tuple[ArchiveContextDeliverySummary, ...]
+    total: int
+    limit: int
+    offset: int
+    next_offset: int | None
+
+
 def _now_ms() -> int:
     return int(datetime.now(UTC).timestamp() * 1000)
 
@@ -213,10 +237,16 @@ def list_context_deliveries(
     *,
     recipient_ref: str | None = None,
     assertion_ref: str | None = None,
-    limit: int | None = 50,
-) -> list[ArchiveContextDeliveryEnvelope]:
-    if limit is not None and limit < 1:
-        raise ValueError("context delivery limit must be positive")
+    limit: int = 50,
+    offset: int = 0,
+) -> ArchiveContextDeliveryPage:
+    """Select one receipt-summary page without reading any context image.
+
+    Count and rows share the caller's transaction, or a read snapshot owned
+    here. The stable timestamp/ref order determines each offset page.
+    """
+    if limit < 1 or offset < 0:
+        raise ValueError("context delivery limit must be positive and offset nonnegative")
     where: list[str] = []
     params: list[object] = []
     if recipient_ref is not None:
@@ -226,17 +256,54 @@ def list_context_deliveries(
         where.append("EXISTS (SELECT 1 FROM json_each(assertion_refs_json) WHERE value = ?)")
         params.append(_normalized_ref(assertion_ref, field="assertion_ref", kinds=frozenset({"assertion"})))
     clause = " WHERE " + " AND ".join(where) if where else ""
-    query = f"SELECT snapshot_ref FROM context_deliveries{clause} ORDER BY delivered_at_ms DESC, snapshot_ref"
-    if limit is not None:
-        query += " LIMIT ?"
-        params.append(limit)
-    with connection_cursor(conn, query, params) as cursor:
-        rows = cursor.fetchall()
-    return [item for row in rows if (item := read_context_delivery(conn, str(row[0]))) is not None]
+    owned_snapshot = not conn.in_transaction
+    if owned_snapshot:
+        with connection_cursor(conn, "BEGIN"):
+            pass
+    try:
+        with connection_cursor(conn, f"SELECT COUNT(*) FROM context_deliveries{clause}", params) as cursor:
+            total = int(cursor.fetchone()[0])
+        query = f"""SELECT snapshot_ref, recipient_ref, run_ref, boundary, inheritance_mode,
+                          context_image_sha256, segment_refs_json, assertion_refs_json,
+                          caveats_json, delivered_by_ref, delivered_at_ms
+                   FROM context_deliveries{clause}
+                   ORDER BY delivered_at_ms DESC, snapshot_ref LIMIT ? OFFSET ?"""
+        with connection_cursor(conn, query, [*params, limit, offset]) as cursor:
+            rows = cursor.fetchall()
+        summaries = tuple(
+            ArchiveContextDeliverySummary(
+                snapshot_ref=str(row[0]),
+                recipient_ref=str(row[1]),
+                run_ref=None if row[2] is None else str(row[2]),
+                boundary=str(row[3]),
+                inheritance_mode=str(row[4]),
+                context_image_sha256=str(row[5]),
+                segment_refs=tuple(map(str, _json_list(row[6]))),
+                assertion_refs=tuple(map(str, _json_list(row[7]))),
+                caveats=tuple(map(str, _json_list(row[8]))),
+                delivered_by_ref=str(row[9]),
+                delivered_at_ms=int(row[10]),
+            )
+            for row in rows
+        )
+        return ArchiveContextDeliveryPage(
+            items=summaries,
+            total=total,
+            limit=limit,
+            offset=offset,
+            next_offset=offset + len(summaries) if offset + len(summaries) < total else None,
+        )
+    except ValueError as exc:
+        raise sqlite3.DatabaseError("stored context delivery summary cannot be decoded") from exc
+    finally:
+        if owned_snapshot:
+            conn.rollback()
 
 
 __all__ = [
     "ArchiveContextDeliveryEnvelope",
+    "ArchiveContextDeliveryPage",
+    "ArchiveContextDeliverySummary",
     "ContextDeliveryWriteOutcome",
     "list_context_deliveries",
     "read_context_delivery",

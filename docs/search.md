@@ -505,6 +505,14 @@ polylogue judge --target-ref session:codex-session:abc123 --review --format json
 polylogue judge --status --format json
 ```
 
+The browser conversation-intelligence panel lists active session claims together
+with active claims targeting messages in that session's composed transcript.
+Inherited claims stop at the canonical branch point; foreign message targets,
+post-branch parent messages and unreviewed candidates remain excluded. Claim
+scope metadata cannot grant membership. The existing bounded claim page is
+selected after membership and lifecycle filtering; incomplete lineage makes the
+panel projection explicitly unavailable rather than showing a partial clean set.
+
 The sole public judgment workflow is root `polylogue judge`; it writes through
 the existing lifecycle authority into the same `user.db` assertion substrate:
 
@@ -568,6 +576,13 @@ block, assertion, delegation, and runtime projection refs (`run`, `observed-even
 `context-snapshot`) when the addressed object exists. Unsupported or missing
 refs return a bounded unresolved payload with caveats; they never widen into a
 session search.
+
+Delegation subtree refs expose paged `nodes` with whole-subtree `node_count`
+and `max_depth`. CLI `read`, MCP `read`, Python `resolve_ref`, and daemon
+`/api/refs/resolve` accept `limit`, `offset`, and the returned opaque
+`continuation`; follow that continuation to enumerate the remaining nodes.
+A changed delegation frame refuses the continuation rather than combining
+pages from different snapshots.
 
 Delegation refs resolve to an explicit evidence card. The card preserves the
 complete recorded instruction while separately bounding the parent-side

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -1936,3 +1937,76 @@ assert.deepEqual(await runChromeControl(['status'],1000,emitted('diagnostic\n'+J
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("cleanup_route", ["finally", "signal", "foreign", "target_refusal"])
+def test_primary_proof_restoration_uses_receiver_mutation_owner(cleanup_route: str) -> None:
+    script = r"""
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { Script, createContext } from "node:vm";
+import { receiverConfigurationOwner } from "./browser-extension/tests/infra/receiver_configuration.js";
+import { configureReceiver, receiverConfiguration, restoreProofReceiverAfterConfiguration } from "./browser-extension/scripts/live_provider_proof.mjs";
+const original = { receiverBaseUrl: "http://127.0.0.1:8765", receiverAuthToken: "neutral-original", polylogueReceiverPairing: { receiver_id: "neutral-original", state: "online" } };
+const storage = structuredClone(original);
+let release;
+const suspended = new Promise(resolve => { release = resolve; });
+let entered;
+const started = new Promise(resolve => { entered = resolve; });
+const chrome = { permissions: { contains: async () => true }, storage: { local: {
+  async get(defaults) { const keys = Array.isArray(defaults) ? defaults : Object.keys(defaults); return Object.fromEntries(keys.filter(key => Object.hasOwn(storage,key) || !Array.isArray(defaults)).map(key => [key, Object.hasOwn(storage,key) ? storage[key] : defaults[key]])); },
+  async set(values) { if (values.receiverAuthToken === "neutral-proof") { entered(); await suspended; } Object.assign(storage, values); },
+  async remove(keys) { for (const key of Array.isArray(keys) ? keys : [keys]) delete storage[key]; }
+} } };
+const owner = receiverConfigurationOwner(chrome);
+chrome.runtime = { sendMessage: message => owner.send(message) };
+const worker = { async call(method, params) { assert.equal(method,"Runtime.evaluate"); return { result: { value: await new Script(params.expression).runInContext(createContext({chrome})) } }; }, close() {} };
+const saved = await receiverConfiguration(worker);
+assert.deepEqual(JSON.parse(JSON.stringify(saved)), original);
+const proofSource = readFileSync("./browser-extension/scripts/live_provider_proof.mjs", "utf8");
+let closed = false;
+const browser = { close() {} };
+const handlers = new Map();
+const context = createContext({
+  _CONTROL_TIMEOUT_MS:10000,_CDP_PORT:9222,
+  Date, Promise, Object, JSON, Error, AggregateError, Math, configureReceiver, receiverConfiguration, restoreProofReceiverAfterConfiguration,
+  requireExpectedServiceContext() {},
+  fixedInputs: () => ({extensionRoot:"neutral",receiverBaseUrl:"http://127.0.0.1:41234",receiverToken:"neutral-proof",providers:["foreign","target_refusal"].includes(process.env.CLEANUP_ROUTE) ? ["neutral"] : [],timeoutMs:90000,startupTimeoutMs:30000,interactiveWaitMs:0}),
+  PROVIDERS:{neutral:{url:"https://example.invalid"}},
+  openAgentWindow:async()=>{if(process.env.CLEANUP_ROUTE === "foreign")storage.receiverAuthToken="neutral-independent";throw new Error("neutral_primary_failure");},
+  path:{join:()=>"neutral"}, readFileSync:()=>"{}", runChromeControl:async()=>({}), waitJson:async()=>({webSocketDebuggerUrl:"neutral"}), connectCdp:async()=>browser,
+  waitForExtensionWorker:async()=>worker,unpackedExtensionId:()=>"neutral",closeProofTargets:async()=>{closed=true;if(process.env.CLEANUP_ROUTE === "target_refusal")throw new Error("neutral_target_refusal");},
+  process:{once:(signal,callback)=>handlers.set(signal,callback),exit:()=>{closed=true;}},
+  activeBrowserClient:null,createdTargetIds:[],shutdownRequested:false,pendingReceiverRestore:null
+});
+const shutdown = proofSource.slice(proofSource.indexOf("function installShutdownCleanup("), proofSource.indexOf("async function runLiveProviderProof("));
+const run = proofSource.slice(proofSource.indexOf("async function runLiveProviderProof("), proofSource.indexOf("if (process.argv[1]"));
+new Script(shutdown + run + "\nglobalThis.run = runLiveProviderProof;").runInContext(context);
+const running = context.run();
+await started;
+if (process.env.CLEANUP_ROUTE === "signal") handlers.get("SIGTERM")();
+await Promise.resolve();
+assert.equal(storage.receiverAuthToken,"neutral-original");
+release();
+if(process.env.CLEANUP_ROUTE === "foreign") {
+  await assert.rejects(running, error => error.message === "proof_receiver_cleanup_failed" && error.errors[0].message === "neutral_primary_failure" && error.errors[1].message === "proof_receiver_configuration_changed");
+} else if(process.env.CLEANUP_ROUTE === "target_refusal") {
+  await assert.rejects(running, error => error.message === "proof_receiver_cleanup_failed" && error.errors[0].message === "neutral_primary_failure" && error.errors[1].message === "neutral_target_refusal");
+} else await running;
+for(let i=0;i<30&&!closed;i++) await new Promise(resolve=>setImmediate(resolve));
+assert.equal(closed,true);
+if(process.env.CLEANUP_ROUTE === "foreign") assert.equal(storage.receiverAuthToken,"neutral-independent");
+else assert.deepEqual(JSON.parse(JSON.stringify(storage)), original);
+process.stdout.write("owned restoration settled\n");
+"""
+    environment = dict(os.environ, CLEANUP_ROUTE=cleanup_route)
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=Path(__file__).resolve().parents[3],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "owned restoration settled\n"

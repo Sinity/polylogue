@@ -2251,3 +2251,188 @@ def test_human_receipt_exposes_unparsed_event_coverage() -> None:
     rendered = render(receipt)
     assert "malformed_json=1" in rendered
     assert "complete=False" in rendered
+
+
+def test_free_threaded_profile_refuses_frame_traversal_but_keeps_cpu_accounting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools.fresh_build_bench import sampler as sampler_module
+
+    monkeypatch.setattr("devtools.fresh_build_bench.sampler.sysconfig.get_config_var", lambda name: 1)
+    monkeypatch.setattr(
+        "devtools.fresh_build_bench.sampler.sys._current_frames", lambda: pytest.fail("unsafe live frame traversal")
+    )
+    sampler = sampler_module.StackSampler(tmp_path / "stacks.json", interval_s=0.0, stacks=True)
+    waits = iter([False, True])
+    monkeypatch.setattr(sampler._stop, "wait", lambda timeout: next(waits))
+    sampler._run()
+    sampler.write()
+    document = json.loads(sampler.out_path.read_text())
+    assert document["profile_refusal"] == "free_threaded_frame_snapshot_unavailable"
+    assert document["ticks"] == 1
+    assert document["stacks"] == []
+    assert document["process_cpu_ticks"] is not None
+
+    from devtools.fresh_build_bench import report
+
+    receipt = report.build_receipt(
+        config=RunConfig(
+            corpus=tmp_path,
+            work=tmp_path,
+            candidate=tmp_path,
+            python="python",
+            label="l",
+            profile=True,
+            fingerprint=False,
+        ),
+        manifest={"total_bytes": 0, "kind": "sample", "digest": "d", "file_count": 0, "by_origin": {}},
+        paths={"events": tmp_path / "events.jsonl", "archive": tmp_path, "stacks": sampler.out_path, "work": tmp_path},
+        identity={"unchanged_during_run": True},
+        environment={},
+        command=[],
+        started_wall=0.0,
+        wall_s=1.0,
+        outcome="interrupted",
+        terminal_at=None,
+        exit_code=None,
+        shutdown_s=0.0,
+        observations=[],
+        final=Observation(1.0),
+        tree_samples=[],
+    )
+    assert receipt["profile"]["outcome"] == "refused"
+    assert receipt["profile"]["reason"] == "free_threaded_frame_snapshot_unavailable"
+    assert receipt["checks"]["profile_collected"] is False
+
+
+@pytest.mark.parametrize("samples", ["refused", "absent", "empty", "collected"])
+def test_requested_profile_controls_terminal_qualification_and_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, samples: str
+) -> None:
+    from devtools.fresh_build_bench import report
+
+    document: dict[str, Any] = {
+        "clock_ticks_per_s": 100,
+        "interval_s": 0.01,
+        "elapsed_s": 1.0,
+        "sampler_seconds": 0.0,
+        "stacks": [],
+        "log_delivery": {"dropped": 0, "failures": 0, "undrained": 0},
+    }
+    if samples == "refused":
+        document["profile_refusal"] = "free_threaded_frame_snapshot_unavailable"
+    elif samples == "collected":
+        document["stacks"] = [
+            {"thread": "worker", "stack": [["/synthetic/worker.py", "run", 1]], "wall_samples": 1, "cpu_ticks": 1}
+        ]
+    stacks = tmp_path / "stacks.json"
+    if samples != "absent":
+        stacks.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(report, "_log_delivery", lambda path: document["log_delivery"])
+    monkeypatch.setattr(
+        report,
+        "analyse_events",
+        lambda *args, **kwargs: {"milestones_s": {"promoted_s": 0.5}, "coverage": {"complete": True}},
+    )
+    monkeypatch.setattr(report, "archive_census", lambda *args: {"messages_fts_rows": 0, "fts_indexable_rows": 0})
+    receipt = report.build_receipt(
+        config=RunConfig(
+            corpus=tmp_path,
+            work=tmp_path,
+            candidate=tmp_path,
+            python="python",
+            label="l",
+            profile=True,
+            fingerprint=False,
+        ),
+        manifest={"total_bytes": 0, "kind": "sample", "digest": "d", "file_count": 0, "by_origin": {}},
+        paths={"events": tmp_path / "events.jsonl", "archive": tmp_path, "stacks": stacks, "work": tmp_path},
+        identity={"unchanged_during_run": True, "git_sha": "0" * 40, "dirty": False},
+        environment={},
+        command=[],
+        started_wall=0.0,
+        wall_s=1.0,
+        outcome="terminal",
+        terminal_at=1.0,
+        exit_code=0,
+        shutdown_s=0.0,
+        observations=[],
+        final=Observation(
+            1.0,
+            cursor_rows=1,
+            cursor_complete=1,
+            promoted_index="synthetic-index",
+            readiness=dict.fromkeys(REQUIRED_READINESS_DOMAINS, True),
+        ),
+        tree_samples=[],
+    )
+    assert all(value for key, value in receipt["checks"].items() if key != "profile_collected")
+    assert receipt["checks"]["profile_collected"] is (samples == "collected")
+    assert receipt["qualified"] is (samples == "collected")
+    # Refresh uses this same owner; it must not resurrect qualification.
+    _derive_dependents(receipt)
+    assert receipt["qualified"] is (samples == "collected")
+    if samples != "collected":
+        assert "profile outcome=refused reason=" in report.render(receipt)
+        for allow in (False, True):
+            ok, text = compare(receipt, receipt, allow_unqualified=allow)
+            assert not ok and "profile refused" in text
+
+
+@pytest.mark.parametrize("reason", ["free_threaded_frame_snapshot_unavailable", "profile_samples_unavailable"])
+@pytest.mark.parametrize("entrypoint", ["standalone", "bench"])
+def test_refused_stack_document_is_not_an_empty_profile(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], reason: str, entrypoint: str
+) -> None:
+    from devtools.fresh_build_bench import profile_report
+
+    document: dict[str, Any] = {"stacks": []}
+    if reason != "profile_samples_unavailable":
+        document["profile_refusal"] = reason
+    samples, output = tmp_path / "stacks.json", tmp_path / "collapsed.txt"
+    samples.write_text(json.dumps(document), encoding="utf-8")
+    if entrypoint == "standalone":
+        exit_code = profile_report.main([str(samples), "--collapsed", str(output)])
+    else:
+        from devtools.fresh_build_bench.cli import main
+
+        exit_code = main(["profile", str(samples), "--collapsed", str(output)])
+    assert exit_code == 2
+    assert f"profile outcome=refused reason={reason}" in capsys.readouterr().out
+    assert not output.exists()
+    with pytest.raises(profile_report.ProfileRefusedError) as caught:
+        profile_report.summarise(document, top=10, thread_filter=None)
+    assert caught.value.reason == reason
+    with pytest.raises(profile_report.ProfileRefusedError):
+        profile_report.collapsed(document, weight="cpu", thread_filter=None)
+
+
+@pytest.mark.uses_real_clock("sampler accounts actual OS thread CPU")
+def test_actual_runtime_profile_environment_never_walks_free_threaded_frames(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    import sysconfig
+
+    from devtools.fresh_build_bench import sampler as sampler_module
+
+    free_threaded = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+    if free_threaded:
+        monkeypatch.setattr(sys, "_current_frames", lambda: pytest.fail("unsafe foreign frames"))
+    monkeypatch.setenv("POLYLOGUE_BENCH_STACK_SAMPLES", str(tmp_path / "samples.json"))
+    monkeypatch.setenv("POLYLOGUE_BENCH_STACKS", "1")
+    # Drive one tick deterministically through the daemon's environment entrypoint.
+    monkeypatch.setattr(sampler_module.StackSampler, "start", lambda self: None)
+    sampler = sampler_module.start_from_environment()
+    assert sampler is not None
+    waits = iter([False, True])
+    monkeypatch.setattr(sampler._stop, "wait", lambda timeout: next(waits))
+    sampler._run()
+    sampler.write()
+    document = json.loads(sampler.out_path.read_text())
+    assert document["profile_refusal"] == ("free_threaded_frame_snapshot_unavailable" if free_threaded else None)
+    assert document["ticks"] == 1
+    assert document["process_cpu_ticks"] is not None
+    if free_threaded:
+        assert document["stacks"] == []

@@ -11,6 +11,7 @@ import sqlite3
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -113,6 +114,7 @@ class DaemonReadDependencies:
     raise_if_aborted: Callable[[], None] = never_aborted
     status_now_ms: int | None = None
     status_config: Config | PolylogueConfig | None = None
+    hermes_root: Path | None = None
 
     @property
     def vector_provider(self) -> VectorProvider | None:
@@ -276,6 +278,12 @@ def execute_read_operation(
                 mode="json", exclude_none=True
             ),
         }
+    elif name in {"continuation.route", "continuation.context", "continuation.candidates"}:
+        from polylogue.operations.continuation import execute_continuation_read
+
+        result = execute_continuation_read(
+            name, payload, archive=archive, serving_identity=serving_identity, checkpoint=dependencies.raise_if_aborted
+        )
     elif name == "session.reference":
         result = _session_reference_payload(payload, archive=archive)
     elif name == "query.units":
@@ -296,6 +304,30 @@ def execute_read_operation(
         from polylogue.operations.user_overlay_reads import execute_user_overlay_read
 
         result = execute_user_overlay_read(name, payload, archive=archive)
+    elif name == "insights.list":
+        from polylogue.operations.insight_reads import execute_insight_read
+
+        result = execute_insight_read(payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
+    elif name == "insights.readiness":
+        from polylogue.operations.insight_reads import execute_insight_readiness
+
+        result = execute_insight_readiness(payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
+    elif name == "annotation.join":
+        from polylogue.operations.annotation_join import execute_annotation_join
+
+        result = execute_annotation_join(payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
+    elif name == "insights.rigor":
+        from polylogue.operations.insight_reads import execute_insight_rigor
+
+        result = execute_insight_rigor(payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
+    elif name == "insights.export_bundle":
+        from polylogue.operations.insight_export import execute_insight_export
+
+        result = execute_insight_export(payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
+    elif name == "insights.fable_packet":
+        from polylogue.operations.fable_packet import execute_fable_packet
+
+        result = execute_fable_packet(payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
     elif name == "completion":
         result = _completion_payload(payload, archive=archive)
     elif name == "facets":
@@ -878,7 +910,7 @@ _COMPLETION_SESSION_SCAN = 100
 #: deliberately not among them: it is a declared vocabulary that must stay
 #: completable on an archive that does not exist yet, so the CLI answers it
 #: from ``sources.origin_specs`` without a read.
-ARCHIVE_COMPLETION_SOURCES: frozenset[str] = frozenset({"session_id", *_COMPLETION_VALUE_UNITS})
+ARCHIVE_COMPLETION_SOURCES: frozenset[str] = frozenset({"session_id", "cwd_prefix", *_COMPLETION_VALUE_UNITS})
 
 
 def completion_reads_archive(payload: Mapping[str, object]) -> bool:
@@ -923,6 +955,13 @@ def _completion_values(
     values: list[dict[str, object]]
     if source == "session_id":
         values = _session_id_completions(incomplete, archive=_require_archive(archive, source), limit=limit)
+    elif source == "cwd_prefix":
+        values = [
+            {"value": directory, "help": f"{count} sessions"}
+            for directory, count in _require_archive(archive, source).list_working_directory_completions(
+                incomplete, limit=limit
+            )
+        ]
     elif source in _COMPLETION_VALUE_UNITS:
         values = _grouped_completions(source, incomplete, archive=_require_archive(archive, source), limit=limit)
     else:
@@ -1480,7 +1519,6 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
         "continuation": window.continuation,
         "complete": window.complete,
     }
-    _require_deliverable_window(result, limit=window.limit)
     return result
 
 
@@ -1595,7 +1633,6 @@ def _session_messages_payload(
         "continuation": window.continuation,
         "complete": window.complete,
     }
-    _require_deliverable_window(result, limit=window.limit)
     return result
 
 
@@ -1672,7 +1709,6 @@ def _session_evidence_payload(ref: str, *, kind: str, archive: ArchiveStore) -> 
         "continuation": None,
         "complete": True,
     }
-    _require_deliverable_window(result, limit=total)
     return result
 
 
@@ -1740,44 +1776,7 @@ def _session_evidence_window_payload(
         "continuation": window["continuation"],
         "complete": window["complete"],
     }
-    _require_deliverable_window(result, limit=int(cast(int, window["limit"])))
     return result
-
-
-def _require_deliverable_window(result: Mapping[str, object], *, limit: int) -> None:
-    """Refuse a window the transport cannot carry, naming the way out.
-
-    Silently truncating would make ``complete``/``next_offset`` lie about what
-    the caller received.
-
-    File edits and web content are byte-paged by the evidence owner before
-    reaching this boundary, including within a single oversized row. This
-    final transport guard remains necessary for other projections: narrowing
-    a row window helps only when the window contains more than one row.
-    """
-
-    import json
-
-    from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
-
-    size = len(json.dumps(result, separators=(",", ":"), default=str).encode())
-    if size <= MAX_OPERATION_RESULT_BYTES:
-        return
-    from polylogue.operations.read_contracts import _WHOLE_EVIDENCE_KINDS
-
-    kind = str(result.get("kind") or "transcript")
-    over = f"is {size} bytes, above the {MAX_OPERATION_RESULT_BYTES}-byte operation result bound"
-    if kind in _WHOLE_EVIDENCE_KINDS:
-        raise ValueError(
-            f"session.read {kind} evidence {over}. This kind is answered whole and takes no window "
-            "coordinates, so there is no smaller request; the relation needs a bounded transport"
-        )
-    if limit <= 1:
-        raise ValueError(
-            f"session.read {kind} window of one row {over}. A single row is already the smallest "
-            "window, so no retry can deliver it; the row itself is larger than one operation result"
-        )
-    raise ValueError(f"session.read {kind} window of {limit} rows {over}; retry with a smaller limit")
 
 
 def _session_reference_payload(payload: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:
@@ -1849,8 +1848,7 @@ def _session_window_request(ref: str, payload: Mapping[str, object], *, limit: i
     narrow the next page, and ``frame_request`` refuses a wider one; an
     explicit nonzero ``offset`` is checked against the token's and refused on
     conflict. Dropping either would serve a window the caller did not ask for:
-    the CLI narrows a resumed page to its remaining bound and to recover from
-    ``result_too_large``.
+    the CLI narrows a resumed page to its remaining requested bound.
     """
 
     from polylogue.operations.session_contracts import SessionRead

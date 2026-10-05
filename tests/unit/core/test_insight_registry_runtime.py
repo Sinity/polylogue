@@ -91,13 +91,13 @@ def test_get_insight_type_and_build_query_raise_useful_errors() -> None:
         get_insight_type("missing-insight")
 
     with pytest.raises(InsightQueryError, match="does not declare a query model"):
-        insight_registry._build_query(
+        insight_registry.build_insight_query(
             InsightType(name="dummy", display_name="Dummy", json_key="items"),
             query="value",
         )
 
     with pytest.raises(InsightQueryError, match="Unknown query field\\(s\\) for session_profiles: refined_work_kind"):
-        insight_registry._build_query(get_insight_type("session_profiles"), refined_work_kind="planning")
+        insight_registry.build_insight_query(get_insight_type("session_profiles"), refined_work_kind="planning")
 
 
 def test_insight_items_payload_and_rendering_cover_json_plain_and_empty_paths() -> None:

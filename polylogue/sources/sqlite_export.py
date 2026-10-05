@@ -17,7 +17,9 @@ and out in bounded memory:
 Values carry their SQLite storage class so text, integers, reals, blobs and
 NULL stay distinct: ``["i",5]``, ``["f",1.5]``, ``["t","text"]``, ``["tx",
 "<hex>"]`` for TEXT whose bytes are not UTF-8, ``["b","<hex>"]`` for a blob,
-and a bare ``null``.
+and a bare ``null``. The ``sqlite_sequence`` header carries the same typed
+name and high-water cells as retained identity evidence. Reconstructions
+materialize the declared user tables, not this SQLite-owned header state.
 
 ``rowid`` is exported as a column for every rowid table, so a reconstruction
 preserves row identity and every ``ORDER BY rowid`` a parser issues answers
@@ -1301,13 +1303,14 @@ def _write_export_connection(
         # contents are logical state: an insert-then-delete on an
         # AUTOINCREMENT table leaves every user row identical while
         # advancing the stored high-water mark.
+        sequence_names = None if declared is None else {name.encode("utf-8") for name in declared}
         with closing(
             conn.execute("SELECT typeof(name), name, typeof(seq), seq FROM sqlite_sequence ORDER BY name")
         ) as cursor:
             sequence_rows = [
                 [_encode_value(_schema_text(name_type), name), _encode_value(_schema_text(seq_type), seq)]
                 for name_type, name, seq_type, seq in cursor
-                if declared is None or _schema_text(name) in declared
+                if sequence_names is None or (name_type == b"text" and name in sequence_names)
             ]
     header = (
         '{"polylogue_sqlite_export":'

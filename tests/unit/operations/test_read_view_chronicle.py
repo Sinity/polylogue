@@ -74,22 +74,20 @@ def test_chronicle_edges_reads_composed_pages_and_counts_only_authored_dialogue(
     assert archive.offsets == [0, 2, 4, 6, 8, 10, 12]
 
 
-def test_chronicle_result_refuses_to_exceed_operation_wire_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_chronicle_result_keeps_a_large_projection(monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.operations import read_view_chronicle
 
+    value = "λ" * (9 * 1024 * 1024)
     monkeypatch.setattr("polylogue.archive.query.archive_execution._archive_summaries", lambda *args, **kwargs: [])
-    monkeypatch.setattr(read_view_chronicle, "MAX_OPERATION_RESULT_BYTES", 1)
     monkeypatch.setattr(
         read_view_chronicle,
         "build_chronicle_projection_payload",
-        lambda sessions, *, edge_limit: SimpleNamespace(model_dump=lambda mode: {"large": "payload"}),
+        lambda sessions, *, edge_limit: SimpleNamespace(model_dump=lambda mode: {"large": value}),
     )
-
-    with pytest.raises(ValueError, match="above the 1-byte operation result limit"):
-        read_view_chronicle.execute_chronicle_read(
-            {"session_id": None, "params": {}, "projection": {}},
-            archive=Mock(archive_root="/tmp/archive"),
-        )
+    result = read_view_chronicle.execute_chronicle_read(
+        {"session_id": None, "params": {}, "projection": {}}, archive=Mock(archive_root="/tmp/archive")
+    )
+    assert result["payload"] == {"large": value}
 
 
 def test_chronicle_operation_applies_exclude_text_before_offset_and_limit(monkeypatch: pytest.MonkeyPatch) -> None:

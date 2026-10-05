@@ -19,10 +19,10 @@ archive. Callers can widen the sample for closer audits.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Literal, cast
 
-from pydantic import Field
+from pydantic import ConfigDict, Field, model_validator
 
 from polylogue.analysis.archive_models import ArchiveInsightModel
 from polylogue.analysis.rigor import (
@@ -38,10 +38,23 @@ DEFAULT_AUDIT_SAMPLE_LIMIT = 500
 
 
 class InsightRigorAuditQuery(ArchiveInsightModel):
-    """Audit scope. Empty ``insights`` means every contract row."""
+    """Audit scope. Empty ``insights`` means every registered product."""
+
+    model_config = ConfigDict(extra="forbid")
 
     insights: tuple[str, ...] = ()
-    sample_limit: int = DEFAULT_AUDIT_SAMPLE_LIMIT
+    sample_limit: int = Field(default=DEFAULT_AUDIT_SAMPLE_LIMIT, ge=0, strict=True)
+
+    @model_validator(mode="after")
+    def validate_targets(self) -> InsightRigorAuditQuery:
+        from polylogue.analysis.registry import get_insight_type
+
+        for name in self.insights:
+            try:
+                get_insight_type(name)
+            except KeyError as exc:
+                raise ValueError(f"Unknown insight type: {name}") from exc
+        return self
 
 
 class ConfidenceDistribution(ArchiveInsightModel):
@@ -122,13 +135,17 @@ def _version_is_stale(row: object, version_name: str, current_version: int) -> b
     return False
 
 
-def _audit_one(rows: Sequence[object], contract: RigorContract) -> InsightRigorAuditEntry:
+def _audit_one(
+    rows: Sequence[object], contract: RigorContract, *, checkpoint: Callable[[], None] | None = None
+) -> InsightRigorAuditEntry:
     distribution = ConfidenceDistribution()
     evidence_count = 0
     inference_count = 0
     fallback_count = 0
     stale_version_count = 0
     for row in rows:
+        if checkpoint is not None:
+            checkpoint()
         if contract.evidence_payload and _payload_is_present(resolve_payload(row, contract.evidence_payload)):
             evidence_count += 1
         if contract.inference_payload and _payload_is_present(resolve_payload(row, contract.inference_payload)):
@@ -174,9 +191,11 @@ def _audit_one(rows: Sequence[object], contract: RigorContract) -> InsightRigorA
     )
 
 
-async def build_insight_rigor_audit_report(
-    operations: object,
+def build_insight_rigor_audit_report(
+    fetch_rows: Callable[[str, int], Sequence[object]],
     query: InsightRigorAuditQuery | None = None,
+    *,
+    checkpoint: Callable[[], None] | None = None,
 ) -> InsightRigorAuditReport:
     """Audit the rigor profile of every registered insight product.
 
@@ -197,6 +216,8 @@ async def build_insight_rigor_audit_report(
     targeted = set(request.insights) if request.insights else None
     entries: list[InsightRigorAuditEntry] = []
     for insight_name, insight_type in INSIGHT_REGISTRY.items():
+        if checkpoint is not None:
+            checkpoint()
         if targeted is not None and insight_name not in targeted:
             continue
         contract = get_rigor_contract(insight_name)
@@ -204,10 +225,12 @@ async def build_insight_rigor_audit_report(
             rows: list[object] = []
             error: str | None = None
             try:
-                rows = await _fetch_rows(operations, insight_name, request.sample_limit)
+                rows = list(fetch_rows(insight_name, request.sample_limit))
             except Exception as exc:
+                if checkpoint is not None:
+                    checkpoint()
                 error = f"{type(exc).__name__}: {exc}"
-            entry = _audit_one(rows, contract)
+            entry = _audit_one(rows, contract, checkpoint=checkpoint)
             if error is not None:
                 entry = entry.model_copy(update={"error": error})
             entries.append(entry)
@@ -222,28 +245,6 @@ async def build_insight_rigor_audit_report(
             )
         )
     return InsightRigorAuditReport(sample_limit=request.sample_limit, entries=tuple(entries))
-
-
-async def _fetch_rows(
-    operations: object,
-    insight_name: str,
-    sample_limit: int,
-) -> list[object]:
-    """Dispatch via the insights registry to operations.
-
-    Imported lazily so the audit module does not pull the registry at
-    module import time (the registry already imports
-    :mod:`polylogue.analysis.archive`).
-    """
-
-    from polylogue.analysis.registry import (
-        fetch_insights_async,
-        get_insight_type,
-    )
-
-    insight_type = get_insight_type(insight_name)
-    rows = await fetch_insights_async(insight_type, operations, limit=sample_limit)
-    return list(rows)
 
 
 __all__ = [

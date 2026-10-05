@@ -131,13 +131,17 @@ def _cli_read_selection(params: Mapping[str, object]) -> tuple[dict[str, object]
 def cli_read_request(params: Mapping[str, object], *, preset: str = "summary") -> ReadRequest:
     """Lower CLI-shaped query intent into the shared read contract."""
 
-    from polylogue.surfaces.read_contract import ReadRequest
+    from polylogue.surfaces.read_contract import ReadRequest, read_input_fields
 
     normalized, selection = _cli_read_selection(params)
     # The same normalized map also carries projection and render controls.
     # Passing selection alone made this shared request silently revert those
     # controls to preset defaults even though the CLI had accepted them.
-    return ReadRequest.normalize({**normalized, "selection": selection}, preset=preset)
+    return ReadRequest.normalize(
+        {key: value for key, value in normalized.items() if key in read_input_fields()},
+        preset=preset,
+        selection=selection,
+    )
 
 
 def cli_query_spec(params: Mapping[str, object]) -> SessionQuerySpec:

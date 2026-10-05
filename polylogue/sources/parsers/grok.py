@@ -49,7 +49,7 @@ from typing import Protocol
 from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.core.enums import BlockType, Provider, TitleSource, ToolResultUnknownReason
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource, ToolResultUnknownReason
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.timestamps import canonical_timestamp_text
 from polylogue.pipeline.ids import idless_session_identity
@@ -64,7 +64,6 @@ from .base import (
     ParsedMessage,
     ParsedSession,
     ParsedSessionEvent,
-    human_authored_override,
     parser_admission,
     synthetic_message_id,
 )
@@ -197,6 +196,22 @@ def parse_conversation_stream(
     return finish_conversation(conversation, fallback_id, messages)
 
 
+def _response_material_origin(role: Role, text: str | None, blocks: list[ParsedContentBlock]) -> MaterialOrigin:
+    """Grok's human sender proves authorship independently of prose markers."""
+    classified = classify_material_origin(
+        role=role,
+        message_type=MessageType.MESSAGE,
+        text=text,
+        block_types=tuple(block.type for block in blocks),
+    )
+    # Native tool and reasoning structures keep their canonical evidence.
+    # Text and attached images on the human channel are the person's input,
+    # including quoted instructions that resemble an agent context envelope.
+    if role is Role.USER and all(block.type in (BlockType.TEXT, BlockType.IMAGE) for block in blocks):
+        return MaterialOrigin.HUMAN_AUTHORED
+    return classified
+
+
 def append_conversation_response(messages: MutableSequence[ParsedMessage], entry: object) -> None:
     """Normalize one Grok response with a stable admitted-message position."""
     fields = _response_fields(entry)
@@ -206,6 +221,7 @@ def append_conversation_response(messages: MutableSequence[ParsedMessage], entry
         return
     grok_role = _role_for_sender(fields.get("sender"))
     timestamp = _timestamp_text(fields.get("create_time"))
+    blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
     provider_message_id = synthetic_message_id(
         namespace=_MESSAGE_ID_NAMESPACE,
         role=grok_role,
@@ -219,16 +235,12 @@ def append_conversation_response(messages: MutableSequence[ParsedMessage], entry
             role=grok_role,
             text=text,
             timestamp=timestamp,
-            blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+            blocks=blocks,
             position=len(messages),
             variant_index=0,
             is_active_path=True,
             is_active_leaf=False,
-            material_origin=human_authored_override(
-                grok_role,
-                MessageType.MESSAGE,
-                classify_material_origin(role=grok_role, message_type=MessageType.MESSAGE, text=text),
-            ),
+            material_origin=_response_material_origin(grok_role, text, blocks),
         )
     )
 
@@ -631,11 +643,7 @@ def parse_native_response_stream(
                     variant_index=variant,
                     owner_coordinate=coordinate,
                     model_name=_string(fields.get("model")),
-                    material_origin=human_authored_override(
-                        role,
-                        MessageType.MESSAGE,
-                        classify_material_origin(role=role, message_type=MessageType.MESSAGE, text=text),
-                    ),
+                    material_origin=_response_material_origin(role, text, blocks),
                 )
             )
             for attachment in _native_attachments(fields, own_id):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import click
 import pytest
 
-from polylogue.analysis.export_bundles import (
+from polylogue.analysis.export_bundle_contracts import (
     InsightExportBundleError,
     InsightExportBundleManifest,
     InsightExportBundleResult,
@@ -25,6 +24,7 @@ from polylogue.analysis.readiness import (
 )
 from polylogue.analysis.registry import CliOption, InsightQueryError, InsightType, get_insight_type
 from polylogue.cli.commands import insights as insights_module
+from polylogue.surfaces.outcome import decide_outcome
 
 
 def _root_context(
@@ -113,6 +113,7 @@ def _status_report() -> InsightReadinessReport:
 
 def _export_result(tmp_path: Path) -> InsightExportBundleResult:
     return InsightExportBundleResult(
+        outcome=decide_outcome(matched=7),
         output_path=tmp_path / "bundle",
         manifest_path=tmp_path / "bundle" / "manifest.json",
         coverage_path=tmp_path / "bundle" / "coverage.json",
@@ -150,7 +151,7 @@ def test_build_click_params_and_insight_command_cover_dynamic_registration() -> 
     params = insights_module._build_click_params(insight_type)
     command = insights_module._build_insight_command(insight_type)
 
-    assert [param.name for param in params] == ["provider", "limit", "offset", "output_format"]
+    assert [param.name for param in params] == ["provider", "limit", "output_format", "offset", "output_format"]
     assert command.name == "test-insight"
     assert command.help == "List test insights."
 
@@ -158,23 +159,36 @@ def test_build_click_params_and_insight_command_cover_dynamic_registration() -> 
 def test_make_callback_renders_insights_and_surfaces_query_errors() -> None:
     callback = insights_module._make_callback(get_insight_type("session_profiles"))
     raw_callback = getattr(callback, "__wrapped__", callback)
-    env = SimpleNamespace(polylogue=MagicMock())
+    env = SimpleNamespace(config=MagicMock())
     ctx = click.Context(click.Command("profiles"))
     ctx.obj = env
 
     request = SimpleNamespace(query_kwargs={"limit": 1}, wants_json=True)
+    result = {
+        "page": {"insight": "session_profiles", "items": [], "total": 0},
+        "outcome": {"state": "empty", "reason": "no_rows_in_scope", "detail": {}},
+    }
     with patch("polylogue.cli.commands.insights.InsightCommandRequest.from_context", return_value=request):
-        with patch("polylogue.cli.commands.insights.fetch_insights", return_value=["row"]) as fetch_insights:
+        with patch("polylogue.cli.commands.insights.dispatch_read", return_value=(result, "daemon")) as dispatch:
             with patch("polylogue.cli.commands.insights.render_insight_items") as render_items:
                 raw_callback(ctx, output_format="json")
 
-    fetch_insights.assert_called_once()
-    render_items.assert_called_once_with(["row"], get_insight_type("session_profiles"), json_mode=True)
+    dispatch.assert_called_once()
+    assert dispatch.call_args.args[0] is env.config
+    operation = dispatch.call_args.args[1]
+    assert operation.operation == "insights.list"
+    assert operation.payload == {"page": {"insight": "session_profiles", "query": {"limit": 1}}}
+    render_items.assert_called_once()
+    assert render_items.call_args.args == ([], get_insight_type("session_profiles"))
+    assert render_items.call_args.kwargs["json_mode"] is True
+    assert render_items.call_args.kwargs["outcome"].state == "empty"
 
     with patch("polylogue.cli.commands.insights.InsightCommandRequest.from_context", return_value=request):
-        with patch("polylogue.cli.commands.insights.fetch_insights", side_effect=InsightQueryError("bad query")):
-            with pytest.raises(SystemExit, match="insights profiles: bad query"):
-                raw_callback(ctx, output_format=None)
+        with patch("polylogue.cli.commands.insights.build_insight_query", side_effect=InsightQueryError("bad query")):
+            with patch("polylogue.cli.commands.insights.dispatch_read") as dispatch:
+                with pytest.raises(SystemExit, match="insights profiles: bad query"):
+                    raw_callback(ctx, output_format=None)
+                dispatch.assert_not_called()
 
 
 def test_status_wants_json_checks_command_and_root_flags() -> None:
@@ -208,13 +222,20 @@ def test_render_status_plain_and_export_plain_cover_optional_sections(
 def test_insights_status_command_emits_json_and_inherits_root_filters(tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
-    async def get_report(query: object) -> InsightReadinessReport:
-        captured["query"] = query
-        return _status_report()
+    def get_report(config: object, operation: object) -> tuple[dict[str, object], str]:
+        from polylogue.operations.insight_contracts import InsightReadinessRequest
+        from polylogue.surfaces.outcome import decide_outcome
 
-    env = SimpleNamespace(polylogue=SimpleNamespace(insight_readiness_report=get_report))
+        assert operation.operation == "insights.readiness"
+        captured["query"] = InsightReadinessRequest.model_validate(operation.payload).query
+        return {
+            "report": _status_report().model_dump(mode="json"),
+            "outcome": decide_outcome(matched=1, degraded=("insight_convergence_pending",)).to_dict(),
+        }, "daemon"
+
+    env = SimpleNamespace(config=object())
     raw_callback = _command_callback(insights_module.insights_status_command)
-    with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=lambda coro: asyncio.run(coro)):
+    with patch("polylogue.cli.commands.insights.dispatch_read", side_effect=get_report) as dispatch:
         with patch("polylogue.cli.commands.insights.emit_success") as emit_success:
             raw_callback(
                 _status_context(env, output_format="json", origin="codex-session"),
@@ -224,35 +245,37 @@ def test_insights_status_command_emits_json_and_inherits_root_filters(tmp_path: 
                 until=None,
                 output_format=None,
             )
-
+    dispatch.assert_called_once()
+    assert dispatch.call_args.args[0] is env.config
     query = captured["query"]
     assert query.insights == ("profiles",)
     assert query.origin == "codex-session"
     assert query.since == "2026-04-01T00:00:00+00:00"
     assert query.until == "2026-04-30T00:00:00+00:00"
     emit_success.assert_called_once()
+    assert emit_success.call_args.args[0]["outcome"]["state"] == "degraded"
 
 
 def test_insights_status_command_rejects_inherited_provider_csv() -> None:
-    env = SimpleNamespace(polylogue=SimpleNamespace(insight_readiness_report=MagicMock()))
+    env = SimpleNamespace(config=object())
     raw_callback = _command_callback(insights_module.insights_status_command)
-
-    with pytest.raises(SystemExit, match="insights commands accept one origin"):
-        raw_callback(
-            _status_context(env, origin="codex-session,chatgpt-export"),
-            insights=(),
-            origin=None,
-            since=None,
-            until=None,
-            output_format=None,
-        )
+    with patch("polylogue.cli.commands.insights.dispatch_read") as dispatch:
+        with pytest.raises(SystemExit, match="insights commands accept one origin"):
+            raw_callback(
+                _status_context(env, origin="codex-session,chatgpt-export"),
+                insights=(),
+                origin=None,
+                since=None,
+                until=None,
+                output_format=None,
+            )
+        dispatch.assert_not_called()
 
 
 def test_insights_status_command_reports_invalid_insight_names() -> None:
-    env = SimpleNamespace(polylogue=SimpleNamespace(insight_readiness_report=MagicMock()))
+    env = SimpleNamespace(config=object())
     raw_callback = _command_callback(insights_module.insights_status_command)
-
-    with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=ValueError("Unknown insight")):
+    with patch("polylogue.cli.commands.insights.dispatch_read") as dispatch:
         with pytest.raises(SystemExit, match="insights status: .*Known insights:"):
             raw_callback(
                 _status_context(env),
@@ -262,16 +285,19 @@ def test_insights_status_command_reports_invalid_insight_names() -> None:
                 until=None,
                 output_format=None,
             )
+        dispatch.assert_not_called()
 
 
 def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
-    async def export_bundle(request: object) -> InsightExportBundleResult:
-        captured["request"] = request
-        return _export_result(tmp_path)
+    def export_bundle(config: object, operation: object) -> tuple[dict[str, object], str]:
+        from polylogue.operations.insight_export_contracts import decode_insight_export_request
 
-    env = SimpleNamespace(polylogue=SimpleNamespace(export_insight_bundle=export_bundle))
+        captured["request"] = decode_insight_export_request(operation.payload).request
+        return {"bundle": _export_result(tmp_path).model_dump(mode="json"), "outcome": {"state": "ok"}}, "daemon"
+
+    env = SimpleNamespace(config=SimpleNamespace())
     raw_callback = _command_callback(insights_module.insights_export_command)
 
     with pytest.raises(SystemExit, match="insights export: unsupported export format: csv"):
@@ -287,7 +313,7 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
             overwrite=False,
         )
 
-    with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=lambda coro: asyncio.run(coro)):
+    with patch("polylogue.cli.commands.insights.dispatch_read", side_effect=export_bundle):
         with patch("polylogue.cli.commands.insights.emit_success") as emit_success:
             raw_callback(
                 _export_context(env, output_format="json", origin="codex-session"),
@@ -310,12 +336,11 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
     assert request.overwrite is True
     emit_success.assert_called_once()
 
-    async def broken_export(request: object) -> InsightExportBundleResult:
-        del request
+    def broken_export(config: object, request: object) -> object:
         raise InsightExportBundleError("cannot write bundle")
 
-    env = SimpleNamespace(polylogue=SimpleNamespace(export_insight_bundle=broken_export))
-    with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=lambda coro: asyncio.run(coro)):
+    env = SimpleNamespace(config=SimpleNamespace())
+    with patch("polylogue.cli.commands.insights.dispatch_read", side_effect=broken_export):
         with pytest.raises(SystemExit, match="insights export: cannot write bundle"):
             raw_callback(
                 _export_context(env),

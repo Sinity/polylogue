@@ -7,13 +7,26 @@ storage-free; execution remains the responsibility of the query transaction.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, fields
-from typing import Any
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import Annotated, Any, Literal
 
-from pydantic import TypeAdapter
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    StringConstraints,
+    TypeAdapter,
+    ValidationInfo,
+    create_model,
+    field_validator,
+)
 
-from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.archive.query.spec import QUERY_PARAMETER_NAMES, SessionQuerySpec
 from polylogue.archive.viewport import READ_VIEW_PROFILES
 from polylogue.surfaces.projection_spec import (
     RENDER_FORMAT_ALIASES,
@@ -48,8 +61,8 @@ class ReadPreset:
         return projection_from_views(
             views,
             format=str(params["output_format"] if params.get("output_format") is not None else self.format.value),
-            destination=str(params.get("destination", self.destination.value)),
-            layout=str(params.get("layout", self.layout)),
+            destination=str(params.get("destination") or self.destination.value),
+            layout=str(params.get("layout") or self.layout),
             timestamps=str(params["timestamps"]) if params.get("timestamps") is not None else None,
             max_tokens=_optional_int(params.get("max_tokens")),
             out=str(params["out"]) if params.get("out") is not None else None,
@@ -101,17 +114,28 @@ class ReadRequest:
         params: Mapping[str, object] | None = None,
         *,
         preset: str | None = None,
+        selection: SessionQuerySpec | None = None,
     ) -> ReadRequest:
         """Normalize a surface payload into one request contract."""
 
-        raw = params or {}
+        raw = _READ_INPUT.model_validate(params if params is not None else {}).model_dump(exclude_unset=True)
+        for key in (
+            "latest",
+            "reverse",
+            "filter_has_tool_use",
+            "filter_has_thinking",
+            "filter_has_paste",
+            "typed_only",
+            "root",
+        ):
+            if raw.get(key) is not None:
+                raw[key] = _boolean(raw[key], default=False)
         preset_name = str(preset or raw.get("preset") or "summary")
         selected = read_preset(preset_name)
         projection = selected.projection(raw)
-        supplied_selection = raw.get("selection")
         selection = (
-            supplied_selection
-            if isinstance(supplied_selection, SessionQuerySpec)
+            selection
+            if selection is not None
             else SessionQuerySpec.from_params(
                 {
                     **raw,
@@ -181,19 +205,116 @@ def read_preset_catalog() -> tuple[dict[str, object], ...]:
     )
 
 
-def read_contract_schema() -> dict[str, Any]:
-    """Describe the request fields without duplicating field inventories."""
+# The machine input is flat. These annotations describe input spellings;
+# domain/projection owners still decide semantic validity (for example DSL
+# predicates and destination/path combinations).
+_InputInteger = StrictInt | Annotated[str, StringConstraints(pattern=r"^(?:[+-]?[0-9]+)?$")] | None
+_InputBoolean = StrictBool | Literal[0, 1, "true", "false", "True", "False", "0", "1", "yes", "no", "on", "off"] | None
+_InputText = StrictStr | None
+_InputTerms = StrictStr | tuple[StrictStr, ...] | None
+_INPUT_TYPES: dict[str, Any] = dict.fromkeys(QUERY_PARAMETER_NAMES, _InputText)
+for _name in (
+    "query",
+    "contains",
+    "exclude_text",
+    "referenced_path",
+    "action",
+    "exclude_action",
+    "action_sequence",
+    "action_text",
+    "tool",
+    "exclude_tool",
+    "origin",
+    "exclude_origin",
+    "tag",
+    "exclude_tag",
+    "repo",
+    "project",
+    "has_type",
+):
+    _INPUT_TYPES[_name] = _InputTerms
+for _name in (
+    "limit",
+    "sample",
+    "min_messages",
+    "max_messages",
+    "min_words",
+    "max_words",
+    "offset",
+    "max_tokens",
+    "edge_limit",
+    "body_limit",
+    "body_offset",
+    "neighbor_limit",
+    "neighbor_window_hours",
+    "context_related_limit",
+    "context_max_sessions",
+    "correlation_since_hours",
+):
+    _INPUT_TYPES[_name] = _InputInteger
+for _name in (
+    "latest",
+    "reverse",
+    "filter_has_tool_use",
+    "filter_has_thinking",
+    "filter_has_paste",
+    "typed_only",
+    "root",
+    "correlation_github_api",
+    "redact_paths",
+    "include_assertions",
+):
+    _INPUT_TYPES[_name] = _InputBoolean
+for _name in ("project_path", "project_repo", "layout", "out", "correlation_repo_path"):
+    _INPUT_TYPES[_name] = _InputText
+_INPUT_CHOICES = {
+    "preset": sorted(_PRESETS),
+    "views": sorted(_PRESETS),
+    "output_format": sorted({value.value for value in RenderFormat} | set(RENDER_FORMAT_ALIASES)),
+    "destination": [value.value for value in RenderDestination],
+    "timestamps": ["renderer-default", "include-available", "omit"],
+}
+for _name, _choices in _INPUT_CHOICES.items():
+    _choice_type = Annotated[StrictStr, Field(json_schema_extra={"enum": _choices})]
+    _INPUT_TYPES[_name] = tuple[_choice_type, ...] | None if _name == "views" else _choice_type | None
+_INPUT_TYPES["correlation_confidence_threshold"] = (
+    StrictFloat
+    | StrictInt
+    | Annotated[str, StringConstraints(pattern=r"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$")]
+    | None
+)
 
-    return {
-        "type": "object",
-        "required": [field.name for field in fields(ReadRequest) if field.name != "preset"],
-        "properties": {
-            "selection": {"type": "object", "fields": [field.name for field in fields(SessionQuerySpec)]},
-            "projection": {"type": "object", "fields": _field_names(ProjectionSpec)},
-            "render": {"type": "object", "fields": _field_names(RenderSpec)},
-            "preset": {"type": "string", "enum": sorted(_PRESETS)},
-        },
-    }
+
+def _validate_input_choice(value: object, info: ValidationInfo) -> object:
+    if value is None:
+        return value
+    choices = _INPUT_CHOICES[info.field_name or ""]
+    values = value if isinstance(value, tuple) else (value,)
+    if any(item not in choices for item in values):
+        raise ValueError(f"{info.field_name} must choose from {', '.join(choices)}")
+    return value
+
+
+_INPUT_DEFINITIONS: dict[str, Any] = {name: (annotation, None) for name, annotation in _INPUT_TYPES.items()}
+_INPUT_VALIDATORS: dict[str, Callable[..., Any]] = {
+    "input_choice": field_validator(*_INPUT_CHOICES)(_validate_input_choice),
+}
+_READ_INPUT: type[BaseModel] = create_model(
+    "ReadInput",
+    __config__=ConfigDict(extra="forbid"),
+    __validators__=_INPUT_VALIDATORS,
+    **_INPUT_DEFINITIONS,
+)
+
+
+def read_input_fields() -> frozenset[str]:
+    """The flat read keys a surface adapter may forward."""
+    return frozenset(_READ_INPUT.model_fields)
+
+
+def read_contract_schema() -> dict[str, Any]:
+    """Describe the same flat structural input validated by normalization."""
+    return _READ_INPUT.model_json_schema()
 
 
 _BOOLEAN = TypeAdapter(bool)
@@ -210,17 +331,12 @@ def _optional_int(value: object) -> int | None:
     return int(str(value))
 
 
-def _field_names(model: type[object]) -> list[str]:
-    """Read a model's authoritative field declaration for discovery output."""
-
-    return list(model.model_fields)  # type: ignore[attr-defined]
-
-
 __all__ = [
     "READ_PRESETS",
     "ReadPreset",
     "ReadRequest",
     "read_contract_schema",
+    "read_input_fields",
     "read_preset",
     "read_preset_catalog",
 ]

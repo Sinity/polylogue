@@ -78,7 +78,7 @@ from polylogue.analysis.archive import (
     UsageTimelineInsight,
 )
 from polylogue.analysis.archive_models import ThreadMemberEvidencePayload, ThreadPayload
-from polylogue.analysis.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
+from polylogue.analysis.audit import InsightRigorAuditQuery, InsightRigorAuditReport, build_insight_rigor_audit_report
 from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
 from polylogue.analysis.confidence import ConfidenceBand
 from polylogue.analysis.feedback import LearningCorrection, parse_correction_kind
@@ -95,7 +95,6 @@ from polylogue.analysis.readiness import (
     known_insight_readiness_names,
     normalize_insight_readiness_name,
 )
-from polylogue.analysis.rigor import list_rigor_contracts
 from polylogue.analysis.session_label import session_structural_label_for_session
 from polylogue.analysis.temporal_source import time_confidence_for_source
 from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
@@ -172,7 +171,6 @@ from polylogue.storage.fts.sql import (
 from polylogue.storage.hook_event_authority import HookEventAuthorityCensus, census_hook_event_authority
 from polylogue.storage.io_phase_metrics import connect_measured, connection_cursor
 from polylogue.storage.raw.models import RawSessionStateUpdate
-from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.archive_tiers import archive_query_reads as _archive_query_reads
 from polylogue.storage.sqlite.archive_tiers.archive_query_reads import (
@@ -184,6 +182,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_query_reads import (
     ArchiveDelegationAncestryRow,
     ArchiveDelegationCard,
     ArchiveDelegationQueryRow,
+    ArchiveDelegationSubtreePage,
     ArchiveDelegationSubtreeRow,
     ArchiveFileQueryRow,
     ArchiveMessageQueryRow,
@@ -299,11 +298,13 @@ from polylogue.storage.sqlite.archive_tiers.types import (
     ArchiveTier,
 )
 from polylogue.storage.sqlite.archive_tiers.user_annotations import (
+    AnnotationBatchReadPage,
     DurableAnnotationSchema,
     list_durable_annotation_schemas,
     persist_annotation_batch,
     persist_annotation_schema,
     read_annotation_batch,
+    read_annotation_batch_page,
     read_durable_annotation_schema,
 )
 from polylogue.storage.sqlite.archive_tiers.user_annotations import (
@@ -3850,6 +3851,19 @@ class ArchiveStore:
         limit: int | None = 50,
         offset: int = 0,
     ) -> list[ThreadInsight]:
+        return list(
+            self.iter_thread_insights(query=query, since_ms=since_ms, until_ms=until_ms, limit=limit, offset=offset)
+        )
+
+    def iter_thread_insights(
+        self,
+        *,
+        query: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        limit: int | None = 50,
+        offset: int = 0,
+    ) -> Generator[ThreadInsight, None, None]:
         """List threads as public thread insights."""
         where: list[str] = []
         params: list[object] = []
@@ -3903,17 +3917,22 @@ class ArchiveStore:
         pagination = "" if limit is None else " LIMIT ? OFFSET ?"
         if limit is not None:
             params.extend([max(int(limit), 0), max(int(offset), 0)])
-        rows = self._conn.execute(
-            f"""
+        with closing(
+            self._conn.execute(
+                f"""
             SELECT t.thread_id
             FROM threads t
             {clause}
             ORDER BY t.created_at_ms DESC, t.thread_id
             {pagination}
             """,
-            tuple(params),
-        ).fetchall()
-        return [insight for row in rows if (insight := self._thread_insight_from_id(str(row["thread_id"]))) is not None]
+                tuple(params),
+            )
+        ) as rows:
+            for row in rows:
+                insight = self._thread_insight_from_id(str(row["thread_id"]))
+                if insight is not None:
+                    yield insight
 
     def _thread_insight_from_id(self, thread_id: str) -> ThreadInsight | None:
         row = self._conn.execute(
@@ -4912,6 +4931,51 @@ class ArchiveStore:
         max_wallclock_seconds: float | None = None,
         sort: str | None = None,
     ) -> list[SessionProfileInsight]:
+        return list(
+            self.iter_session_profile_insights(
+                origin=origin,
+                workflow_shape=workflow_shape,
+                terminal_state=terminal_state,
+                tag=tag,
+                repo=repo,
+                since_ms=since_ms,
+                until_ms=until_ms,
+                first_message_since=first_message_since,
+                first_message_until=first_message_until,
+                session_date_since=session_date_since,
+                session_date_until=session_date_until,
+                tier=tier,
+                query=query,
+                limit=limit,
+                offset=offset,
+                min_wallclock_seconds=min_wallclock_seconds,
+                max_wallclock_seconds=max_wallclock_seconds,
+                sort=sort,
+            )
+        )
+
+    def iter_session_profile_insights(
+        self,
+        *,
+        origin: str | None = None,
+        workflow_shape: str | None = None,
+        terminal_state: str | None = None,
+        tag: str | None = None,
+        repo: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        first_message_since: str | None = None,
+        first_message_until: str | None = None,
+        session_date_since: str | None = None,
+        session_date_until: str | None = None,
+        tier: str = "merged",
+        query: str | None = None,
+        limit: int | None = 50,
+        offset: int = 0,
+        min_wallclock_seconds: float | None = None,
+        max_wallclock_seconds: float | None = None,
+        sort: str | None = None,
+    ) -> Generator[SessionProfileInsight, None, None]:
         """List archive session profile insights.
 
         ``min_wallclock_seconds`` / ``max_wallclock_seconds`` filter on the
@@ -4979,8 +5043,9 @@ class ArchiveStore:
         pagination = "" if limit is None else " LIMIT ? OFFSET ?"
         if limit is not None:
             params.extend([max(int(limit), 0), max(int(offset), 0)])
-        rows = self._conn.execute(
-            f"""
+        with closing(
+            self._conn.execute(
+                f"""
             SELECT s.session_id, s.origin, s.root_session_id, s.title, s.created_at_ms, s.updated_at_ms,
                    s.message_count, s.word_count, s.tool_use_count, s.thinking_count,
                    sp.workflow_shape, sp.workflow_shape_confidence, sp.terminal_state,
@@ -4999,9 +5064,11 @@ class ArchiveStore:
             ORDER BY {order_by}
             {pagination}
             """,
-            tuple(params),
-        ).fetchall()
-        return [_session_profile_insight_from_archive_row(self._conn, row, tier=tier) for row in rows]
+                tuple(params),
+            )
+        ) as rows:
+            for row in rows:
+                yield _session_profile_insight_from_archive_row(self._conn, row, tier=tier)
 
     def read_summary(self, session_id: str) -> ArchiveSessionSummary:
         """Read one session summary by exact session id."""
@@ -5212,6 +5279,31 @@ class ArchiveStore:
             invalidate_search_cache()
         return removed
 
+    def list_working_directory_completions(self, incomplete: str, *, limit: int) -> list[tuple[str, int]]:
+        """Read a requested prefix window from this original Index snapshot."""
+        self.check_operation_read()
+        prefix = incomplete.replace("\\", "/")
+        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        cursor = self._conn.execute(
+            r"""
+            SELECT REPLACE(path, char(92), '/') AS directory, COUNT(DISTINCT session_id) AS session_count
+            FROM session_working_dirs
+            WHERE path != '' AND REPLACE(path, char(92), '/') LIKE ? ESCAPE '\'
+            GROUP BY directory
+            ORDER BY session_count DESC, directory
+            LIMIT ?
+            """,
+            (escaped + "%", limit),
+        )
+        try:
+            values: list[tuple[str, int]] = []
+            for row in cursor:
+                self.check_operation_read()
+                values.append((str(row["directory"]), int(row["session_count"])))
+            return values
+        finally:
+            cursor.close()
+
     def list_user_tags(self, *, origin: str | None = None) -> dict[str, int]:
         """Return user tag counts over archive sessions."""
         where = "WHERE st.tag_source = 'user'"
@@ -5243,6 +5335,22 @@ class ArchiveStore:
         limit: int | None = 100,
         offset: int = 0,
     ) -> list[SessionTagRollupInsight]:
+        return list(
+            self.iter_session_tag_rollup_insights(
+                origin=origin, query=query, since_ms=since_ms, until_ms=until_ms, limit=limit, offset=offset
+            )
+        )
+
+    def iter_session_tag_rollup_insights(
+        self,
+        *,
+        origin: str | None = None,
+        query: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        limit: int | None = 100,
+        offset: int = 0,
+    ) -> Generator[SessionTagRollupInsight, None, None]:
         """Aggregate archive session tags into public tag-rollup insights."""
         where: list[str] = []
         params: list[object] = []
@@ -5264,8 +5372,9 @@ class ArchiveStore:
         pagination = "" if limit is None else " LIMIT ? OFFSET ?"
         if limit is not None:
             params.extend([max(int(limit), 0), max(int(offset), 0)])
-        rows = self._conn.execute(
-            f"""
+        with closing(
+            self._conn.execute(
+                f"""
             SELECT st.tag,
                    COUNT(DISTINCT s.session_id) AS session_count,
                    COUNT(DISTINCT COALESCE(s.root_session_id, s.session_id)) AS logical_session_count,
@@ -5279,35 +5388,34 @@ class ArchiveStore:
             ORDER BY session_count DESC, st.tag
             {pagination}
             """,
-            tuple(params),
-        ).fetchall()
-        return [
-            SessionTagRollupInsight(
-                tag=str(row["tag"]),
-                session_count=int(row["session_count"] or 0),
-                logical_session_count=int(row["logical_session_count"] or 0),
-                explicit_count=int(row["explicit_count"] or 0),
-                auto_count=int(row["auto_count"] or 0),
-                origin_breakdown=_tag_origin_breakdown(
-                    self._conn, str(row["tag"]), clause, filter_params, self._tags_relation
-                ),
-                repo_breakdown=_tag_repo_breakdown(
-                    self._conn, str(row["tag"]), clause, filter_params, self._tags_relation
-                ),
-                provenance=ArchiveInsightProvenance(
-                    materializer_version=1,
-                    materialized_at=None,
-                    source_updated_at=_iso_from_ms(row["source_sort_key_ms"]),
-                    source_sort_key=(
-                        float(row["source_sort_key_ms"]) / 1000.0 if row["source_sort_key_ms"] is not None else None
-                    ),
-                    input_high_water_mark=_iso_from_ms(row["source_sort_key_ms"]),
-                    input_high_water_mark_source="sort_key" if row["source_sort_key_ms"] is not None else None,
-                    time_confidence="estimated" if row["source_sort_key_ms"] is not None else "unknown",
-                ),
+                tuple(params),
             )
-            for row in rows
-        ]
+        ) as rows:
+            for row in rows:
+                yield SessionTagRollupInsight(
+                    tag=str(row["tag"]),
+                    session_count=int(row["session_count"] or 0),
+                    logical_session_count=int(row["logical_session_count"] or 0),
+                    explicit_count=int(row["explicit_count"] or 0),
+                    auto_count=int(row["auto_count"] or 0),
+                    origin_breakdown=_tag_origin_breakdown(
+                        self._conn, str(row["tag"]), clause, filter_params, self._tags_relation
+                    ),
+                    repo_breakdown=_tag_repo_breakdown(
+                        self._conn, str(row["tag"]), clause, filter_params, self._tags_relation
+                    ),
+                    provenance=ArchiveInsightProvenance(
+                        materializer_version=1,
+                        materialized_at=None,
+                        source_updated_at=_iso_from_ms(row["source_sort_key_ms"]),
+                        source_sort_key=(
+                            float(row["source_sort_key_ms"]) / 1000.0 if row["source_sort_key_ms"] is not None else None
+                        ),
+                        input_high_water_mark=_iso_from_ms(row["source_sort_key_ms"]),
+                        input_high_water_mark_source="sort_key" if row["source_sort_key_ms"] is not None else None,
+                        time_confidence="estimated" if row["source_sort_key_ms"] is not None else "unknown",
+                    ),
+                )
 
     def list_tool_usage_insights(self, query: ToolUsageInsightQuery | None = None) -> list[ToolUsageInsight]:
         """Aggregate tool-usage insights from action rows."""
@@ -5345,6 +5453,7 @@ class ArchiveStore:
             self._conn.commit()
         return ArchiveReadInsights(
             self._conn,
+            checkpoint=self.check_operation_read,
             normalize_origin=_origin_value,
             iso_from_milliseconds=_iso_from_ms,
             tags_relation=self._tags_relation,
@@ -6025,6 +6134,17 @@ class ArchiveStore:
             return read_annotation_batch(user_conn, batch_id)
         finally:
             self._close_user_connection(user_conn)
+
+    def get_annotation_batch_page(self, batch_id: str, *, limit: int, offset: int) -> AnnotationBatchReadPage | None:
+        """Read exact batch evidence from the original pinned User snapshot."""
+        self.check_operation_read()
+        if self.index_connection is None or not any(
+            row[1] == "user_tier" for row in self.index_connection.execute("PRAGMA database_list")
+        ):
+            return None
+        return read_annotation_batch_page(
+            self.index_connection, batch_id, limit=limit, offset=offset, schema="user_tier"
+        )
 
     def list_annotation_batches(
         self,
@@ -6855,26 +6975,18 @@ class ArchiveStore:
             insights=entries,
         )
 
-    def audit_insight_rigor(self, query: InsightRigorAuditQuery | None = None) -> InsightRigorAuditReport:
-        """Audit insight rigor over read models."""
-        request = query or InsightRigorAuditQuery()
-        targeted = set(request.insights) if request.insights else None
-        entries = []
-        for contract in list_rigor_contracts():
-            if targeted is not None and contract.insight_name not in targeted:
-                continue
-            rows = self._rigor_audit_rows(contract.insight_name, limit=max(request.sample_limit, 0))
-            entries.append(_audit_one(rows, contract))
-        return InsightRigorAuditReport(sample_limit=request.sample_limit, entries=tuple(entries))
+    def audit_insight_rigor(
+        self, query: InsightRigorAuditQuery | None = None, *, checkpoint: Callable[[], None] | None = None
+    ) -> InsightRigorAuditReport:
+        """Sample every registered product on this original pinned reader."""
+        from polylogue.analysis.insight_reads import read_insight_page
+        from polylogue.analysis.registry import build_insight_query, get_insight_type
 
-    def _rigor_audit_rows(self, insight_name: str, *, limit: int) -> list[object]:
-        if insight_name == "session_profiles":
-            return list(self.list_session_profile_insights(limit=limit))
-        if insight_name == "threads":
-            return list(self.list_thread_insights(limit=limit))
-        if insight_name == "session_tag_rollups":
-            return list(self.list_session_tag_rollup_insights(limit=limit))
-        return []
+        def fetch_rows(name: str, limit: int) -> Sequence[object]:
+            request = build_insight_query(get_insight_type(name), limit=limit)
+            return read_insight_page(self, request)
+
+        return build_insight_rigor_audit_report(fetch_rows, query, checkpoint=checkpoint)
 
     def _archive_session_origin_coverage(
         self, *, origin: str | None, since_ms: int | None, until_ms: int | None
@@ -8193,8 +8305,15 @@ class ArchiveStore:
     def get_delegation_ancestry(self, session_id: str) -> list[ArchiveDelegationAncestryRow]:
         return _archive_query_reads.get_delegation_ancestry(self, session_id)
 
-    def get_delegation_subtree(self, session_id: str) -> list[ArchiveDelegationSubtreeRow]:
-        return _archive_query_reads.get_delegation_subtree(self, session_id)
+    def get_delegation_subtree(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        after: tuple[int, str, str] | None = None,
+    ) -> ArchiveDelegationSubtreePage:
+        return _archive_query_reads.get_delegation_subtree(self, session_id, limit=limit, offset=offset, after=after)
 
     def query_files(
         self,
@@ -8480,8 +8599,8 @@ class ArchiveStore:
             return self._stats_by_for_selection(group_by, selected_where, params)
         raise ValueError(f"aggregate mode is not declared: {mode!r}")
 
-    def _stats_for_selection(self, where: str, params: list[object]) -> ArchiveStats:
-        """Reduce a supplied SQL session relation without reconstructing membership."""
+    def _counts_for_selection(self, where: str, params: list[object]) -> dict[str, int]:
+        """Reduce session counters without hydrating content or computing breakdowns."""
         row = self._conn.execute(
             f"""
             SELECT COUNT(*) AS total_sessions,
@@ -8491,6 +8610,18 @@ class ArchiveStore:
             """,
             params,
         ).fetchone()
+        return {
+            "total_sessions": int(row["total_sessions"]),
+            "total_messages": int(row["total_messages"]),
+        }
+
+    def counts(self) -> dict[str, int]:
+        """Return archive counts from the canonical session counters."""
+        return self._counts_for_selection("", [])
+
+    def _stats_for_selection(self, where: str, params: list[object]) -> ArchiveStats:
+        """Reduce a supplied SQL session relation without reconstructing membership."""
+        counts = self._counts_for_selection(where, params)
         provider_rows = self._conn.execute(
             f"""
             SELECT s.origin, COUNT(*) AS count
@@ -8571,8 +8702,8 @@ class ArchiveStore:
                 """
             ).fetchall()
         return ArchiveStats(
-            total_sessions=int(row["total_sessions"] or 0) if row is not None else 0,
-            total_messages=int(row["total_messages"] or 0) if row is not None else 0,
+            total_sessions=counts["total_sessions"],
+            total_messages=counts["total_messages"],
             total_attachments=int(attachment_row["total_attachments"] or 0) if attachment_row is not None else 0,
             origins={str(provider_row["origin"]): int(provider_row["count"] or 0) for provider_row in provider_rows},
             role_counts={
@@ -9268,7 +9399,7 @@ def _archive_provenance(
 ) -> ArchiveInsightProvenance:
     if provenance is None:
         return ArchiveInsightProvenance(
-            materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
+            materializer_version=None,
             materialized_at=None,
             input_high_water_mark=input_high_water_mark,
             input_high_water_mark_source=input_high_water_mark_source,
@@ -10223,6 +10354,7 @@ __all__ = [
     "ArchiveDelegationCard",
     "ArchiveDelegationQueryRow",
     "ArchiveDelegationSubtreeRow",
+    "ArchiveDelegationSubtreePage",
     "ArchiveFileQueryRow",
     "ArchiveMessageQueryRow",
     "ArchiveAggMetricSpec",

@@ -24,11 +24,11 @@ from polylogue.analysis.registry import (
     InsightType,
     RetentionVerdict,
     _attr,
-    _build_query,
     _id_with_origin,
     _nested,
     _nested_ms_as_seconds,
     _stringify,
+    build_insight_query,
     get_insight_type,
     insight_items_payload,
     list_insight_types,
@@ -348,10 +348,10 @@ class TestRenderInsightItems:
 
 
 class TestBuildQuery:
-    """Test _build_query() query validation."""
+    """Test build_insight_query() query validation."""
 
     def test_build_query_no_query_model_raises(self) -> None:
-        """_build_query() raises InsightQueryError when query_model is None."""
+        """build_insight_query() raises InsightQueryError when query_model is None."""
         insight_type = InsightType(
             name="no_query",
             display_name="No Query",
@@ -359,24 +359,24 @@ class TestBuildQuery:
             query_model=None,
         )
         with pytest.raises(InsightQueryError) as exc_info:
-            _build_query(insight_type)
+            build_insight_query(insight_type)
         assert "does not declare a query model" in str(exc_info.value)
 
     def test_build_query_unknown_field_raises(self) -> None:
-        """_build_query() raises InsightQueryError for unknown query fields."""
+        """build_insight_query() raises InsightQueryError for unknown query fields."""
         insight_type = get_insight_type("session_profiles")
         with pytest.raises(InsightQueryError) as exc_info:
-            _build_query(insight_type, unknown_field="value")
+            build_insight_query(insight_type, unknown_field="value")
         error_msg = str(exc_info.value)
         assert "Unknown query field" in error_msg
         assert "unknown_field" in error_msg
         assert "Accepted fields" in error_msg
 
     def test_build_query_valid_fields_succeed(self) -> None:
-        """_build_query() succeeds with valid fields."""
+        """build_insight_query() succeeds with valid fields."""
 
         insight_type = get_insight_type("session_profiles")
-        query = _build_query(
+        query = build_insight_query(
             insight_type,
             tier="merged",
             limit=10,
@@ -386,9 +386,9 @@ class TestBuildQuery:
         assert query_obj.limit == 10
 
     def test_build_query_returns_correct_type(self) -> None:
-        """_build_query() returns instance of query_model."""
+        """build_insight_query() returns instance of query_model."""
         insight_type = get_insight_type("archive_coverage")
-        query = _build_query(insight_type, group_by="day")
+        query = build_insight_query(insight_type, group_by="day")
         assert isinstance(query, ArchiveCoverageInsightQuery)
 
 

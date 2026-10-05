@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.core.durable_fs import DurableFilesystemError, append_line, atomic_replace, write_once
+from polylogue.core.durable_fs import DurableFilesystemError, append_line, atomic_create, atomic_replace, write_once
 
 
-@pytest.mark.parametrize("operation", ["write_once", "atomic_replace", "append_line"])
+@pytest.mark.parametrize("operation", ["write_once", "atomic_replace", "atomic_create", "append_line"])
 def test_durable_file_operations_sync_the_parent_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
@@ -29,6 +29,8 @@ def test_durable_file_operations_sync_the_parent_directory(
         write_once(path, b"first")
     elif operation == "atomic_replace":
         atomic_replace(path, b"replacement")
+    elif operation == "atomic_create":
+        atomic_create(path, b"replacement")
     else:
         append_line(path, "line")
 
@@ -129,3 +131,36 @@ def test_write_once_removes_its_partial_file_after_fsync_failure(
     monkeypatch.setattr("polylogue.core.durable_fs.os.fsync", real_fsync)
     write_once(path, b"retry")
     assert path.read_bytes() == b"retry"
+
+
+@pytest.mark.parametrize("competing", ["existing", "during_publication"])
+def test_atomic_create_preserves_a_competing_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, competing: str
+) -> None:
+    """Replacing link publication with replace would overwrite the other owner."""
+    path = tmp_path / "receipt"
+    original_link = os.link
+    if competing == "existing":
+        path.write_bytes(b"other owner")
+    else:
+
+        def race(source: Path, destination: Path) -> None:
+            destination.write_bytes(b"other owner")
+            original_link(source, destination)
+
+        monkeypatch.setattr("polylogue.core.durable_fs.os.link", race)
+    with pytest.raises(DurableFilesystemError):
+        atomic_create(path, b"new output")
+    assert path.read_bytes() == b"other owner"
+    assert list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("operation", [atomic_create, atomic_replace])
+def test_atomic_publication_accepts_a_maximal_destination_component(tmp_path: Path, operation: object) -> None:
+    from collections.abc import Callable
+    from typing import cast
+
+    path = tmp_path / ("r" * 255)
+    cast(Callable[[Path, bytes], None], operation)(path, b"complete output")
+    assert path.read_bytes() == b"complete output"
+    assert list(tmp_path.iterdir()) == [path]

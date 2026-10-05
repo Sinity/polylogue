@@ -237,8 +237,16 @@ def test_topology_sync_derivation_resolves_full_tree() -> None:
         parent_session_id=SessionId("root"),
         branch_type=None,
     )
-    children: dict[str, list[SessionRecord]] = {"root": [cont], "cont": []}
-    by_id = {"root": root, "cont": cont}
+    sibling = cont.model_copy(update={"session_id": SessionId("sibling"), "native_id": "ext-sibling"})
+    grandchild = cont.model_copy(
+        update={
+            "session_id": SessionId("grandchild"),
+            "native_id": "ext-grandchild",
+            "parent_session_id": SessionId("sibling"),
+        }
+    )
+    children = {"root": [cont, sibling], "sibling": [grandchild]}
+    by_id = {str(record.session_id): record for record in (root, cont, sibling, grandchild)}
 
     topo = derive_session_topology_sync(
         "cont",
@@ -247,16 +255,16 @@ def test_topology_sync_derivation_resolves_full_tree() -> None:
         fetch_links=lambda cid: (
             [
                 {
-                    "src_session_id": "cont",
+                    "src_session_id": cid,
                     "dst_origin": "codex-session",
-                    "dst_native_id": "ext-root",
+                    "dst_native_id": "ext-" + str(by_id[cid].parent_session_id),
                     "link_type": "branch",
-                    "resolved_dst_session_id": "root",
+                    "resolved_dst_session_id": str(by_id[cid].parent_session_id),
                     "confidence": 1.0,
                     "observed_at_ms": 1,
                 }
             ]
-            if cid == "cont"
+            if by_id[cid].parent_session_id is not None
             else []
         ),
     )
@@ -264,7 +272,9 @@ def test_topology_sync_derivation_resolves_full_tree() -> None:
     assert not topo.cycle_detected
     assert str(topo.root_id) == "root"
     ids = {str(node.session_id) for node in topo.nodes}
-    assert ids == {"root", "cont"}
+    assert ids == {"root", "cont", "sibling", "grandchild"}
+    assert [str(node.session_id) for node in topo.nodes] == ["root", "cont", "sibling", "grandchild"]
+    assert {str(edge.child_id) for edge in topo.edges} == {"cont", "sibling", "grandchild"}
     # The canonical link type remains available even though the denormalized
     # session branch field carries no classification.
     cont_edge = next(edge for edge in topo.edges if str(edge.child_id) == "cont")

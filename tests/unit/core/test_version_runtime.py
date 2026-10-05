@@ -209,6 +209,13 @@ def test_detect_git_dirty_handles_clean_dirty_and_failures(tmp_path: Path) -> No
         assert _detect_git_dirty(tmp_path) is False
 
 
+@pytest.mark.uses_real_clock
+def test_detect_git_dirty_preserves_version_resolution_when_git_refuses(tmp_path: Path) -> None:
+    """The real git nonzero exit is diagnostic absence, not an import failure."""
+    (tmp_path / ".git").write_text("invalid synthetic git directory pointer\n", encoding="utf-8")
+    assert _detect_git_dirty(tmp_path) is False
+
+
 def test_resolve_base_version_prefers_pyproject_then_metadata(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
     assert _resolve_base_version(tmp_path) == "1.2.3"

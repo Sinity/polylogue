@@ -127,22 +127,28 @@ def test_declared_result_contracts_reject_empty_placeholders(operation: str) -> 
 
 
 def test_mutation_result_requires_exact_authorization_reference_shape() -> None:
-    validate_operation_result(
-        "mutation.session.delete.authorize",
-        {
-            "status": "authorized",
-            "authorization_ref": "one",
-            "authorization_refs": ["one", "two"],
-        },
-    )
+    reference = {
+        "archive_identity": "synthetic-archive",
+        "request_id": "synthetic-authorize",
+        "principal_ref": "synthetic-actor",
+        "fingerprint": "0" * 64,
+        "operation_name": "mutation.session.delete.authorize",
+        "artifact_kind": "authorization-batch",
+        "artifact_ref": "authorization:one",
+        "accepted_at_ms": 1,
+        "part_count": 2,
+        "accepted_deadline_unix_ms": None,
+    }
+    validate_operation_result("mutation.session.delete.authorize", {"status": "authorized", "reference": reference})
     with pytest.raises(OperationResultContractError):
         validate_operation_result(
             "mutation.session.delete.authorize",
-            {
-                "status": "authorized",
-                "authorization_ref": "other",
-                "authorization_refs": ["one", "two"],
-            },
+            {"status": "authorized", "reference": {**reference, "artifact_kind": "preview-batch"}},
+        )
+    with pytest.raises(OperationResultContractError):
+        validate_operation_result(
+            "mutation.session.delete.authorize",
+            {"status": "authorized", "reference": {"artifact_kind": "authorization-batch"}},
         )
 
 

@@ -99,7 +99,7 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 while chunk := staged.read(TRANSFER_BYTES):
                     self.wfile.write(chunk)
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, TimeoutError):
                 return
 
     def _reject(self, status: int, code: str, detail: str) -> None:

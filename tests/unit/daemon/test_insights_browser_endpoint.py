@@ -387,7 +387,7 @@ class TestUnavailableInsightSurface:
                 raise ArchiveInsightUnavailableError("thread insight surface is unavailable")
 
             try:
-                monkeypatch.setattr(ArchiveStore, "list_thread_insights", _unavailable, raising=True)
+                monkeypatch.setattr(ArchiveStore, "iter_thread_insights", _unavailable, raising=True)
                 handler.do_GET()
             finally:
                 monkeypatch.undo()

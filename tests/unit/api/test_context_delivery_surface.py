@@ -30,6 +30,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.frozen_clock import FrozenClock
 from tests.infra.live_ingest import write_index_session
 
 
@@ -133,7 +134,7 @@ async def test_compile_and_record_context_replay_is_idempotent_and_drift_is_reje
             assert replay.context_image_sha256 == first.context_image_sha256
 
             listed = await poly.list_context_deliveries(recipient_ref="agent:codex-main")
-            assert [item.snapshot_ref for item in listed] == [first.snapshot_ref]
+            assert [item.snapshot_ref for item in listed.items] == [first.snapshot_ref]
 
             # Same snapshot ref, different recipient: identity drift is rejected.
             from polylogue.operations.daemon_errors import DaemonOperationRejectedError
@@ -196,7 +197,7 @@ async def test_compile_and_record_context_refuses_assertion_read_failure(
             )
 
         monkeypatch.undo()
-        assert await poly.list_context_deliveries(recipient_ref="agent:codex-main") == []
+        assert (await poly.list_context_deliveries(recipient_ref="agent:codex-main")).items == ()
 
 
 async def test_list_context_deliveries_never_includes_full_context_image(
@@ -217,16 +218,15 @@ async def test_list_context_deliveries_never_includes_full_context_image(
                 max_sessions=1,
             )
             listed = await poly.list_context_deliveries(recipient_ref="agent:codex-main")
-            assert len(listed) == 1
-            # The list path returns the same durable envelope type as get -- the
-            # summary/full split is enforced at the surface payload layer
-            # (MCPContextDeliverySummaryPayload), not by truncating the facade
-            # return type. Prove it round-trips to the same recorded receipt.
-            assert listed[0].snapshot_ref == recorded.snapshot_ref
-            assert listed[0].context_image_sha256 == recorded.context_image_sha256
+            assert len(listed.items) == listed.total == 1
+            # Summary metadata identifies the same durable receipt without
+            # decoding or disclosing its delivered context image.
+            assert not hasattr(listed.items[0], "context_image")
+            assert listed.items[0].snapshot_ref == recorded.snapshot_ref
+            assert listed.items[0].context_image_sha256 == recorded.context_image_sha256
 
             unrelated = await poly.list_context_deliveries(recipient_ref="agent:unrelated")
-            assert unrelated == []
+            assert unrelated.items == () and unrelated.total == 0
 
 
 async def test_record_context_delivery_requires_initialized_user_tier(tmp_path: Path) -> None:
@@ -258,8 +258,11 @@ async def test_record_context_delivery_requires_initialized_user_tier(tmp_path: 
         )
 
 
+@pytest.mark.frozen_clock_modules("polylogue.api.archive")
 async def test_context_scheduler_ledger_has_a_facade_reader(
-    tmp_path: Path, facade_daemon_writer: Callable[[Path], AbstractContextManager[object]]
+    tmp_path: Path,
+    facade_daemon_writer: Callable[[Path], AbstractContextManager[object]],
+    frozen_clock: FrozenClock,
 ) -> None:
     archive_root = tmp_path / "archive-ledger-reader"
     _seed(archive_root, provider_session_id="ledger-target", text="scheduler evidence")
@@ -272,6 +275,7 @@ async def test_context_scheduler_ledger_has_a_facade_reader(
             records = await poly.list_context_injection_ledger(target_session="codex-session:ledger-target")
 
     assert records
+    assert all(record.observed_at_ms == int(frozen_clock.now().timestamp() * 1000) for record in records)
     assert records[0].row.source == "archive-context"
     assert records[0].row.execution_context_ref.startswith("sha256:")
 
@@ -295,5 +299,10 @@ async def test_context_delivery_decode_failure_refuses_instead_of_absence(
     async with Polylogue(archive_root=root, db_path=root / "index.db") as poly:
         with pytest.raises(ArchiveTierUnavailableError):
             await poly.get_context_delivery(receipt.snapshot_ref, recipient_ref="agent:neutral")
+        page = await poly.list_context_deliveries(recipient_ref="agent:neutral")
+        assert tuple(item.snapshot_ref for item in page.items) == (receipt.snapshot_ref,)
+    with sqlite3.connect(root / "user.db") as conn:
+        conn.execute("UPDATE context_deliveries SET segment_refs_json = '{}'")
+    async with Polylogue(archive_root=root, db_path=root / "index.db") as poly:
         with pytest.raises(ArchiveTierUnavailableError):
             await poly.list_context_deliveries(recipient_ref="agent:neutral")

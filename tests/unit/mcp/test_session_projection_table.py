@@ -12,7 +12,6 @@ without updating the table makes the method-existence assertion red.
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 from typing import Literal, get_args, get_origin, get_type_hints
 from unittest.mock import AsyncMock, patch
 
@@ -333,7 +332,7 @@ async def test_capability_explanation_is_derived_from_session_projection_table(
 ) -> None:
     """Adding or removing a table entry changes capability discovery too."""
     poly = make_polylogue_mock()
-    poly.stats = AsyncMock(return_value=SimpleNamespace(session_count=0, message_count=0))
+    poly.storage_counts = AsyncMock(return_value={"total_sessions": 0, "total_messages": 0})
 
     with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
         payload = json.loads(

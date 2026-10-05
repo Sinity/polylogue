@@ -724,42 +724,45 @@ class TestIdentityFrameContract:
             assert len(frame.display(session_id)) <= len(session_id)
 
 
-# -----------------------------------------------------------------------------
-# BOUNDED IDENTIFIER DISPLAY (bd polylogue-m8yd5)
-# -----------------------------------------------------------------------------
+@pytest.mark.parametrize("tail", [None, 8])
+def test_identity_frame_keeps_distinct_overlong_identity_keys(tail: int | None) -> None:
+    """Full native identity keys survive a shared prefix longer than 256."""
+    prefix = "codex-session:" + "f" * 1_000_000
+    identities = [prefix + "a" + "same-tail", prefix + "b" + "same-tail"]
+    frame = identity_frame(identities, tail=tail)
+    assert set(frame.displays) == set(identities)
+    assert len({frame.display(identity) for identity in identities}) == 2
+    assert frame.display(prefix + "unknown") == prefix + "unknown"
 
 
-def test_identity_frame_bounds_an_overlong_identifier() -> None:
-    """A megabyte-long native id renders bounded and marked, not character-laddered.
+def test_pinned_identity_tail_expands_collisions_only() -> None:
+    """Honoring a requested tail cannot merge distinct middle identities."""
+    identities = ["x" * 20 + middle + "z" * 8 for middle in ("aaaa", "bbbb")]
+    unrelated = "codex-session:" + "u" * 40
+    expected = identity_frame([unrelated], tail=8).display(unrelated)
+    frame = identity_frame([*identities, unrelated], tail=8)
+    assert frame.tail == 8
+    assert [frame.display(identity) for identity in identities] == identities
+    assert frame.display(unrelated) == expected
+    assert frame.column_width == max(map(len, frame.displays.values()))
 
-    ``identity_frame`` tried every tail length from ``MINIMUM_TAIL`` to the
-    longest identifier in the frame, rendering every identifier at each step.
-    Provider session ids are unrestricted strings from untrusted exports and
-    are stored verbatim, so one such id made every later CLI render of any
-    result set containing it cost ~10^6 * N renders, on every query, forever.
 
-    Anti-vacuity: remove ``_bounded`` from ``identity_frame``/``display`` and
-    the marker disappears, the cell grows past
-    ``MAXIMUM_DISPLAY_LENGTH + len(OVERLONG_MARKER)``, and the ladder runs to
-    the full identifier length again.
-    """
-    from polylogue.rendering.identity import (
-        MAXIMUM_DISPLAY_LENGTH,
-        OVERLONG_MARKER,
-        identity_frame,
+def test_identity_frame_revalidates_literal_abbreviation_collisions() -> None:
+    identity = "x" * 20 + "middle" + "z" * 8
+    literal = "x" * 20 + "…" + "z" * 8
+    frame = identity_frame([identity, literal], tail=8)
+    assert frame.display(identity) == identity
+    assert frame.display(literal) == literal
+
+
+def test_summary_listing_keeps_long_native_identities_distinct() -> None:
+    """The actual text column cannot alias IDs sharing the old truncation prefix."""
+    prefix = "codex-session:" + "f" * 300
+    session_ids = [prefix + "aaaa" + "z" * 8, prefix + "bbbb" + "z" * 8]
+    rendered = format_summary_list(
+        _sibling_summaries(session_ids, title="same"), "text", None, message_counts=dict.fromkeys(session_ids, 1)
     )
-
-    overlong = "codex-session:" + ("f" * 1_000_000)
-    ordinary = "codex-session:0000aaaa"
-
-    frame = identity_frame([overlong, ordinary])
-
-    rendered = frame.display(overlong)
-    assert OVERLONG_MARKER in rendered
-    assert len(rendered) <= MAXIMUM_DISPLAY_LENGTH + len(OVERLONG_MARKER)
-    assert frame.tail <= MAXIMUM_DISPLAY_LENGTH + len(OVERLONG_MARKER)
-    # The frame stays injective and the ordinary identifier is unaffected.
-    assert rendered != frame.display(ordinary)
+    assert len(set(_identity_fields(rendered))) == len(session_ids)
 
 
 def test_markdown_uses_remote_attachment_urls_without_a_local_path() -> None:

@@ -119,19 +119,38 @@ def _handle_ref_resolve(self: Any, params: dict[str, list[str]]) -> None:
     if archive_root is None:
         self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
         return
-    plan = plan_ref_resolution(ref, archive_root=archive_root)
-    if plan.payload is not None:
-        payload = plan.payload
-    else:
-        assert plan.read is not None
-        with archive_read_context(
-            archive_root,
-            operation=plan.operation,
-            arguments=plan.arguments,
-            projection=plan.projection,
-            stable_order=plan.stable_order,
-        ) as archive:
-            payload = plan.read(archive)
+    from polylogue.archive.query.transaction import QueryContinuationInvalidError, QueryContinuationStaleError
+
+    try:
+        plan = plan_ref_resolution(
+            ref,
+            archive_root=archive_root,
+            limit=int(self._get_param(params, "limit", "50")),
+            offset=int(self._get_param(params, "offset", "0")),
+            continuation=self._get_param(params, "continuation"),
+        )
+    except ValueError as exc:
+        self._send_error(HTTPStatus.BAD_REQUEST, "invalid_argument", str(exc))
+        return
+    try:
+        if plan.payload is not None:
+            payload = plan.payload
+        else:
+            assert plan.read is not None
+            with archive_read_context(
+                archive_root,
+                operation=plan.operation,
+                arguments=plan.arguments,
+                projection=plan.projection,
+                stable_order=plan.stable_order,
+            ) as archive:
+                payload = plan.read(archive)
+    except QueryContinuationInvalidError as exc:
+        self._send_json(HTTPStatus.BAD_REQUEST, {"error": exc.code, "message": str(exc)})
+        return
+    except QueryContinuationStaleError as exc:
+        self._send_json(HTTPStatus.CONFLICT, {"error": exc.code, "message": str(exc)})
+        return
     self._send_json(HTTPStatus.OK, payload.model_dump(mode="json", exclude_none=True))
 
 

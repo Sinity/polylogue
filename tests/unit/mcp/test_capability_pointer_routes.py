@@ -36,9 +36,13 @@ Pointer = dict[str, Any]
 
 def _seeded_archive(tmp_path: Path) -> Path:
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root):
+    from polylogue.operations.fts_derivation import stamp_fts_readiness_binding
+
+    with ArchiveStore(archive_root) as archive:
         builder = SessionBuilder(archive_root / "index.db", "capability-pointer").provider("codex-session")
         builder.add_message(role="user", text="capability pointer seed").save()
+        assert stamp_fts_readiness_binding(archive._conn)
+        archive._conn.commit()
     return archive_root
 
 
@@ -286,3 +290,122 @@ async def test_capability_discovery_includes_messages(mcp_server: MCPServerUnder
     page = body.get("page") or body
     assert set(page["read_views"]) == set(mcp_read_view_names())
     assert "messages" in page["read_views"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("archive_state", ["missing", "empty", "populated"])
+async def test_capability_pages_keep_declarations_without_full_statistics(
+    mcp_server: MCPServerUnderTest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, archive_state: str
+) -> None:
+    """Missing evidence stays unknown; measured counts never invoke stats or hydration."""
+    from polylogue import Polylogue
+
+    root = tmp_path / "archive"
+    if archive_state == "populated":
+        root = _seeded_archive(tmp_path)
+    elif archive_state == "empty":
+        from polylogue.operations.fts_derivation import stamp_fts_readiness_binding
+
+        with ArchiveStore(root) as archive:
+            assert stamp_fts_readiness_binding(archive._conn)
+            archive._conn.commit()
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("capability pages must not aggregate statistics or hydrate sessions")
+
+    monkeypatch.setattr(ArchiveStore, "stats", forbidden)
+    monkeypatch.setattr(ArchiveStore, "read_session", forbidden)
+    poly = Polylogue(archive_root=root)
+    explain = mcp_server._tool_manager._tools["explain"].fn
+    with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
+        first = json.loads(await invoke_surface_async(explain, subject="capability", limit=1))
+        second = json.loads(
+            await invoke_surface_async(explain, subject="capability", limit=1, offset=first["next_offset"])
+        )
+    assert first["items"] and second["items"]
+    assert first["items"][0]["declaration_id"] != second["items"][0]["declaration_id"]
+    assert first["read_view_profile_ids"] == second["read_view_profile_ids"]
+    assert "chronicle" in first["read_view_profile_ids"]
+    for page in (first, second):
+        if archive_state == "missing":
+            assert page["outcome"]["state"] == "degraded"
+            assert page["outcome"]["reason"] == "archive_counts_unavailable"
+            assert page["snapshot"]["freshness"] == "unknown"
+            assert all(item["observed_count"] is None and item["status"] == "unknown" for item in page["items"])
+        else:
+            assert page["outcome"]["state"] == "ok"
+            assert page["snapshot"]["freshness"] == "request-current"
+    if archive_state != "missing":
+        assert await poly.storage_counts() == {
+            "total_sessions": 1 if archive_state == "populated" else 0,
+            "total_messages": 1 if archive_state == "populated" else 0,
+        }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evidence_state", ["healthy", "debt", "unbound", "missing", "skew"])
+async def test_capability_evidence_uses_public_origins_specific_counts_and_query_readiness(
+    mcp_server: MCPServerUnderTest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, evidence_state: str
+) -> None:
+    import sqlite3
+
+    from polylogue.sources.origin_specs import public_origin_tokens
+    from polylogue.storage.fts.derivation import FtsDerivationAdapter
+    from polylogue.storage.sqlite.archive_tiers.ops_write import add_convergence_debt
+    from tests.infra.mcp import installed_runtime_services
+
+    root = tmp_path / "archive" if evidence_state == "missing" else _seeded_archive(tmp_path)
+    if evidence_state == "unbound":
+        with sqlite3.connect(root / "index.db") as conn:
+            conn.execute("DELETE FROM messages_fts_readiness_binding")
+    elif evidence_state == "skew":
+        with sqlite3.connect(root / "index.db") as conn:
+            conn.execute("UPDATE schema_identity SET identity='synthetic-skew' WHERE tier='index'")
+    elif evidence_state == "debt":
+        with sqlite3.connect(root / "ops.db") as conn:
+            add_convergence_debt(
+                conn, stage="materialize", target_type="session", target_id="fixture", created_at_ms=1000
+            )
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("capability evidence must not scan statistics, blocks or sessions")
+
+    monkeypatch.setattr(ArchiveStore, "stats", forbidden)
+    monkeypatch.setattr(ArchiveStore, "read_session", forbidden)
+    monkeypatch.setattr(FtsDerivationAdapter, "inspect_partition", forbidden)
+    explain = mcp_server._tool_manager._tools["explain"].fn
+    with installed_runtime_services(root):
+        pages = [
+            json.loads(await invoke_surface_async(explain, subject="capability", search=search))
+            for search in ("query.unit.message", "query.unit.block", "tags")
+        ]
+    for page in pages:
+        assert page["items"]
+        assert {item["origin"] for item in page["evidence"]["origins"]} == set(public_origin_tokens())
+        assert all("origins" not in item["evidence"] for item in page["items"])
+        assert all(item["evidence"]["freshness"] == page["snapshot"]["freshness"] for item in page["items"])
+    message = next(item for item in pages[0]["items"] if item["kind"] == "unit" and item["name"] == "message")
+    block = next(item for item in pages[1]["items"] if item["kind"] == "unit" and item["name"] == "block")
+    tags = next(item for item in pages[2]["items"] if item["kind"] == "field" and item["name"] == "tags")
+    assert block["observed_count"] is None and tags["observed_count"] is None
+    if evidence_state in {"missing", "skew"}:
+        assert message["observed_count"] is None and message["status"] == "unknown"
+        assert all(page["outcome"]["reason"] == "archive_counts_unavailable" for page in pages)
+        assert all(page["snapshot"]["freshness"] == "unknown" for page in pages)
+    else:
+        assert message["observed_count"] == 1
+        expected_state = {"healthy": "ready", "debt": "stale", "unbound": "unknown"}[evidence_state]
+        assert all(page["evidence"]["readiness"]["state"] == expected_state for page in pages)
+        assert all(item["evidence"]["readiness_state"] == expected_state for page in pages for item in page["items"])
+        if evidence_state == "healthy":
+            assert message["status"] == "supported_and_observed"
+            assert block["status"] == tags["status"] == "unknown"
+            assert all(page["outcome"]["state"] == "ok" for page in pages)
+        elif evidence_state == "debt":
+            assert all(page["outcome"]["state"] == "degraded" for page in pages)
+            assert all(page["snapshot"]["freshness"] == "stale_or_degraded" for page in pages)
+            assert all(item["status"] == "stale_or_degraded" for page in pages for item in page["items"])
+        else:
+            assert message["status"] == "unknown"
+            assert all(page["outcome"]["reason"] == "query_binding_unavailable" for page in pages)
+            assert all(page["snapshot"]["freshness"] == "unknown" for page in pages)

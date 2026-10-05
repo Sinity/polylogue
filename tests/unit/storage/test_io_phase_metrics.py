@@ -11,6 +11,7 @@ import pytest
 
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.io_phase_metrics import (
+    close_connection_cursor,
     connect_measured,
     connection_cursor,
     io_phase_process_snapshot,
@@ -462,4 +463,27 @@ def test_statement_context_physically_settles_declared_connection_types(measured
         if measured:
             assert live_connection_cursors(connection) == ()
     finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("measured", [False, True])
+def test_canonical_cursor_close_supports_original_raw_and_measured_suppliers(measured: bool) -> None:
+    connection = connect_measured(":memory:") if measured else sqlite3.connect(":memory:")
+    cursor = connection.cursor(factory=ControlledCursor)
+    assert isinstance(cursor, ControlledCursor)
+    cursor.execute("SELECT 1 UNION ALL SELECT 2")
+    cursor.allow_cleanup.clear()
+    try:
+        with pytest.raises(OSError) as caught:
+            close_connection_cursor(connection, cursor)
+        assert caught.value is cursor.cleanup_failure
+        if measured:
+            assert cursor in live_connection_cursors(connection)
+        cursor.allow_cleanup.set()
+        close_connection_cursor(connection, cursor)
+        with pytest.raises(sqlite3.ProgrammingError):
+            cursor.fetchone()
+    finally:
+        cursor.allow_cleanup.set()
+        close_connection_cursor(connection, cursor)
         connection.close()

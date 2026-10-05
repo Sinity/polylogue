@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import functools
+import json
+import tempfile
 from builtins import BaseExceptionGroup
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
-from dataclasses import replace
+from contextlib import closing, contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic, time
-from typing import Any, cast
+from typing import Any, BinaryIO, cast
 
 from polylogue.operations.audit import (
     MACHINE_PAGE_KINDS,
@@ -20,7 +22,6 @@ from polylogue.operations.audit import (
 )
 from polylogue.operations.bindings import OperationBinding, runtime_operation_binding
 from polylogue.operations.daemon_protocol import DaemonAuthorization, DaemonOperationRequest, daemon_operation_spec
-from polylogue.operations.delete_authorization import _canonical_session_ids
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_actuators import (
     BulkMetadataSetActuator,
@@ -40,6 +41,7 @@ from polylogue.operations.mutation_transaction import (
 )
 from polylogue.operations.operation_context import OperationContext, OperationControlRead, PinnedOperationRead
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.surfaces.query_rows import query_session_row
 
 
 def _execute_named_mutation(
@@ -531,7 +533,7 @@ def _audit_int(value: object, *, field: str) -> int:
 
 
 def _binding(
-    request: DaemonOperationRequest, context: OperationContext, snapshot: PinnedOperationRead
+    request: DaemonOperationRequest, context: OperationContext, snapshot: PinnedOperationRead | OperationControlRead
 ) -> MachineRequestBinding:
     return MachineRequestBinding(
         snapshot.identity.authority_identity_digest,
@@ -575,12 +577,6 @@ def _previews(
             )
         )
     return tuple(previews)
-
-
-#: The delete preview's request budget (its operation deadline) and a
-#: preview's lifetime once prepared (``OperationExecutor.prepare_bound``).
-_DELETE_PREVIEW_BUDGET_MS = 300_000
-_PREVIEW_LIFETIME_MS = 60_000
 
 
 def _accepted_pages(audit: AuditRepository, binding: MachineRequestBinding, kind: str) -> int | None:
@@ -637,91 +633,58 @@ def _page_bounds(
         yield offset, end, end == total
 
 
-def mutation_session_delete_preview(
-    request: DaemonOperationRequest,
-    context: OperationContext,
-    audit: AuditRepository,
-    snapshot: PinnedOperationRead,
-) -> dict[str, object]:
-    binding = _binding(request, context, snapshot)
-    accepted = _accepted_pages(audit, binding, "preview-batch")
-    if accepted is not None:
-        # Accepted durably at its first page and extended page by page, so a
-        # selection of any size is prepared and a restart resumes it.
-        ids = _canonical_session_ids(snapshot.archive, tuple(cast(list[str], request.payload["session_ids"])))
-        operation = runtime_operation_binding(SessionDeleteActuator())
-        chunks = [
-            ids[offset : offset + MAX_MUTATION_PLAN_TARGETS] for offset in range(0, len(ids), MAX_MUTATION_PLAN_TARGETS)
-        ]
-        # Every page expires together, a full preview lifetime after the
-        # request's own budget from its durable acceptance, so no page lapses
-        # while the same request is still preparing later ones.
-        staged = audit.machine_request(binding)
-        accepted_at_ms = int(cast(int, staged["accepted_at_ms"])) if staged is not None else int(time() * 1000)
-        expires_at_ms = accepted_at_ms + _DELETE_PREVIEW_BUDGET_MS + _PREVIEW_LIFETIME_MS
-        with _fenced_on_failure(audit, binding):
-            for offset, end, final in _page_bounds(
-                len(chunks), accepted, request=request, context=context, audit=audit, binding=binding
-            ):
-                args = tuple(SessionDeleteArgs(snapshot.archive, chunk) for chunk in chunks[offset:end])
-                previews = _previews(request, context, audit, snapshot, operation, args, expires_at_ms=expires_at_ms)
-                with audit.bind_machine_request(binding, transition="create_preview_batch", page=(offset, final)):
-                    audit.create_preview_batch(tuple(preview.plan for preview in previews), context.principal)
-    # Counted and sampled from the durable rows: no target list is rebuilt.
-    return audit.machine_preview_summary(binding)
-
-
 def mutation_session_delete_authorize(
-    request: DaemonOperationRequest,
-    context: OperationContext,
-    audit: AuditRepository,
-    snapshot: PinnedOperationRead,
+    request: DaemonOperationRequest, context: OperationContext, audit: AuditRepository, snapshot: PinnedOperationRead
 ) -> dict[str, object]:
+    from polylogue.operations.daemon_protocol import AcceptedOperationReference
+
     binding = _binding(request, context, snapshot)
-    accepted = _accepted_pages(audit, binding, "authorization-batch")
-    if accepted is not None:
-        preview_refs = _refs(request.payload, "preview_ref")
-        operation = runtime_operation_binding(SessionDeleteActuator())
-        with _fenced_on_failure(audit, binding):
-            for offset, end, final in _page_bounds(
-                len(preview_refs), accepted, request=request, context=context, audit=audit, binding=binding
-            ):
-                previews = tuple(
-                    audit.preview_for_principal(ref, context.principal) for ref in preview_refs[offset:end]
-                )
-                # Judged as of the handshake's progress, as the audit tier
-                # judges the same page, so a long paged preview does not
-                # expire its own authorization.
-                as_of_ms = audit.handshake_as_of_ms(binding, preview_refs=preview_refs[offset:end])
-                executor = OperationExecutor(now_ms=functools.partial(int, as_of_ms))
-                authorizations = tuple(
-                    executor.authorize_bound(operation, preview, context.principal, confirmation_strength="bound_token")
-                    for preview in previews
-                )
-                with audit.bind_machine_request(binding, transition="issue_authorization_batch", page=(offset, final)):
-                    audit.issue_authorization_batch(previews, context.principal, authorizations)
-    refs = [str(part["artifact_ref"]) for part in audit.machine_parts(binding)]
-    return {"status": "authorized", "authorization_ref": refs[0], "authorization_refs": refs}
+    operation = runtime_operation_binding(SessionDeleteActuator())
+    with _fenced_on_failure(audit, binding):
+        for offset, refs, final in _delete_reference_pages(
+            request, context, audit, snapshot, authorize=True, kind="authorization-batch"
+        ):
+            previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs)
+            as_of_ms = audit.handshake_as_of_ms(binding, preview_refs=refs)
+            executor = OperationExecutor(now_ms=functools.partial(int, as_of_ms))
+            authorizations = tuple(
+                executor.authorize_bound(operation, preview, context.principal, confirmation_strength="bound_token")
+                for preview in previews
+            )
+            with audit.bind_machine_request(binding, transition="issue_authorization_batch", page=(offset, final)):
+                audit.issue_authorization_batch(previews, context.principal, authorizations)
+    record = audit.machine_request(binding)
+    assert record is not None
+    result: dict[str, object] = {
+        "status": "authorized",
+        "reference": AcceptedOperationReference.from_record(record).to_dict(),
+        "source_request_id": audit.machine_delete_preview_origin(binding),
+    }
+    if record["part_count"] == 1:
+        result["authorization_ref"] = next(audit.iter_machine_parts(binding))["artifact_ref"]
+    return result
 
 
 def mutation_session_delete_cancel(
-    request: DaemonOperationRequest,
-    context: OperationContext,
-    audit: AuditRepository,
-    snapshot: PinnedOperationRead,
+    request: DaemonOperationRequest, context: OperationContext, audit: AuditRepository, snapshot: PinnedOperationRead
 ) -> dict[str, object]:
+    from polylogue.operations.daemon_protocol import AcceptedOperationReference
+
     binding = _binding(request, context, snapshot)
-    refs = _refs(request.payload, "preview_ref")
-    accepted = _accepted_pages(audit, binding, "cancelled-preview-batch")
-    if accepted is not None:
-        with _fenced_on_failure(audit, binding):
-            for offset, end, final in _page_bounds(
-                len(refs), accepted, request=request, context=context, audit=audit, binding=binding
-            ):
-                previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs[offset:end])
-                with audit.bind_machine_request(binding, transition="cancel_preview_batch", page=(offset, final)):
-                    audit.cancel_preview_batch(previews, context.principal)
-    return {"status": "cancelled", "preview_ref": refs[0], "preview_refs": list(refs)}
+    with _fenced_on_failure(audit, binding):
+        for offset, refs, final in _delete_reference_pages(
+            request, context, audit, snapshot, authorize=True, kind="cancelled-preview-batch"
+        ):
+            previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs)
+            with audit.bind_machine_request(binding, transition="cancel_preview_batch", page=(offset, final)):
+                audit.cancel_preview_batch(previews, context.principal)
+    record = audit.machine_request(binding)
+    assert record is not None
+    return {
+        "status": "cancelled",
+        "reference": AcceptedOperationReference.from_record(record).to_dict(),
+        "source_request_id": audit.machine_delete_preview_origin(binding),
+    }
 
 
 def _part_args(
@@ -747,6 +710,41 @@ def _part_args(
     if preview.plan.operation == "mutate-bulk-set-metadata":
         pairs = tuple((str(pair[0]), pair[1]) for pair in cast(list[list[object]], preview.plan.context["pairs"]))
         return runtime_operation_binding(BulkMetadataSetActuator()), BulkMetadataSetArgs(archive, ids, pairs)
+    from polylogue.operations.mutation_actuators import (
+        AnnotationSaveActuator,
+        AnnotationSaveArgs,
+        MarkAddActuator,
+        MarkArgs,
+        MarkRemoveActuator,
+        TagRemoveActuator,
+        TagRemoveArgs,
+    )
+
+    meaning = preview.plan.context
+    if preview.plan.operation in {"mutate-add-mark", "mutate-remove-mark"}:
+        actuator = MarkAddActuator() if preview.plan.operation == "mutate-add-mark" else MarkRemoveActuator()
+        return runtime_operation_binding(actuator), MarkArgs(
+            archive=archive,
+            target_type=str(meaning["target_type"]),
+            target_id=str(meaning["target_id"]),
+            mark_type=str(meaning["mark_type"]),
+            owner_session_id=cast(str | None, meaning["owner_session_id"]),
+        )
+    if preview.plan.operation == "mutate-save-annotation":
+        return runtime_operation_binding(AnnotationSaveActuator()), AnnotationSaveArgs(
+            archive=archive,
+            annotation_id=str(meaning["annotation_id"]),
+            target_type=str(meaning["target_type"]),
+            target_id=str(meaning["target_id"]),
+            note_text=str(meaning["note_text"]),
+            owner_session_id=cast(str | None, meaning["owner_session_id"]),
+        )
+    if preview.plan.operation == "mutate-remove-tag":
+        return runtime_operation_binding(TagRemoveActuator()), TagRemoveArgs(
+            archive=archive,
+            session_id=str(meaning["session_id"]),
+            tag=str(meaning["tag"]),
+        )
     raise ValueError("unsupported durable machine mutation family")
 
 
@@ -754,7 +752,7 @@ def _execute_batch(
     request: DaemonOperationRequest,
     context: OperationContext,
     audit: AuditRepository,
-    snapshot: PinnedOperationRead,
+    snapshot: PinnedOperationRead | OperationControlRead,
     refs: tuple[str, ...],
 ) -> dict[str, object]:
     assert context.runtime is not None
@@ -773,7 +771,7 @@ def _execute_batch(
         raise ValueError("machine request is not an execution batch")
     with ArchiveStore.open_existing(context.archive_root, read_only=False) as archive:
         executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
-        for part in audit.machine_parts(binding):
+        for part in audit.iter_machine_parts(binding):
             if record.get("stop_reason"):
                 break
             if part["operation_id"] is not None:
@@ -821,12 +819,16 @@ def _execute_batch(
 
 
 def mutation_session_delete_execute(
-    request: DaemonOperationRequest,
-    context: OperationContext,
-    audit: AuditRepository,
-    snapshot: PinnedOperationRead,
+    request: DaemonOperationRequest, context: OperationContext, audit: AuditRepository, snapshot: PinnedOperationRead
 ) -> dict[str, object]:
-    return _execute_batch(request, context, audit, snapshot, _refs(request.payload, "authorization_ref"))
+    binding = _binding(request, context, snapshot)
+    with _fenced_on_failure(audit, binding):
+        for offset, refs, final in _delete_reference_pages(
+            request, context, audit, snapshot, authorize=False, kind="execution-batch"
+        ):
+            with audit.bind_machine_request(binding, transition="accept_execution_batch", page=(offset, final)):
+                audit.accept_execution_batch(refs, context.principal)
+    return _execute_batch(request, context, audit, snapshot, ())
 
 
 def _inline_mutation(
@@ -902,7 +904,8 @@ def _resolve_session_target(archive: ArchiveStore, archive_root: Path, token: st
         resolved = None
     if resolved:
         return str(resolved)
-    durable = resolve_durable_user_state_session_id(archive_root, token)
+    archive.require_user_tier()
+    durable = resolve_durable_user_state_session_id(archive_root, token, connection=archive._conn, schema="user_tier")
     if durable:
         return durable
     raise ValueError(f"session {token!r} not found")
@@ -948,50 +951,6 @@ def _execute_user_state_mutations(
         "affected_count": affected,
         "result": {"receipts": receipts},
     }
-
-
-def mutation_session_mark(
-    request: DaemonOperationRequest,
-    context: OperationContext,
-    audit: AuditRepository,
-    snapshot: PinnedOperationRead,
-) -> dict[str, object]:
-    """Add or remove whole-session star/pin/archive marks."""
-    from polylogue.core.user_state_targets import TARGET_SESSION, validate_mark_type
-    from polylogue.operations.mutation_actuators import MarkAddActuator, MarkArgs, MarkRemoveActuator
-
-    payload = request.payload
-    tokens = tuple(cast(list[str], payload["session_ids"]))
-    adds = tuple(validate_mark_type(str(value)) for value in cast(list[str], payload.get("add_marks") or []))
-    removes = tuple(validate_mark_type(str(value)) for value in cast(list[str], payload.get("remove_marks") or []))
-
-    def build(archive: ArchiveStore) -> Any:
-        for token in tokens:
-            session_id = _resolve_session_target(archive, context.archive_root, token)
-            for mark_type in adds:
-                yield (
-                    MarkAddActuator(),
-                    MarkArgs(
-                        archive=archive,
-                        target_type=TARGET_SESSION,
-                        target_id=session_id,
-                        mark_type=mark_type,
-                        owner_session_id=session_id,
-                    ),
-                )
-            for mark_type in removes:
-                yield (
-                    MarkRemoveActuator(),
-                    MarkArgs(
-                        archive=archive,
-                        target_type=TARGET_SESSION,
-                        target_id=session_id,
-                        mark_type=mark_type,
-                        owner_session_id=session_id,
-                    ),
-                )
-
-    return _execute_user_state_mutations(request, context, audit, build)
 
 
 def mutation_annotation_save(
@@ -1517,3 +1476,607 @@ async def execute_raw_authority_frontier_operation(request: DaemonOperationReque
     validate_operation_result(request.operation, result)
     authority = observe_control_authority(context.archive_root)
     return operation_envelope(request, context, snapshot=authority, started_at=started, result=result)
+
+
+def _source_delete_parts(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead | OperationControlRead,
+    *,
+    authorize: bool,
+) -> tuple[Iterator[dict[str, object]], int]:
+    """Resolve authenticated completed phase authority on the resident owner."""
+    key = "preview_request_id" if authorize else "authorization_request_id"
+    target = request.payload.get(key)
+    if target is None:
+        ref = str(request.payload["preview_ref" if authorize else "authorization_ref"])
+        return iter(({"ordinal": 0, "artifact_ref": ref},)), 1
+    record = audit.machine_request_for_principal(
+        snapshot.identity.authority_identity_digest, str(target), context.principal.actor_ref
+    )
+    expected = "mutation.session.delete.preview" if authorize else "mutation.session.delete.authorize"
+    kind = "preview-batch" if authorize else "authorization-batch"
+    if record is None or record["operation_name"] != expected or record["artifact_kind"] != kind:
+        raise ValueError("delete operation reference does not name a sealed phase")
+    source = MachineRequestBinding(
+        *(
+            str(record[field])
+            for field in ("archive_identity", "request_id", "principal_ref", "fingerprint", "operation_name")
+        )
+    )
+    return audit.iter_machine_parts(source), _audit_int(record["part_count"], field="part count")
+
+
+def _delete_reference_pages(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead | OperationControlRead,
+    *,
+    authorize: bool,
+    kind: str,
+) -> Iterator[tuple[int, tuple[str, ...], bool]]:
+    binding = _binding(request, context, snapshot)
+    accepted = _accepted_pages(audit, binding, kind)
+    if accepted is None:
+        return
+    parts, total = _source_delete_parts(request, context, audit, snapshot, authorize=authorize)
+    refs: list[str] = []
+    offset = accepted
+    for part in parts:
+        if _audit_int(part["ordinal"], field="part ordinal") < accepted:
+            continue
+        if context.runtime is not None and context.runtime.stop_reason(request) == "cancelled":
+            from polylogue.archive.query.execution_control import QueryCancelledError
+
+            raise QueryCancelledError("Delete phase was cancelled before all authority pages were sealed.")
+        refs.append(str(part["artifact_ref"]))
+        if len(refs) == MACHINE_PAGE_PARTS:
+            yield offset, tuple(refs), offset + len(refs) == total
+            offset += len(refs)
+            refs.clear()
+    if refs:
+        yield offset, tuple(refs), offset + len(refs) == total
+        offset += len(refs)
+    if offset != total:
+        raise ValueError("delete operation authority part count is incomplete")
+
+
+class MutationSelectionError(ValueError):
+    """The resident selected relation cannot authorize this mutation."""
+
+    def __init__(self, code: str, detail: str, data: dict[str, object] | None = None) -> None:
+        self.code = code
+        self.detail = detail
+        self.data = data or {}
+        super().__init__(detail)
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedMutationSelection:
+    authority: OperationControlRead
+    frame: str
+    session_count: int
+    sample: tuple[str, ...]
+
+
+_MUTATION_SELECTION_PAGE_SIZE = 500
+
+
+def _prepare_mutation_selection(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    document: BinaryIO,
+) -> _PreparedMutationSelection:
+    """Seal canonical selected identities on disk inside one admitted read frame."""
+    from polylogue.archive.query.transaction import archive_snapshot_epoch
+    from polylogue.operations.daemon_execution import _validate_identity
+    from polylogue.operations.daemon_reads import (
+        DaemonReadDependencies,
+        execute_read_operation,
+        requires_vector_snapshot,
+    )
+    from polylogue.operations.operation_context import abort_checkpoint, open_operation_read
+    from polylogue.storage.io_phase_metrics import connect_measured
+    from polylogue.surfaces.outcome import OutcomeEnvelope
+
+    runtime = context.runtime
+    assert runtime is not None
+    checkpoint = abort_checkpoint(context.read_control) if context.read_control is not None else lambda: None
+    selected = request.payload.get("selection")
+    params = dict(cast(dict[str, object], selected["params"])) if isinstance(selected, dict) else {}
+    mode = str(selected["mode"]) if isinstance(selected, dict) else "explicit"
+    dependencies = context.read_dependencies or DaemonReadDependencies()
+    vector_recipe = (
+        dependencies.vector_binding.recipe
+        if dependencies.vector_binding is not None
+        and requires_vector_snapshot(
+            "cli.query", {"params": params}, acquisition_enabled=bool(dependencies.vector_binding.voyage_key)
+        )
+        else None
+    )
+    with open_operation_read(
+        context.archive_root,
+        publication_guard=runtime.publication_guard,
+        vector_recipe=vector_recipe,
+        execution_context=context.read_control,
+    ) as pinned:
+        _validate_identity(request, context, pinned)
+        runtime.observe_snapshot(request, pinned)
+        dependencies = replace(
+            dependencies,
+            vector_connection=pinned.archive.operation_vector_connection,
+            vector_failure=pinned.vector_failure or dependencies.vector_failure,
+            raise_if_aborted=checkpoint,
+        )
+        frame = f"{pinned.archive.index_db_path.resolve()}:{archive_snapshot_epoch(pinned.archive)}"
+        sample: list[str] = []
+        count = 0
+        with (
+            tempfile.TemporaryDirectory(prefix="polylogue-selection-") as directory,
+            closing(connect_measured(Path(directory) / "keys.db")) as keys,
+        ):
+            keys.execute("CREATE TABLE selected_ids (id BLOB PRIMARY KEY) WITHOUT ROWID")
+
+            def seen(session_id: str) -> bool:
+                return (
+                    keys.execute(
+                        "SELECT 1 FROM selected_ids WHERE id = ?", (session_id.encode("utf-8", "surrogatepass"),)
+                    ).fetchone()
+                    is not None
+                )
+
+            def retain(session_id: str) -> None:
+                nonlocal count
+                checkpoint()
+                if seen(session_id):
+                    return
+                keys.execute("INSERT INTO selected_ids VALUES (?)", (session_id.encode("utf-8", "surrogatepass"),))
+                # Each identity is an existing exact JSON scalar; the complete
+                # selected population is never represented as a Python list.
+                document.write(json.dumps(session_id, ensure_ascii=True).encode("ascii") + b"\n")
+                count += 1
+                if len(sample) < 5:
+                    sample.append(session_id)
+
+            if mode == "explicit":
+                tokens = cast(list[str], request.payload["session_ids"])
+                if request.operation == "mutation.session.delete.preview":
+                    for offset in range(0, len(tokens), 256):
+                        chunk = tuple(tokens[offset : offset + 256])
+                        exact = pinned.archive.resolve_exact_session_ids(chunk, page_size=256)
+                        for token in chunk:
+                            sid = exact.get(token)
+                            if sid is None:
+                                raise MutationSelectionError(
+                                    "selection_is_stale", "An exact deletion target no longer exists."
+                                )
+                            if seen(sid):
+                                raise MutationSelectionError(
+                                    "selection_is_not_canonical",
+                                    "Deletion targets must be distinct canonical sessions.",
+                                )
+                            retain(sid)
+                else:
+                    for token in tokens:
+                        retain(_resolve_session_target(pinned.archive, context.archive_root, token))
+            else:
+                requested_limit = params.get("limit")
+                if mode == "page" and requested_limit is not None and type(requested_limit) is not int:
+                    raise ValueError("query display limit must be an integer")
+                page_size = (
+                    (requested_limit if requested_limit is not None else 10)
+                    if mode == "page"
+                    else 1
+                    if mode == "first"
+                    else 2
+                    if mode == "single"
+                    else _MUTATION_SELECTION_PAGE_SIZE
+                )
+                params = {**params, "limit": page_size, "offset": params.get("offset", 0) if mode == "page" else 0}
+                expected_total: int | None = None
+                total_is_known = False
+                while True:
+                    checkpoint()
+                    page = execute_read_operation(
+                        "cli.query",
+                        {"params": params},
+                        archive=pinned.archive,
+                        serving_identity=context.serving_identity,
+                        dependencies=dependencies,
+                    )
+                    outcome = OutcomeEnvelope.model_validate(page["outcome"])
+                    if not outcome.rows_are_authoritative:
+                        raise MutationSelectionError(
+                            "selection_not_authoritative",
+                            "Mutation selection is not authoritative.",
+                            {"outcome": outcome.model_dump(mode="json")},
+                        )
+                    raw_rows = page.get("hits") if isinstance(page.get("hits"), list) else page.get("items")
+                    rows = raw_rows if isinstance(raw_rows, list) else []
+                    block_grain = isinstance(page.get("hits"), list)
+                    raw_total = page.get("total")
+                    if raw_total is not None:
+                        if type(raw_total) is not int or raw_total < 0:
+                            raise MutationSelectionError(
+                                "query_selection_incomplete", "Canonical selection returned an invalid total."
+                            )
+                        if total_is_known and raw_total != expected_total:
+                            raise MutationSelectionError(
+                                "query_selection_incomplete", "Canonical selection changed its total."
+                            )
+                        expected_total, total_is_known = raw_total, True
+                    elif total_is_known:
+                        raise MutationSelectionError(
+                            "query_selection_incomplete", "Canonical selection stopped reporting its total."
+                        )
+                    if mode != "page" and "next_offset" not in page:
+                        raise MutationSelectionError(
+                            "query_selection_incomplete", "Canonical selection omitted continuation metadata."
+                        )
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            raise ValueError("canonical selection returned a non-object row")
+                        session = query_session_row(row, ranked=block_grain)
+                        selected_id = session.get("id") or session.get("session_id")
+                        if not isinstance(selected_id, str) or not selected_id:
+                            raise ValueError("canonical selection returned no session identity")
+                        if seen(selected_id) and not block_grain:
+                            raise MutationSelectionError(
+                                "query_selection_incomplete", "Canonical selection repeated a session row."
+                            )
+                        retain(selected_id)
+                        if mode == "first" or mode == "single" and count >= 2:
+                            break
+                    if mode == "page" or mode == "first" and count or mode == "single" and count >= 2:
+                        break
+                    cursor, next_offset = page.get("next_cursor"), page.get("next_offset")
+                    if cursor is None and next_offset is None:
+                        if total_is_known and not block_grain and count != expected_total:
+                            raise MutationSelectionError(
+                                "query_selection_incomplete", "Canonical selection ended before its reported total."
+                            )
+                        break
+                    if cursor is None:
+                        current_offset = params.get("offset", 0)
+                        if (
+                            type(next_offset) is not int
+                            or type(current_offset) is not int
+                            or next_offset <= current_offset
+                        ):
+                            raise MutationSelectionError(
+                                "query_pagination_stalled", "Canonical selection continuation did not advance."
+                            )
+                        if next_offset != current_offset + len(rows):
+                            raise MutationSelectionError(
+                                "query_selection_incomplete",
+                                "Canonical selection continuation skipped or overlapped rows.",
+                            )
+                        if (
+                            total_is_known
+                            and not block_grain
+                            and expected_total is not None
+                            and next_offset > expected_total
+                        ):
+                            raise MutationSelectionError(
+                                "query_selection_incomplete",
+                                "Canonical selection continuation exceeded its reported total.",
+                            )
+                    if (
+                        not rows
+                        or cursor is not None
+                        and cursor == params.get("cursor")
+                        or cursor is None
+                        and next_offset == params.get("offset")
+                    ):
+                        raise MutationSelectionError("query_pagination_stalled", "Canonical selection did not advance.")
+                    params = {**params, "cursor": cursor, "offset": 0 if cursor is not None else next_offset}
+        if request.operation == "mutation.session.mark" and mode not in {"explicit", "page"} and count == 0:
+            raise MutationSelectionError("selection_empty", "No sessions matched the mutation selection.")
+        if mode == "single" and count > 1:
+            raise MutationSelectionError(
+                "selection_ambiguous",
+                "Mutation selection matched more than one session.",
+                {"session_ids_sample": sample},
+            )
+        document.flush()
+        document.seek(0)
+        return _PreparedMutationSelection(
+            OperationControlRead(pinned.identity, dict(pinned.schema_versions), pinned.degraded_components),
+            frame,
+            count,
+            tuple(sample),
+        )
+
+
+async def execute_session_delete_preview_operation(request: DaemonOperationRequest, context: OperationContext) -> Any:
+    """Prepare any canonical selection on the resident owner without client IDs."""
+    from polylogue.archive.query.transaction import archive_snapshot_epoch
+    from polylogue.operations.daemon_execution import _validate_identity, operation_envelope
+    from polylogue.operations.operation_context import open_operation_read
+
+    runtime = context.runtime
+    if runtime is None:
+        raise PermissionError("daemon_required")
+    started = monotonic()
+    audit = runtime.audit_for_request(request, context)
+
+    def prior() -> tuple[OperationControlRead, dict[str, object] | None]:
+        with open_operation_read(context.archive_root, publication_guard=runtime.publication_guard) as pinned:
+            _validate_identity(request, context, pinned)
+            runtime.observe_snapshot(request, pinned)
+            authority = OperationControlRead(pinned.identity, dict(pinned.schema_versions), pinned.degraded_components)
+            return authority, audit.machine_request(_binding(request, context, authority))
+
+    authority, existing = await runtime.compute_phase(prior)
+    with tempfile.TemporaryFile(mode="w+b") as document:
+        selection = None
+        if existing is None:
+            selection = await runtime.compute_phase(lambda: _prepare_mutation_selection(request, context, document))
+            authority = selection.authority
+        elif existing["artifact_kind"] != "preview-batch":
+            raise MutationSelectionError(
+                "mutation_acceptance_interrupted", "The original deletion preview was not sealed."
+            )
+        binding = _binding(request, context, authority)
+
+        def prepare() -> dict[str, object]:
+            if selection is not None:
+                # This callback already holds the daemon writer gate. Pin the
+                # existing read scope without submitting a nested gate owner.
+                with open_operation_read(context.archive_root) as pinned:
+                    _validate_identity(request, context, pinned)
+                    current = f"{pinned.archive.index_db_path.resolve()}:{archive_snapshot_epoch(pinned.archive)}"
+                    if current != selection.frame:
+                        raise MutationSelectionError(
+                            "selection_frame_changed", "The deletion selection changed before acceptance."
+                        )
+                if selection.session_count == 0:
+                    return {
+                        "status": "prepared",
+                        "operation": "delete",
+                        "session_count": 0,
+                        "session_ids_sample": [],
+                        "affected_count": 0,
+                    }
+                total = (selection.session_count + MAX_MUTATION_PLAN_TARGETS - 1) // MAX_MUTATION_PLAN_TARGETS
+                offset = 0
+                chunk: list[str] = []
+                pending: list[MutationPreview] = []
+                operation = runtime_operation_binding(SessionDeleteActuator())
+                with (
+                    _fenced_on_failure(audit, binding),
+                    ArchiveStore.open_existing(context.archive_root, read_only=False) as archive,
+                ):
+                    instance = audit.ensure_archive_authority(now_ms=int(time() * 1000))
+                    executor = OperationExecutor()
+
+                    def retain() -> None:
+                        args = SessionDeleteArgs(archive, tuple(chunk))
+                        raw = operation.actuator.prepare(args)
+                        pending.append(
+                            executor.prepare_bound(
+                                operation,
+                                args,
+                                context.principal,
+                                archive_instance_id=instance,
+                                archive_identity_digest=authority.identity.authority_identity_digest,
+                                parameter_digest=compute_parameter_digest(raw),
+                                raw_plan=raw,
+                            )
+                        )
+                        chunk.clear()
+
+                    def accept() -> None:
+                        nonlocal offset
+                        if runtime.stop_reason(request) == "cancelled":
+                            from polylogue.archive.query.execution_control import QueryCancelledError
+
+                            raise QueryCancelledError("Delete preview cancelled before selection was sealed.")
+                        with audit.bind_machine_request(
+                            binding, transition="create_preview_batch", page=(offset, offset + len(pending) == total)
+                        ):
+                            audit.create_preview_batch(tuple(preview.plan for preview in pending), context.principal)
+                        offset += len(pending)
+                        pending.clear()
+
+                    document.seek(0)
+                    for line in document:
+                        sid = json.loads(line)
+                        if not isinstance(sid, str) or not sid:
+                            raise ValueError("sealed deletion identity is invalid")
+                        chunk.append(sid)
+                        if len(chunk) == MAX_MUTATION_PLAN_TARGETS:
+                            retain()
+                            if len(pending) == MACHINE_PAGE_PARTS:
+                                accept()
+                    if chunk:
+                        retain()
+                    if pending:
+                        accept()
+                    if offset != total:
+                        raise ValueError("sealed deletion part count differs from its complete selection")
+            return audit.machine_preview_summary(binding)
+
+        result = await runtime.write_phase("session.delete.preview", prepare)
+    return operation_envelope(request, context, snapshot=authority, started_at=started, result=result)
+
+
+def _combined_user_intents(
+    archive: ArchiveStore, document: BinaryIO, payload: dict[str, object]
+) -> Iterator[tuple[Any, object]]:
+    """Lower a sealed identity stream to the existing bounded actuators."""
+    import hashlib
+
+    from polylogue.core.user_state_targets import TARGET_SESSION
+    from polylogue.operations.mutation_actuators import (
+        AnnotationSaveActuator,
+        AnnotationSaveArgs,
+        MarkAddActuator,
+        MarkArgs,
+        MarkRemoveActuator,
+        TagRemoveActuator,
+        TagRemoveArgs,
+    )
+
+    def intents(ids: tuple[str, ...]) -> Iterator[tuple[Any, object]]:
+        tags = tuple(cast(list[str], payload.get("tags") or []))
+        pairs = tuple((pair[0], pair[1]) for pair in cast(list[list[str]], payload.get("pairs") or []))
+        if tags:
+            yield BulkTagActuator(), BulkTagArgs(archive, ids, tags)
+        if pairs:
+            yield BulkMetadataSetActuator(), BulkMetadataSetArgs(archive, ids, pairs)
+        for sid in ids:
+            for tag in cast(list[str], payload.get("remove_tags") or []):
+                yield TagRemoveActuator(), TagRemoveArgs(archive, sid, tag)
+            for field, actuator in (("add_marks", MarkAddActuator()), ("remove_marks", MarkRemoveActuator())):
+                for mark in cast(list[str], payload.get(field) or []):
+                    yield actuator, MarkArgs(archive, TARGET_SESSION, sid, mark, owner_session_id=sid)
+            note = payload.get("note_text")
+            if isinstance(note, str):
+                digest = hashlib.sha256(sid.encode("utf-8", errors="surrogatepass")).hexdigest()
+                yield (
+                    AnnotationSaveActuator(),
+                    AnnotationSaveArgs(archive, f"note-{digest}", TARGET_SESSION, sid, note, owner_session_id=sid),
+                )
+
+    chunk: list[str] = []
+    emitted = False
+    document.seek(0)
+    for line in document:
+        sid = json.loads(line)
+        if not isinstance(sid, str) or not sid:
+            raise ValueError("sealed mutation identity is invalid")
+        chunk.append(sid)
+        if len(chunk) == MAX_MUTATION_PLAN_TARGETS:
+            yield from intents(tuple(chunk))
+            chunk.clear()
+            emitted = True
+    if chunk or not emitted:
+        yield from intents(tuple(chunk))
+
+
+async def execute_session_mark_operation(request: DaemonOperationRequest, context: OperationContext) -> Any:
+    """Seal selection and every intent before applying one durable User batch."""
+    from polylogue.archive.query.transaction import archive_snapshot_epoch
+    from polylogue.operations.daemon_execution import _validate_identity, operation_envelope
+    from polylogue.operations.operation_context import open_operation_read
+
+    runtime = context.runtime
+    if runtime is None:
+        raise PermissionError("daemon_required")
+    started = monotonic()
+    audit = runtime.audit_for_request(request, context)
+
+    def prior() -> tuple[OperationControlRead, dict[str, object] | None]:
+        with open_operation_read(context.archive_root, publication_guard=runtime.publication_guard) as pinned:
+            _validate_identity(request, context, pinned)
+            runtime.observe_snapshot(request, pinned)
+            authority = OperationControlRead(pinned.identity, dict(pinned.schema_versions), pinned.degraded_components)
+            return authority, audit.machine_request(_binding(request, context, authority))
+
+    authority, existing = await runtime.compute_phase(prior)
+    with tempfile.TemporaryFile(mode="w+b") as document:
+        selection = None
+        if existing is None:
+            selection = await runtime.compute_phase(lambda: _prepare_mutation_selection(request, context, document))
+            authority = selection.authority
+        elif existing["artifact_kind"] != "execution-batch":
+            raise MutationSelectionError(
+                "mutation_acceptance_interrupted", "The original mutation selection was not sealed."
+            )
+        binding = _binding(request, context, authority)
+
+        def apply() -> dict[str, object]:
+            if selection is not None:
+                # The writer owns admission through acceptance and execution.
+                # Compare the actual pinned Index and User eligibility frame,
+                # including tag changes that preserve the selected row count.
+                # write_phase already excludes publication; a second bridge
+                # hold would inherit the active lease into another task.
+                with open_operation_read(context.archive_root) as pinned:
+                    _validate_identity(request, context, pinned)
+                    current = f"{pinned.archive.index_db_path.resolve()}:{archive_snapshot_epoch(pinned.archive)}"
+                    if current != selection.frame:
+                        raise MutationSelectionError(
+                            "selection_frame_changed", "The mutation selection changed before acceptance."
+                        )
+                per_session = sum(
+                    len(cast(list[str], request.payload.get(field) or []))
+                    for field in ("add_marks", "remove_marks", "remove_tags")
+                ) + (request.payload.get("note_text") is not None)
+                chunks = max(1, (selection.session_count + MAX_MUTATION_PLAN_TARGETS - 1) // MAX_MUTATION_PLAN_TARGETS)
+                total = selection.session_count * per_session + chunks * sum(
+                    bool(request.payload.get(field)) for field in ("tags", "pairs")
+                )
+                if selection.session_count == 0 or total == 0:
+                    return {
+                        "outcome": "completed",
+                        "sequence": 1,
+                        "effect": "no-effect",
+                        "session_count": 0,
+                        "session_ids_sample": [],
+                        "affected_count": 0,
+                        "tag_count": 0,
+                        "applied_count": 0,
+                    }
+                offset = 0
+                pending: list[tuple[OperationBinding[Any, object], MutationPreview]] = []
+                with (
+                    _fenced_on_failure(audit, binding),
+                    ArchiveStore.open_existing(context.archive_root, read_only=False) as archive,
+                ):
+                    instance = audit.ensure_archive_authority(now_ms=int(time() * 1000))
+                    executor = OperationExecutor()
+
+                    def accept() -> None:
+                        nonlocal offset
+                        if runtime.stop_reason(request) == "cancelled":
+                            from polylogue.archive.query.execution_control import QueryCancelledError
+
+                            raise QueryCancelledError("Mutation cancelled before all intents were sealed.")
+                        previews = tuple(preview for _, preview in pending)
+                        refs = audit.create_preview_batch(
+                            tuple(preview.plan for preview in previews), context.principal
+                        )
+                        previews = tuple(
+                            replace(preview, preview_ref=ref) for preview, ref in zip(previews, refs, strict=True)
+                        )
+                        authorizations = tuple(
+                            executor.authorize_bound(operation, preview, context.principal)
+                            for (operation, _), preview in zip(pending, previews, strict=True)
+                        )
+                        authorized = tuple(audit.issue_authorization_batch(previews, context.principal, authorizations))
+                        with audit.bind_machine_request(
+                            binding, transition="accept_execution_batch", page=(offset, offset + len(pending) == total)
+                        ):
+                            audit.accept_execution_batch(authorized, context.principal)
+                        offset += len(pending)
+                        pending.clear()
+
+                    for actuator, args in _combined_user_intents(archive, document, request.payload):
+                        operation = runtime_operation_binding(actuator)
+                        raw = actuator.prepare(args)
+                        preview = executor.prepare_bound(
+                            operation,
+                            args,
+                            context.principal,
+                            archive_instance_id=instance,
+                            archive_identity_digest=authority.identity.authority_identity_digest,
+                            parameter_digest=compute_parameter_digest(raw),
+                            raw_plan=raw,
+                        )
+                        pending.append((operation, preview))
+                        if len(pending) == MACHINE_PAGE_PARTS:
+                            accept()
+                    if pending:
+                        accept()
+                    if offset != total:
+                        raise ValueError("sealed mutation part count differs from its complete intent")
+            return _execute_batch(request, context, audit, authority, ())
+
+        state = await runtime.write_phase("session.mark", apply)
+    return operation_envelope(
+        request, context, snapshot=authority, started_at=started, outcome=str(state["outcome"]), result=state
+    )

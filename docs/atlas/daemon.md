@@ -73,7 +73,7 @@ The live watcher passes acquired Raw IDs to the supplied resident Raw owner for 
 
 ## Domain derivations
 
-The typed kernel validates prerequisite names against the supplied ordered domain list. It pages required and excess keys, inspects authoritative output, computes outside the writer lease, and admits each replacement through the writer bridge. Publication adopts the coordinator's delegation on the existing compute worker, so preparation observers retain their creator. Its joined native cleanup boundary drains publication handles before the delegation and writer gate retire. Process-local continuation state is disposable. Reports distinguish pending policy work from failed attempts (`polylogue/daemon/derivation.py:375-428`; `polylogue/daemon/derivation.py:481-498`; `polylogue/daemon/convergence.py:110-123`).
+The typed kernel validates prerequisite names against the supplied ordered domain list. It pages required and excess keys, inspects authoritative output, computes outside the writer lease, and admits each replacement through the writer bridge. Publication adopts the coordinator's delegation on the existing compute worker, so preparation observers retain their creator. Its joined native cleanup boundary drains publication handles before the delegation and writer gate retire. Process-local continuation state is disposable. A partially consumed page retains only its bounded unconsumed key suffix and the next-page cursor; resumption reinspects those exact keys rather than offsetting a fresh query whose demand rows may have disappeared. Smaller resumed budgets split that suffix without losing its remaining keys. Reports distinguish pending policy work from failed attempts (`polylogue/daemon/derivation.py:375-428`; `polylogue/daemon/derivation.py:481-498`; `polylogue/daemon/convergence.py:110-123`).
 
 Raw observations use the same owner for admitted raw-to-logical membership. FTS retains canonical triggers, identity membership and the FTS refresh guard; per-session replacement joins exact canonical session membership. Its selected global orphan partition runs at low cadence and streams its binding, but still requires archive-wide scan and transaction work (`polylogue/daemon/raw_observation_owner.py:1`; `polylogue/storage/fts/derivation.py:660-690`; `polylogue/operations/fts_derivation.py:1`).
 
@@ -106,6 +106,8 @@ Hook capture is two ordinary steps, not a route of its own. Producers append one
 A current retained decode refusal remains a failed derivation outcome. Its exact raw coordinate, parser census, support status and trusted failure carrier are validated by the canonical raw adapter. A later deliberate pass reports that same typed refusal from metadata without parsing the bytes again. Fair intake excludes the exact terminal item and discovery leaves it out of retry backlog; infrastructure failures and unavailable exact-key outcomes remain retryable (`polylogue/storage/derived/raw.py`, `polylogue/daemon/derivation.py`, `polylogue/operations/intake_adapters.py`).
 
 ## Status evidence and diagnostic privacy
+
+The WebUI observability monitor retains snapshot frame errors separately from refresh errors in both bootstrap and direct status observations. Catch-up mode `idle` overrides a retained previous phase in its current-phase display.
 
 `overall_status_ok` in `operations/daemon_status.py` owns the verdict for daemon, pinned, and composed status. An acquired stale or unavailable snapshot refutes health even when the required archive operands are healthy. A refresh may replace the previous stale state with refreshing, but preserves explicit unavailable evidence. A pinned read passes `None` for optional runtime evidence it did not acquire.
 
@@ -142,12 +144,11 @@ unavailable reason. Empty readable history remains available; failed authority
 keeps the mode degraded. Status and workload telemetry read only current ops
 tables; unavailable counts never stand in for exact zero.
 
-Normal client read and mutation requests bind the installed client version and canonical Index schema version before their single operation POST. The client resolves those expectations after the existing peer-checked socket connects, so an absent daemon does not load the storage or version graph. Explicit caller preconditions remain unchanged. Status discovery and the original operation status, await, cancel and result controls remain available without inferred version preconditions, so a client can inspect an incompatible daemon or recover already accepted work. Session-delete preview cancellation remains a version-bound mutation.
+Normal client read and mutation requests bind the installed client version before their single operation POST. Index-dependent operations also bind the canonical Index schema version. User-only setting get/list and tier backup/restore omit an implicit Index precondition; an explicitly supplied precondition still reaches the resident validator unchanged. The client resolves those expectations after the existing peer-checked socket connects, so an absent daemon does not load the storage or version graph. Explicit caller preconditions remain unchanged. Status discovery and the original operation status, await, cancel and result controls remain available without inferred version preconditions, so a client can inspect an incompatible daemon or recover already accepted work. Session-delete preview cancellation remains a version-bound mutation.
 
 The Unix operation listener keeps accepted sockets until their original handlers physically finish. Slow request bodies and response consumers have no transport deadline. Shutdown stops new handler admission, interrupts retained socket reads and writes, then joins the original handlers while the runtime owner loop remains available to settle admitted work.
 
 Receipt waits bind the control request execution deadline to its actual `timeout_ms` wait budget. The transport retains its existing response allowance, so the forced final receipt read after an exhausted completion budget does not inherit the normal 30-second control deadline. Accepted mutation identity, cancellation and durable outcome reconciliation remain unchanged.
-
 
 Session Excision prepares and executes under the original request-bound authority,
 then retains the complete canonical domain receipt before retiring its source
@@ -159,3 +160,68 @@ The CLI stages and verifies the complete length, digest and UTF-8 before emittin
 machine JSON with `domain_receipt`; human output uses the scalar counts. Failed
 product delivery preserves the committed mutation receipt and reports a delivery
 failure rather than a new mutation refusal.
+
+### Resident mutation selection
+
+Delete previews and combined mark commands lower the query once into the resident selection owner. That owner pins Index and User together, checks the canonical selection outcome, and streams distinct session identities into a private disk relation. First selection requests one row per page, singleton selection at most two; ranked hits are deduplicated at session grain before cardinality is decided. All selection follows the canonical continuation in the same snapshot. Before durable acceptance, the admitted writer compares the selected frame again, including User overlay changes, and refuses a changed frame.
+
+Tags, metadata, tag removal, marks and notes are validated as one command. Every bounded actuator plan and authorization is sealed before the first effect. Delete authorization and execution reference their originating resident request IDs rather than arrays of tokens. Scalar summaries retain the exact total and a display sample; lifecycle responses aggregate the entire batch and page its part details with `parts_offset`, `parts_limit` and `next_parts_offset`. A failed later part preserves actual committed effects and the untouched suffix count. Sampling never determines mutation membership.
+
+### Complete operation response delivery
+
+UDS and HTTP operation responses encode into private temporary scratch before headers are published. The exact Content-Length is then delivered in fixed transfer chunks; the client consumes the complete framed body and incrementally decodes JSON before exposing a result. A permitted individual row or value does not fail because the response exceeds 8 MiB. Row pagination, pinned view authority, strict operation models and mutation recovery remain unchanged. Encoding, malformed framing, disconnect and cancellation retire temporary scratch. Result validation walks the wire values and uses the existing models with their declared JSON tuple, string-enum and ISO-datetime forms; it does not reencode the entire result on either peer. Product Python values and hydrated validation models still contribute memory proportional to the result. This change does not qualify bounded whole-route memory or the separate resident Excision document producer.
+
+Backup and verified restore bind the daemon version and control authority without an implicit Index version precondition. Their declared tier copy and recovery paths remain available when the derived Index is missing or skewed. An explicitly supplied Index precondition is preserved and refused when that control snapshot cannot prove it.
+
+Context compilation submits its disposable scheduler ledger with the compilation start time in milliseconds. Every ledger producer supplies that time explicitly; the resident writer preserves it and refuses a request that omits it rather than inventing an epoch-zero observation.
+
+## Resident insight pages
+
+The eleven registered `analyze insights` list commands call `insights.list`
+through the daemon. Its closed discriminated request and result branches use
+the registry's existing query and item models. The canonical page reader is
+shared with the Python facade and executes on the resident pinned archive
+snapshot: origin tag rollups are merged before paging, and cost estimates are
+enriched and filtered before paging. Missing daemon or unavailable insight
+authority refuses instead of opening a local archive. `ops insights status` also calls the resident `insights.readiness` route on
+the same pinned reader, preserving the canonical selected coverage and convergence
+verdict. Its named pending-convergence outcome remains visible with zero rows.
+The `ops insights audit` command also uses resident `insights.rigor`: every registered product is sampled on that same pinned reader, including explicit uncovered or exempt entries. Per-product read failure remains a named degraded outcome. `ops insights hermes-health` uses resident `insights.hermes_health`, composing the existing read-only probes against the configured Hermes root. Missing derived tiers remain explicit measurement gaps; this diagnostic binds daemon and archive identity without requiring an Index precondition. A supplied Index version is observed through the supported read-only tier reader, then compared; a missing tier or wrong version refuses. The same explicit-only observation applies to User setting get/list. Python callers share the operations composer. Export commands retain their separate existing routes.
+
+`ops insights fable-packet` uses resident `insights.fable_packet` with normal pinned Index/User authority and cancellation. Its exhaustive evidence paging and named unsupported outcomes are documented in [the query/read atlas](query-read-path.md).
+
+`polylogued run --listener-info-path <path>` atomically creates private JSON without replacing an existing destination with the process `pid` and actual bound `listeners.api` and `listeners.browser_capture` host/port pairs (null for disabled listeners). Publication follows all enabled TCP binds and is socket readback, not archive readiness. Port zero requests distinct kernel-assigned listeners; equal positive ports on overlapping hosts remain refused. Component startup events report the assigned port for a zero request. A caller must identify its child and use a unique destination or reject stale process identity. The AgentCTL proof uses this output without closing and reacquiring port reservations.
+
+
+Ingest diagnostics keep receipt units distinct: `parsed_raw_count` supplies
+successful file counts and file rates; `materialized_count` supplies session
+throughput. A measured zero file count does not use an older stage-event value.
+Stage-event queued/needed file denominators take precedence over parsed counts.
+Finished-batch durations and throughput include `completed_with_failures` as
+well as `completed`; failed and interrupted attempts remain separate statuses
+and do not enter that duration/rate population. Prometheus attempt counts expose
+every declared operation-run status. The pinned workload projection applies the
+same completion population without reopening its supplied reader.
+
+The workload probe qualifies thread and latency surfaces by row coverage and
+readability. Thread views must be readable and their session-profile inputs
+complete. Latency coverage uses the canonical quiet-window missing-row and
+orphan-row checks, together with profile-input coverage. Read failures leave
+the derived readiness unchecked; a readable empty eligible scope is ready.
+Planner row estimates are display evidence only. These checks do not certify
+value freshness or replace the materializer's partition inspection.
+
+The `polylogued` command registry lives in `daemon/commands.py`. Root help and
+version do not initialize service implementations. Selected service commands
+retain their original runtime callbacks and options. Status makes one resident
+operation request and reports typed absence or refusal instead of recomputing a
+local view. The guided path keeps `polylogued run` in another terminal before
+issuing its resident transcript read.
+
+Cold command branches defer canonical Source vocabulary and coordination
+archive readers until their selected consumer needs them. Selected filters and
+archive reads retain their existing owners, validation and connection cleanup.
+Each process snapshot row classifies its executable and first Python module
+from one complete shell parse. Malformed quoting retains whitespace executable
+classification and refuses module inference; classification is local to that
+observation.

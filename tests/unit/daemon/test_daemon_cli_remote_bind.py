@@ -31,7 +31,8 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from polylogue.daemon.cli import main, run_daemon_services
+from polylogue.daemon.cli import run_daemon_services
+from polylogue.daemon.commands import main
 from polylogue.daemon.services import ServiceCapability, ServiceProfile
 from tests.infra.daemon_service_harness import ServiceHarness
 
@@ -314,3 +315,82 @@ def test_browser_port_is_opt_in_and_reaches_the_service_composition() -> None:
 
     assert result.exit_code == 0, (result.output, result.exception)
     assert recorded["browser_port"] == 8767
+
+
+def test_listener_readback_destination_reaches_daemon_composition(tmp_path: Path) -> None:
+    recorded: dict[str, object] = {}
+
+    async def run_services(**kwargs: object) -> None:
+        recorded.update(kwargs)
+
+    destination = tmp_path / "listeners.json"
+    with patch("polylogue.daemon.cli.run_daemon_services", side_effect=run_services):
+        result = CliRunner().invoke(
+            main, ["run", "--no-watch", "--api-port", "0", "--port", "0", "--listener-info-path", str(destination)]
+        )
+    assert result.exit_code == 0, (result.output, result.exception)
+    assert recorded["listener_info_path"] == destination
+    assert recorded["api_port"] == recorded["browser_capture_port"] == 0
+
+
+@pytest.mark.parametrize("use_tilde", [False, True])
+def test_listener_readback_cannot_replace_an_archive_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, use_tilde: bool
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    initialize_active_archive_root(root)
+    source = root / "source.db"
+    before = source.read_bytes()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    destination = Path("~/archive/source.db") if use_tilde else source
+    with pytest.raises(click.UsageError, match="must be outside the archive root"):
+        _run(
+            run_daemon_services(
+                sources=(),
+                enable_watch=False,
+                enable_browser_capture=True,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=0,
+                enable_api=True,
+                api_port=0,
+                listener_info_path=destination,
+            )
+        )
+    assert source.read_bytes() == before
+
+
+def test_listener_readback_refuses_schema_blocked_enabled_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    initialize_active_archive_root(root)
+    destination = tmp_path / "listeners.json"
+    critical = HealthAlert(
+        check_name="schema_version",
+        tier=HealthTier.FAST,
+        severity=HealthSeverity.CRITICAL,
+        message="synthetic derived schema mismatch",
+        checked_at="2026-05-24T00:00:00+00:00",
+    )
+    with (
+        patch("polylogue.daemon.cli._check_schema_version_fast", return_value=critical),
+        pytest.raises(click.UsageError, match="every enabled listener to bind"),
+    ):
+        _run(
+            run_daemon_services(
+                sources=(),
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=0,
+                enable_api=True,
+                api_port=0,
+                listener_info_path=destination,
+            )
+        )
+    assert not destination.exists()

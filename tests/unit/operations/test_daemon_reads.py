@@ -347,7 +347,7 @@ def test_archive_backed_completion_answers_from_the_pinned_reader(tmp_path: Path
 
     bootstrap_archive_root(tmp_path)
     with open_operation_read(tmp_path) as pinned:
-        for source in ("session_id", "tag", "repo", "tool"):
+        for source in ("session_id", "tag", "repo", "cwd_prefix", "tool"):
             result = execute_read_operation(
                 "completion",
                 {"source": source, "incomplete": "", "limit": 3},
@@ -777,6 +777,7 @@ def test_keyless_text_search_with_retained_binding_remains_disabled(
     from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
     from tests.infra.vector_archive import seed_vector_archive
 
+    bootstrap_archive_root(tmp_path)
     seed_vector_archive(
         tmp_path,
         [("seed", "m1", "Synthetic needle prose with retained embeddings.", [1.0] + [0.0] * 1023)],

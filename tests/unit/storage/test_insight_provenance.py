@@ -77,6 +77,7 @@ class TestProfileProvenance:
         for profile in profiles:
             assert profile.provenance.materialized_at
             # The profile provenance must record the source it folded in.
+            assert profile.provenance.materializer_version is not None
             assert profile.provenance.materializer_version >= 0
 
 
@@ -155,3 +156,83 @@ class TestAggregateProvenance:
                 assert int(rollup.session_count) == int(actual), (
                     f"tag {rollup.tag!r}: rollup session_count={rollup.session_count} != tagged session count={actual}"
                 )
+
+
+@pytest.mark.asyncio
+async def test_public_insight_versions_require_recorded_profile_evidence(
+    workspace_env: Mapping[str, Path],
+) -> None:
+    """Stamping today's version for a missing profile breaks this public read."""
+    import json
+    from typing import cast
+
+    from polylogue.api import Polylogue
+    from polylogue.mcp.server import build_server
+    from polylogue.services import RuntimeServices
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
+
+    db_path = db_setup(workspace_env)
+    builder = (
+        SessionBuilder(db_path, "version-evidence")
+        .provider("claude-code")
+        .add_message("m-1", role="user", text="question")
+        .add_message("m-2", role="assistant", text="answer")
+    )
+    builder.save()
+    session_id = builder.native_session_id()
+    materialize_session_insights(db_path)
+    with closing(_open_archive(db_path)) as conn, conn:
+        conn.execute("UPDATE session_profiles SET materializer_version = 3 WHERE session_id = ?", (session_id,))
+    async with Polylogue(archive_root=db_path.parent, db_path=db_path) as poly:
+        profile = await poly.get_session_profile_insight(session_id)
+        thread = await poly.get_thread_insight(session_id)
+        latency = await poly.get_session_latency_profile_insight(session_id)
+        assert profile is not None and thread is not None and latency is not None
+        assert profile.provenance.materializer_version == 3
+        assert profile.inference_provenance is not None
+        assert profile.inference_provenance.inference_version == 3
+        assert profile.enrichment_provenance is not None
+        assert profile.enrichment_provenance.enrichment_version == 3
+        assert thread.provenance.materializer_version == latency.provenance.materializer_version == 3
+    with closing(_open_archive(db_path)) as conn, conn:
+        conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (session_id,))
+    async with Polylogue(archive_root=db_path.parent, db_path=db_path) as poly:
+        assert await poly.get_session_profile_insight(session_id) is None
+        thread = await poly.get_thread_insight(session_id)
+        latency = await poly.get_session_latency_profile_insight(session_id)
+        assert thread is not None and latency is not None
+        for insight in (thread, latency):
+            assert insight.provenance.materializer_version is None
+            assert insight.provenance.materialized_at is None
+            assert insight.model_dump(mode="json")["provenance"]["materializer_version"] is None
+        with installed_runtime_services(db_path.parent):
+            server = cast(MCPServerUnderTest, build_server(services=RuntimeServices(config=poly.config)))
+            result = json.loads(
+                cast(
+                    str,
+                    await invoke_surface_async(
+                        server._tool_manager._tools["query"].fn,
+                        projection="threads",
+                        limit=1,
+                    ),
+                )
+            )
+        assert len(result["threads"]) == 1
+        assert result["threads"][0]["provenance"].get("materializer_version") is None
+    with ArchiveStore.open_existing(db_path.parent) as archive:
+        assert archive.get_session_profile_record(session_id) is None
+
+
+def test_unknown_provenance_schema_preserves_nullable_version_types() -> None:
+    from polylogue.analysis.archive_models import ArchiveEnrichmentProvenance, ArchiveInferenceProvenance
+
+    for model, field, family in (
+        (ArchiveInferenceProvenance, "inference_version", "inference_family"),
+        (ArchiveEnrichmentProvenance, "enrichment_version", "enrichment_family"),
+    ):
+        payload = {"materializer_version": None, field: None, family: "archive"}
+        value = model.model_validate(payload)
+        assert value.model_dump()[field] is None
+        schema = model.model_json_schema()
+        assert {entry["type"] for entry in schema["properties"][field]["anyOf"]} == {"integer", "null"}

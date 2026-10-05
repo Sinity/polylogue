@@ -380,7 +380,7 @@ async function backfillCoordinator() {
     });
   }
   const coordinator = await backfillCoordinatorPromise;
-  if (coordinator.unavailableRecoveryProviders.length) {
+  if (!initializing && coordinator.unavailableRecoveryProviders.length) {
     const tabs = await runtimeChrome.tabs.query({});
     const providers = coordinator.unavailableRecoveryProviders.filter(
       (provider) => tabs.some((tab) => archiveProviderForUrl(tab.url || tab.pendingUrl || "") === provider),

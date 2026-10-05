@@ -492,18 +492,6 @@ def _read_view_option_values(bound_values: Mapping[str, object]) -> dict[str, ob
 _CONTINUE_CANDIDATE_DEFAULT_LIMIT = 10
 
 
-def _successor_context_unit_queries(session_id: str) -> tuple[str, ...]:
-    """Default successor-context recipe expressed through terminal DSL units."""
-
-    session_clause = f"session.id:{session_id}"
-    return (
-        f"runs where {session_clause}",
-        f"observed-events where {session_clause}",
-        f"context-snapshots where {session_clause}",
-        f"actions where {session_clause}",
-    )
-
-
 def _wants_json(request: RootModeRequest, *, output_format: str | None) -> bool:
     """Return whether the local/root output contract requests JSON."""
 
@@ -536,30 +524,45 @@ def _emit_continue_candidates(
     """
 
     from polylogue.cli.shared.machine_errors import emit_success
+    from polylogue.operations.daemon_protocol import ContinuationCandidatesResult
 
-    candidates = run_coroutine_sync(
-        env.polylogue.find_resume_candidates(
-            repo_path=repo_path,
-            cwd=cwd,
-            recent_files=recent_files,
-            limit=limit,
+    result = ContinuationCandidatesResult.model_validate(
+        _dispatch_continuation(
+            env,
+            request,
+            "continuation.candidates",
+            {"repo_path": repo_path, "cwd": cwd, "recent_files": list(recent_files), "limit": limit},
         )
     )
-    payload = {
-        "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
-        "returned": len(candidates),
-        "limit": limit,
-    }
     if _wants_json(request, output_format=output_format):
-        emit_success(payload)
+        emit_success(result.model_dump(mode="json"))
         return
-    for candidate in candidates:
+    for candidate in result.candidates:
         basis = candidate.overlap_basis
         click.echo(
             f"{candidate.score:.3f} {candidate.logical_session_id} {candidate.title} "
             f"[overlap exact={len(basis.exact)} dir={len(basis.dir)} "
             f"dead-excluded={len(basis.dead_excluded)}]"
         )
+
+
+def _dispatch_continuation(
+    env: AppEnv, request: RootModeRequest, operation: str, payload: dict[str, object]
+) -> dict[str, object]:
+    from polylogue.cli.operation_kernel import OperationKernelError, OperationRequest
+    from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
+    from polylogue.cli.render.outcome import exit_for_read_failure
+
+    try:
+        result, _ = dispatch_read(
+            env.config,
+            OperationRequest(operation, payload),
+            daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+            selection_epoch=request.selection_epoch,
+        )
+    except OperationKernelError as exc:
+        exit_for_read_failure(exc)
+    return result
 
 
 def _complete_read_view(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
@@ -804,7 +807,6 @@ def _build_read_projection_spec(
             # query predicates such as typed_only, sort, and reference scope.
             # Passing only the fields repeated below made ReadRequest look
             # canonical while silently normalizing a reduced selection.
-            "selection": query_spec,
             "output_format": effective_format,
             "views": views,
             "destination": destination,
@@ -834,6 +836,7 @@ def _build_read_projection_spec(
             "include_assertions": include_assertions,
         },
         preset=primary_view,
+        selection=query_spec,
     )
     return selection_projection.model_copy(
         update={"projection": normalized_request.projection, "render": normalized_request.render}
@@ -1350,7 +1353,9 @@ def read_verb(
             raise click.UsageError("Direct ref reads currently support --format json only.")
         if destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT):
             raise click.UsageError("Direct ref reads write JSON to terminal/stdout only.")
-        payload = run_coroutine_sync(env.polylogue.resolve_ref(ref))
+        payload = run_coroutine_sync(
+            env.polylogue.resolve_ref(ref, limit=limit or 50, offset=offset or 0, continuation=continuation)
+        )
         click.echo(serialize_surface_payload(payload, exclude_none=True))
         return
 
@@ -1642,35 +1647,47 @@ def continue_verb(
         raise click.UsageError("--repo, --cwd, and --recent are only valid with continue --candidates.")
     if candidate_limit != _CONTINUE_CANDIDATE_DEFAULT_LIMIT:
         raise click.UsageError("--limit is only valid with continue --candidates.")
-    from polylogue.cli.select import machine_output_requested
-
-    session_id = _resolve_query_action_session_id(
-        env, request, operation="continue", machine_output=machine_output_requested(output_format)
-    )
-    if session_id is None:
-        raise click.UsageError("continue requires one matched session (use --id, --latest, or a narrowing query).")
-    session = run_coroutine_sync(env.polylogue.get_session(session_id))
-    if session is None:
-        raise click.UsageError(f"Session not found: {session_id}")
-    if _wants_json(request, output_format=output_format):
+    is_json = _wants_json(request, output_format=output_format)
+    if is_json:
         if execute:
             raise click.UsageError("continue --exec cannot be combined with --format json.")
         if destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT, RenderDestination.FILE):
             raise click.UsageError("continue --format json supports terminal, stdout, or file destinations only.")
         if destination == RenderDestination.FILE and not out_path:
             raise click.UsageError("continue --format json --to file requires --out.")
-        from polylogue.archive.context_models import ContextSpec
+    elif not execute and (
+        destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT) or out_path is not None
+    ):
+        raise click.UsageError("continue prints its command to terminal/stdout; omit --to/--out.")
+    from polylogue.cli.select import machine_output_requested
 
-        image = run_coroutine_sync(
-            env.polylogue.compile_context(
-                ContextSpec(
-                    purpose="continue",
-                    seed_refs=(f"session:{session_id}",),
-                    read_views=("messages",),
-                    unit_queries=_successor_context_unit_queries(session_id),
-                )
-            )
+    selected_frames: list[str] = []
+    session_id = _resolve_query_action_session_id(
+        env,
+        request,
+        operation="continue",
+        machine_output=machine_output_requested(effective_output_format),
+        frame_sink=selected_frames.append,
+    )
+    if selected_frames:
+        request = request.with_param_updates(selection_epoch=selected_frames[-1])
+    if session_id is None:
+        raise click.UsageError("continue requires one matched session (use --id, --latest, or a narrowing query).")
+    if is_json:
+        from datetime import datetime, timezone
+
+        from polylogue.archive.context_models import ContextImage
+        from polylogue.cli.read_views.context import record_context_image_ledger
+
+        observed_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        result = _dispatch_continuation(
+            env,
+            request,
+            "continuation.context",
+            {"session_id": session_id, "observed_at_ms": observed_at_ms},
         )
+        image = ContextImage.model_validate(result["payload"])
+        record_context_image_ledger(env.config, image.model_dump(mode="json"), observed_at_ms=observed_at_ms)
         _deliver_content(
             env,
             serialize_surface_payload(image, exclude_none=True) + "\n",
@@ -1678,18 +1695,18 @@ def continue_verb(
             out_path=out_path,
         )
         return
-    from polylogue.archive.resume_routing import route_resume
+    from polylogue.operations.daemon_protocol import ContinuationRouteResult
 
-    route = route_resume(session)
+    route = ContinuationRouteResult.model_validate(
+        _dispatch_continuation(env, request, "continuation.route", {"session_id": session_id})
+    )
     if route.status != "supported" or route.command is None:
         raise click.UsageError(route.detail or "This session cannot be resumed by a verified local harness command.")
     if execute:
-        result = subprocess.run(route.argv, cwd=route.cwd, check=False)
-        if result.returncode:
-            raise SystemExit(_shell_exit_status(result.returncode))
+        executed = subprocess.run(route.argv, cwd=route.cwd, check=False)
+        if executed.returncode:
+            raise SystemExit(_shell_exit_status(executed.returncode))
         return
-    if destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT) or out_path is not None:
-        raise click.UsageError("continue prints its command to terminal/stdout; omit --to/--out.")
     click.echo(route.command)
 
 
@@ -1737,18 +1754,8 @@ def delete_verb(
         polylogue find 'repo:polylogue since:7d' then delete --dry-run --all
         polylogue find 'repo:polylogue since:7d' then delete --yes --all
     """
-    from polylogue.cli.contextual_errors import (
-        AMBIGUITY_CANDIDATE_LIMIT,
-        AmbiguousSelectionError,
-        ContextualCliError,
-        NextAction,
-    )
-    from polylogue.cli.verb_cardinality import (
-        check_cardinality,
-        probe_session_ids_for_verb,
-        require_exact_mutation_selection,
-        resolve_session_ids_for_verb,
-    )
+    from polylogue.cli.contextual_errors import ContextualCliError, NextAction
+    from polylogue.cli.verb_cardinality import require_exact_mutation_selection
 
     output_format = normalize_output_dialect(output_format)
     env: AppEnv = ctx.obj
@@ -1770,32 +1777,11 @@ def delete_verb(
     ):
         return
 
-    from polylogue.cli.archive_query import execute_delete_by_session_ids
+    from polylogue.cli.archive_query import execute_delete_selection
 
-    # Decided before any read: a contradictory or windowed selection is refused
-    # rather than resolved to some wider set than the operator chose.
     require_exact_mutation_selection(request, allow_all=all_flag, operation="delete")
-
-    # dry-run: require explicit multi-target scope before materializing a broad
-    # preview. Once --all is supplied, resolve the SAME full ID set the real
-    # delete uses rather than re-running the query through _execute_query_verb,
-    # which caps at the default limit of 20 and would preview fewer sessions
-    # than --yes --all actually deletes (#1873).
     if dry_run:
-        probe_ids = probe_session_ids_for_verb(env, request, limit=AMBIGUITY_CANDIDATE_LIMIT + 1)
-        if len(probe_ids) > 1 and not all_flag:
-            raise AmbiguousSelectionError(
-                "'delete dry-run' matched multiple sessions. "
-                "Use --all to preview every matched session, or narrow the query.",
-                candidates=tuple(probe_ids[:AMBIGUITY_CANDIDATE_LIMIT]),
-                bounded=len(probe_ids) > AMBIGUITY_CANDIDATE_LIMIT,
-                next_actions=(
-                    NextAction("Preview every matched session", "polylogue find <QUERY> then delete --dry-run --all"),
-                    NextAction("Preview one session", "polylogue find id:'<REF>' then delete --dry-run"),
-                ),
-            )
-        session_ids = resolve_session_ids_for_verb(env, request)
-        execute_delete_by_session_ids(env, session_ids, force=True, dry_run=True)
+        execute_delete_selection(env, request, mode="all" if all_flag else "single", force=True, dry_run=True)
         return
     if not yes_flag:
         raise ContextualCliError(
@@ -1806,19 +1792,7 @@ def delete_verb(
             ),
         )
 
-    # Enforce cardinality before any destructive action.
-    session_ids = resolve_session_ids_for_verb(env, request)
-    check_cardinality(
-        len(session_ids),
-        allow_all=all_flag,
-        first_only=False,
-        operation="delete",
-        candidates=session_ids[:AMBIGUITY_CANDIDATE_LIMIT],
-        bounded=len(session_ids) > AMBIGUITY_CANDIDATE_LIMIT,
-    )
-
-    # Delete using the pre-resolved IDs so all matched sessions are removed.
-    execute_delete_by_session_ids(env, session_ids, force=yes_flag)
+    execute_delete_selection(env, request, mode="all" if all_flag else "single", force=yes_flag)
 
 
 @click.group("mark", invoke_without_command=True)
@@ -1881,14 +1855,8 @@ def mark_verb(
         polylogue find id:abc then mark --pin
         polylogue find 'repo:polylogue since:7d' then mark --tag-add sprint --all
     """
-    import hashlib
-
-    from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT, ContextualCliError, NextAction
-    from polylogue.cli.verb_cardinality import (
-        check_cardinality,
-        require_exact_mutation_selection,
-        resolve_session_ids_for_verb,
-    )
+    from polylogue.cli.contextual_errors import ContextualCliError, NextAction
+    from polylogue.cli.verb_cardinality import require_exact_mutation_selection
 
     if ctx.invoked_subcommand is not None:
         return
@@ -1926,63 +1894,49 @@ def mark_verb(
             ),
         )
 
-    # Resolve matched sessions and enforce cardinality.
+    if not (
+        tags_to_add
+        or tags_to_remove
+        or star
+        or unstar
+        or pin
+        or unpin
+        or do_archive
+        or do_unarchive
+        or note_text is not None
+    ):
+        if effective_output_format == "json":
+            from polylogue.surfaces.payloads import MutationResultPayload
+
+            click.echo(
+                MutationResultPayload(status="ok", operation="mutate", affected_count=0).to_json(exclude_none=True)
+            )
+        else:
+            click.echo("No mark operations specified.")
+        return
+
     require_exact_mutation_selection(request, allow_all=apply_all, operation="mark")
-    session_ids = resolve_session_ids_for_verb(env, request)
-    check_cardinality(
-        len(session_ids),
-        allow_all=apply_all,
-        first_only=first_only,
-        operation="mark",
-        candidates=session_ids[:AMBIGUITY_CANDIDATE_LIMIT],
-        bounded=len(session_ids) > AMBIGUITY_CANDIDATE_LIMIT,
+    from polylogue.cli.archive_query import _object_int, submit_cli_mutation
+    from polylogue.cli.lowering import lower_user_change
+
+    result = submit_cli_mutation(
+        env,
+        "mutation.session.mark",
+        lower_user_change(
+            request,
+            mode="all" if apply_all else "first" if first_only else "single",
+            tags=tags_to_add,
+            remove_tags=tags_to_remove,
+            add_marks=tuple(name for name, flag in (("star", star), ("pin", pin), ("archive", do_archive)) if flag),
+            remove_marks=tuple(
+                name for name, flag in (("star", unstar), ("pin", unpin), ("archive", do_unarchive)) if flag
+            ),
+            note_text=note_text,
+        ),
     )
 
-    # Honour --first: act only on the leading result when multiple matched.
-    target_ids = session_ids[:1] if first_only and len(session_ids) > 1 else session_ids
-
-    # Every branch below is a durable ``user.db`` write, and the daemon is the
-    # sole writer: each lowers to a declared operation through the kernel
-    # instead of opening a writable store in this process. The facade route it
-    # replaced (``Polylogue.add_tag``/``add_mark``/``save_annotation`` ->
-    # ``_execute_facade_mutation``) was invisible to the mutation-authority
-    # layering rule, because it entered through ``polylogue/api`` rather than
-    # through a substrate import (polylogue-gjwto).
-    from polylogue.cli.archive_query import submit_cli_mutation
-
-    add_marks = [name for name, flag in (("star", star), ("pin", pin), ("archive", do_archive)) if flag]
-    remove_marks = [name for name, flag in (("star", unstar), ("pin", unpin), ("archive", do_unarchive)) if flag]
-    selection = list(target_ids)
-
-    if tags_to_add:
-        submit_cli_mutation(env, "mutation.session.tag", {"session_ids": selection, "tags": list(tags_to_add)})
-    if tags_to_remove:
-        submit_cli_mutation(
-            env, "mutation.session.tag", {"session_ids": selection, "remove_tags": list(tags_to_remove)}
-        )
-    if add_marks or remove_marks:
-        submit_cli_mutation(
-            env,
-            "mutation.session.mark",
-            {"session_ids": selection, "add_marks": add_marks, "remove_marks": remove_marks},
-        )
-    if note_text is not None:
-        for sid in target_ids:
-            # Stable per-session identity, deliberately excluding note_text: the
-            # help text promises "add or update" a single mutable note per
-            # session (mirroring add_mark's one-row-per-target behavior), so a
-            # second `mark --note` call on the same session must update the
-            # existing annotation in place rather than fork a new content-hash
-            # row every time the text changes (polylogue-tilk).
-            digest = hashlib.sha256(sid.encode("utf-8", errors="surrogatepass")).hexdigest()
-            submit_cli_mutation(
-                env,
-                "mutation.annotation.save",
-                {"annotation_id": f"note-{digest}", "session_id": sid, "note_text": note_text},
-            )
-
     # Report.
-    count = len(target_ids)
+    count = _object_int(result.get("session_count"))
     ops: list[str] = []
     if tags_to_add:
         ops.append(f"added tags: {', '.join(tags_to_add)}")
@@ -2010,8 +1964,9 @@ def mark_verb(
                 status="ok",
                 operation="mutate",
                 session_count=count,
-                affected_count=count if ops else 0,
-                session_ids=tuple(target_ids),
+                affected_count=_object_int(result.get("affected_count")),
+                session_ids_sample=tuple(cast(list[str], result.get("session_ids_sample") or [])),
+                reference=cast(dict[str, object] | None, result.get("reference")),
             ).to_json(exclude_none=True)
         )
     elif ops:
@@ -2671,6 +2626,7 @@ def _resolve_query_action_session_id(
     operation: str,
     first_only: bool = False,
     machine_output: bool = False,
+    frame_sink: Callable[[str], None] | None = None,
 ) -> str | None:
     """Resolve one query-action session with explicit ranked-result cardinality.
 
@@ -2691,6 +2647,9 @@ def _resolve_query_action_session_id(
         resolve_limit = 1 if first_only else AMBIGUITY_CANDIDATE_LIMIT + 1
         selection = query_session_selection(env.config, request, limit=resolve_limit)
         selection.require_authoritative()
+        if frame_sink is not None:
+            assert selection.snapshot_epoch is not None
+            frame_sink(selection.snapshot_epoch)
         rows = selection.rows
         session_ids = [row.session_id for row in rows]
         multi_match_hint = "Narrow the query to one session or run select first." if operation == "continue" else None
@@ -2704,6 +2663,12 @@ def _resolve_query_action_session_id(
                     return list(rows)
                 complete = query_session_selection(env.config, request, limit=None)
                 complete.require_authoritative()
+                if complete.snapshot_epoch != selection.snapshot_epoch:
+                    from polylogue.cli.operation_kernel import OperationFailedError
+
+                    raise OperationFailedError(
+                        "query_continuation_stale", "selection changed before choosing a continuation target"
+                    )
                 return list(complete.rows)
 
             return resolve_ambiguous_selection(

@@ -117,7 +117,7 @@ def _runtime_entry_points() -> str:
         [
             "[console_scripts]",
             "polylogue = polylogue.cli:main",
-            "polylogued = polylogue.daemon.cli:main",
+            "polylogued = polylogue.daemon.commands:main",
             "polylogue-mcp = polylogue.mcp.cli:main",
             "",
         ]

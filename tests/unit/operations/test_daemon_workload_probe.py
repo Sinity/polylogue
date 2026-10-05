@@ -1603,3 +1603,71 @@ def test_two_available_debt_ledgers_still_diff() -> None:
         "delta": 3,
         "measured": True,
     }
+
+
+@pytest.mark.parametrize("state", ["empty", "missing_profile", "missing_latency", "complete", "hot"])
+def test_workload_surface_readiness_uses_profile_coverage_and_empty_scope(tmp_path: Path, state: str) -> None:
+    from polylogue.core.types import SessionId
+    from polylogue.storage.derived.session.records import SessionLatencyProfileRecord
+    from polylogue.storage.derived.session.storage import replace_session_latency_profiles_bulk_sync
+
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    session_id = "codex-session:coverage"
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        if state != "empty":
+            conn.execute(
+                "INSERT INTO sessions (native_id, origin, content_hash, created_at_ms) VALUES (?, ?, ?, ?)",
+                ("coverage", "codex-session", b"c" * 32, 4070908800000 if state == "hot" else 946684800000),
+            )
+            if state != "missing_profile":
+                write_session_profile(conn, session_id)
+            if state == "complete":
+                replace_session_latency_profiles_bulk_sync(
+                    conn,
+                    [
+                        SessionLatencyProfileRecord(
+                            session_id=SessionId(session_id),
+                            source_name="codex-session",
+                            materialized_at="2000-01-01T00:00:00Z",
+                        )
+                    ],
+                )
+    payload = probe(tmp_path / "index.db")
+    readiness = payload["archive_tiers"]["derived_readiness"]
+    assert readiness["checked"] is True
+    surfaces = readiness["surface_readiness"]
+    assert surfaces["threads"]["ready"] is (state != "missing_profile")
+    assert surfaces["latency_profiles"]["ready"] is (state in {"empty", "complete", "hot"})
+    assert surfaces["latency_profiles"]["evidence"]["missing_latency_profile_row_count"] == (
+        1 if state == "missing_latency" else 0
+    )
+    if state == "missing_profile":
+        assert surfaces["threads"]["blockers"] == ["missing_profile_rows"]
+        assert surfaces["latency_profiles"]["blockers"] == ["missing_profile_rows"]
+    if state == "missing_latency":
+        assert surfaces["latency_profiles"]["blockers"] == ["missing_latency_profile_rows"]
+        assert (
+            "surface:latency_profiles:missing_latency_profile_rows"
+            in payload["archive_tiers"]["layout_readiness"]["blockers"]
+        )
+
+
+def test_workload_readiness_refuses_unreadable_thread_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.core.evidence import Evidence, Unavailable
+
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    original = workload_probe._presence_count
+
+    def read(conn: sqlite3.Connection, table: str) -> Evidence[int]:
+        if table == "threads":
+            return Unavailable(reason="presence_read_failed", detail="thread projection unavailable")
+        return original(conn, table)
+
+    monkeypatch.setattr(workload_probe, "_presence_count", read)
+    payload = probe(tmp_path / "index.db")
+    readiness = payload["archive_tiers"]["derived_readiness"]
+    assert readiness["checked"] is False
+    assert readiness["reason"] == "thread projection unavailable"
+    assert readiness["surface_readiness"] == {}

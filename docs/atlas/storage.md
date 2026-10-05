@@ -156,7 +156,26 @@ collations, order, uniqueness and complementary literal predicates in both
 rehearsal and live execution; exact row values, primary keys, foreign keys
 and integrity must survive the owned transaction. Other non-additive changes
 still require verified backup authority (`storage/sqlite/migration_runner.py`).
-Source runtime version 3 adds `raw_profile_identity_receipts`, captured-input
+### Attachment coordinate migration
+
+Source slot 003 replaces `blob_refs` identity while copying every retained value
+and its original rowid. Attachment references include their provider coordinate
+in the unique key, so identical bytes under two file IDs retain two references.
+Other reference kinds keep their raw or hook owner key. Raw attribution still
+owns liveness and retirement; coordinate identity never encodes a different raw.
+Deferred, inline and prepared attachment acquisition use the same provider file
+coordinate (or the provider attachment ID when no file ID exists).
+
+Populated Source tiers require the existing authenticated, scratch-verified
+backup and numbered daemon train before slot 003 applies. This code change does
+not migrate a live archive. Fresh owned bootstrap and isolated runtime probes
+may instead prove the exact pristine Source v2 schema and literal rows using
+existing evidence owners, including every Source table and canonical seed row.
+The runner rechecks that source-specific authority under its apply lock; an
+empty blob ledger alone is insufficient. No backup receipt is claimed for this
+mode. Coordinates already erased by the predecessor cannot be reconstructed.
+
+Source runtime version 4 (`004_captured_profile_identity.sql`) adds `raw_profile_identity_receipts`, captured-input
 identity columns in prepared manifests and accepted source items, and the
 complementary failure partition for missing profile evidence. This mixed
 table/column/index migration requires the authenticated pre-migration package,
@@ -247,6 +266,16 @@ that shape, and this is not a general native SQLite memory bound.
 
 ## Parsed-session write choke point
 
+Canonical message FTS publication retains the caller's transaction and reads
+deletion targets in connection-bounded pages. It first walks the unchanged
+blocks by their indexed `(message_id, position)` key, then walks remaining
+owned identity residue by `block_id`. Each page cursor closes before companion
+deletes; both scans preserve signed rowids and the existing session ownership
+predicate. SQL inserts read text directly from blocks. A caller-owned
+transaction needs no Python text digest, while publication prepared outside
+the transaction retains its optimistic input revalidation
+(`storage/fts/derivation.py`; `storage/fts/fts_lifecycle.py`).
+
 - `write_parsed_session_to_archive` computes public origin, stored native identity, session identity, parser fingerprint, and lowering fingerprint before lowering one parsed session (function `write_parsed_session_to_archive` in `polylogue/storage/sqlite/archive_tiers/write.py`).
 - Every producer declares its actual destination and transaction owner. Active archive writes use a durable-reference seal; an owned inactive generation defers the archive-wide proof to promotion. A genuine non-archive memory index declares its standalone transaction explicitly. Missing archive arguments or missing durable tiers do not grant standalone permission.
 - Bulk callers reuse one `IndexMutationScope` per commit window. Its disk-backed witness stores original typed lookups, re-resolves their targets before publication, and includes composed descendants affected by parent changes. Inserts, aliases and lineage changes also receive proof: unchanged message IDs alone do not establish preserved lookup or block-position semantics. Generation replacement checks the whole candidate. User/Audit JSON anchor enumeration remains global and unindexed; batching amortizes that census rather than making it independent of archive size (`polylogue/storage/sqlite/reference_seal.py`).
@@ -258,7 +287,7 @@ that shape, and this is not a general native SQLite memory bound.
 
 - Blob paths are SHA-256-addressed as `<root>/<first-two-hex>/<remaining-hex>` (`polylogue/storage/blob_store.py:193-197`).
 - Every preparation route hashes while writing a private staging file and fsyncs its bytes before publication; publication fsyncs the shard directory after an atomic `os.replace` (`polylogue/storage/blob_store.py:207-237`; `polylogue/storage/blob_store.py:245-274`; `polylogue/storage/blob_store.py:282-295`; `polylogue/storage/blob_store.py:303-316`). Preparation, publication deduplication and error cleanup admit the same owned private staging root or child directories; symlinks, foreign directories, parent traversal and escaping companion paths refuse before unlink.
-- Archive publication commits durable reservation receipts before exposing final paths; the exact receipt is consumed in the durable-reference transaction (`polylogue/storage/blob_publication.py:110-150`; `polylogue/storage/blob_publication.py:212-224`; `polylogue/storage/blob_publication.py:270-283`).
+- Archive publication commits durable reservation receipts before exposing final paths; the exact receipt is consumed in the durable-reference transaction (`BlobPublicationReservationStore.reserve_many` in `polylogue/storage/blob_publication.py:125`; `ArchiveBlobPublisher.flush` in the same file at `302-334`; `consume_blob_publication_receipt` at `553-564`).
 - Liveness is descriptor-owned. Ordinary `blob_refs.ref_type` values must map unambiguously to one referent relation (`polylogue/storage/blob_liveness.py:90-113`).
 - A destructive liveness check returns `LIVE`, `UNREFERENCED`, or typed `BLOCKED`; unavailable or unreadable required tiers block deletion (`polylogue/storage/blob_liveness.py:250-291`).
 - GC safety requires no live DB reference, no publication reservation, a final locked recheck across control/source/index, an age floor, and bounded deletion batches (`polylogue/storage/blob_gc.py:7-25`).
@@ -274,12 +303,14 @@ Pending generations are restartable; a restart resumes their exact member set in
 
 ## Lineage storage model
 
-- A prefix-sharing child stores only its divergent tail. The writer resolves the parent, compares composed signatures, records the last inherited message as the branch point, and lowers only the remaining messages (`polylogue/storage/sqlite/archive_tiers/write.py:804-867`).
+The exported synchronous topology adapter discovers both children and outbound links for every fetched node, including ancestors found after the initial target. Its visited queue terminates cycles and includes ancestor siblings and their descendants; the shared topology composition engine retains edge classification and deterministic breadth-first output.
+
+- A prefix-sharing child stores only its divergent tail. The writer resolves the parent, compares composed signatures, records the last inherited message as the branch point, and lowers only the remaining messages (`_prepared_message_context` in `polylogue/storage/sqlite/archive_tiers/write.py:1694-1753`).
 - `session_links` stores destination identity, resolved parent, branch point and its content address, inheritance mode, status, parent tool-use block, method, confidence, and evidence (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:1263-1304`).
-- Reads plan the composition before materializing it: one iterative walk, bounded only by its visited set, resolves the ancestral prefix into per-session segment lengths, with explicit cycle and dangling-branch-point status instead of silently claiming completeness. No depth cap drops a valid ancestor (`polylogue/storage/sqlite/archive_tiers/write.py:2540-2625`).
-- A write never strands an inheriting child. Before a parent full replace, the writer records each direct prefix-sharing child's inherited rows. Afterwards, a child whose branch point no longer resolves gets that pre-write prefix materialized into its own rows and stops inheriting (`spawned-fresh`, still linked to its parent); descendants anchored in those rows follow them. A child whose branch point still resolves keeps inheriting the parent's current prefix (`polylogue/storage/sqlite/archive_tiers/write.py:10257-10420`). A full read materializes every segment; a bounded page fetches only the window the caller asked for, so a deep child's first paint costs the chain depth rather than the composed transcript (`polylogue/storage/sqlite/archive_tiers/write.py:3024-3060`).
-- Link writes refuse to let parser inference overwrite an existing hook-authoritative edge, rather than losing it to last-writer-wins (`polylogue/storage/sqlite/archive_tiers/write.py:5333-5389`).
-- Provider usage counters are NOT sliced like messages. A prefix-sharing child keeps its own reported `total_*` lanes verbatim; only a usage event bound to a replayed prefix message is dropped, because the parent already owns that observation (`polylogue/storage/sqlite/archive_tiers/write.py:6432-6452`; `polylogue/storage/sqlite/archive_tiers/write.py:8605-8630`).
+- Reads plan the composition before materializing it: one iterative walk, bounded only by its visited set, resolves the ancestral prefix into per-session segment lengths, with explicit cycle and dangling-branch-point status instead of silently claiming completeness. No depth cap drops a valid ancestor (`_composed_transcript_plan` in `polylogue/storage/sqlite/archive_tiers/write.py:3399`).
+- A write never strands an inheriting child. Before a parent full replace, the writer records each direct prefix-sharing child's inherited rows. Afterwards, a child whose branch point no longer resolves gets that pre-write prefix materialized into its own rows and stops inheriting (`spawned-fresh`, still linked to its parent); descendants anchored in those rows follow them. A child whose branch point still resolves keeps inheriting the parent's current prefix (`_capture_inherited_prefixes` and `_settle_inherited_prefixes` in `polylogue/storage/sqlite/archive_tiers/write.py:11905` and `12038`). A full read materializes every segment; a bounded page fetches only the window the caller asked for, so a deep child's first paint costs the chain depth rather than the composed transcript (`read_archive_session_page` in `polylogue/storage/sqlite/archive_tiers/write.py:3881`).
+- Link writes refuse to let parser inference overwrite an existing hook-authoritative edge, rather than losing it to last-writer-wins (`_upsert_session_link` in `polylogue/storage/sqlite/archive_tiers/write.py:7852-7894`).
+- Provider usage counters are NOT sliced like messages. A prefix-sharing child keeps its own reported `total_*` lanes verbatim; only a usage event bound to a replayed prefix message is dropped, because the parent already owns that observation (`_provider_usage_event_row` in `polylogue/storage/sqlite/archive_tiers/write.py:9527`; `_reextract_provider_usage_tail_db` in the same file at `13204`).
 - Logical-session usage is therefore the chain root's observation plus each prefix-sharing descendant's own, not a root plus deltas (`polylogue/storage/usage.py:1837-1849`).
 
 ## Invariants and gotchas
@@ -346,6 +377,35 @@ for Hermes delivery correlation, and the ops injection ledger refuse with
 never create missing tiers. Named-source freshness reads current cursor progress
 only from ops `ingest_cursor`; a missing offset remains unknown, and successful
 empty canonical state cannot inherit progress from a retired index table.
+
+## Embedding contract transitions
+
+Acquisition checks all retained producer contracts in the active Embeddings
+membership before a provider call; publication checks again under the same
+generation's writer lock. Declared compatible recipes retain their actual
+producer identities. Incompatible output contracts raise
+`EmbeddingContractTransitionRequiredError` before purchasing or writing a
+window. Unknown producer provenance refuses independently. A separately
+produced candidate can be validated and explicitly promoted through
+`EmbeddingGenerationStore.replace`; this admission does not automatically
+build or switch generations (`storage/embeddings/generations.py`;
+`storage/embeddings/materialization.py`; `storage/embeddings/derivation.py`).
+
+Embedding status measures coverage from Index and the canonical Embeddings tier.
+Its separately guarded Ops history reader returns nullable catchup history when
+the disposable tier is missing or unreadable; that absence does not abort
+otherwise measurable coverage. Supplied pinned connections keep their original
+attached snapshot authority. Owned diagnostic readers close even when an
+Embeddings attachment refuses (`storage/embeddings/status_payload.py`).
+
+Ordinary full FTS rebuilds clear text and identity residue together and stream
+session pages through the existing paired SQL projections. Progress counts
+settled sessions, using the exact session total; an empty terminal event follows
+both resets. Page publication retains the caller transaction. Async observers
+run on their event loop with one settled handoff at a time; observer errors or
+cancellation settle the physical worker before returning and emit no later
+progress (`storage/fts/fts_lifecycle.py`; `pipeline/services/indexing.py`). The
+separately owned resumable bulk generation retains its existing chunk commits.
 
 ### Provider usage projection
 

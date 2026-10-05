@@ -16,12 +16,12 @@ import argparse
 import json
 import subprocess
 import sys
-from collections.abc import Iterable
 from pathlib import Path
 
-from polylogue.core.json import JSONDocument, JSONValue
-from polylogue.schemas.privacy import PUBLISHABLE_VOCABULARY_ROLES
-from polylogue.schemas.privacy_config import PrivacyConfigSection, load_privacy_config
+from polylogue.cli.shared.schema_command_support import build_schema_privacy_config
+from polylogue.core.json import JSONDocument
+from polylogue.schemas.operator.inference import privacy_config_from_payload
+from polylogue.schemas.privacy_config import PrivacyConfig
 from polylogue.schemas.provider_reconciliation import (
     ProviderMatrix,
     load_receipts,
@@ -43,44 +43,6 @@ def _code_revision(explicit: str | None) -> str:
         check=False,
     )
     return completed.stdout.strip() if completed.returncode == 0 else "unknown"
-
-
-def _inference_configuration(privacy: str | None, privacy_config_path: Path | None) -> JSONDocument:
-    """Resolve the privacy declaration the pass ran under, never a summary of it.
-
-    The resolved values are recorded rather than the preset name alone, so a
-    later change to a preset cannot silently re-describe what this pass did.
-    """
-
-    overrides: PrivacyConfigSection = {"level": privacy} if privacy else {}
-    config = load_privacy_config(
-        cli_overrides=overrides,
-        project_path=privacy_config_path.parent if privacy_config_path else None,
-    )
-    payload: JSONDocument = {
-        "privacy_level": config.level,
-        "safe_enum_max_length": config.safe_enum_max_length,
-        "high_entropy_min_length": config.high_entropy_min_length,
-        "source_selection": "declared_frontier",
-    }
-    payload["field_overrides"] = _string_map(config.field_overrides)
-    payload["allow_value_patterns"] = _json_strings(config.allow_value_patterns)
-    payload["deny_value_patterns"] = _json_strings(config.deny_value_patterns)
-    payload["publishable_vocabulary_roles"] = _json_strings(PUBLISHABLE_VOCABULARY_ROLES)
-    return payload
-
-
-def _json_strings(values: Iterable[str]) -> list[JSONValue]:
-    items: list[JSONValue] = []
-    items.extend(sorted(values))
-    return items
-
-
-def _string_map(values: dict[str, str]) -> JSONDocument:
-    payload: JSONDocument = {}
-    for key, value in sorted(values.items()):
-        payload[key] = value
-    return payload
 
 
 def _load_receipt_payloads(directory: Path) -> list[JSONDocument]:
@@ -122,13 +84,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"schema-reconcile: {exc}", file=sys.stderr)
         return 1
 
-    matrix = reconcile_provider_matrix(
-        frontier=frontier,
-        check=check,
-        receipts=receipts,
-        code_revision=_code_revision(args.code_revision),
-        inference_configuration=_inference_configuration(args.privacy, args.privacy_config),
-    )
+    try:
+        expected = (
+            privacy_config_from_payload(
+                build_schema_privacy_config(
+                    privacy=args.privacy,
+                    privacy_config_path=args.privacy_config,
+                )
+            )
+            or PrivacyConfig()
+        )
+        matrix = reconcile_provider_matrix(
+            frontier=frontier,
+            check=check,
+            receipts=receipts,
+            code_revision=_code_revision(args.code_revision),
+            inference_configuration=expected.to_payload(),
+        )
+    except ValueError as exc:
+        print(f"schema-reconcile: {exc}", file=sys.stderr)
+        return 1
 
     if args.write is not None:
         _write_matrix(matrix, args.write)

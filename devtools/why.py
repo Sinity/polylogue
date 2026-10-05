@@ -25,7 +25,7 @@ from typing import Any
 from devtools.verify_runs import (
     ABANDONED_DIAGNOSIS,
     VERIFY_RUNS_DIR,
-    reconcile_and_record_abandoned_verify_runs,
+    reconcile_and_record_verify_runs,
     verify_history_path,
 )
 
@@ -467,7 +467,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     # Reading the receipts is the moment a stranded ``running`` run can be
     # closed out: the process that would have finished it is gone.
-    reconcile_and_record_abandoned_verify_runs(runs_root=VERIFY_RUNS_DIR)
+    reconcile_and_record_verify_runs(runs_root=VERIFY_RUNS_DIR)
 
     if args.history is not None:
         if args.json:

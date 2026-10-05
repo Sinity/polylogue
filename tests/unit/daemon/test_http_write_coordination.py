@@ -25,6 +25,7 @@ from polylogue.daemon.http import (
     DaemonAPIHandler,
     DaemonAPIHTTPServer,
 )
+from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
 from polylogue.daemon.web_auth import WebCredentialScope
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.daemon_client import DaemonClient, DaemonMutationIndeterminateError
@@ -36,6 +37,7 @@ from tests.infra.sqlite_cursor_settlement import (
 
 class _DeleteDaemonClient(DaemonClient):
     archive_root: Path
+    authority_server: DaemonAPIUnixHTTPServer
 
 
 class _RecordingBridge:
@@ -164,6 +166,7 @@ def _delete_authority_daemon(
         stack.client.auth_token = "delete-authority-token"
         client = cast(_DeleteDaemonClient, stack.client)
         object.__setattr__(client, "archive_root", archive_root)
+        object.__setattr__(client, "authority_server", stack.server)
         # These routes delete hundreds of sessions through a real daemon, and
         # one request's cost is proportional to the prepared archive. A
         # constant budget measures how loaded the host is, not the route
@@ -227,9 +230,6 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
     """Real daemon HTTP/client/API proof of prepared, single-use delete authority."""
 
     from polylogue.operations.daemon_errors import DaemonResponseError
-    from polylogue.operations.delete_authorization import DeleteAuthorizationError, consume_cli_delete
-    from polylogue.operations.mutation_transaction import MutationPrincipal
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
@@ -257,8 +257,8 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
         _delete_operation(client, "execute", {"authorization_ref": substitute_ref})
 
         stale_ref = _prepare_authorize(client, (stale_a, stale_b))
-        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-            archive.delete_sessions((stale_a,))
+        intervening_ref = _prepare_authorize(client, (stale_a,))
+        _delete_operation(client, "execute", {"authorization_ref": intervening_ref})
         # Selection validation runs after durable batch acceptance. Its
         # refusal is a recoverable no-effect result, not an HTTP rejection.
         stale_result = _delete_operation(client, "execute", {"authorization_ref": stale_ref})
@@ -272,12 +272,12 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
         _assert_session_exists(archive_root, stale_b, expected=True)
 
         expiry_ref = _prepare_authorize(client, (expiry_id,))
-        with pytest.raises(DeleteAuthorizationError):
-            consume_cli_delete(
-                archive_root,
-                expiry_ref,
-                MutationPrincipal("daemon:bearer:other", frozenset({"archive.delete_session"}), "cli", "write"),
-            )
+        client.authority_server.auth_token = "different-authenticated-principal"
+        client.auth_token = "different-authenticated-principal"
+        with pytest.raises(DaemonResponseError):
+            _delete_operation(client, "execute", {"authorization_ref": expiry_ref})
+        client.authority_server.auth_token = "delete-authority-token"
+        client.auth_token = "delete-authority-token"
         _assert_session_exists(archive_root, expiry_id, expected=True)
         with sqlite3.connect(archive_root / "audit.db") as conn:
             conn.execute(
@@ -449,7 +449,9 @@ def test_cli_delete_real_daemon_route_cancels_an_unconfirmed_preview(
         assert preview is not None
         preview_ref = str(preview["preview_ref"])
         cancelled = _delete_operation(client, "cancel", {"preview_ref": preview_ref})
-        assert cancelled == {"status": "cancelled", "preview_ref": preview_ref, "preview_refs": [preview_ref]}
+        assert cancelled["status"] == "cancelled"
+        assert cancelled["source_request_id"] == cast(dict[str, object], preview["reference"])["request_id"]
+        assert cast(dict[str, object], cancelled["reference"])["part_count"] == 1
         with pytest.raises(DaemonResponseError) as authorization_error:
             _delete_operation(client, "authorize", {"preview_ref": preview_ref})
 
@@ -482,7 +484,9 @@ def test_cli_delete_real_daemon_route_cancels_an_expired_preview(
 
         cancelled = _delete_operation(client, "cancel", {"preview_ref": preview_ref})
 
-    assert cancelled == {"status": "cancelled", "preview_ref": preview_ref, "preview_refs": [preview_ref]}
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["source_request_id"] == cast(dict[str, object], preview["reference"])["request_id"]
+    assert cast(dict[str, object], cancelled["reference"])["part_count"] == 1
     _assert_session_exists(archive_root, session_id, expected=True)
     with sqlite3.connect(archive_root / "audit.db") as conn:
         assert conn.execute("SELECT state FROM operation_previews WHERE preview_id = ?", (preview_ref,)).fetchone() == (
@@ -697,15 +701,13 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
         assert preview["session_count"] == 513
         assert preview["session_ids_sample"] == list(session_ids[:20])
         assert "session_ids" not in preview
-        preview_refs = preview["preview_refs"]
-        assert isinstance(preview_refs, list)
-        assert len(preview_refs) == 3
-        authorization = _delete_operation(client, "authorize", {"preview_refs": preview_refs})
+        preview_id = str(cast(dict[str, object], preview["reference"])["request_id"])
+        assert cast(dict[str, object], preview["reference"])["part_count"] == 3
+        authorization = _delete_operation(client, "authorize", {"preview_request_id": preview_id})
         assert authorization is not None
-        tokens = authorization["authorization_refs"]
-        assert isinstance(tokens, list)
-        assert len(tokens) == 3
-        result = _delete_operation(client, "execute", {"authorization_refs": tokens})
+        authorization_id = str(cast(dict[str, object], authorization["reference"])["request_id"])
+        assert cast(dict[str, object], authorization["reference"])["part_count"] == 3
+        result = _delete_operation(client, "execute", {"authorization_request_id": authorization_id})
 
     _assert_completed_delete(result, affected=513, chunks=3)
     with sqlite3.connect(archive_root / "index.db") as conn:
@@ -736,12 +738,10 @@ def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
         preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
         assert preview is not None
-        preview_refs = preview["preview_refs"]
-        assert isinstance(preview_refs, list)
-        authorization = _delete_operation(client, "authorize", {"preview_refs": preview_refs})
+        preview_id = str(cast(dict[str, object], preview["reference"])["request_id"])
+        authorization = _delete_operation(client, "authorize", {"preview_request_id": preview_id})
         assert authorization is not None
-        tokens = authorization["authorization_refs"]
-        assert isinstance(tokens, list)
+        authorization_id = str(cast(dict[str, object], authorization["reference"])["request_id"])
 
         original_apply = SessionDeleteActuator.apply
         completed_applies = 0
@@ -760,7 +760,7 @@ def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
         # after two durable effects leaves the final attempt unknown rather
         # than inventing a retry-safe HTTP refusal.
         with patch.object(SessionDeleteActuator, "apply", new=fail_third_apply):
-            result = _delete_operation(client, "execute", {"authorization_refs": tokens})
+            result = _delete_operation(client, "execute", {"authorization_request_id": authorization_id})
 
     assert completed_applies == 2
     assert result["outcome"] == "indeterminate"
@@ -797,16 +797,7 @@ def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
 
 
 def test_delete_protocol_accepts_selections_of_any_size() -> None:
-    """Every delete phase accepts a selection above the retired 10,000-id cap.
-
-    The preview splits a selection into bounded audit chunks and the
-    operation's ``max_body_bytes`` bounds the transport, so no phase counts
-    targets or chunk references.
-
-    Anti-vacuity: restore ``max_length=10_000`` on the preview ids or
-    ``max_length=40`` on the preview/authorization refs and model validation
-    raises here.
-    """
+    """Large explicit selections remain valid; follow-up requests name their owner."""
     from polylogue.operations.daemon_protocol import (
         DeleteAuthorizeRequest,
         DeleteCancelRequest,
@@ -815,152 +806,149 @@ def test_delete_protocol_accepts_selections_of_any_size() -> None:
     )
 
     selection = [f"codex-session:large-{index}" for index in range(10_001)]
-    refs = [f"ref-{index}" for index in range(41)]
+    assert len(DeletePreviewRequest.model_validate({"session_ids": selection}).session_ids or ()) == 10_001
+    assert (
+        DeleteAuthorizeRequest.model_validate({"preview_request_id": "preview-owner"}).preview_request_id
+        == "preview-owner"
+    )
+    assert (
+        DeleteCancelRequest.model_validate({"preview_request_id": "preview-owner"}).preview_request_id
+        == "preview-owner"
+    )
+    assert (
+        DeleteExecuteRequest.model_validate(
+            {"authorization_request_id": "authorization-owner"}
+        ).authorization_request_id
+        == "authorization-owner"
+    )
 
-    assert len(DeletePreviewRequest.model_validate({"session_ids": selection}).session_ids) == 10_001
-    assert DeleteAuthorizeRequest.model_validate({"preview_refs": refs}).preview_refs == refs
-    assert DeleteCancelRequest.model_validate({"preview_refs": refs}).preview_refs == refs
-    assert DeleteExecuteRequest.model_validate({"authorization_refs": refs}).authorization_refs == refs
 
-    # The follow-up phases carry one ref per preview chunk of the same
-    # selection, so they share the preview's transport bound.
-    from polylogue.operations.daemon_protocol import daemon_operation_spec
-
-    body_limits = {
-        step: cast(Any, daemon_operation_spec(f"mutation.session.delete.{step}")).max_body_bytes
-        for step in ("preview", "authorize", "cancel", "execute")
-    }
-    assert len(set(body_limits.values())) == 1, body_limits
-
-
-def test_cli_delete_preparation_resolves_canonical_ids_in_bounded_pages(tmp_path: Path) -> None:
-    """A real archive selection must not spend one SQLite query per canonical ID.
-
-    The production preparation helper is given 513 persisted sessions and its
-    real SQLite connection records resolution queries. The repair batches
-    exact canonical IDs in fixed-size pages, so this requires three or fewer
-    selection queries. The prior per-ID resolver produced 513 queries, and
-    the former list membership duplicate check made the canonicality pass
-    quadratic as the preview grew.
-    """
-    from polylogue.operations.delete_authorization import _canonical_session_ids
+def test_cli_delete_preparation_resolves_canonical_ids_in_bounded_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The actual resident selection resolves 513 exact IDs in three bounded reads."""
+    from polylogue.operations import daemon_mutations
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    session_ids = _seed_delete_authority_archive(archive_root, 513)
+    root = tmp_path / "archive"
+    root.mkdir()
+    ids = _seed_delete_authority_archive(root, 513)
+    original_select = daemon_mutations._prepare_mutation_selection
+    original_resolve = ArchiveStore.resolve_exact_session_ids
+    selecting = threading.local()
+    sizes: list[int] = []
 
-    with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
-        statements: list[str] = []
-        archive._conn.set_trace_callback(statements.append)
-        assert _canonical_session_ids(archive, session_ids) == session_ids
+    def select(*args: Any, **kwargs: Any) -> Any:
+        selecting.active = True
+        try:
+            return original_select(*args, **kwargs)
+        finally:
+            selecting.active = False
 
-    session_selects = [statement for statement in statements if "FROM sessions" in statement]
-    assert len(session_selects) <= 3
+    def resolve(archive: ArchiveStore, session_ids: Any, **kwargs: Any) -> Any:
+        if getattr(selecting, "active", False):
+            sizes.append(len(session_ids))
+        return original_resolve(archive, session_ids, **kwargs)
 
-
-def test_cli_delete_preparation_refuses_a_missing_exact_id_that_is_a_live_prefix(tmp_path: Path) -> None:
-    """Delete previews are bound to exact canonical IDs, never prefix resolution."""
-
-    from polylogue.operations.delete_authorization import DeleteAuthorizationError, _canonical_session_ids
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    (session_id,) = _seed_delete_authority_archive(archive_root, 1)
-    missing_exact_id = session_id.removesuffix("0")
-
-    with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
-        with pytest.raises(DeleteAuthorizationError, match="selection_is_stale"):
-            _canonical_session_ids(archive, (missing_exact_id,))
-
-    _assert_session_exists(archive_root, session_id, expected=True)
+    monkeypatch.setattr(daemon_mutations, "_prepare_mutation_selection", select)
+    monkeypatch.setattr(ArchiveStore, "resolve_exact_session_ids", resolve)
+    with _delete_authority_daemon(monkeypatch, root) as client:
+        preview = _delete_operation(client, "preview", {"session_ids": list(ids)})
+    assert preview["session_count"] == len(ids)
+    assert sizes == [256, 256, 1]
 
 
-def test_cli_delete_preparation_rejects_a_late_duplicate_before_archive_resolution(tmp_path: Path) -> None:
-    """Set canonicality rejects a large duplicate selection without quadratic work.
+def test_cli_delete_preparation_refuses_a_missing_exact_id_that_is_a_live_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.operations.daemon_errors import DaemonResponseError
 
-    This invokes the production preparation helper with a real temporary
-    SQLite archive. A duplicate after 513 distinct IDs must fail before any
-    resolver query. The pre-repair list membership loop resolved every prior
-    target and compared each canonical ID against a growing list.
-    """
-    from polylogue.operations.delete_authorization import DeleteAuthorizationError, _canonical_session_ids
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    root = tmp_path / "archive"
+    root.mkdir()
+    (session_id,) = _seed_delete_authority_archive(root, 1)
+    with _delete_authority_daemon(monkeypatch, root) as client:
+        with pytest.raises(DaemonResponseError) as refusal:
+            _delete_operation(client, "preview", {"session_ids": [session_id.removesuffix("0")]})
+    assert refusal.value.code == "selection_is_stale"
+    _assert_session_exists(root, session_id, expected=True)
 
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    session_ids = _seed_delete_authority_archive(archive_root, 513)
 
-    with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
-        statements: list[str] = []
-        archive._conn.set_trace_callback(statements.append)
-        with pytest.raises(DeleteAuthorizationError, match="selection_is_not_canonical"):
-            _canonical_session_ids(archive, session_ids + (session_ids[0],))
+def test_cli_delete_preparation_rejects_a_late_duplicate_before_archive_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.operations import daemon_mutations
 
-    assert not [statement for statement in statements if "FROM sessions" in statement]
+    root = tmp_path / "archive"
+    root.mkdir()
+    ids = _seed_delete_authority_archive(root, 513)
+    with _delete_authority_daemon(monkeypatch, root) as client:
+        with patch.object(
+            daemon_mutations,
+            "_prepare_mutation_selection",
+            side_effect=AssertionError("duplicate reached archive selection"),
+        ) as selection:
+            with pytest.raises(ValueError):
+                _delete_operation(client, "preview", {"session_ids": list(ids + (ids[0],))})
+        selection.assert_not_called()
 
 
 def test_cli_delete_interruption_consumes_authorization_without_deleting(tmp_path: Path) -> None:
-    """An interrupted apply leaves a consumed unknown audit attempt, never a retryable token."""
-
-    from polylogue.operations.delete_authorization import (
-        DeleteAuthorizationError,
-        authorize_cli_delete,
-        consume_cli_delete,
-        prepare_cli_delete,
-    )
+    """An interrupted bound actuator consumes its actual UDS-issued authority once."""
+    from polylogue.operations.audit import AuditRepository
     from polylogue.operations.mutation_actuators import SessionDeleteActuator
-    from polylogue.operations.mutation_transaction import MutationPrincipal
+    from polylogue.operations.mutation_transaction import TokenConsumedError
+    from tests.infra.daemon_operations import execute_bound_delete, prepare_bound_delete
 
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    (session_id,) = _seed_delete_authority_archive(archive_root, 1)
-    principal = MutationPrincipal(
-        "daemon:bearer:interrupted",
-        frozenset({"archive.delete_session"}),
-        "cli",
-        "daemon-authenticated",
-    )
-    preview = prepare_cli_delete(archive_root, (session_id,), principal)
-    token = authorize_cli_delete(archive_root, preview.preview_ref, principal)
+    root = tmp_path / "archive"
+    root.mkdir()
+    (session_id,) = _seed_delete_authority_archive(root, 1)
+    with running_daemon_operations(root) as stack:
+        preview, authorization, principal = prepare_bound_delete(stack, (session_id,))
+        with patch.object(
+            SessionDeleteActuator, "apply", side_effect=RuntimeError("interrupted before apply")
+        ) as apply:
+            with pytest.raises(RuntimeError, match="interrupted before apply"):
+                execute_bound_delete(stack, preview, authorization, principal)
+        _assert_session_exists(root, session_id, expected=True)
 
-    with patch.object(SessionDeleteActuator, "apply", side_effect=RuntimeError("interrupted before apply")):
-        with pytest.raises(RuntimeError, match="interrupted before apply"):
-            consume_cli_delete(archive_root, token, principal)
-    _assert_session_exists(archive_root, session_id, expected=True)
+        # Test the durable one-shot boundary directly: another executor first
+        # runs legitimate recovery of the original unknown intent, which is
+        # different from granting a second authorization consumption.
+        def consume_again() -> str | None:
+            return AuditRepository(root / "audit.db").consume_authorization_and_start(preview, authorization)
 
-    with pytest.raises(DeleteAuthorizationError, match="authorization_not_active"):
-        consume_cli_delete(archive_root, token, principal)
-    with sqlite3.connect(archive_root / "audit.db") as conn:
+        with pytest.raises(TokenConsumedError):
+            stack.write_bridge.run_sync("test.delete.consumed-authority", consume_again)
+        apply.assert_called_once()
+    with sqlite3.connect(root / "audit.db") as conn:
         state = conn.execute(
             "SELECT state, unknown_reason FROM operation_attempts ORDER BY started_at_ms DESC LIMIT 1"
         ).fetchone()
+        consumed = conn.execute(
+            "SELECT state, consumed_at_ms FROM operation_authorizations WHERE authorization_id = ?",
+            (authorization.authorization_id,),
+        ).fetchone()
+        attempts = conn.execute("SELECT count(*) FROM operation_attempts").fetchone()
     assert state == ("unknown", "actuator exception after durable intent")
+    assert consumed is not None and consumed[0] == "consumed" and consumed[1] is not None
+    assert attempts == (1,)
+    _assert_session_exists(root, session_id, expected=True)
 
 
 def test_cli_delete_preserves_audit_finalization_failure_after_effect(tmp_path: Path) -> None:
     from polylogue.operations.audit import AuditRepository
-    from polylogue.operations.delete_authorization import authorize_cli_delete, consume_cli_delete, prepare_cli_delete
-    from polylogue.operations.mutation_transaction import AuditFinalizationError, MutationPrincipal
+    from polylogue.operations.mutation_transaction import AuditFinalizationError
+    from tests.infra.daemon_operations import execute_bound_delete, prepare_bound_delete
 
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    (session_id,) = _seed_delete_authority_archive(archive_root, 1)
-    principal = MutationPrincipal(
-        "daemon:bearer:audit-failure",
-        frozenset({"archive.delete_session"}),
-        "cli",
-        "daemon-authenticated",
-    )
-    preview = prepare_cli_delete(archive_root, (session_id,), principal)
-    token = authorize_cli_delete(archive_root, preview.preview_ref, principal)
-
-    with patch.object(AuditRepository, "finalize_attempt", side_effect=RuntimeError("audit unavailable")):
-        with pytest.raises(AuditFinalizationError):
-            consume_cli_delete(archive_root, token, principal)
-
-    _assert_session_exists(archive_root, session_id, expected=False)
+    root = tmp_path / "archive"
+    root.mkdir()
+    (session_id,) = _seed_delete_authority_archive(root, 1)
+    with running_daemon_operations(root) as stack:
+        preview, authorization, principal = prepare_bound_delete(stack, (session_id,))
+        with patch.object(AuditRepository, "finalize_attempt", side_effect=RuntimeError("audit unavailable")):
+            with pytest.raises(AuditFinalizationError):
+                execute_bound_delete(stack, preview, authorization, principal)
+        _assert_session_exists(root, session_id, expected=False)
 
 
 def test_no_auth_cli_principal_ignores_attacker_selected_bearer_text() -> None:
@@ -1290,71 +1278,46 @@ def test_tcp_pre_dispatch_refusal_is_marked_rejected_not_indeterminate() -> None
 
 
 def test_delete_preview_plan_is_reconstructed_by_its_audit_owner(tmp_path: Path) -> None:
-    """The stored plan payload, not the preview columns, defines the plan.
+    """The canonical Audit reader retains authored fields and refuses mismatched replay semantics."""
+    from polylogue.operations.audit import AuditRepository
+    from tests.infra.daemon_operations import prepare_bound_delete
 
-    ``delete_authorization`` used to rebuild the plan from ``operation_previews``
-    columns with its own rules (notably a hardcoded ``reversible=False``), so
-    two readers of one durable row could disagree about what was authorized.
-    Reconstruction now goes through the audit tier's own payload reader, and
-    the loaded plan is bound by the same integrity check the authorize/begin
-    path applies.
+    root = tmp_path / "archive"
+    root.mkdir()
+    (session_id,) = _seed_delete_authority_archive(root, 1)
+    with running_daemon_operations(root) as stack:
+        preview, _authorization, principal = prepare_bound_delete(stack, (session_id,))
+        audit = AuditRepository(root / "audit.db")
+        loaded = audit.preview_for_principal(preview.preview_ref, principal)
+        assert loaded.plan.target_refs == (f"session:{session_id}",)
+        assert loaded.plan.reversible is False
 
-    Anti-vacuity: reinstate the column-based reconstruction and the first
-    assertion is red (the tampered ``reversible`` in ``plan_json`` would be
-    ignored); drop ``validate_mutation_plan_integrity`` from the load path and
-    the second assertion is red (a rewritten context would load happily).
-    """
-
-    from polylogue.operations.delete_authorization import (
-        DeleteAuthorizationError,
-        _audit_repository,
-        _load_preview,
-        prepare_cli_delete,
-    )
-    from polylogue.operations.mutation_transaction import MutationPrincipal
-
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    (session_id,) = _seed_delete_authority_archive(archive_root, 1)
-    principal = MutationPrincipal(
-        "daemon:bearer:reconstruction",
-        frozenset({"archive.delete_session"}),
-        "cli",
-        "daemon-authenticated",
-    )
-    preview = prepare_cli_delete(archive_root, (session_id,), principal)
-    audit = _audit_repository(archive_root)
-
-    loaded = _load_preview(audit, preview.preview_ref, principal, require_prepared=True)
-    assert loaded.plan.target_refs == (f"session:{session_id}",)
-    assert loaded.plan.reversible is False
-
-    def _rewrite_plan_json(mutate: Callable[[dict[str, object]], None]) -> None:
-        with sqlite3.connect(archive_root / "audit.db") as conn:
-            stored = json.loads(
+        def rewrite(mutate: Callable[[dict[str, object]], None]) -> None:
+            with sqlite3.connect(root / "audit.db") as conn:
+                stored = json.loads(
+                    conn.execute(
+                        "SELECT plan_json FROM operation_previews WHERE preview_id = ?", (preview.preview_ref,)
+                    ).fetchone()[0]
+                )
+                mutate(stored)
                 conn.execute(
-                    "SELECT plan_json FROM operation_previews WHERE preview_id = ?", (preview.preview_ref,)
-                ).fetchone()[0]
-            )
-            mutate(stored)
-            conn.execute(
-                "UPDATE operation_previews SET plan_json = ? WHERE preview_id = ?",
-                (json.dumps(stored, sort_keys=True, separators=(",", ":")), preview.preview_ref),
-            )
+                    "UPDATE operation_previews SET plan_json = ? WHERE preview_id = ?",
+                    (json.dumps(stored, sort_keys=True, separators=(",", ":")), preview.preview_ref),
+                )
 
-    def _set_reversible(document: dict[str, object]) -> None:
-        document["reversible"] = True
+        def reversible(document: dict[str, object]) -> None:
+            document["reversible"] = True
 
-    _rewrite_plan_json(_set_reversible)
-    assert _load_preview(audit, preview.preview_ref, principal, require_prepared=True).plan.reversible is True
+        rewrite(reversible)
+        assert audit.preview_for_principal(preview.preview_ref, principal).plan.reversible is True
 
-    def _rewrite_context(document: dict[str, object]) -> None:
-        document["reversible"] = False
-        document["context"] = {"session_ids": ["codex-session:not-authorized"]}
+        def wrong_context(document: dict[str, object]) -> None:
+            document["reversible"] = False
+            document["context"] = {"session_ids": ["codex-session:not-authorized"]}
 
-    _rewrite_plan_json(_rewrite_context)
-    with pytest.raises(DeleteAuthorizationError, match="preview_plan_invalid"):
-        _load_preview(audit, preview.preview_ref, principal, require_prepared=True)
+        rewrite(wrong_context)
+        with pytest.raises(ValueError, match="stored plan context differs from its replay semantics"):
+            audit.preview_for_principal(preview.preview_ref, principal)
 
 
 @pytest.mark.uses_real_clock("client deadline expires while its admitted writer continues to actual settlement")
@@ -1443,27 +1406,29 @@ def test_cli_delete_pages_every_phase_past_one_machine_batch(monkeypatch: pytest
     from polylogue.operations import daemon_mutations
 
     monkeypatch.setattr(daemon_mutations, "MAX_MUTATION_PLAN_TARGETS", 2)
+    monkeypatch.setattr(daemon_mutations, "_MUTATION_SELECTION_PAGE_SIZE", 2)
     monkeypatch.setattr(daemon_mutations, "MACHINE_PAGE_PARTS", 1)
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
-    session_ids = _seed_delete_authority_archive(archive_root, 7)
+    _seed_delete_authority_archive(archive_root, 7)
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
+        preview = _delete_operation(client, "preview", {"selection": {"params": {"list_mode": True}, "mode": "all"}})
         assert preview["session_count"] == 7
-        preview_refs = preview["preview_refs"]
-        assert isinstance(preview_refs, list) and len(preview_refs) == 4
-        authorization = _delete_operation(client, "authorize", {"preview_refs": preview_refs})
-        tokens = authorization["authorization_refs"]
-        assert isinstance(tokens, list) and len(tokens) == 4
-        result = _delete_operation(client, "execute", {"authorization_refs": tokens})
+        preview_id = str(cast(dict[str, object], preview["reference"])["request_id"])
+        assert cast(dict[str, object], preview["reference"])["part_count"] == 4
+        authorization = _delete_operation(client, "authorize", {"preview_request_id": preview_id})
+        authorization_id = str(cast(dict[str, object], authorization["reference"])["request_id"])
+        assert cast(dict[str, object], authorization["reference"])["part_count"] == 4
+        result = _delete_operation(client, "execute", {"authorization_request_id": authorization_id})
 
     _assert_completed_delete(result, affected=7, chunks=4)
     with sqlite3.connect(archive_root / "audit.db") as conn:
         kinds = sorted(str(row[0]) for row in conn.execute("SELECT artifact_kind FROM machine_requests"))
         assert kinds == ["authorization-batch", "execution-batch", "preview-batch"]
-        expiries = {int(row[0]) for row in conn.execute("SELECT expires_at_ms FROM operation_previews")}
-        assert len(expiries) == 1, "pages of one preview expire together"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM operation_previews WHERE expires_at_ms <= created_at_ms"
+        ).fetchone() == (0,)
         assert {int(row[0]) for row in conn.execute("SELECT part_count FROM machine_requests")} == {4}
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
@@ -1482,10 +1447,11 @@ def test_cli_delete_cancels_a_preview_of_many_pages(monkeypatch: pytest.MonkeyPa
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
         preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
-        preview_refs = preview["preview_refs"]
-        assert isinstance(preview_refs, list) and len(preview_refs) == 3
-        cancelled = _delete_operation(client, "cancel", {"preview_refs": preview_refs})
-        assert cancelled["preview_refs"] == preview_refs
+        preview_id = str(cast(dict[str, object], preview["reference"])["request_id"])
+        assert cast(dict[str, object], preview["reference"])["part_count"] == 3
+        cancelled = _delete_operation(client, "cancel", {"preview_request_id": preview_id})
+        assert cancelled["source_request_id"] == preview_id
+        assert cast(dict[str, object], cancelled["reference"])["part_count"] == 3
     with sqlite3.connect(archive_root / "audit.db") as conn:
         states = {str(row[0]) for row in conn.execute("SELECT state FROM operation_previews")}
     assert states == {"cancelled"}
@@ -1496,7 +1462,7 @@ def test_cli_delete_keeps_progressing_past_its_request_deadline(
 ) -> None:
     """A durably accepted paged delete finishes every phase past its deadline.
 
-    The runtime reports every request past its deadline throughout. Anti-vacuity:
+    The runtime reports a deadline after actual durable acceptance. Anti-vacuity:
     fence staging pages or execution parts on ``deadline`` and the selection is
     left partly deleted, with a request stopped as ``deadline``.
     """
@@ -1505,15 +1471,26 @@ def test_cli_delete_keeps_progressing_past_its_request_deadline(
 
     monkeypatch.setattr(daemon_mutations, "MAX_MUTATION_PLAN_TARGETS", 2)
     monkeypatch.setattr(daemon_mutations, "MACHINE_PAGE_PARTS", 1)
-    monkeypatch.setattr(operation_runtime.DaemonOperationRuntime, "stop_reason", lambda _self, _request: "deadline")
+
+    def past_deadline_after_acceptance(runtime: operation_runtime.DaemonOperationRuntime, request: Any) -> str | None:
+        exchange = runtime._exchanges[str(request.request_id)]
+        return "deadline" if exchange.acceptance_started else None
+
+    monkeypatch.setattr(operation_runtime.DaemonOperationRuntime, "stop_reason", past_deadline_after_acceptance)
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     session_ids = _seed_delete_authority_archive(archive_root, 7)
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
         preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
-        authorization = _delete_operation(client, "authorize", {"preview_refs": preview["preview_refs"]})
-        result = _delete_operation(client, "execute", {"authorization_refs": authorization["authorization_refs"]})
+        authorization = _delete_operation(
+            client, "authorize", {"preview_request_id": cast(dict[str, object], preview["reference"])["request_id"]}
+        )
+        result = _delete_operation(
+            client,
+            "execute",
+            {"authorization_request_id": cast(dict[str, object], authorization["reference"])["request_id"]},
+        )
 
     _assert_completed_delete(result, affected=7, chunks=4)
     with sqlite3.connect(archive_root / "audit.db") as conn:

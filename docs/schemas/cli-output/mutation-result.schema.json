@@ -172,6 +172,19 @@
       "default": null,
       "title": "Outcome"
     },
+    "reference": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reference"
+    },
     "resource_id": {
       "anyOf": [
         {
@@ -234,6 +247,21 @@
       ],
       "default": null,
       "title": "Session Ids"
+    },
+    "session_ids_sample": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Ids Sample"
     },
     "skipped_count": {
       "anyOf": [

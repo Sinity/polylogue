@@ -1341,3 +1341,46 @@ async def test_canonical_retained_attachment_claims_keep_equal_content_coordinat
             assert index.execute("SELECT COUNT(*) FROM attachments WHERE blob_hash=?", (blob_hash,)).fetchone() == (2,)
 
     await _run_original_raw_carrier_case(tmp_path, monkeypatch, check, session_factory=session, seed_setup=seed)
+
+
+@pytest.mark.parametrize("prepared", (False, True))
+def test_equal_content_inline_provider_coordinates_survive_publication(tmp_path: Path, prepared: bool) -> None:
+    """Raw-wide inline coordinates would collapse the two durable references."""
+    bootstrap_archive_root(tmp_path)
+    session = _session("two attachments", attachment_bytes=b"identical inline payload")
+    first = session.attachments[0]
+    session.attachments = [
+        first.model_copy(update={"provider_attachment_id": file_id, "provider_file_id": file_id})
+        for file_id in ("inline-file-a", "inline-file-b")
+    ]
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
+        if prepared:
+            (raw_id,) = _write_raws(writer, 1)
+            parse = _parse_from({raw_id: session})
+            _publish_census(writer, raw_id, parse, at_ms=1)
+            cohort = prepare_ingest_cohort(
+                writer,
+                logical_source_key="codex-session:prepared-membership",
+                accepted_raw_ids=(raw_id,),
+                parser_fingerprint="prepared-test-parser",
+                parse_retained_raw=parse,
+                acquired_at_ms=2,
+            )
+            assert publish_ingest_cohort(writer, cohort).published
+        else:
+            raw_id, _session_id = writer.write_raw_and_parsed(
+                session,
+                payload=b'{"synthetic":"two-inline-attachments"}',
+                source_path="/synthetic/inline.json",
+                acquired_at_ms=2,
+            )
+        refs = (
+            writer._ensure_source_conn()
+            .execute("SELECT ref_id, source_path FROM blob_refs WHERE ref_type='attachment' ORDER BY source_path")
+            .fetchall()
+        )
+        assert refs == [(raw_id, "attachment:inline-file-a"), (raw_id, "attachment:inline-file-b")]
+        assert (
+            writer._conn.execute("SELECT COUNT(*) FROM attachments WHERE acquisition_status='acquired'").fetchone()[0]
+            == 2
+        )

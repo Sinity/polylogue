@@ -59,9 +59,21 @@ These may exist in a working checkout but are not repository authority.
 | `.venv/` | Primary uv-managed Python environment | uv |
 | `.venv-freethreaded/` | Optional free-threaded Python validation environment | uv |
 | `result` / `result-*` | Disposable Nix build-result symlinks | Nix |
-| `__pycache__/` | Disposable Python bytecode | Python |
+| `.cache/pycache/` | Disposable Python bytecode for this checkout | Python |
 
 Local state is never evidence merely because it exists in a checkout. A
 release, migration, or live archive operation must bind the selected Git SHA,
 built package, and receipt rather than relying on an ambient
 working directory.
+
+The devshell and direnv entrypoints clear inherited `PYTHONDONTWRITEBYTECODE`
+and set `PYTHONPYCACHEPREFIX` to this checkout's `.cache/pycache/`. Python owns
+cache validation and invalidation. Source directories and another checkout's
+cache are not cache destinations.
+
+The cold-command benchmark records five sequential installed-process launches
+for status, agent status, and daemon status with isolated home/configuration
+and no resident daemon. It records the existing cache state without purging
+or prewarming it; these samples do not measure an empty bytecode cache. Import
+profiling is a separate diagnostic invocation, so timing samples stay
+unprofiled.

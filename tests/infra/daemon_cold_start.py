@@ -588,7 +588,7 @@ def qualify(
         )
         command += ["-c", _INSTRUMENTED_BOOTSTRAP]
     else:
-        command += ["-c", "from polylogue.daemon.cli import main; main()"]
+        command += ["-c", "from polylogue.daemon.commands import main; main()"]
     command += [
         "run",
         "--no-browser-capture",
@@ -1081,6 +1081,6 @@ def steps_wrapper(*args, **kwargs):
 
 discovery._ordered_children = ordered_wrapper
 intake_adapters._source_path_steps = steps_wrapper
-from polylogue.daemon.cli import main
+from polylogue.daemon.commands import main
 main()
 """

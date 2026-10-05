@@ -12,7 +12,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -73,8 +72,12 @@ def _archive_environment(root: Path) -> Iterator[None]:
 
 @pytest.fixture(scope="module")
 def query_cardinality_archive(tmp_path_factory: pytest.TempPathFactory) -> _PreparedArchive:
-    """Layer independent Codex facts onto the immutable realized C-03 canary."""
-    work = tmp_path_factory.mktemp("query-cardinality-survivor")
+    return _prepare_query_cardinality_archive(tmp_path_factory.mktemp("query-cardinality-survivor"))
+
+
+def _prepare_query_cardinality_archive(work: Path) -> _PreparedArchive:
+    """Acquire the corpus into an authentic seeded clone with its original train proofs."""
+    work.mkdir(parents=True, exist_ok=True)
     artifact = build_seeded_archive(cache_root=work / "seeded-cache")
     clone = clone_seeded_archive(artifact, work / "augmented-archive")
     manifest = query_cardinality_manifest()
@@ -155,41 +158,6 @@ def _copy_archive(source: Path, destination: Path) -> Path:
         bootstrap_marker.unlink()
         _record_fresh_durable_bootstrap(destination)
     return destination
-
-
-def _daemon_delete_route(archive_root: Path) -> Any:
-    """Stand in for the daemon's three-step delete, doing the real delete.
-
-    ``_emit_delete`` has no non-daemon route: it refuses outright when the
-    daemon does not answer the prepare call (see
-    ``TestDeleteCardinalityLargeNonMocked._daemon_delete_route`` in
-    test_verb_cardinality.py, which this mirrors). This survivor is about
-    membership/cardinality laws, not about which process performs the write,
-    so the stub prepares from the caller's own resolved ids and then deletes
-    them through the real ``ArchiveStore``.
-    """
-    prepared: dict[str, list[str]] = {}
-
-    def _route(_config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
-        if operation.endswith(".preview"):
-            prepared["ids"] = [str(item) for item in cast(list[Any], payload["session_ids"])]
-            return {
-                "status": "prepared",
-                "preview_ref": "preview:delete",
-                "session_count": len(prepared["ids"]),
-                "session_ids_sample": list(prepared["ids"])[:20],
-            }
-        if operation.endswith(".authorize"):
-            # ``_delete_authorization_refs`` (archive_query.py) reads
-            # ``authorization_refs``/``authorization_ref`` since #4867 renamed the
-            # authorization contract off one-time tokens onto durable refs, and
-            # refuses a count mismatch against the prepared id set.
-            return {"status": "authorized", "authorization_refs": ["test-authorization"]}
-        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-            affected = archive.delete_sessions(tuple(prepared["ids"]))
-        return {"status": "deleted", "affected_count": affected, "session_ids": prepared["ids"]}
-
-    return _route
 
 
 def _cli_env(root: Path) -> dict[str, str]:
@@ -316,7 +284,9 @@ def test_query_algebra_cardinality_survives_real_read_and_action_routes(
     # Preview and apply run against a private clone.  The previewed identities
     # equal the planted session set, apply reports the same cardinality, the
     # selected sessions disappear, and the output-only decoy remains.
-    mutation_root = _copy_archive(root, tmp_path / "mutation-archive")
+    mutation_archive = _prepare_query_cardinality_archive(tmp_path / "mutation-archive")
+    assert mutation_archive.manifest == manifest
+    mutation_root = mutation_archive.root
     with cli_daemon_archive(mutation_root, monkeypatch):
         runner = CliRunner()
         preview_result = runner.invoke(
@@ -326,21 +296,17 @@ def test_query_algebra_cardinality_survives_real_read_and_action_routes(
         )
         assert preview_result.exit_code == 0, preview_result.output
         preview = cast(dict[str, object], json.loads(preview_result.output))
-        preview_ids = tuple(cast(list[str], preview["session_ids"]))
+        preview_ids = tuple(cast(list[str], preview["session_ids_sample"]))
         assert preview["status"] == "preview"
         assert preview["affected_count"] == 0
         assert set(preview_ids) == set(manifest.matching_session_ids())
         assert preview["session_count"] == len(manifest.matching_session_ids())
 
-        with patch(
-            "polylogue.cli.archive_query._submit_mutation_operation",
-            side_effect=_daemon_delete_route(mutation_root),
-        ):
-            apply_result = runner.invoke(
-                cli,
-                ["--plain", "find", _SESSION_EXPRESSION, "then", "delete", "--yes", "--all"],
-                env=_cli_env(mutation_root),
-            )
+        apply_result = runner.invoke(
+            cli,
+            ["--plain", "find", _SESSION_EXPRESSION, "then", "delete", "--yes", "--all"],
+            env=_cli_env(mutation_root),
+        )
         assert apply_result.exit_code == 0, apply_result.output
         applied = cast(dict[str, object], json.loads(apply_result.output))
         assert applied["session_count"] == preview["session_count"]

@@ -248,7 +248,7 @@ def test_socket_path_import_is_lightweight() -> None:
     convergence stack -- seconds of import for a few dozen lines of path
     arithmetic. Shell completion resolves this path on a keystroke.
 
-    Mutation: restore the eager ``from polylogue.daemon.cli import main`` in
+    Mutation: restore the eager ``from polylogue.daemon.commands import main`` in
     the package ``__init__`` and ``polylogue.storage`` is in ``sys.modules``
     again, failing this.
     """

@@ -48,6 +48,7 @@ def test_schema_commit_forwards_request_and_defaults_output_dir(
     def fake_commit(request: SchemaCommitRequest) -> SchemaCommitResult:
         captured.append(request)
         return SchemaCommitResult(
+            inference_configuration={},
             provider=request.provider,
             generation=GenerationResult(provider=request.provider, schema={"type": "object"}, sample_count=3),
             versions=(SchemaVersionCommitReport(version="v1", status="new", sample_count=3),),
@@ -79,6 +80,7 @@ def test_schema_commit_honors_output_dir_and_dry_run_overrides(monkeypatch: pyte
     def fake_commit(request: SchemaCommitRequest) -> SchemaCommitResult:
         captured.append(request)
         return SchemaCommitResult(
+            inference_configuration={},
             provider=request.provider,
             generation=GenerationResult(provider=request.provider, schema={"type": "object"}, sample_count=1),
             versions=(SchemaVersionCommitReport(version="v1", status="unchanged", sample_count=1),),
@@ -119,6 +121,7 @@ def test_schema_commit_json_output_reports_success(
         schema_commit,
         "commit_provider_schema",
         lambda request: SchemaCommitResult(
+            inference_configuration={},
             provider=request.provider,
             generation=GenerationResult(provider=request.provider, schema={"type": "object"}, sample_count=42),
             versions=(
@@ -157,6 +160,7 @@ def test_schema_commit_exits_nonzero_on_generation_failure(
         schema_commit,
         "commit_provider_schema",
         lambda request: SchemaCommitResult(
+            inference_configuration={},
             provider=request.provider,
             generation=GenerationResult(provider=request.provider, schema=None, sample_count=0, error="No samples"),
             versions=(),
@@ -265,6 +269,7 @@ def test_schema_commit_exits_nonzero_when_narrowed(monkeypatch: pytest.MonkeyPat
         schema_commit,
         "commit_provider_schema",
         lambda request: SchemaCommitResult(
+            inference_configuration={},
             provider=request.provider,
             generation=GenerationResult(provider=request.provider, schema={"type": "object"}, sample_count=3),
             versions=(
@@ -305,6 +310,7 @@ def test_plain_output_uses_requested_provider_input_manifest(
         schema_commit,
         "commit_provider_schema",
         lambda request: SchemaCommitResult(
+            inference_configuration={},
             provider=request.provider,
             generation=GenerationResult(provider=request.provider, schema={"type": "object"}, sample_count=1),
             versions=(),
@@ -344,3 +350,46 @@ def test_schema_commit_renders_typed_refusals_as_json(
     assert payload["success"] is False
     assert payload["provider"] == "chatgpt"
     assert payload["error"] == str(error)
+
+
+@pytest.mark.parametrize("privacy", [None, "permissive"])
+def test_zero_eligible_terminal_records_resolved_policy(
+    privacy: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from types import SimpleNamespace
+
+    from polylogue.schemas.privacy_config import PrivacyConfig
+    from polylogue.schemas.source_frontier import FrontierRoot, FrontierSubject, SchemaFrontier
+
+    frontier = SchemaFrontier(
+        subjects=(
+            FrontierSubject(
+                "codex",
+                (
+                    FrontierRoot(
+                        path=tmp_path,
+                        scope="synthetic empty root",
+                        zero_material_reason="no eligible synthetic material",
+                    ),
+                ),
+            ),
+        )
+    )
+    monkeypatch.setattr(schema_commit, "load_frontier", lambda _path: frontier)
+    monkeypatch.setattr(
+        schema_commit, "check_frontier", lambda *_args, **_kwargs: SimpleNamespace(ok=True, checked_members=0)
+    )
+    monkeypatch.setattr(schema_commit, "frontier_source_inputs", lambda *_args: ())
+    args = ["--provider", "codex", "--frontier", "--json"]
+    if privacy is not None:
+        args.extend(["--privacy", privacy])
+    assert schema_commit.main(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["terminal"] == "zero_eligible_material"
+    assert (
+        payload["inference_configuration"]
+        == (PrivacyConfig(level="permissive") if privacy == "permissive" else PrivacyConfig()).to_payload()
+    )

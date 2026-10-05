@@ -2089,13 +2089,18 @@ def list_assertion_candidate_reviews(
 def _latest_candidate_judgment(
     conn: sqlite3.Connection,
     candidate_assertion_id: str,
+    *,
+    schema: str | None = None,
 ) -> ArchiveAssertionEnvelope | None:
-    if not _table_exists(conn, "assertions"):
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError(f"invalid SQLite schema name: {schema!r}")
+    table = f"{schema}.assertions" if schema is not None else "assertions"
+    if not _table_exists(conn, "assertions", schema=schema or "main"):
         return None
     row = conn.execute(
         f"""
         SELECT {_ASSERTION_COLUMNS}
-        FROM assertions
+        FROM {table}
         WHERE target_ref = ?
           AND kind = ?
           AND COALESCE(status, ?) != ?
@@ -2117,10 +2122,12 @@ def _latest_candidate_judgment(
 def read_latest_candidate_judgment(
     conn: sqlite3.Connection,
     candidate_assertion_id: str,
+    *,
+    schema: str | None = None,
 ) -> ArchiveAssertionEnvelope | None:
     """Return the durable latest judgment attached to one candidate."""
 
-    return _latest_candidate_judgment(conn, _assertion_id_from_ref(candidate_assertion_id))
+    return _latest_candidate_judgment(conn, _assertion_id_from_ref(candidate_assertion_id), schema=schema)
 
 
 def _candidate_evidence_digests(candidate: ArchiveAssertionEnvelope) -> tuple[str | None, str | None]:
@@ -2582,10 +2589,15 @@ _ASSERTION_COLUMNS = (
 )
 
 
-def read_assertion_envelope(conn: sqlite3.Connection, assertion_id: str) -> ArchiveAssertionEnvelope | None:
+def read_assertion_envelope(
+    conn: sqlite3.Connection, assertion_id: str, *, schema: str | None = None
+) -> ArchiveAssertionEnvelope | None:
     """Read one assertion by id, or ``None`` when absent."""
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError(f"invalid SQLite schema name: {schema!r}")
+    table = f"{schema}.assertions" if schema is not None else "assertions"
     with connection_cursor(
-        conn, f"SELECT {_ASSERTION_COLUMNS} FROM assertions WHERE assertion_id = ?", (assertion_id,)
+        conn, f"SELECT {_ASSERTION_COLUMNS} FROM {table} WHERE assertion_id = ?", (assertion_id,)
     ) as cursor:
         row = cursor.fetchone()
     if row is None:
@@ -2714,6 +2726,7 @@ def list_assertion_claims(
     schema: str | None = None,
     kinds: Sequence[str | AssertionKind] = ASSERTION_CLAIM_KINDS,
     target_ref: str | None = None,
+    session_id: str | None = None,
     target_refs: Collection[str] | None = None,
     scope_ref: str | None = None,
     statuses: Sequence[str | AssertionStatus] | None = (AssertionStatus.ACTIVE, AssertionStatus.CANDIDATE),
@@ -2743,6 +2756,11 @@ def list_assertion_claims(
     unaffected. Pass ``include_expired=True`` for audit/export reads that
     must still see expired rows.
 
+    ``session_id`` selects its exact session target and messages in its
+    canonical composed transcript, including only the inherited prefix. The
+    plan remains proportional to lineage depth; no message IDs are hydrated.
+    Incomplete lineage refuses rather than presenting a partial claim set.
+
     ``target_refs`` restricts the read to rows targeting any of the given
     refs (an empty collection selects nothing). The set travels as one JSON
     parameter expanded by ``json_each``, so its size never meets SQLite's
@@ -2770,6 +2788,27 @@ def list_assertion_claims(
     if target_ref is not None:
         where.append("target_ref = ?")
         params.append(target_ref)
+    if session_id is not None:
+        from polylogue.core.errors import DatabaseError
+        from polylogue.storage.sqlite.archive_tiers.write import _composed_transcript_plan
+
+        plan = _composed_transcript_plan(conn, session_id)
+        if not plan.lineage_complete:
+            raise DatabaseError(
+                f"assertion session membership has incomplete lineage: {plan.lineage_truncation_reason}"
+            )
+        segments = [
+            (segment.session_id, segment.upto_position, segment.upto_variant_index) for segment in plan.segments
+        ]
+        where.append(
+            "target_ref IN (SELECT ? UNION ALL "
+            "SELECT 'message:' || m.message_id FROM json_each(?) AS segment "
+            "JOIN main.messages AS m ON m.session_id = json_extract(segment.value, '$[0]') "
+            "WHERE json_extract(segment.value, '$[1]') IS NULL "
+            "OR (m.position, m.variant_index) <= "
+            "(json_extract(segment.value, '$[1]'), json_extract(segment.value, '$[2]')))"
+        )
+        params.extend((f"session:{session_id}", json.dumps(segments)))
     if target_refs is not None:
         where.append("target_ref IN (SELECT value FROM json_each(?))")
         params.append(json.dumps(sorted(set(target_refs))))
@@ -2830,6 +2869,7 @@ def list_assertion_claims(
 def count_assertion_claims(
     conn: sqlite3.Connection,
     *,
+    schema: str | None = None,
     kinds: Sequence[str | AssertionKind],
     statuses: Sequence[str | AssertionStatus] | None,
     target_ref: str | None = None,
@@ -2840,7 +2880,14 @@ def count_assertion_claims(
 ) -> int:
     """Count a typed assertion selection without materializing claim rows."""
 
-    if not _table_exists(conn, "assertions") or not kinds or (statuses is not None and not statuses):
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError(f"invalid SQLite schema name: {schema!r}")
+    table = f"{schema}.assertions" if schema is not None else "assertions"
+    if (
+        not _table_exists(conn, "assertions", schema=schema or "main")
+        or not kinds
+        or (statuses is not None and not statuses)
+    ):
         return 0
     normalized_kinds = tuple(_normalize_assertion_kind(kind).value for kind in kinds)
     kind_placeholders = ", ".join("?" for _ in normalized_kinds)
@@ -2867,7 +2914,7 @@ def count_assertion_claims(
         target_prefix = f"{annotation_target_kind}:"
         where.append("substr(target_ref, 1, length(?)) = ?")
         params.extend((target_prefix, target_prefix))
-    row = conn.execute(f"SELECT count(*) FROM assertions WHERE {' AND '.join(where)}", tuple(params)).fetchone()
+    row = conn.execute(f"SELECT count(*) FROM {table} WHERE {' AND '.join(where)}", tuple(params)).fetchone()
     return int(row[0]) if row is not None else 0
 
 

@@ -1,6 +1,6 @@
 # AgentCTL development-loop proof
 
-The browser-capture development proof is a declared Polylogue AgentCTL operation. AgentCTL binds the job to the registered worktree and exact starting HEAD, starts and stops the systemd service cgroup, enforces the 15-minute deadline, handles cancellation, and retains the bounded JSON result. Polylogue selects loopback API and receiver ports for its child processes and reports them in the bounded result.
+The browser-capture development proof is a declared Polylogue AgentCTL operation. AgentCTL binds the job to the registered worktree and exact starting HEAD, starts and stops the systemd service cgroup, enforces the 15-minute deadline, handles cancellation, and retains the bounded JSON result. The daemon binds both loopback listeners to port zero and retains their sockets. It atomically publishes actual bound addresses to a unique private startup file; the proof verifies the child PID, then uses those ports for API and receiver convergence and reports them in the bounded result. Child exit during startup fails immediately.
 
 Create or use a managed workspace, then start the fixed operation:
 

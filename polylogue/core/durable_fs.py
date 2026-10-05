@@ -67,11 +67,20 @@ def write_once(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
 
 def atomic_replace(path: Path, payload: bytes, *, mode: int | None = None) -> None:
     """Durably write bytes to a temporary file and replace ``path``."""
+    _atomic_publish(path, payload, mode=mode, replace_existing=True)
+
+
+def atomic_create(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
+    """Publish complete durable bytes without replacing any existing path."""
+    _atomic_publish(path, payload, mode=mode, replace_existing=False)
+
+
+def _atomic_publish(path: Path, payload: bytes, *, mode: int | None, replace_existing: bool) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = -1
     temporary_path: Path | None = None
     try:
-        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        descriptor, temporary = tempfile.mkstemp(prefix=".publish-", suffix=".tmp", dir=path.parent)
         temporary_path = Path(temporary)
         with os.fdopen(descriptor, "wb", closefd=False) as stream:
             if mode is not None:
@@ -81,13 +90,16 @@ def atomic_replace(path: Path, payload: bytes, *, mode: int | None = None) -> No
             os.fsync(descriptor)
         os.close(descriptor)
         descriptor = -1
-        os.replace(temporary_path, path)
+        if replace_existing:
+            os.replace(temporary_path, path)
+        else:
+            os.link(temporary_path, path)
         _fsync_directory(path.parent)
     except OSError as exc:
         if descriptor >= 0:
             with suppress(OSError):
                 os.close(descriptor)
-        raise DurableFilesystemError(f"cannot durably replace: {path}") from exc
+        raise DurableFilesystemError(f"cannot durably publish: {path}") from exc
     finally:
         if temporary_path is not None:
             with suppress(FileNotFoundError):
@@ -110,7 +122,7 @@ def append_line(path: Path, line: str | bytes) -> None:
         raise DurableFilesystemError(f"cannot durably append: {path}") from exc
 
 
-__all__ = ["DurableFilesystemError", "append_line", "atomic_replace", "sync_directory", "write_once"]
+__all__ = ["DurableFilesystemError", "append_line", "atomic_create", "atomic_replace", "sync_directory", "write_once"]
 
 
 def reflink_into(source_fd: int, destination_fd: int) -> bool:

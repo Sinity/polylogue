@@ -219,6 +219,7 @@ def build_independent_raw_corpus(
     raw_count: int,
     avg_payload_bytes: int,
     authoritative_source: bool = False,
+    native_singletons: bool = False,
 ) -> list[str]:
     """Write ``raw_count`` independent, uncensused, single-session raws.
 
@@ -226,6 +227,8 @@ def build_independent_raw_corpus(
     initialized fresh; call once per corpus. ``authoritative_source`` binds
     each raw to its own byte-proven full-revision baseline without deriving
     index rows, for rebuild-route fixtures that must pass source admission.
+    ``native_singletons`` retains the exact ID declared by each constructed
+    session header without prebinding revision authority.
     """
     initialize_active_archive_root(archive_root)
     raw_ids: list[str] = []
@@ -238,7 +241,7 @@ def build_independent_raw_corpus(
                 payload=payload,
                 source_path=f"synthetic-amg1/session-{index:06d}.jsonl",
                 acquired_at_ms=index + 1,
-                native_id=native_id if authoritative_source else None,
+                native_id=native_id if authoritative_source or native_singletons else None,
             )
             if authoritative_source:
                 archive.bind_raw_revision(
@@ -345,13 +348,15 @@ def build_revision_chain_corpus(
     *,
     superseded_count: int,
     final_payload_bytes: int,
+    native_singleton: bool = False,
 ) -> list[str]:
     """Write one growing-file cohort: ``superseded_count`` older captures plus
     a final winner, all at the same ``source_path`` and each a strict byte
     prefix of the next -- the shape a re-scanned, ever-appended Codex rollout
     file produces on disk (polylogue-nh44). Returns raw ids oldest-first;
-    the last id is the winner (the only one that should ever be parsed by an
-    optimized census).
+    the last id is the winner. ``native_singleton`` retains the session
+    header identity at acquisition for byte-prefix census controls; the
+    default remains grouped input with independently observed memberships.
     """
     initialize_active_archive_root(archive_root)
     revision_count = superseded_count + 1
@@ -390,6 +395,7 @@ def build_revision_chain_corpus(
                 payload=payload,
                 source_path="nh44-chain/session.jsonl",
                 acquired_at_ms=index + 1,
+                native_id="nh44-chain-session" if native_singleton else None,
             )
             raw_ids.append(raw_id)
     return raw_ids

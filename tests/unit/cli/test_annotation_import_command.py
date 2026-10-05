@@ -4,7 +4,7 @@
 tier, so it lowers to the declared ``mutation.annotation.import_batch``
 operation and the daemon is its sole writer (polylogue-gjwto / polylogue-r29bv
 AC3). The write tests here therefore run a real daemon stack rather than an
-in-process writer; ``annotations join`` (a read) is untouched and stays direct.
+in-process writer; ``annotations join`` uses its separately declared resident read.
 """
 
 from __future__ import annotations
@@ -163,9 +163,11 @@ def test_daemon_import_and_facade_resolve_evidence_refs_through_one_plan(
     planned: list[str] = []
     original_plan = ref_resolution.plan_ref_resolution
 
-    def recording_plan(ref: str, *, archive_root: Path) -> ref_resolution.RefResolutionPlan:
+    def recording_plan(
+        ref: str, *, archive_root: Path, limit: int = 50, offset: int = 0, continuation: str | None = None
+    ) -> ref_resolution.RefResolutionPlan:
         planned.append(ref)
-        return original_plan(ref, archive_root=archive_root)
+        return original_plan(ref, archive_root=archive_root, limit=limit, offset=offset, continuation=continuation)
 
     monkeypatch.setattr(ref_resolution, "plan_ref_resolution", recording_plan)
 

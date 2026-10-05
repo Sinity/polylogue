@@ -132,3 +132,39 @@ def test_replaying_the_acquired_revision_changes_nothing(tmp_path: Path, monkeyp
     assert acquired["acquisition_status"] == "acquired"
     assert bytes(acquired["blob_hash"]) == hashlib.sha256(PAYLOAD_BYTES).digest()
     assert _ref_count(conn) == 1
+
+
+@pytest.mark.parametrize("metadata_first", [False, True])
+def test_metadata_replay_keeps_acquired_attachment_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, metadata_first: bool
+) -> None:
+    store = BlobStore(tmp_path / "blob")
+    monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: store)
+    conn = _connect(tmp_path / "index.db")
+    acquired_capture = _capture(extracted_content=PAYLOAD)
+    metadata_capture = _capture(extracted_content=None)
+    for capture in (acquired_capture, metadata_capture):
+        messages = capture["chat_messages"]
+        assert isinstance(messages, list)
+        messages[0]["files"][0]["size_bytes"] = 10_000_000
+    metadata_capture["uuid"] = "metadata-session"
+    metadata_messages = metadata_capture["chat_messages"]
+    assert isinstance(metadata_messages, list)
+    metadata_messages[0]["uuid"] = "metadata-message"
+    acquired = parse_ai(acquired_capture, "fallback")
+    metadata = parse_ai(metadata_capture, "fallback")
+    first, second = (metadata, acquired) if metadata_first else (acquired, metadata)
+    try:
+        for session in (first, second, metadata, metadata):
+            write_fixture_index_session(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
+        retained = _attachment_state(conn)
+        digest = hashlib.sha256(PAYLOAD_BYTES).digest()
+        assert conn.execute("SELECT count(*) FROM attachments").fetchone()[0] == 1
+        assert retained["byte_count"] == len(PAYLOAD_BYTES)
+        assert bytes(retained["blob_hash"]) == digest
+        assert retained["acquisition_status"] == "acquired"
+        assert store.read_all(digest.hex()) == PAYLOAD_BYTES
+        assert store.blob_path(digest.hex()).stat().st_size == len(PAYLOAD_BYTES)
+        assert _ref_count(conn) == 2
+    finally:
+        conn.close()

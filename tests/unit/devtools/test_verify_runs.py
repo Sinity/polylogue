@@ -375,7 +375,7 @@ def test_a_killed_run_becomes_terminal_on_the_next_receipt_read(tmp_path: Path) 
     runs_root = tmp_path / verify_runs.VERIFY_RUNS_DIR
     path = _running_run(tmp_path, pid=_dead_pid())
 
-    reconciled = verify_runs.reconcile_and_record_abandoned_verify_runs(runs_root=runs_root)
+    reconciled = verify_runs.reconcile_and_record_verify_runs(runs_root=runs_root)
 
     assert [entry["run_id"] for entry in reconciled] == [path.parent.name]
     payload = cast(dict[str, object], verify_runs._read_json(path))
@@ -400,7 +400,7 @@ def test_a_running_run_with_a_live_owner_is_left_alone(tmp_path: Path) -> None:
     runs_root = tmp_path / verify_runs.VERIFY_RUNS_DIR
     path = _running_run(tmp_path, pid=os.getpid())
 
-    assert verify_runs.reconcile_and_record_abandoned_verify_runs(runs_root=runs_root) == []
+    assert verify_runs.reconcile_and_record_verify_runs(runs_root=runs_root) == []
 
     payload = cast(dict[str, object], verify_runs._read_json(path))
     assert payload["status"] == "running"
@@ -475,7 +475,7 @@ def test_an_abandoned_run_adopts_the_agentctl_outcome_when_one_exists(
     )
     path = _running_run(tmp_path, pid=_dead_pid(), job_id="polylogue-verify_all-6e84077f")
 
-    verify_runs.reconcile_and_record_abandoned_verify_runs(runs_root=runs_root, state_root=state_root)
+    verify_runs.reconcile_and_record_verify_runs(runs_root=runs_root, state_root=state_root)
 
     payload = cast(dict[str, object], verify_runs._read_json(path))
     assert payload["exit_code"] == 130
@@ -501,21 +501,21 @@ def test_abandoned_agentctl_run_waits_for_late_outcome_then_reconciles_mirror_an
     verify_runs._write_json(current, {"run_id": run_path.parent.name, "status": "running"})
     runs_root = tmp_path / verify_runs.VERIFY_RUNS_DIR
     assert (
-        verify_runs.reconcile_and_record_abandoned_verify_runs(
+        verify_runs.reconcile_and_record_verify_runs(
             runs_root=runs_root, state_root=state_root, evidence_path=override_evidence
         )
         == []
     )
     assert cast(dict[str, object], verify_runs._read_json(run_path))["status"] == "running"
     (state_root / "late-job.outcome").write_text('{"exit_code": 1, "outcome": "failed"}', encoding="utf-8")
-    first = verify_runs.reconcile_and_record_abandoned_verify_runs(
+    first = verify_runs.reconcile_and_record_verify_runs(
         runs_root=runs_root, state_root=state_root, evidence_path=override_evidence
     )
     assert first and cast(dict[str, object], verify_runs._read_json(current))["status"] == "failed"
     assert list(verify_runs._iter_history_pinned(history))[0]["run_id"] == run_path.parent.name
     assert len(verify_runs.read_verification_evidence(override_evidence)) == 1
     assert not configured_evidence.exists()
-    second = verify_runs.reconcile_and_record_abandoned_verify_runs(
+    second = verify_runs.reconcile_and_record_verify_runs(
         runs_root=runs_root, state_root=state_root, evidence_path=override_evidence
     )
     assert second and len(list(verify_runs._iter_history_pinned(history))) == 1
@@ -573,7 +573,7 @@ def test_three_differently_killed_runs_do_not_collapse_into_one_ending(tmp_path:
         )
         paths[suffix] = _running_run(tmp_path, pid=_dead_pid(), job_id=job_id)
 
-    verify_runs.reconcile_and_record_abandoned_verify_runs(runs_root=runs_root, state_root=state_root)
+    verify_runs.reconcile_and_record_verify_runs(runs_root=runs_root, state_root=state_root)
 
     adopted = {suffix: cast(dict[str, object], verify_runs._read_json(path)) for suffix, path in paths.items()}
     assert adopted["df109b43"]["termination_killer"] == "timeout"

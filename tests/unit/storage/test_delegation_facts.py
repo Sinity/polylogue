@@ -960,7 +960,7 @@ def test_delegation_subtree_returns_all_descendants_depth_annotated(tmp_path: Pa
 
     initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
     with ArchiveStore.open_existing(tmp_path) as archive:
-        subtree = archive.get_delegation_subtree(root_id)
+        subtree = archive.get_delegation_subtree(root_id).rows
 
     by_session = {node.session_id: node for node in subtree}
     assert set(by_session) == {root_id, child_a, grandchild}
@@ -974,7 +974,7 @@ def test_delegation_subtree_returns_all_descendants_depth_annotated(tmp_path: Pa
 
     # A leaf that dispatched nothing returns just itself.
     with ArchiveStore.open_existing(tmp_path) as archive:
-        leaf_subtree = archive.get_delegation_subtree(grandchild)
+        leaf_subtree = archive.get_delegation_subtree(grandchild).rows
     assert [node.session_id for node in leaf_subtree] == [grandchild]
 
 
@@ -999,7 +999,7 @@ def test_delegation_subtree_excludes_quarantined_edges(tmp_path: Path) -> None:
 
     initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
     with ArchiveStore.open_existing(tmp_path) as archive:
-        subtree = archive.get_delegation_subtree(parent_id)
+        subtree = archive.get_delegation_subtree(parent_id).rows
         ancestry = archive.get_delegation_ancestry(child_id)
 
     # Only the queried node itself -- the quarantined edge is never followed.
@@ -1032,7 +1032,7 @@ def test_delegation_traversals_exclude_authority_contradicted_edges(tmp_path: Pa
         )
         [attempt_payload] = envelope.items
         card = archive.get_delegation_card(parent_session_id=parent_id, child_session_id=child_id)
-        subtree = archive.get_delegation_subtree(parent_id)
+        subtree = archive.get_delegation_subtree(parent_id).rows
         ancestry = archive.get_delegation_ancestry(child_id)
 
     assert attempt_payload.model_dump(mode="json")["mapping_state"] == "authority-contradicted"
@@ -1089,7 +1089,7 @@ def test_delegation_subtree_visited_path_guard_stops_a_two_node_cycle(tmp_path: 
         # Both edges are genuinely `resolved` (neither quarantined) -- proof
         # the cycle survives topology's own quarantine pass and only the
         # recursive query's own guard stops it.
-        subtree_from_a = archive.get_delegation_subtree(a_id)
+        subtree_from_a = archive.get_delegation_subtree(a_id).rows
         ancestry_from_a = archive.get_delegation_ancestry(a_id)
 
     # The guard must terminate (no RecursionError/timeout) and must not

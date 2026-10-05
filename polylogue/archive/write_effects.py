@@ -192,9 +192,8 @@ WRITE_EFFECT_REGISTRY: tuple[WriteEffect, ...] = (
 )
 """Ordered, declared effects for the archive write choke point.
 
-These three entries are a behavior-identical extraction of what
-``commit_archive_write_effects`` used to inline directly (slice 1 of
-polylogue-0aj). An earlier revision of the choke point also
+The registry declares the transaction and post-commit effects. An earlier
+revision of the choke point also
 acquired/released a blob-GC lease here, keyed by
 ``_blob_hashes``/``_operation_id`` payload entries. No production caller
 ever populated those keys (polylogue-v7e0), so the branch never executed;

@@ -1459,6 +1459,9 @@ def _archive_live_ingest_attempt_state_from_row(
     source_payload_read_bytes = _payload_int(payload, "source_payload_read_bytes")
     cursor_fingerprint_read_bytes = _payload_int(payload, "cursor_fingerprint_read_bytes")
     total_read_bytes = source_payload_read_bytes + cursor_fingerprint_read_bytes
+    # The receipt counts parsed raw files separately from materialized sessions.
+    # Zero is a measured file count and must not fall back to an older stage event.
+    succeeded_files = _row_int(row[8])
     return LiveIngestAttemptState(
         attempt_id=_required_str(row[0]),
         started_at=started_at,
@@ -1466,20 +1469,16 @@ def _archive_live_ingest_attempt_state_from_row(
         completed_at=completed_at,
         status=status_value,
         phase=_optional_str(row[4]) or _payload_str(payload, "phase", default="") or "",
-        queued_file_count=_row_int(row[8]) or _payload_int(payload, "queued_file_count"),
-        needed_file_count=_row_int(row[8]) or _payload_int(payload, "needed_file_count"),
-        succeeded_file_count=_row_int(row[9]) or _payload_int(payload, "succeeded_file_count"),
+        queued_file_count=_payload_int(payload, "queued_file_count", default=_row_int(row[8])),
+        needed_file_count=_payload_int(payload, "needed_file_count", default=_row_int(row[8])),
+        succeeded_file_count=succeeded_files,
         failed_file_count=_payload_int(payload, "failed_file_count", default=1 if status_value == "failed" else 0),
         input_bytes=input_bytes,
         source_payload_read_bytes=source_payload_read_bytes,
         cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
         total_read_bytes=total_read_bytes,
         read_amplification=round(total_read_bytes / input_bytes, 3) if input_bytes > 0 else 0.0,
-        files_per_second=(
-            round((_row_int(row[9]) or _payload_int(payload, "succeeded_file_count")) / total_time_s, 3)
-            if total_time_s > 0
-            else 0.0
-        ),
+        files_per_second=(round(succeeded_files / total_time_s, 3) if total_time_s > 0 else 0.0),
         source_mb_per_second=(
             round((source_payload_read_bytes / (1024 * 1024)) / total_time_s, 3) if total_time_s > 0 else 0.0
         ),
@@ -2158,16 +2157,13 @@ def _raw_replay_backlog_info(*, include: bool = True) -> dict[str, object]:
 
 def _sinex_publication_status_info() -> dict[str, object]:
     """Read durable Sinex publication state without requiring a transport."""
-    from polylogue.config import active_archive_root, load_polylogue_config, resolve_runtime_config
-    from polylogue.sinex.models import PublicationMode
-    from polylogue.sinex.service import publication_status
+    from polylogue.config import active_archive_root, resolve_runtime_config
+    from polylogue.sinex.service import publication_status_payload
     from polylogue.storage.archive_identity import ArchiveLocation
 
-    config = load_polylogue_config()
-    mode = PublicationMode.from_string(config.sinex_mode)
     runtime_config = resolve_runtime_config().as_config()
     source_db = ArchiveLocation.resolve(active_archive_root(runtime_config)).configured_tier("source").configured_path
-    return publication_status(source_db, mode).as_dict()
+    return publication_status_payload(source_db, runtime_config.sinex_mode)
 
 
 def _quick_check_observation() -> QuickCheckObservation:
@@ -3413,7 +3409,7 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         # An absent payload is an uncollected probe, not a configured-off
         # publication with zero lag (polylogue-20d.17.4).
         mode = publication.get("mode") or "unavailable"
-        if not publication or mode == "unavailable":
+        if not publication or mode == "unavailable" or publication.get("state") == "unavailable":
             reason = publication.get("reason") or "sinex publication status was not collected"
             lines.append(f"Sinex publication: unavailable — {reason}")
         else:

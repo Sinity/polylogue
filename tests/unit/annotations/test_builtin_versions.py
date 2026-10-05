@@ -12,7 +12,7 @@ import pytest
 
 from polylogue.annotations.batch import AnnotationBatch, AnnotationBatchError
 from polylogue.annotations.importer import AnnotationBatchImportRequest
-from polylogue.annotations.join import AnnotationStructuralJoinRequest, join_typed_annotations
+from polylogue.annotations.join_contracts import AnnotationStructuralJoinRequest
 from polylogue.annotations.schema import (
     SEED_ANNOTATION_SCHEMAS,
     AnnotationSchema,
@@ -37,6 +37,7 @@ from tests.infra.annotation_history import (
     historical_user_rows,
     seed_annotation_history,
 )
+from tests.infra.annotation_join import join_fixture_annotations
 from tests.infra.daemon_operations import daemon_serving_archive
 from tests.infra.live_ingest import write_index_session
 
@@ -102,7 +103,7 @@ async def test_retired_historical_target_is_inspectable_but_cannot_be_resolved(t
         async def get_session_summary(self, session_id: str) -> object:
             raise AssertionError("retired target has no fabricated live summary")
 
-    result = await join_typed_annotations(
+    result = await join_fixture_annotations(
         HistoryArchive(),
         AnnotationStructuralJoinRequest(
             schema_id="seed.activity", schema_version=1, statuses=(AssertionStatus.CANDIDATE,)

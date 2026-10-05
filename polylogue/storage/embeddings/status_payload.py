@@ -988,22 +988,18 @@ def _archive_embedding_status_payload(
         conn = open_readonly_connection(index_db, timeout=STATUS_READ_BUSY_TIMEOUT_MS / 1000.0, validate_schema=False)
     else:
         conn = _pinned_connection
-    # The CLI status fast path may open an active index whose filename is not
-    # the conventional ``index.db`` (for example, an active generation).
-    # ``open_readonly_connection`` only auto-attaches sibling tiers for the
-    # conventional name, so make the two status siblings explicit here.  A
-    # missing tier remains a measured absence; an existing attachment is
-    # preserved so callers may supply a pinned snapshot.
-    aliases = {str(row[1]) for row in conn.execute("PRAGMA database_list").fetchall()}
-    if owns_connection:
-        for schema, filename in (("embeddings", "embeddings.db"), ("ops_tier", "ops.db")):
-            sibling = root / filename
-            if schema not in aliases and sibling.exists():
-                attach_readonly_database(conn, sibling, alias=schema)
-                aliases.add(schema)
     latest_catchup_run: EmbeddingCatchupRunPayload | None = None
     latest_material_catchup_run: EmbeddingCatchupRunPayload | None = None
     try:
+        # Coverage reads only the canonical embeddings tier. Catchup history
+        # has its own guarded ops reader below; attaching disposable ops here
+        # would let unreadable history abort otherwise measurable coverage.
+        aliases = {str(row[1]) for row in conn.execute("PRAGMA database_list").fetchall()}
+        if owns_connection:
+            sibling = root / "embeddings.db"
+            if "embeddings" not in aliases and sibling.exists():
+                attach_readonly_database(conn, sibling, alias="embeddings")
+                aliases.add("embeddings")
         if not _table_exists(conn, "sessions"):
             return None
         if _pinned_connection is not None:

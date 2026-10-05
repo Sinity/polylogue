@@ -15,7 +15,6 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
-from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from functools import partial
 from http.server import ThreadingHTTPServer
@@ -30,16 +29,16 @@ from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_serv
 from polylogue.core.compute import BoundedComputeAdapter, publish_compute_adapter, reset_compute_adapter
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.degraded import DegradedReason, set_degraded
-from polylogue.core.json import JSONDocument, dumps, json_document
+from polylogue.core.durable_fs import atomic_create
+from polylogue.core.json import dumps
 from polylogue.core.loopback import bind_hosts_overlap, is_loopback_host
 from polylogue.core.stage_admission import (
     StageWriteAdmission,
     admit_stage_write,
     stage_write_admission,
 )
-from polylogue.daemon.api_auth import API_ALLOW_NO_AUTH_ENV, api_command
+from polylogue.daemon.api_auth import API_ALLOW_NO_AUTH_ENV
 from polylogue.daemon.api_auth import resolve_api_auth_token as resolve_api_auth_token
-from polylogue.daemon.browser_capture import browser_capture_command
 from polylogue.daemon.event_bus import IngestCommitted, daemon_event_bus
 from polylogue.daemon.health import (
     HealthSeverity,
@@ -62,7 +61,6 @@ from polylogue.daemon.services import (
     ServiceProfile,
     ServiceState,
 )
-from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
 from polylogue.daemon.supervisor import DaemonSupervisor
 from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
@@ -99,7 +97,6 @@ from polylogue.storage.sqlite.connection_profile import (
 from polylogue.storage.sqlite.wal_checkpoint import (
     checkpoint_connection as checkpoint_connection,
 )
-from polylogue.version import POLYLOGUE_VERSION
 
 
 def validate_api_bind_policy(*, enabled: bool, host: str, allow_remote: bool, auth_token: str | None) -> None:
@@ -2024,6 +2021,7 @@ async def run_daemon_services(
     startup_message: str | None = None,
     service_profile: ServiceProfile = PRODUCTION_PROFILE,
     cold_build_index: bool = False,
+    listener_info_path: Path | None = None,
 ) -> None:
     """Run the daemon while excluding every offline index rebuild.
 
@@ -2077,6 +2075,7 @@ async def run_daemon_services(
             startup_message=startup_message,
             service_profile=service_profile,
             cold_build_index=cold_build_index,
+            listener_info_path=listener_info_path,
         )
 
 
@@ -2135,6 +2134,7 @@ async def _run_daemon_services_under_active_writer_lease(
     startup_message: str | None = None,
     service_profile: ServiceProfile = PRODUCTION_PROFILE,
     cold_build_index: bool = False,
+    listener_info_path: Path | None = None,
 ) -> None:
     """Run configured daemon components until interrupted.
 
@@ -2163,9 +2163,15 @@ async def _run_daemon_services_under_active_writer_lease(
     # healthy writer before its first ArchiveStore happens to open.
     assert_writable_archive_identity(configured_root=archive_root_path, active_root=archive_root_path)
 
+    if listener_info_path is not None:
+        listener_info_path = listener_info_path.expanduser().resolve()
+        if listener_info_path.is_relative_to(archive_root_path.resolve()):
+            raise click.UsageError("--listener-info-path must be outside the archive root")
+
     if (
         enable_api
         and enable_browser_capture
+        and api_port != 0
         and api_port == browser_capture_port
         and bind_hosts_overlap(api_host, browser_capture_host)
     ):
@@ -2380,6 +2386,9 @@ async def _run_daemon_services_under_active_writer_lease(
     # acquisition) may still start: acquisition only ever writes source.db,
     # so a derived-only mismatch (index.db/embeddings.db) must not stop it.
     schema_blocked = schema_alert.severity == HealthSeverity.CRITICAL
+    if listener_info_path is not None and enable_api and schema_blocked:
+        archive_owner.release()
+        raise click.UsageError("--listener-info-path requires every enabled listener to bind")
     watcher_blocked = enable_watch and schema_blocked
     # Unconditional (not gated on ``enable_watch``): operation recovery below
     # touches audit.db on every startup regardless of whether the watcher is
@@ -2709,7 +2718,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     component="browser_capture",
                     payload={
                         "host": browser_capture_host,
-                        "port": browser_capture_port,
+                        "port": int(server.server_address[1]) if browser_capture_port == 0 else browser_capture_port,
                         "spool_path": str(browser_capture_spool_root()),
                         "auth_enabled": resolved_browser_capture_auth_token is not None,
                     },
@@ -2812,10 +2821,29 @@ async def _run_daemon_services_under_active_writer_lease(
                     component="api",
                     payload={
                         "host": api_host,
-                        "port": api_port,
+                        "port": int(api_server.server_address[1]) if api_port == 0 else api_port,
                         "auth_enabled": resolved_api_auth_token is not None,
                     },
                 )
+
+        if listener_info_path is not None:
+            if (enable_api and api_server is None) or (enable_browser_capture and server is None):
+                raise click.UsageError("--listener-info-path requires every enabled listener to bind")
+            # Publish only after every enabled TCP listener owns its socket.
+            # This is bind readback, not archive or service readiness.
+            listeners = {
+                "api": {"host": str(api_server.server_address[0]), "port": int(api_server.server_address[1])}
+                if api_server is not None
+                else None,
+                "browser_capture": {"host": str(server.server_address[0]), "port": int(server.server_address[1])}
+                if server is not None
+                else None,
+            }
+            atomic_create(
+                listener_info_path,
+                (dumps({"pid": os.getpid(), "listeners": listeners}) + "\n").encode(),
+                mode=0o600,
+            )
 
         if api_server is None and not schema_blocked:
             # The ingest owner does not depend on the HTTP surface: accepted
@@ -3931,93 +3959,7 @@ async def _serve_until_complete(
         raise failure[0]
 
 
-@click.group(help="Run long-lived Polylogue local services.")
-@click.version_option(version=POLYLOGUE_VERSION, prog_name="polylogued")
-def main() -> None:
-    from polylogue.runtime import require_free_threaded_runtime
-
-    require_free_threaded_runtime(consumer="polylogued")
-    pass
-
-
-main.add_command(browser_capture_command)
-main.add_command(api_command)
-
-
-def _live_daemon_status_payload() -> JSONDocument | None:
-    """Return the running daemon's status through its machine socket, or ``None``.
-
-    ``polylogued status`` used to always recompute the full rich status
-    in-process, cold, with every expensive diagnostic flag on by default --
-    the same collection a running daemon already keeps refreshed off-request
-    (polylogue-20d.17). It asks the daemon for its ``status`` operation, which
-    merges the daemon's cached runtime snapshot (writer, services, cold-build
-    progress, ETA) with the pinned archive reading.
-
-    The request goes over the daemon's AF_UNIX socket, the route every CLI
-    verb uses: the client verifies the listener's uid with ``SO_PEERCRED``
-    before any credential is sent, so neither a squatted TCP port, a proxy, a
-    redirect nor a URL from an untrusted ``polylogue.toml`` can receive the
-    daemon's bearer. No socket means no daemon and a silent local fallback. A
-    daemon that answers but refuses is reported on stderr: a silent
-    recomputation here would present the CLI's own configuration and an empty
-    in-process state as the running daemon's view.
-    """
-    from polylogue.cli.operation_kernel import (
-        OperationKernelError,
-        OperationRequest,
-        OperationUnavailableError,
-        dispatch,
-    )
-    from polylogue.config import load_polylogue_config
-
-    config = load_polylogue_config()
-    try:
-        # The operation's own declared deadline: a pinned read on a large
-        # archive can legitimately take longer than a connect probe, and
-        # cutting it short would fall back to the slower local path.
-        result = dispatch(config, OperationRequest("status", {}), daemon_only=True)
-    except OperationUnavailableError:
-        return None
-    except OperationKernelError as exc:
-        click.echo(
-            f"polylogued status: the running daemon did not answer the status request ({exc}); "
-            "showing a recomputation in this process, which cannot see the daemon's in-process state",
-            err=True,
-        )
-        return None
-    document = json_document(result.value)
-    return document or None
-
-
-@main.command("status", help="Show configured daemon component status.")
-@click.option(
-    "--format",
-    "output_format",
-    type=click.Choice(["json"]),
-    default=None,
-    help="Output format.",
-)
-def status_command(output_format: str | None) -> None:
-    configure_logging()
-    payload = _live_daemon_status_payload()
-    if payload is None:
-        if output_format == "json":
-            with redirect_stdout(sys.stderr):
-                payload = daemon_status_payload()
-        else:
-            payload = daemon_status_payload()
-    status_ok = payload.get("ok") is True
-    if output_format == "json":
-        click.echo(dumps(payload))
-    else:
-        for line in format_daemon_status_lines(payload):
-            click.echo(line)
-    if not status_ok:
-        raise SystemExit(1)
-
-
-@main.command("health", help="Run tiered daemon health checks.")
+@click.command("health", help="Run tiered daemon health checks.")
 @click.option(
     "--tier",
     "tiers",
@@ -4073,7 +4015,7 @@ def health_command(
         raise SystemExit(1)
 
 
-@main.command("run", help="Run configured long-lived daemon components.")
+@click.command("run", help="Run configured long-lived daemon components.")
 @click.option(
     "--host",
     default="127.0.0.1",
@@ -4178,6 +4120,12 @@ def health_command(
         "through it -- default OFF; an explicit opt-out for the auto-minted-token default."
     ),
 )
+@click.option(
+    "--listener-info-path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Atomically write actual bound API and capture addresses as private JSON after listener startup.",
+)
 @click.pass_context
 def run_command(
     ctx: click.Context,
@@ -4197,6 +4145,7 @@ def run_command(
     browser_port: int | None,
     api_auth_token: str | None,
     api_allow_no_auth: bool,
+    listener_info_path: Path | None,
 ) -> None:
     """Run configured daemon components.
 
@@ -4288,6 +4237,7 @@ def run_command(
                 api_auth_token=api_auth_token,
                 api_allow_no_auth=api_allow_no_auth,
                 cold_build_index=cold_build_index,
+                listener_info_path=listener_info_path,
             )
         )
     except KeyboardInterrupt:
@@ -4301,7 +4251,7 @@ def run_command(
         shutdown_events(timeout_s=0.25)
 
 
-@main.command("watch", help="Watch source directories and ingest new sessions live.")
+@click.command("watch", help="Watch source directories and ingest new sessions live.")
 def watch_command() -> None:
     from polylogue.config import resolve_runtime_config
     from polylogue.operations.durable_change_train import ArchiveOwnershipError, DurableChangeTrainError
@@ -4338,9 +4288,7 @@ def watch_command() -> None:
 __all__ = [
     "default_sources",
     "health_command",
-    "main",
     "run_command",
     "run_daemon_services",
-    "status_command",
     "watch_command",
 ]

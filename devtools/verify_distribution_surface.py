@@ -20,7 +20,7 @@ ROOT = _get_root()
 RUNTIME_SCRIPTS = ("polylogue", "polylogued", "polylogue-mcp")
 RUNTIME_IMPORT_PROBES = (
     "polylogue.cli.click_app",
-    "polylogue.daemon.cli",
+    "polylogue.daemon.commands",
     "polylogue.mcp.cli",
     "polylogue.archive.query.expression",
     "devtools.storage_correctness_scenario",

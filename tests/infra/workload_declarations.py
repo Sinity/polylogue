@@ -133,6 +133,8 @@ class WorkloadProfile:
             raise ValueError("workload profile requires a name and purpose")
         if not self.family_ids or not self.profile_tokens:
             raise ValueError("workload profile requires corpus identity")
+        if any(token.startswith(("workload-name:", "workload-purpose:")) for token in self.profile_tokens):
+            raise ValueError("workload profile tokens cannot use reserved declaration prefixes")
         reject_semantic_metadata(asdict(self), location="workload profile")
 
     @property
@@ -206,7 +208,7 @@ class NamedWorkloadProfile:
     def corpus_specs(self) -> tuple[CorpusSpec, ...]:
         return self.workload.corpus_specs(
             tuple(
-                WorkloadSessionShape(provider, count, self.messages_min, self.messages_max)
+                WorkloadSessionShape(provider, count, self.messages_min, self.messages_max, style="default")
                 for provider, count in self.provider_session_counts
             )
         )

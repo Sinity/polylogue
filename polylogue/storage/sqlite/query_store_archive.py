@@ -283,7 +283,7 @@ class SQLiteQueryStoreArchiveMixin:
     async def get_attachment_library_page(
         self, *, limit: int, offset: int, mime_filter: str = "", session_filter: str = "", state_filter: str = ""
     ) -> list[tuple[AttachmentRecord, str, str | None]]:
-        async with self._connection_factory() as conn:
+        async with self._connection_factory() as conn, _message_snapshot(conn):
             return await attachments_q.get_attachment_library_page(
                 conn,
                 limit=limit,

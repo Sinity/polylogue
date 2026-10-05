@@ -15,7 +15,7 @@ import polylogue.logging as plog
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
 from polylogue.core.json import JSONDocument
 from polylogue.daemon import status as status_module
-from polylogue.daemon.cli import status_command as daemon_status_command
+from polylogue.daemon.commands import status_command as daemon_status_command
 from polylogue.daemon.fts_status import FTSReadiness
 from polylogue.daemon.health import DaemonHealth, HealthAlert, HealthSeverity, HealthTier
 from polylogue.daemon.status import (
@@ -361,9 +361,8 @@ def test_daemon_status_plain_output_reports_judgment_scheduler_receipt() -> None
 def test_daemon_status_command_exit_matches_json_health_claim(payload_ok: bool, expected_exit: int) -> None:
     """``polylogued status`` exposes JSON and shell status consistently."""
     with (
-        patch("polylogue.daemon.cli.configure_logging"),
         patch(
-            "polylogue.daemon.cli._live_daemon_status_payload",
+            "polylogue.daemon.commands._live_daemon_status_payload",
             return_value={"ok": payload_ok, "raw_failure_lifecycle_state": "healthy" if payload_ok else "blocked"},
         ),
     ):
@@ -1440,8 +1439,8 @@ def test_daemon_status_reads_ops_tier_from_archive_tiers(tmp_path: Path) -> None
             phase="full_parse",
             started_at_ms=1_700_000_000_000,
             heartbeat_at_ms=1_700_000_002_500,
-            parsed_raw_count=7,
-            materialized_count=3,
+            parsed_raw_count=3,
+            materialized_count=9,
         )
         record_daemon_stage_event(
             conn,
@@ -1572,8 +1571,8 @@ def test_daemon_status_reads_ops_tier_when_archive_db_exists(tmp_path: Path) -> 
     assert latest["phase"] == "archive_phase"
     assert latest["current_source"] == "codex-session"
     assert latest["current_path"] == "/tmp/v1-preferred.jsonl"
-    assert latest["queued_file_count"] == 9
-    assert latest["succeeded_file_count"] == 4
+    assert latest["queued_file_count"] == 1
+    assert latest["succeeded_file_count"] == 9
 
 
 def test_daemon_status_reports_convergence_debt_separately(tmp_path: Path) -> None:
@@ -4062,3 +4061,59 @@ def test_publication_surfaces_preserve_blocked_liveness(
     assert plan.context["blocked"] == [receipt.publication_id]
     assert plan.context["unreferenced"] == []
     assert plan.context["referenced"] == []
+
+
+@pytest.mark.parametrize("parsed_files", [0, 1])
+def test_status_file_progress_uses_raw_receipt_not_session_or_old_stage_counts(
+    tmp_path: Path,
+    parsed_files: int,
+) -> None:
+    from polylogue.daemon.status import _archive_live_ingest_attempt_summary_info
+
+    ops_db = tmp_path / "ops.db"
+    with sqlite3.connect(ops_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.OPS)
+        record_ingest_attempt(
+            conn,
+            attempt_id="unit-attempt",
+            status="completed_with_failures",
+            started_at_ms=1_700_000_000_000,
+            finished_at_ms=1_700_000_002_000,
+            parsed_raw_count=parsed_files,
+            materialized_count=3,
+        )
+        record_daemon_stage_event(
+            conn,
+            attempt_id="unit-attempt",
+            stage="full_parse",
+            status="running",
+            observed_at_ms=1_700_000_001_000,
+            payload={"succeeded_file_count": 9, "needed_file_count": 2, "queued_file_count": 2},
+            event_id="earlier-stage",
+        )
+    summary = _archive_live_ingest_attempt_summary_info(ops_db)
+    assert summary is not None
+    assert summary.recent[0].status == "completed_with_failures"
+    assert summary.recent[0].succeeded_file_count == parsed_files
+    assert summary.recent[0].files_per_second == parsed_files / 2
+    assert summary.recent[0].needed_file_count == summary.recent[0].queued_file_count == 2
+
+
+def test_daemon_publication_status_preserves_invalid_config_diagnostic(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.core.json import json_document
+    from polylogue.daemon.status import _sinex_publication_status_info
+
+    monkeypatch.setenv("POLYLOGUE_SINEX_MODE", "bogus")
+    payload = _sinex_publication_status_info()
+    assert payload["mode"] == "bogus"
+    assert payload["state"] == "unavailable"
+    assert payload["code"] == "sinex_mode_unrecognized"
+    assert "active_lag" not in payload
+    lines = format_daemon_status_lines(json_document({"sinex_publication": payload}))
+    publication_lines = [line for line in lines if line.startswith("Sinex publication:")]
+    assert len(publication_lines) == 1
+    assert "unavailable" in publication_lines[0]
+    assert " lag" not in publication_lines[0]

@@ -7,10 +7,25 @@
     ]
   },
   {
+    "file": "polylogue/analysis/cohorts.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/analysis/command_shapes.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/analysis/delegation_work_evidence_materializer.py",
     "tiers": [
       "index"
     ]
+  },
+  {
+    "file": "polylogue/analysis/fable_packet.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/api/archive.py",
@@ -96,6 +111,11 @@
   },
   {
     "file": "polylogue/operations/daemon_ingest.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/operations/daemon_mutations.py",
     "tiers": [],
     "authority": "scratch"
   },

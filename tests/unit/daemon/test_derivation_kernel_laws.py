@@ -1299,7 +1299,7 @@ def test_cursor_evidence_excludes_budget_suffix_even_when_its_inspection_failed(
     adapter = PoisonedSuffix("d", required=("published", "budget", "poison"))
     report = converge(DerivationRegistry([adapter]), FRAME, budget=Budget(publication=1, retained_outcomes=0))
     assert report.failed == 1 and report.pending == 1 and report.done == 1
-    assert report.cursor.position("d").offset == 1
+    assert report.cursor.position("d").pending_keys == ("budget", "poison")
     assert report.cursor_unsettled_domains == frozenset()
 
 
@@ -1328,5 +1328,5 @@ def test_deadline_reached_during_compute_keeps_the_unattempted_suffix_ahead_of_c
     adapter = SlowCompute("d", required=("published", "deferred"))
     report = converge(DerivationRegistry([adapter]), FRAME, budget=Budget(deadline_at=1.0, retained_outcomes=0))
     assert report.done == 1 and report.pending == 1
-    assert report.cursor.position("d").offset == 1
+    assert report.cursor.position("d").pending_keys == ("deferred",)
     assert report.cursor_unsettled_domains == frozenset()

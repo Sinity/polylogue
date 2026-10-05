@@ -14,6 +14,7 @@ import json
 from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
 from polylogue.archive.session_projections import (
@@ -963,7 +964,19 @@ async def _query_registry_insight(
         kwargs["limit"] = hooks.clamp_limit(limit if limit is not None else descriptor.mcp_default_limit)
     if "offset" in fields:
         kwargs["offset"] = offset if offset is not None else 0
-    for key, value in (("origin", origin), ("tag", tag), ("repo", repo), ("since", since), ("until", until)):
+    if repo is not None:
+        repository_fields = fields.intersection({"repo", "repository"})
+        if len(repository_fields) == 2 and (
+            query_model.model_fields["repo"].annotation != query_model.model_fields["repository"].annotation
+        ):
+            return hooks.error_json(
+                f"insight {descriptor.name!r} declares incompatible repository fields",
+                code="unsupported_projection",
+                tool="query",
+            )
+        if repository_fields:
+            kwargs["repo" if "repo" in repository_fields else "repository"] = repo
+    for key, value in (("origin", origin), ("tag", tag), ("since", since), ("until", until)):
         if value is not None and key in fields:
             kwargs[key] = value
 
@@ -1493,7 +1506,20 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         the CLI: ``limit``/``offset`` bound the page, and the payload's
         opaque ``continuation`` resumes it until ``complete``.
         """
-        if continuation is not None and view not in ("topology", "messages", *_windowed_list_projection_names()):
+        started_at = monotonic()
+        from polylogue.core.refs import parse_delegation_subtree_object_id
+
+        normalized = _object_ref(ref)
+        subtree_read = (
+            view is None
+            and normalized.startswith("delegation:")
+            and parse_delegation_subtree_object_id(normalized.removeprefix("delegation:")) is not None
+        )
+        if (
+            continuation is not None
+            and not subtree_read
+            and view not in ("topology", "messages", *_windowed_list_projection_names())
+        ):
             return hooks.error_json(
                 "read continuations are not implemented for this view; use query for exhaustive rows",
                 code="invalid_continuation",
@@ -1510,9 +1536,8 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     code="invalid_argument",
                     tool="read",
                 )
-        # ``limit`` is applied to list-shaped read payloads below.
+        # Collection limits are applied by their canonical product read.
 
-        normalized = _object_ref(ref)
         session_id = normalized.removeprefix("session:") if normalized.startswith("session:") else None
 
         async def run() -> str:
@@ -1605,6 +1630,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         authority=authority_for_config(
                             hooks.get_polylogue().config,
                             server_identity="direct",
+                            started_at=started_at,
                         ),
                         outcome=lineage_page_outcome(
                             matched=len(messages),
@@ -1632,9 +1658,14 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     )
             if not is_mcp_read_view(view):
                 return hooks.error_json(f"unsupported read view: {view}", code="invalid_argument", tool="read")
-            payload = await hooks.get_polylogue().resolve_ref(normalized)
-            if limit is not None and hasattr(payload, "items"):
-                payload = payload.model_copy(update={"items": tuple(payload.items[: hooks.clamp_limit(limit)])})
+            from polylogue.archive.query.transaction import QueryContinuationInvalidError, QueryContinuationStaleError
+
+            try:
+                payload = await hooks.get_polylogue().resolve_ref(
+                    normalized, limit=hooks.clamp_limit(limit), offset=offset or 0, continuation=continuation
+                )
+            except (QueryContinuationInvalidError, QueryContinuationStaleError) as exc:
+                return hooks.error_json(str(exc), code=exc.code, tool="read")
             return hooks.json_payload(payload)
 
         return await hooks.async_safe_call("read", run, session_id=session_id)
@@ -1848,28 +1879,44 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
 
             if subject == "capability":
                 from polylogue.archive.query.capability_catalog import capability_detail_page
+                from polylogue.core.errors import ArchiveTierUnavailableError, SchemaRefusalError
 
-                stats = await hooks.get_polylogue().stats()
+                poly = hooks.get_polylogue()
+                counts = None
+                readiness = None
+                gaps: tuple[str, ...] = ()
+                try:
+                    counts = await poly.storage_counts()
+                except (ArchiveTierUnavailableError, SchemaRefusalError):
+                    gaps = ("archive_counts_unavailable",)
+                if counts is not None:
+                    try:
+                        readiness = await poly.query_capability_readiness()
+                    except (ArchiveTierUnavailableError, SchemaRefusalError):
+                        gaps = ("query_readiness_unavailable",)
+                    else:
+                        gaps = tuple(cast(list[str], readiness.get("caveats", [])))
                 page = capability_detail_page(
                     search=search,
                     offset=offset,
                     limit=limit,
-                    stats={
-                        "total_sessions": stats.session_count,
-                        "total_messages": stats.message_count,
-                    },
+                    stats=counts,
+                    readiness=readiness,
                 )
                 return hooks.json_payload(
                     MCPRootPayload(
                         root={
                             "subject": subject,
                             **page,
+                            "outcome": decide_outcome(
+                                matched=len(cast(list[object], page["items"])), degraded=gaps
+                            ).to_dict(),
                             "read_views": list(mcp_read_view_names()),
                             # Identities only: the full profile metadata has
                             # its own facade route and would not fit a
                             # capability page's response budget.
                             "read_view_profile_ids": [
-                                profile["view_id"] for profile in await hooks.get_polylogue().list_read_view_profiles()
+                                profile["view_id"] for profile in await poly.list_read_view_profiles()
                             ],
                         }
                     )
@@ -1969,27 +2016,22 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     )
                 return hooks.json_payload(MCPContextDeliveryPayload.from_envelope(receipt))
             if recipient_ref is not None:
-                from polylogue.mcp.mutation_support import page_items
-
                 clamped_limit = hooks.clamp_limit(limit)
                 page_offset = max(0, offset or 0)
                 receipts = await hooks.get_polylogue().list_context_deliveries(
                     recipient_ref=recipient_ref,
                     assertion_ref=assertion_ref,
-                    limit=None,
-                )
-                page, matched, _, next_offset = page_items(
-                    tuple(MCPContextDeliverySummaryPayload.from_envelope(item) for item in receipts),
                     limit=clamped_limit,
                     offset=page_offset,
                 )
+                page = tuple(MCPContextDeliverySummaryPayload.from_summary(item) for item in receipts.items)
                 return hooks.json_payload(
                     MCPContextDeliveryListPayload(
                         items=page,
-                        total=matched,
-                        limit=clamped_limit,
-                        offset=page_offset,
-                        next_offset=next_offset,
+                        total=receipts.total,
+                        limit=receipts.limit,
+                        offset=receipts.offset,
+                        next_offset=receipts.next_offset,
                         outcome=decide_outcome(matched=len(page)),
                     )
                 )
@@ -2089,7 +2131,6 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 return hooks.json_payload(MCPRootPayload(root=root), exclude_none=True)
 
             if scope == "sinex":
-                from polylogue.config import load_polylogue_config
                 from polylogue.mcp.archive_support import active_archive_root
                 from polylogue.sinex.service import publication_status_payload
 
@@ -2097,7 +2138,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 active_root = active_archive_root(config) or config.archive_root
                 root["sinex"] = publication_status_payload(
                     active_root / "source.db",
-                    str(getattr(load_polylogue_config(), "sinex_mode", "off")),
+                    config.sinex_mode,
                 )
                 return hooks.json_payload(MCPRootPayload(root=root), exclude_none=True)
 
@@ -2117,17 +2158,12 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     stats, include_embedded=False, include_db_size=False
                 ).model_dump(mode="json")
             if scope == "archive":
-                from polylogue.config import load_polylogue_config
                 from polylogue.mcp.archive_support import active_archive_root
-                from polylogue.sinex.models import PublicationMode
-                from polylogue.sinex.service import publication_status
+                from polylogue.sinex.service import publication_status_payload
 
                 config = hooks.get_config()
                 source_db = (active_archive_root(config) or mcp_archive_root(config)) / "source.db"
-                root["sinex_publication"] = publication_status(
-                    source_db,
-                    PublicationMode.from_string(load_polylogue_config().sinex_mode),
-                ).as_dict()
+                root["sinex_publication"] = publication_status_payload(source_db, config.sinex_mode)
             if "provider_usage" in include:
                 report_usage = await hooks.get_polylogue().origin_usage_report(
                     origin=ref,

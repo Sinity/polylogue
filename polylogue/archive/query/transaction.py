@@ -14,7 +14,7 @@ import hmac
 import json
 import sqlite3
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import time
@@ -555,7 +555,13 @@ class QueryTransaction:
         self._prepare(archive)
         return work(archive)
 
-    async def run(self, work: Callable[[ArchiveStore], T], *, index_path: Path | None = None) -> T:
+    async def run(
+        self,
+        work: Callable[[ArchiveStore], T],
+        *,
+        index_path: Path | None = None,
+        read_owner: Callable[[QueryExecutionContext], AbstractContextManager[ArchiveStore]] | None = None,
+    ) -> T:
         return await execute_archive_read(
             self.archive_root,
             lambda archive: self._run_work(archive, work),
@@ -563,6 +569,7 @@ class QueryTransaction:
             controller=self.controller,
             read_timeout=self.read_timeout,
             index_path=index_path,
+            read_owner=read_owner,
         )
 
     def run_sync(self, work: Callable[[ArchiveStore], T]) -> T:
@@ -592,6 +599,7 @@ async def run_archive_read(
     workload_class: WorkloadClass = "interactive",
     admission_weight: int = 1,
     controller: QueryAdmissionController | None = None,
+    read_owner: Callable[[QueryExecutionContext], AbstractContextManager[ArchiveStore]] | None = None,
 ) -> T:
     """Run one named read through the shared transaction boundary."""
     transaction = QueryTransaction(
@@ -608,7 +616,7 @@ async def run_archive_read(
         admission_weight=admission_weight,
         controller=controller,
     )
-    return await transaction.run(work)
+    return await transaction.run(work, read_owner=read_owner)
 
 
 def run_archive_read_sync(

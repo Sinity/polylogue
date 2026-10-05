@@ -201,6 +201,7 @@ def _content_block_record(
     tool_id: str | None = None,
     tool_input: str | None = None,
     media_type: str | None = None,
+    signature: str | None = None,
     metadata: str | None = None,
     semantic_type: str | None = None,
     tool_result_is_error: int | None = None,
@@ -221,6 +222,8 @@ def _content_block_record(
         tool_id=tool_id,
         tool_input=tool_input,
         metadata=merged_metadata,
+        media_type=media_type,
+        signature=signature,
         semantic_type=None if semantic_type is None else SemanticBlockType.from_string(semantic_type),
         tool_result_is_error=tool_result_is_error,
         tool_result_exit_code=tool_result_exit_code,
@@ -248,6 +251,7 @@ def _content_block_from_mapping(
         tool_id=_optional_str(block.get("tool_id")) or _optional_str(block.get("id")),
         tool_input=_json_string_or_none(raw_tool_input, context="content block tool input"),
         media_type=_optional_str(block.get("media_type")),
+        signature=_optional_str(block.get("signature")),
         metadata=_json_string_or_none(raw_metadata, context="content block metadata"),
         semantic_type=_optional_str(block.get("semantic_type")),
         tool_result_is_error=_optional_int(block.get("tool_result_is_error", block.get("is_error"))),
@@ -455,6 +459,8 @@ def _record_to_parsed_session(
                     tool_id=block.tool_id,
                     tool_input=_maybe_json_object(block.tool_input),
                     metadata=_maybe_json_object(block.metadata),
+                    media_type=block.media_type,
+                    signature=block.signature,
                     is_error=is_error,
                     exit_code=exit_code,
                     tool_outcome=block.tool_outcome,
@@ -1174,6 +1180,89 @@ def materialize_session_insights(
         )
 
 
+def seed_insight_scope_archive(root: Path) -> None:
+    """Neutral profile/latency rows with distinct repository and auto-tag scopes."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(root)
+    index_path = root / "index.db"
+    for name, month in (("alpha", 1), ("beta", 2), ("other", 3)):
+        (
+            SessionBuilder(index_path, name)
+            .provider("claude-code")
+            .title(name)
+            .git_repository_url(f"https://example.test/org/{name}.git")
+            .created_at(f"2026-0{month}-01T00:00:00+00:00")
+            .updated_at(f"2026-0{month}-01T00:00:00+00:00")
+            .add_message("m-0", role="user", text="neutral request", timestamp=f"2026-0{month}-01T00:00:00+00:00")
+            .save()
+        )
+    materialize_session_insights(index_path)
+    with sqlite3.connect(index_path) as conn:
+        for name in ("alpha", "beta", "other"):
+            session_id = f"claude-code-session:ext-{name}"
+            conn.execute(
+                "INSERT INTO session_tags (session_id, tag, tag_source, method) VALUES (?, ?, 'auto', 'parser')",
+                (session_id, name),
+            )
+            conn.execute(
+                """INSERT INTO session_latency_profiles (
+                    session_id, source_name, median_tool_call_ms, p90_tool_call_ms,
+                    max_tool_call_ms, stuck_tool_count, materialized_at
+                ) VALUES (?, 'claude-code-session', 1, 2, 3, 1, '2026-03-01T00:00:00+00:00')
+                ON CONFLICT(session_id) DO UPDATE SET stuck_tool_count = 1""",
+                (session_id,),
+            )
+
+
+def seed_topology_chain(db_path: Path, count: int) -> tuple[str, ...]:
+    """Acquire a neutral connected chain for exhaustive topology reads."""
+    ids = []
+    for index in range(count):
+        builder = SessionBuilder(db_path, f"chain-{index}").provider("claude-code")
+        if index:
+            builder.parent_session(f"ext-chain-{index - 1}").branch_type("continuation")
+        builder.add_message(text=f"message {index}").save()
+        ids.append(builder.native_session_id())
+    return tuple(ids)
+
+
+def seed_anchor_session(db_path: Path, *, insert_prefix: bool = False) -> str:
+    """Keep native message identities stable while a prefix changes their ordinals."""
+    builder = SessionBuilder(db_path, "anchored").provider("claude-code")
+    if insert_prefix:
+        builder.add_message(message_id="inserted", text="new prefix")
+    for index in range(4):
+        builder.add_message(
+            message_id=f"anchor-{index}",
+            text=f"original {index}",
+            blocks=[
+                {
+                    "type": "thinking",
+                    "text": "neutral thought",
+                    "media_type": "text/plain",
+                    "signature": "neutral-signature",
+                }
+            ]
+            if index == 0
+            else [],
+        )
+    builder.save()
+    return builder.native_session_id()
+
+
+def seed_topology_star(db_path: Path, count: int) -> tuple[str, ...]:
+    """Acquire siblings exceeding the ordinary topology edge window."""
+    ids = []
+    for index in range(count):
+        builder = SessionBuilder(db_path, f"star-{index}").provider("claude-code")
+        if index:
+            builder.parent_session("ext-star-0").branch_type("continuation")
+        builder.add_message(text=f"sibling {index}").save()
+        ids.append(builder.native_session_id())
+    return tuple(ids)
+
+
 def seed_thread_search_archive(root: Path) -> dict[str, str]:
     """A profiled older singleton and newer unprofiled parent/child thread."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -1214,3 +1303,74 @@ def seed_thread_search_archive(root: Path) -> dict[str, str]:
     )
     child.save()
     return {"older": older.native_session_id(), "newer": newer.native_session_id(), "child": child.native_session_id()}
+
+
+def seed_attachment_library_lineage_archive(root: Path) -> dict[str, str]:
+    """Physical refs before/after an inherited cut, plus child and foreign refs."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    with ArchiveStore(root):
+        pass
+    index = root / "index.db"
+    parent = SessionBuilder(index, "attachment-parent").created_at("2026-01-01T00:00:00+00:00")
+    parent.add_message(message_id="prefix", text="inherited prefix")
+    parent.add_message(message_id="later", text="outside inherited cut")
+    parent.add_attachment("prefix", message_id="prefix", display_name="prefix.txt")
+    parent.add_attachment("later", message_id="later", display_name="post-cut.txt")
+    parent.save()
+    child = SessionBuilder(index, "attachment-child").created_at("2026-02-01T00:00:00+00:00")
+    child.add_message(message_id="own", text="child tail")
+    child.add_attachment("own", message_id="own", display_name="own.txt")
+    child.save()
+    foreign = SessionBuilder(index, "attachment-foreign").created_at("2026-03-01T00:00:00+00:00")
+    foreign.add_message(message_id="foreign", text="foreign session")
+    foreign.add_attachment("foreign", message_id="foreign", display_name="foreign.txt")
+    foreign.save()
+    parent_id, child_id = parent.native_session_id(), child.native_session_id()
+    with write_lease("test.attachment-library-lineage"), ArchiveStore.open_existing(root, read_only=False) as archive:
+        message = archive._conn.execute(
+            "SELECT message_id,content_address FROM messages WHERE session_id=? ORDER BY position LIMIT 1",
+            (parent_id,),
+        ).fetchone()
+        assert message is not None
+        archive._conn.execute(
+            "INSERT INTO session_links(src_session_id,dst_origin,dst_native_id,link_type,resolved_dst_session_id,"
+            "branch_point_message_id,branch_point_content_address,inheritance,status,confidence,evidence_json,observed_at_ms) "
+            "VALUES (?, 'codex-session', ?, 'fork', ?, ?, ?, 'prefix-sharing', NULL, 1.0, '[]', 0)",
+            (child_id, parent.conv.native_id, parent_id, message[0], message[1]),
+        )
+        archive._conn.commit()
+    return {"parent": parent_id, "child": child_id, "foreign": foreign.native_session_id()}
+
+
+def seed_command_shape_archive(root: Path) -> str:
+    """Executed commands observed in two repositories on one session."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(root)
+    repositories = [root / "command-shape-repos" / name for name in ("A", "B")]
+    for repository in repositories:
+        (repository / ".git").mkdir(parents=True)
+    builder = (
+        SessionBuilder(root / "index.db", "command-shapes")
+        .provider("claude-code")
+        .working_directories([str(repository) for repository in repositories])
+        .add_message(
+            "commands",
+            role="assistant",
+            text="ran commands",
+            timestamp="2026-01-01T00:00:00+00:00",
+            blocks=[
+                {
+                    "type": "tool_use",
+                    "tool_name": "Bash",
+                    "tool_id": "shell-1",
+                    "input": {"command": "foo bar | foo bar; other status"},
+                },
+                {"type": "tool_use", "tool_name": "Bash", "tool_id": "shell-2", "input": {"command": "other status"}},
+            ],
+        )
+    )
+    builder.save()
+    return builder.native_session_id()

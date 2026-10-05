@@ -10,7 +10,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
-from polylogue.core.errors import SchemaRefusalError
+from polylogue.core.errors import ArchiveTierUnavailableError, SchemaRefusalError
 from polylogue.core.raw_failure_evidence import (
     CohortMembershipRefusalError,
     RetainedRawDecodeRefusalError,
@@ -211,6 +211,35 @@ def operation_envelope(
     )
 
 
+def _observe_explicit_index_condition(
+    request: DaemonOperationRequest,
+    snapshot: OperationControlRead,
+    *,
+    archive_root: Path,
+    read_control: QueryExecutionContext,
+) -> OperationControlRead:
+    """Observe only a caller-supplied Index condition for independent reads."""
+    if request.index_schema_version is None:
+        return snapshot
+    from polylogue.archive.query.execution_control import InterruptibleSQLiteRead
+    from polylogue.operations.user_overlay_reads import readable_required_tier
+    from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    location = ArchiveLocation.resolve(archive_root)
+    if ArchiveIdentity.resolve_location(location) != snapshot.identity:
+        raise ValueError("archive_identity_stale")
+    with (
+        readable_required_tier(location.active_index_path, ArchiveTier.INDEX) as connection,
+        InterruptibleSQLiteRead(read_control).control_connection(connection),
+    ):
+        connection.execute("BEGIN")
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(archive_root)) != snapshot.identity:
+        raise ValueError("archive_identity_stale")
+    return replace(snapshot, schema_versions={**snapshot.schema_versions, "index": version})
+
+
 def _validate_identity(
     request: DaemonOperationRequest, context: OperationContext, snapshot: PinnedOperationRead | OperationControlRead
 ) -> None:
@@ -249,6 +278,76 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
         assert spec is not None
         if request.operation == "mutation.session.excision":
             raise PermissionError("staged_execution_required")
+        if request.operation == "insights.hermes_health":
+            from polylogue.operations.hermes_health import execute_hermes_health
+            from polylogue.operations.operation_context import abort_checkpoint
+            from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+
+            read_control = context.read_control or QueryExecutionContext(
+                call_id=str(request.request_id),
+                query_ref=request.fingerprint,
+                deadline_monotonic=None if request.deadline_ms is None else started + request.deadline_ms / 1000,
+                owner_ref=context.principal.actor_ref,
+            )
+            checkpoint = abort_checkpoint(read_control)
+            checkpoint()
+            identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(context.archive_root))
+            snapshot = _observe_explicit_index_condition(
+                request,
+                OperationControlRead(identity, {}, ()),
+                archive_root=context.archive_root,
+                read_control=read_control,
+            )
+            _validate_identity(request, context, snapshot)
+            dependencies = context.read_dependencies
+            if dependencies is None or dependencies.hermes_root is None:
+                raise ValueError("Hermes health requires the resident configured source root")
+            result = execute_hermes_health(
+                context.archive_root, hermes_root=dependencies.hermes_root, checkpoint=checkpoint
+            )
+            read_control.mark_cleanup_complete()
+            validate_operation_result(request.operation, result)
+            if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(context.archive_root)) != identity:
+                raise ValueError("archive changed while reading Hermes health")
+            return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
+        if request.operation in {"user.settings.get", "user.settings.list"}:
+            from polylogue.archive.query.execution_control import InterruptibleSQLiteRead
+            from polylogue.operations.operation_context import abort_checkpoint
+            from polylogue.operations.user_overlay_reads import read_user_settings, readable_required_tier
+            from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+            from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+            read_control = context.read_control or QueryExecutionContext(
+                call_id=str(request.request_id),
+                query_ref=request.fingerprint,
+                deadline_monotonic=None if request.deadline_ms is None else started + request.deadline_ms / 1000,
+                owner_ref=context.principal.actor_ref,
+            )
+            checkpoint = abort_checkpoint(read_control)
+            identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(context.archive_root))
+            snapshot = _observe_explicit_index_condition(
+                request,
+                OperationControlRead(identity, {}, ()),
+                archive_root=context.archive_root,
+                read_control=read_control,
+            )
+            _validate_identity(request, context, snapshot)
+            with (
+                readable_required_tier(
+                    context.archive_root / "user.db", ArchiveTier.USER, on_settled=read_control.mark_cleanup_complete
+                ) as connection,
+                InterruptibleSQLiteRead(read_control).control_connection(connection),
+            ):
+                connection.execute("BEGIN")
+                version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+                snapshot = replace(snapshot, schema_versions={**snapshot.schema_versions, "user": version})
+                result = read_user_settings(
+                    request.operation, request.payload, connection=connection, checkpoint=checkpoint
+                )
+                validate_operation_result(request.operation, result)
+                if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(context.archive_root)) != identity:
+                    raise ValueError("archive changed while reading user settings")
+                return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
         if request.operation.startswith("operation."):
             assert context.runtime is not None
             control_snapshot = observe_control_authority(context.archive_root)
@@ -407,6 +506,20 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                 "detail": str(exc),
                 "retryable": True,
                 "data": details,
+            },
+        )
+    except ArchiveTierUnavailableError as exc:
+        return operation_envelope(
+            request,
+            context,
+            snapshot=snapshot,
+            started_at=started,
+            outcome="rejected",
+            error={
+                "code": exc.code,
+                "detail": exc.public_message,
+                "retryable": False,
+                "data": {"tier": exc.tier, "guidance": exc.guidance},
             },
         )
     except EmbeddingGenerationBusyError as exc:

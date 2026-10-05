@@ -10,6 +10,7 @@ rule:
         not:
           has:
             any:
+              - pattern: sync_directory($DIR)
               - pattern: _fsync_directory($DIR)
               - pattern: _fsync_dir($DIR)
               - pattern: sync_directory($DIR)

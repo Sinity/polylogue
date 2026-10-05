@@ -4,7 +4,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from polylogue.cli.shared.schema_command_support import (
-    _privacy_config_payload,
     _privacy_level,
     build_schema_privacy_config,
 )
@@ -205,13 +204,13 @@ def test_schema_command_support_builds_payloads_from_privacy_inputs(tmp_path: Pa
     assert _privacy_level("strict") == "strict"
     assert _privacy_level("permissive") == "permissive"
     assert _privacy_level("bogus") == "standard"
-    assert _privacy_config_payload(config) == {
+    assert config.to_payload() == {
         "level": "strict",
         "safe_enum_max_length": 12,
         "high_entropy_min_length": 14,
         "cross_conv_min_count": 5,
         "cross_conv_proportional": True,
-        "field_overrides": {"$.id": "deny"},
+        "field_overrides": [{"pattern": "$.id", "action": "deny"}],
         "allow_value_patterns": ["safe*"],
         "deny_value_patterns": ["secret*"],
     }
@@ -228,13 +227,16 @@ def test_schema_command_support_builds_payloads_from_privacy_inputs(tmp_path: Pa
         cli_overrides={"level": "strict"},
         project_path=tmp_path,
     )
-    assert loaded == _privacy_config_payload(config)
+    assert loaded == config.to_payload()
     assert build_schema_privacy_config(privacy="bogus", privacy_config_path=None) == {
         "level": "standard",
         "safe_enum_max_length": 50,
         "high_entropy_min_length": 10,
         "cross_conv_min_count": 3,
         "cross_conv_proportional": False,
+        "field_overrides": [],
+        "allow_value_patterns": [],
+        "deny_value_patterns": [],
     }
     assert build_schema_privacy_config(privacy=None, privacy_config_path=None) is None
 

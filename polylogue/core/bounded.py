@@ -7,8 +7,6 @@ code review and by the AST ratchet.
 
 from __future__ import annotations
 
-import asyncio
-import inspect
 import math
 import os
 import subprocess
@@ -114,6 +112,8 @@ def _timeout_exception(handler: TimeoutHandler | None, budget: float) -> BaseExc
     if isinstance(handler, BaseException):
         return handler
     if isinstance(handler, type):
+        import inspect
+
         if not issubclass(handler, BaseException):
             raise TypeError("on_timeout class must derive from BaseException")
         exception_type: type[BaseException] = handler
@@ -137,6 +137,8 @@ async def bounded(
     translated to a typed exception.  ``on_timeout`` may be an exception
     class, an exception instance, or a factory receiving the budget.
     """
+    import asyncio
+
     seconds = _validate_budget(budget)
     timeout_context = asyncio.timeout(seconds)
     try:

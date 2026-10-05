@@ -279,7 +279,16 @@ class DaemonClient:
                 "operation.cancel",
                 "operation.result",
             }:
-                if request.index_schema_version is None:
+                if request.index_schema_version is None and operation not in {
+                    "maintenance.backup",
+                    "maintenance.restore_verified_backup",
+                    "user.settings.get",
+                    "user.settings.list",
+                    "insights.hermes_health",
+                }:
+                    # These operations read or copy declared tiers without an Index
+                    # reader. An explicit Index precondition still reaches the
+                    # server unchanged and must be verified there.
                     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
                     request = replace(request, index_schema_version=INDEX_SCHEMA_VERSION)
@@ -443,7 +452,7 @@ class DaemonClient:
             if reference is not None:
                 AcceptedOperationReference.model_validate(reference)
             if response.get("outcome") == "completed" and response.get("error") is None:
-                validate_operation_result(request.operation, response.get("result"))
+                validate_operation_result(request.operation, response.get("result"), native_result=False)
         except (ValueError, RuntimeError) as exc:
             raise DaemonOperationProtocolError(str(exc)) from exc
         return response
@@ -694,7 +703,7 @@ class DaemonClient:
                 result = state.get("result", state)
                 if state["outcome"] == "completed" or (operation == "ingest" and state["outcome"] == "degraded"):
                     try:
-                        validate_operation_result(operation, result)
+                        validate_operation_result(operation, result, native_result=False)
                     except RuntimeError as exc:
                         raise DaemonOperationProtocolError(str(exc)) from exc
                 # Receipt recovery observed source/audit authority, not the

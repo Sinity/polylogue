@@ -118,7 +118,7 @@ def test_declared_agentctl_operation_is_bounded_and_previewable() -> None:
     assert operation["exec"] == ["devtools", "cache", "gc", "--json"]
     assert operation["result"] == "json"
     assert operation["cache"] == "none"
-    assert operation["timeout_seconds"] == 900
+    assert operation["timeout_seconds"] == 0
 
 
 def test_gc_rejects_non_finite_grace_period(tmp_path: Path) -> None:
@@ -184,7 +184,8 @@ def test_route_returns_nonzero_when_deletion_fails(tmp_path: Path, monkeypatch: 
     payload = json.loads(output.getvalue())
     assert payload["dispositions"].get(ArtifactGcDisposition.DELETION_FAILED.value) == 1
     assert exit_code == 1
-    assert stale.root.exists()
+    assert not stale.root.exists()
+    assert any((cache_root / ".staging").glob(f"{stale.root.name}.gc.*"))
     assert current.root.exists()
 
 
@@ -221,3 +222,164 @@ def test_json_refusal_payload_bounds_untrusted_error_text(tmp_path: Path, monkey
     assert command.main(["--cache-root", str(tmp_path), "--json"], stdout=output) == 1
     payload = json.loads(output.getvalue())
     assert len(payload["refused"]) == 2_048
+
+
+def test_gc_sigterm_after_partial_deletion_is_receipted_and_resumable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production command must retire before unlinking and preserve a resumable interruption."""
+    import signal
+
+    cache_root = tmp_path / "cache"
+    current = build_seeded_archive(cache_root=cache_root)
+    stale = build_seeded_archive(
+        (
+            dataclasses.replace(
+                c03_semantic_corpus_spec(), seed=991, count=2, session_native_ids=("c03-target", "c03-irrelevant-000")
+            ),
+        ),
+        cache_root=cache_root,
+    )
+    _age_artifact(stale.root)
+    receipt = tmp_path / "gc.json"
+    original = workload_artifacts._remove_tree
+    previous_handler = signal.getsignal(signal.SIGTERM)
+    sent = False
+
+    def interrupt(path: Path, *, budget: int | None, progress: object) -> None:
+        from collections.abc import Callable
+        from typing import cast
+
+        assert path.parent == cache_root / ".staging"
+        assert not stale.root.exists()
+        before = tuple(path.iterdir())
+
+        def tick() -> None:
+            nonlocal sent
+            if not sent and any(not item.exists() for item in before):
+                sent = True
+                signal.raise_signal(signal.SIGTERM)
+            cast(Callable[[], None], progress)()
+
+        original(path, budget=budget, progress=tick)
+
+    monkeypatch.setattr(workload_artifacts, "_remove_tree", interrupt)
+    output = io.StringIO()
+    assert (
+        command.main(
+            ["--cache-root", str(cache_root), "--receipt", str(receipt), "--grace-period-s", "1", "--apply", "--json"],
+            stdout=output,
+        )
+        == 143
+    )
+    interrupted = json.loads(output.getvalue())
+    assert sent and interrupted["interrupted"] and not interrupted["complete"]
+    assert interrupted["deletion_bytes_complete"] is False
+    assert interrupted["next_cursor"] is None
+    checkpoint = json.loads(receipt.read_text())
+    assert checkpoint["interrupted"] and not checkpoint["complete"]
+    assert checkpoint["entries"] == interrupted["entries"]
+    assert any(entry["disposition"] == "retired" for entry in interrupted["entries"])
+    assert signal.getsignal(signal.SIGTERM) == previous_handler
+    assert current.root.exists()
+    monkeypatch.setattr(workload_artifacts, "_remove_tree", original)
+    resumed_output = io.StringIO()
+    assert (
+        command.main(
+            ["--cache-root", str(cache_root), "--receipt", str(receipt), "--grace-period-s", "1", "--apply", "--json"],
+            stdout=resumed_output,
+        )
+        == 0
+    )
+    resumed = json.loads(resumed_output.getvalue())
+    assert resumed["complete"] and not resumed["interrupted"]
+    assert resumed["dispositions"].get("corrupt", 0) == 0
+    assert any(entry["disposition"] == "deleted" for entry in resumed["entries"])
+    assert not list((cache_root / ".staging").glob("*.gc.*"))
+    assert current.root.exists()
+
+
+def test_gc_pages_do_not_skip_candidates_when_prior_artifacts_disappear(tmp_path: Path) -> None:
+    """Lexical continuation follows deletion without the shrinking-offset defect."""
+    cache_root = tmp_path / "cache"
+    artifacts = [
+        build_seeded_archive(
+            (
+                dataclasses.replace(
+                    c03_semantic_corpus_spec(),
+                    seed=seed,
+                    count=2,
+                    session_native_ids=("c03-target", "c03-irrelevant-000"),
+                ),
+            ),
+            cache_root=cache_root,
+        )
+        for seed in (991, 992, 993)
+    ]
+    for artifact in artifacts:
+        _age_artifact(artifact.root)
+    after = None
+    seen = set()
+    complete = False
+    while not complete:
+        report = gc_seeded_archive_artifacts(
+            cache_root=cache_root,
+            reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
+            grace_period_s=1,
+            dry_run=False,
+            page_size=1,
+            after=after,
+        )
+        assert len(report.entries) == 1
+        entry = report.entries[0]
+        assert entry.disposition is ArtifactGcDisposition.DELETED
+        assert entry.key not in seen
+        seen.add(entry.key)
+        complete = report.complete
+        after = report.next_cursor
+        assert complete == (after is None)
+    assert seen == {artifact.manifest.key for artifact in artifacts}
+
+
+def test_gc_retired_deletion_has_no_valid_tree_node_cap(tmp_path: Path) -> None:
+    """A retired tree exceeding the predecessor 10,000-node cap still completes by streaming."""
+    cache = tmp_path / "cache"
+    (cache / "artifacts").mkdir(parents=True)
+    (cache / ".locks").mkdir()
+    retired = cache / ".staging" / ("a" * 64 + ".gc." + "b" * 32)
+    retired.mkdir(parents=True)
+    for index in range(10_001):
+        (retired / str(index)).touch()
+    report = gc_seeded_archive_artifacts(
+        cache_root=cache, reachable_keys=("seeded-archive:sha256:" + "f" * 64,), dry_run=False
+    )
+    assert report.complete and not report.interrupted
+    assert [entry.disposition for entry in report.entries] == [ArtifactGcDisposition.DELETED]
+    assert not retired.exists()
+
+
+def test_refused_retirement_preserves_published_tree_and_seal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed directory move must not leave an otherwise valid shared artifact writable."""
+    import stat
+
+    cache = tmp_path / "cache"
+    spec = dataclasses.replace(
+        c03_semantic_corpus_spec(), seed=996, count=2, session_native_ids=("c03-target", "c03-irrelevant-000")
+    )
+    artifact = build_seeded_archive((spec,), cache_root=cache)
+    _age_artifact(artifact.root)
+    original_mode = artifact.root.stat().st_mode
+
+    def refuse(_source: Path, _destination: Path) -> None:
+        raise PermissionError("injected retirement refusal")
+
+    monkeypatch.setattr(workload_artifacts, "_safe_replace", refuse)
+    report = gc_seeded_archive_artifacts(
+        cache_root=cache, reachable_keys=("seeded-archive:sha256:" + "f" * 64,), grace_period_s=1, dry_run=False
+    )
+    assert [entry.disposition for entry in report.entries] == [ArtifactGcDisposition.DELETION_FAILED]
+    assert not report.complete and report.next_cursor is None
+    assert artifact.root.exists()
+    assert artifact.root.stat().st_mode == original_mode
+    assert not original_mode & stat.S_IWUSR
+    assert workload_artifacts._gc_manifest_integrity(artifact.root)[2] is None

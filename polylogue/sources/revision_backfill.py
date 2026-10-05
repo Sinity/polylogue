@@ -3239,14 +3239,20 @@ def prepare_revision_source_census(
                 return
         state.classified += int(len(sessions) == 1)
         pending = evidence_reader.raw_has_pending_envelope(raw_id)
+        # A grouped acquisition retains native_id=NULL even when its parser
+        # currently yields one session; its original membership governs that
+        # session. A native singleton learns its own key through the census.
+        grouped = evidence_reader.raw_native_id(raw_id) is None
         if (
             len(sessions) == 1
+            and not grouped
             and (revision_kind is RawRevisionKind.UNKNOWN or pending)
             and not evidence_reader.raw_has_membership_authority(raw_id)
         ):
             record_current_parser_source_census(seal, raw_id, parser_sessions=sessions)
         elif revision_kind is RawRevisionKind.UNKNOWN or (
-            pending and (len(sessions) > 1 or evidence_reader.raw_has_membership_governed_pending_envelope(raw_id))
+            pending
+            and (grouped or len(sessions) > 1 or evidence_reader.raw_has_membership_governed_pending_envelope(raw_id))
         ):
             replace_raw_membership_census(
                 seal,

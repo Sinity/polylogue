@@ -59,6 +59,8 @@ an import, keyed on the original path.
 
 ## Configuration Flags
 
+For a caller-owned temporary daemon, `--api-port 0 --port 0 --listener-info-path <unique-path>` lets the kernel choose distinct ports while the daemon retains both sockets. The JSON contains `pid` and `listeners.api` / `listeners.browser_capture` host/port objects, with null for disabled listeners. Verify the child process identity and keep service readiness checks separate from socket binding. The destination must be outside the archive root and must not already exist; atomic publication also refuses a competing creator. The file is published with mode 0600 only after every enabled TCP listener binds. It contains no authentication tokens.
+
 By default `polylogued run` enables every component (watch, browser capture, HTTP API). Pass the corresponding `--no-*` flag to disable any one.
 
 | Flag | Default | Description |
@@ -90,7 +92,8 @@ local process can then read/post to the receiver).
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--api-host` | `127.0.0.1` | API server host |
-| `--api-port` | `8766` | API server port |
+| `--api-port` | `8766` | API server port; zero assigns an available port |
+| `--listener-info-path` | none | Atomically write private JSON with child PID and actual bound API/capture addresses |
 | `--browser-port` | disabled | Start the separate browser host on this port, for example `8767`; requires the API |
 | `--api-auth-token` (`daemon.api.auth_token` / `api_auth_token`) | auto | API bearer token; auto-minted/loaded from a 0600 file if not given |
 | `--api-allow-no-auth` (`daemon.api.allow_no_auth` / `api_allow_no_auth`) | off | Explicit opt-out: serve the API with no bearer token at all |
@@ -374,13 +377,12 @@ Enabled by default on `127.0.0.1:8765`. Disable with `--no-browser-capture`.
 `polylogued health` runs tiered health checks (fast by default,
 `--expensive` to include full integrity checks).
 
-`polylogued status` asks the running daemon first, for its `status`
-operation over the machine socket every CLI verb uses; the client checks the
-listener's uid with `SO_PEERCRED` before it sends any credential. With no
-socket it recomputes status in its own process. If the daemon answers but
-fails the request, stderr says so first, because that recomputation cannot
-see the daemon's in-process state such as cold-build progress, the writer
-holder or the ETA.
+`polylogued status` reads one `status` operation from the resident daemon over
+its peer-verified machine socket. An absent daemon returns the typed
+`daemon_absent` unavailable result and exit 1. A refused request preserves its
+typed reason. The command never recomputes the resident view in its own
+process. Service commands load their original implementation when selected;
+root help and status do not initialize the service loop.
 
 ### Status Fields
 
@@ -1146,3 +1148,35 @@ systemctl --user start polylogued
 
 The daemon will catch up on any files ingested after the backup was taken.
 ```
+
+### Structural annotation joins
+
+`polylogue annotations join` lowers its schema, explicit lifecycle statuses,
+target kind, grouping and page operands to the resident `annotation.join` read.
+The CLI renders the existing join report and never opens an archive. Daemon
+absence or a typed rejection is final. The producer reads label selection,
+schema evidence, judgments and structural targets from one pinned Index/User
+view. Missing targets, schema drift and invalid values remain explicit report
+counts and give the operation a degraded verdict even when no row joins.
+
+The Python API retains its controlled direct read of the same declared product
+composer. It pins the same attached tiers before evaluating the join; it does
+not delegate target resolution back to a facade or reopen User for selection.
+Its original operation-read owner revalidates archive identity across the pin;
+a generation republished during that interval produces a typed retryable refusal.
+Pages retain `matched_annotation_count`, `next_offset` and
+`selection_truncated`; the page budget bounds delivery rather than total scope.
+
+### Working-directory completion
+
+The declared `completion` read accepts `source="cwd_prefix"`. It filters distinct paths from the original pinned Index's `session_working_dirs` before applying the requested candidate window, ordered by session count and then path. Windows separators are rendered as `/`, matching the canonical cwd query field. Literal `%` and `_` in a prefix remain path characters. The operation shares the resident read cancellation and snapshot lifetime.
+
+Shell `--cwd-prefix` and cwd query completion use this operation. They never open a local archive. A recent answer may be used from the selected archive's 24-hour advisory cache when the daemon is absent; a successful empty answer removes matching cached values. Cache publication skips a contended lock instead of blocking a TAB press.
+
+## Resident continuation reads
+
+`continue` uses `continuation.route` to resolve the original harness route from session identity and working directories. Printing the command and explicitly executing its argv stay client-side. `continue --candidates` uses `continuation.candidates` and the existing logical-session ranking, preserving repository, cwd, repeated recent paths and the requested window. The result reports `returned` and `limit`, without inventing a population total.
+
+`continue --format json` uses `continuation.context` on one pinned Index/User reader. The original compiler receives messages and the successor recipe's runs, observed-events, context-snapshots and actions queries through the canonical query-unit executor. Selected reads carry the originating selection epoch; a changed view refuses. Missing or ambiguous targets remain explicit, and an absent daemon never opens the local facade. Cancellation controls the original reader and reaches candidate ranking.
+
+Context-image delivery submits the resulting disposable scheduler ledger through the existing `mutation.facade.context_ledger` resident writer, with the compilation observation time. This remains best-effort scheduler telemetry, separate from successful image composition; the read itself does not open a writer. Terminal/stdout resume commands and JSON file delivery retain their existing options.

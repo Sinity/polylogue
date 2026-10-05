@@ -221,6 +221,10 @@ def make_polylogue_mock(*, resolved_id: str | None = None) -> MagicMock:
     poly.save_view = AsyncMock(return_value=False)
     poly.delete_view = AsyncMock(return_value=False)
     poly.get_session_summary = AsyncMock(return_value=(MagicMock(id=resolved_id) if resolved_id is not None else None))
+    poly.storage_counts = AsyncMock(return_value={"total_sessions": 0, "total_messages": 0})
+    poly.query_capability_readiness = AsyncMock(
+        return_value={"state": "ready", "scope": "query binding and convergence debt", "caveats": []}
+    )
     poly.get_session_stats = AsyncMock(return_value={})
     poly.get_stats_by = AsyncMock(return_value={})
     poly.get_session_tree = AsyncMock(return_value=[])

@@ -167,6 +167,22 @@ class _ExtraOperationRow:
 
 _EXTRA_OPERATION_ROWS: Final[tuple[_ExtraOperationRow, ...]] = (
     _ExtraOperationRow(
+        "insights.export_bundle",
+        "Write a versioned bundle from the pinned insight relation.",
+        f"{FACADE_SYMBOL}.export_insight_bundle",
+        SurfaceBinding("cli", target="ops insights export"),
+        SurfaceBinding("mcp", absence_reason="filesystem bundle publication has no dedicated MCP tool"),
+        kernel_owner="polylogue/operations/insight_export.py",
+    ),
+    _ExtraOperationRow(
+        "insights.fable_packet",
+        "Compile a private descriptive delegation packet or name unsupported evidence.",
+        f"{FACADE_SYMBOL}.regenerate_private_fable_packet",
+        SurfaceBinding("cli", target="ops insights fable-packet"),
+        SurfaceBinding("mcp", absence_reason="private packet regeneration has no dedicated MCP tool"),
+        kernel_owner="polylogue/operations/fable_packet.py",
+    ),
+    _ExtraOperationRow(
         "api.embedding_preflight",
         "Report whether the embedding backend is usable before a semantic read.",
         f"{FACADE_SYMBOL}.embedding_preflight",
@@ -303,14 +319,12 @@ _EXCLUSION_CATEGORIES: Final[tuple[_ExclusionCategory, ...]] = (
             "compact_lineage",
             "reconcile_codex_spawn_edges",
             "reconcile_hermes_session_lifecycle",
-            "regenerate_private_fable_packet",
         ),
     ),
     _ExclusionCategory(
         "insight-projection",
         "descriptor-driven insight registry (polylogue/analysis/registry.py) owns cross-surface parity for these",
         (
-            "export_insight_bundle",
             "find_stuck_session_latency_profile_insights",
             "get_session_insight_status",
             "get_session_latency_profile_insight",
@@ -369,7 +383,7 @@ _EXCLUSION_CATEGORIES: Final[tuple[_ExclusionCategory, ...]] = (
     ),
     _ExclusionCategory(
         "aggregate",
-        "aggregates reached through the `query` operation's aggregate result semantics",
+        "aggregate and readiness projections reached through query, explain, or status operations",
         (
             "aggregate_sessions",
             "archive_count_sessions",
@@ -379,6 +393,8 @@ _EXCLUSION_CATEGORIES: Final[tuple[_ExclusionCategory, ...]] = (
             "query_completions",
             "query_sessions",
             "storage_stats",
+            "storage_counts",
+            "query_capability_readiness",
             "get_index_status",
             "health_check",
             "hermes_integration_health",

@@ -88,12 +88,12 @@ cache = "tree+environment"
 timeout_seconds = 2400
 
 [operations.seeded_archive_cache_gc]
-description = "Preview or apply bounded GC for the reusable seeded-archive fixture cache"
+description = "Preview or apply cancellation-owned GC pages for the seeded-archive fixture cache"
 exec = ["devtools", "cache", "gc", "--json"]
 pool = "normal"
 result = "json"
 cache = "none"
-timeout_seconds = 900
+timeout_seconds = 0
 
 [operations.verify_all]
 description = "Run Polylogue's explicit complete-corpus verification plan"

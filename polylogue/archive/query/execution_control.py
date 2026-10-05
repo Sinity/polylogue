@@ -30,12 +30,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import sqlite3
 import threading
 import time
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import ExitStack, asynccontextmanager, contextmanager, suppress
+from contextlib import AbstractContextManager, ExitStack, asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeVar
@@ -489,16 +490,78 @@ class InterruptibleSQLiteRead:
         self._ctx = ctx
         self._store_lock = threading.Lock()
         self._store: ArchiveStore | None = None
+        self._connection: sqlite3.Connection | None = None
 
     def interrupt(self) -> None:
         """Interrupt the active statement, if any. Safe from any thread."""
         with self._store_lock:
             store = self._store
+            connection = self._connection
         if store is not None:
             # Benign race with worker cleanup: interrupting a just-closed
             # connection has no one left to notify.
             with suppress(Exception):  # pragma: no cover
                 store.interrupt_reads()
+
+        if connection is not None:
+            with suppress(sqlite3.Error):
+                connection.interrupt()
+
+    @contextmanager
+    def control_connection(self, connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+        """Control an admitted tier reader; its owner closes it and records settlement."""
+        with self._control_read(connection):
+            yield connection
+
+    @contextmanager
+    def _control_read(self, target: ArchiveStore | sqlite3.Connection) -> Iterator[None]:
+        """Apply the same cancellation and progress law to the existing read owner."""
+        ctx = self._ctx
+        ctx.receipt.state = "running"
+        started = time.monotonic()
+        opcodes = PROGRESS_GUARD_OPCODES
+        if ctx.sqlite_vm_step_budget is not None:
+            opcodes = min(opcodes, max(1, ctx.sqlite_vm_step_budget))
+
+        def guard() -> int:
+            ctx.record_sqlite_progress(opcodes)
+            return int(ctx.should_abort())
+
+        with self._store_lock:
+            if isinstance(target, sqlite3.Connection):
+                self._connection = target
+            else:
+                self._store = target
+        remove_listener = ctx.add_cancel_listener(self.interrupt)
+        try:
+            if isinstance(target, sqlite3.Connection):
+                target.set_progress_handler(guard, opcodes)
+            else:
+                target.set_read_progress_guard(guard, n_opcodes=opcodes, check_cancelled=self._check_cancelled)
+            if ctx.should_abort():
+                raise _abort_error(ctx)
+            try:
+                yield
+            except Exception as exc:
+                if ctx.should_abort() and _is_interrupt_error(exc):
+                    ctx.receipt.interrupted = True
+                    raise _abort_error(ctx) from exc
+                raise
+            else:
+                if ctx.should_abort():
+                    raise _abort_error(ctx)
+                ctx.receipt.state = "completed"
+        finally:
+            remove_listener()
+            ctx.receipt.run_s = time.monotonic() - started
+            with self._store_lock:
+                self._connection = None
+                self._store = None
+            if isinstance(target, sqlite3.Connection):
+                target.set_progress_handler(None, 0)
+            else:
+                target.clear_read_progress_guard()
+                ctx.mark_cleanup_complete()
 
     def run(
         self,
@@ -534,57 +597,9 @@ class InterruptibleSQLiteRead:
 
     @contextmanager
     def control_store(self, store: ArchiveStore) -> Iterator[ArchiveStore]:
-        """Control an explicitly supplied store without reopening or closing it.
-
-        Its owner pins and releases the snapshot. Daemon callers have already
-        entered shared compute admission; this scope adds no second scheduler.
-        """
-        ctx = self._ctx
-        ctx.receipt.state = "running"
-        started = time.monotonic()
-        progress_opcodes = PROGRESS_GUARD_OPCODES
-        if ctx.sqlite_vm_step_budget is not None:
-            progress_opcodes = min(progress_opcodes, max(1, ctx.sqlite_vm_step_budget))
-
-        def guard() -> int:
-            ctx.record_sqlite_progress(progress_opcodes)
-            return 1 if ctx.should_abort() else 0
-
-        def check_cancelled() -> None:
-            if ctx.should_abort():
-                raise _abort_error(ctx)
-
-        with self._store_lock:
-            self._store = store
-        try:
-            store.set_read_progress_guard(
-                guard,
-                n_opcodes=progress_opcodes,
-                check_cancelled=check_cancelled,
-            )
-            if ctx.should_abort():
-                raise _abort_error(ctx)
-            try:
-                yield store
-            except Exception as exc:
-                if ctx.should_abort() and _is_interrupt_error(exc):
-                    ctx.receipt.interrupted = True
-                    raise _abort_error(ctx) from exc
-                raise
-            else:
-                # The progress guard only observes SQLite execution. An abort
-                # that lands during Python-side post-processing (row grouping,
-                # envelope assembly) must still abort here rather than return a
-                # "completed" result nobody is waiting for.
-                if ctx.should_abort():
-                    raise _abort_error(ctx)
-                ctx.receipt.state = "completed"
-        finally:
-            ctx.receipt.run_s = time.monotonic() - started
-            with self._store_lock:
-                self._store = None
-            store.clear_read_progress_guard()
-            ctx.mark_cleanup_complete()
+        """Control the supplied store without reopening or closing it."""
+        with self._control_read(store):
+            yield store
 
     def _check_cancelled(self) -> None:
         if self._ctx.should_abort():
@@ -709,6 +724,7 @@ async def execute_archive_read(
     controller: QueryAdmissionController | None = None,
     read_timeout: float = 5.0,
     index_path: Path | None = None,
+    read_owner: Callable[[QueryExecutionContext], AbstractContextManager[ArchiveStore]] | None = None,
 ) -> T:
     """Run one archive read off the event loop under admission control.
 
@@ -718,10 +734,15 @@ async def execute_archive_read(
     A worker still settling after that wait retains admission and has its
     eventual exception observed; caller cancellation never releases its lease.
     """
+    if read_owner is not None and index_path is not None:
+        raise ValueError("read_owner cannot be combined with a pinned archive index")
     admission = controller or default_admission_controller()
     reader = InterruptibleSQLiteRead(ctx)
 
     def _admitted_run() -> T:
+        if read_owner is not None:
+            with read_owner(ctx) as store:
+                return work(store)
         return reader.run(archive_root, work, read_timeout=read_timeout, index_path=index_path)
 
     from polylogue.core.compute import CancellationHandle, DaemonOperationCancelled, compute_adapter

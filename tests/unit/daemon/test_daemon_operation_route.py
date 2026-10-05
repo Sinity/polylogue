@@ -78,6 +78,37 @@ def test_failed_backup_operation_retains_rejected_result_details(
     }
 
 
+@pytest.mark.parametrize("index_state", ["missing", "skewed"])
+def test_overlay_backup_does_not_require_a_readable_index(tmp_path: Path, index_state: str) -> None:
+    """Overlay evidence stays available while the derived tier needs recovery."""
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        index = ArchiveLocation.resolve(stack.archive_root).active_index_path
+        if index_state == "missing":
+            index.unlink()
+        else:
+            with closing(sqlite3.connect(index)) as connection:
+                connection.execute("PRAGMA user_version=999")
+        refused = stack.client.operation(
+            "maintenance.backup",
+            {"output_dir": str(tmp_path / "packages"), "profile": "user_overlays"},
+            archive_root=str(stack.archive_root),
+            index_schema_version=999,
+        )
+        assert refused is not None and refused["outcome"] == "failed"
+        assert refused["error"]["detail"] == "schema_version_mismatch"
+        envelope = stack.client.operation(
+            "maintenance.backup",
+            {"output_dir": str(tmp_path / "packages"), "profile": "user_overlays"},
+            archive_root=str(stack.archive_root),
+        )
+    assert envelope is not None and envelope["outcome"] == "completed", envelope
+    package = Path(envelope["result"]["result"]["output_path"])
+    assert (package / "user.db").is_file()
+    assert not (package / "index.db").exists()
+
+
 def _seed_terminal_embedding_failure(root: Path) -> None:
     with closing(sqlite3.connect(root / "embeddings.db")) as connection:
         with connection:
@@ -226,7 +257,9 @@ def test_embedding_resolution_refuses_stale_embedding_schema_before_lifecycle(tm
     assert row == ("terminal",)
 
 
-def _seed_sessions(root: Path, *, count: int, title: str = "Operation route session") -> tuple[str, ...]:
+def _seed_sessions(
+    root: Path, *, count: int, title: str = "Operation route session", message_text: str | None = None
+) -> tuple[str, ...]:
     """Seed one fully bootstrapped synthetic archive before daemon startup."""
 
     session_ids: list[str] = []
@@ -235,7 +268,9 @@ def _seed_sessions(root: Path, *, count: int, title: str = "Operation route sess
             SessionBuilder(root / "index.db", f"operation-{number}")
             .provider("codex")
             .title(title)
-            .add_message(text=f"Synthetic daemon operation session {number}.")
+            .add_message(
+                text=message_text if message_text is not None else f"Synthetic daemon operation session {number}."
+            )
         )
         builder.save()
         session_ids.append(builder.native_session_id())
@@ -696,31 +731,26 @@ def test_identical_intent_replays_the_recorded_mutation_without_a_second_effect(
     assert fresh["result"]["receipt_ref"] != first["result"]["receipt_ref"]
 
 
-def test_operation_route_bounds_the_real_canonical_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Mutation: bypass the UDS response bound and the oversized canonical rows escape."""
-
-    import json
-
-    import polylogue.daemon.uds as uds
+def test_operation_route_delivers_a_large_canonical_row(tmp_path: Path) -> None:
+    """The actual resident/client exchange preserves a permitted single value."""
+    text = "[large] λ\n" * (1024 * 1024)
+    ids: tuple[str, ...] = ()
 
     def seed(root: Path) -> None:
-        _seed_sessions(root, count=8)
+        nonlocal ids
+        ids = _seed_sessions(root, count=1, message_text=text)
 
     with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
-        unbounded = stack.client.operation("cli.query", {"params": {"limit": 8}}, archive_root=str(stack.archive_root))
-        assert unbounded is not None and unbounded["outcome"] == "completed"
-        assert len(json.dumps(unbounded, separators=(",", ":")).encode()) > 4096
-        monkeypatch.setattr(uds, "MAX_OPERATION_RESULT_BYTES", 4096)
         envelope = stack.client.operation(
-            "cli.query",
-            {"params": {"limit": 8}},
-            archive_root=str(stack.archive_root),
+            "session.read", {"ref": ids[0], "limit": 1}, archive_root=str(stack.archive_root)
         )
 
-    assert envelope is not None
-    assert envelope["outcome"] == "failed"
-    assert envelope["result"] is None
-    assert envelope["error"]["code"] == "result_too_large"
+    assert envelope is not None and envelope["outcome"] == "completed"
+    result = envelope["result"]
+    assert result["session"]["messages"][0]["blocks"][0]["text"] == text
+    assert result["total"] == 1 and result["complete"] is True
+    assert result["continuation"] is None and result["lineage_complete"] is True
+    assert envelope["authority_snapshot"]["generation"]
 
 
 def test_kernel_authenticated_uid_reference_survives_client_and_daemon_restart(tmp_path: Path) -> None:
@@ -795,14 +825,14 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
         assert preview is not None
         authorization = first.client.operation_to_completion(
             "mutation.session.delete.authorize",
-            {"preview_refs": preview["result"]["preview_refs"]},
+            {"preview_request_id": preview["result"]["reference"]["request_id"]},
             archive_root=str(root),
             request_id="indeterminate-authorize",
         )
         assert authorization is not None
         lost = first.client.operation_to_completion(
             "mutation.session.delete.execute",
-            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
             archive_root=str(root),
             request_id="indeterminate-execute",
         )
@@ -831,7 +861,7 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
             connection.commit()
         recovered = restarted.client.operation(
             "mutation.session.delete.execute",
-            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
             archive_root=str(root),
             request_id="indeterminate-execute",
         )
@@ -897,14 +927,14 @@ def test_crash_recovery_replays_a_delete_on_exactly_the_recorded_id_not_a_prefix
             assert preview["result"]["session_count"] == 1
             authorization = first.client.operation_to_completion(
                 "mutation.session.delete.authorize",
-                {"preview_refs": preview["result"]["preview_refs"]},
+                {"preview_request_id": preview["result"]["reference"]["request_id"]},
                 archive_root=str(root),
                 request_id="prefix-authorize",
             )
             assert authorization is not None
             lost = first.client.operation_to_completion(
                 "mutation.session.delete.execute",
-                {"authorization_refs": authorization["result"]["authorization_refs"]},
+                {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
                 archive_root=str(root),
                 request_id="prefix-execute",
             )
@@ -955,14 +985,14 @@ def test_delete_preview_count_equals_the_applied_count_and_spares_prefix_sibling
         prepared_count = preview["result"]["session_count"]
         authorization = stack.client.operation_to_completion(
             "mutation.session.delete.authorize",
-            {"preview_refs": preview["result"]["preview_refs"]},
+            {"preview_request_id": preview["result"]["reference"]["request_id"]},
             archive_root=str(root),
             request_id="counted-authorize",
         )
         assert authorization is not None
         executed = stack.client.operation_to_completion(
             "mutation.session.delete.execute",
-            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
             archive_root=str(root),
             request_id="counted-execute",
         )
@@ -1016,14 +1046,14 @@ def test_restart_resumes_an_accepted_request_whose_daemon_died_before_its_first_
         assert preview is not None
         authorization = first.client.operation_to_completion(
             "mutation.session.delete.authorize",
-            {"preview_refs": preview["result"]["preview_refs"]},
+            {"preview_request_id": preview["result"]["reference"]["request_id"]},
             archive_root=str(root),
         )
         assert authorization is not None
         crash["armed"] = True
         stranded = first.client.operation(
             "mutation.session.delete.execute",
-            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
             archive_root=str(root),
             request_id=request_id,
         )
@@ -1035,7 +1065,7 @@ def test_restart_resumes_an_accepted_request_whose_daemon_died_before_its_first_
     with running_daemon_operations(root) as restarted:
         resumed = restarted.client.operation_to_completion(
             "mutation.session.delete.execute",
-            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
             archive_root=str(root),
             request_id=request_id,
         )
@@ -1079,7 +1109,7 @@ def test_disconnected_after_durable_acceptance_recovers_without_replaying_mutati
     monkeypatch.setattr(SessionDeleteActuator, "apply", blocked_apply)
     request_id = "disconnect-after-acceptance"
     accepted_reference: dict[str, object]
-    authorization_refs: list[str]
+    authorization_request_id: str
     with running_daemon_operations(root, seed_archive=seed) as stack:
         preview = stack.client.operation_to_completion(
             "mutation.session.delete.preview",
@@ -1089,17 +1119,17 @@ def test_disconnected_after_durable_acceptance_recovers_without_replaying_mutati
         assert preview is not None
         authorization = stack.client.operation_to_completion(
             "mutation.session.delete.authorize",
-            {"preview_refs": preview["result"]["preview_refs"]},
+            {"preview_request_id": preview["result"]["reference"]["request_id"]},
             archive_root=str(root),
         )
         assert authorization is not None
-        authorization_refs = list(authorization["result"]["authorization_refs"])
+        authorization_request_id = str(authorization["result"]["reference"]["request_id"])
 
         from polylogue.operations.daemon_protocol import DaemonOperationRequest
 
         request = DaemonOperationRequest(
             "mutation.session.delete.execute",
-            {"authorization_refs": authorization_refs},
+            {"authorization_request_id": authorization_request_id},
             archive_root=str(root),
             request_id=request_id,
             deadline_ms=10_000,
@@ -1295,7 +1325,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
         preview_result = preview["result"]
         authorization = stack.client.operation_to_completion(
             "mutation.session.delete.authorize",
-            {"preview_refs": preview_result["preview_refs"]},
+            {"preview_request_id": preview_result["reference"]["request_id"]},
             archive_root=str(stack.archive_root),
         )
         assert authorization is not None
@@ -1306,7 +1336,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
             client = DaemonClient(stack.socket_path, timeout_s=5)
             response = client.operation(
                 "mutation.session.delete.execute",
-                {"authorization_refs": authorization["result"]["authorization_refs"]},
+                {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
                 archive_root=str(stack.archive_root),
                 request_id=execute_request_id,
             )
@@ -1460,7 +1490,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
     with running_daemon_operations(tmp_path / "archive") as restarted:
         replay = restarted.client.operation(
             "mutation.session.delete.execute",
-            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
             archive_root=str(restarted.archive_root),
             request_id=execute_request_id,
         )
@@ -1749,20 +1779,18 @@ def test_cancelled_queued_operation_reports_cancelled_not_failed(
 ) -> None:
     """A pre-acceptance cancellation is a cancellation, not an operation failure.
 
-    The scheduler cancels a queued, unstarted task by completing its future
-    with ``DaemonOperationCancelled``
-    (``BoundedComputeAdapter._cancel_before_start``), having already released
-    the reservation with no work started.
+    The scheduler settles an unstarted read with ``DaemonOperationCancelled``.
+    A staged preview cancels its proxy Future only after its task and cleanup
+    settle. Both must report cancellation before acceptance.
 
     Anti-vacuity: the operation is genuinely queued behind saturated workers
     (its exchange exists and its future is not done before the cancel), so the
-    scheduler's pre-start path is the one that fires. Removing the
-    ``except DaemonOperationCancelled`` branch from
+    pre-acceptance path is the one that fires. Removing the typed cancellation
+    branches from
     ``DaemonOperationRuntime.call`` sends it to the generic handler, which
     reports ``outcome == "failed"`` with
-    ``error.code == "DaemonOperationCancelled"``, and both assertions go red.
+    a cancellation error, and both assertions go red.
     """
-    from polylogue.core.compute import CancellationHandle
     from polylogue.operations.daemon_protocol import DAEMON_OPERATION_SPECS, DaemonOperationRequest
     from polylogue.operations.mutation_transaction import MutationPrincipal
 
@@ -1794,11 +1822,10 @@ def test_cancelled_queued_operation_reports_cancelled_not_failed(
             request_id=request_id,
             archive_root=str(stack.archive_root),
         )
-        disconnect = CancellationHandle()
         envelopes: list[dict[str, object]] = []
 
         def call_runtime() -> None:
-            envelopes.append(stack.runtime.call(request, principal, client_disconnect=disconnect))
+            envelopes.append(stack.runtime.call(request, principal))
 
         caller = threading.Thread(target=call_runtime, name="cancelled-queued-control-caller", daemon=True)
         caller.start()
@@ -1817,7 +1844,10 @@ def test_cancelled_queued_operation_reports_cancelled_not_failed(
                 assert exchange.context.read_control is not None
                 assert exchange.context.read_control.deadline_monotonic is None
 
-            disconnect.cancel()
+            # Request cancellation on the actual owner while keeping the caller
+            # connected until its future physically settles. A peer disconnect
+            # may truthfully return before that settlement boundary.
+            exchange.cancellation.cancel()
             caller.join(timeout=5)
             assert not caller.is_alive()
             assert stack.execution_kernel.snapshot().used_bytes == 0
@@ -1828,7 +1858,7 @@ def test_cancelled_queued_operation_reports_cancelled_not_failed(
 
     assert len(envelopes) == 1
     envelope = envelopes[0]
-    assert envelope["outcome"] == "cancelled"
+    assert envelope["outcome"] == "cancelled", envelope
     assert envelope.get("error") is None
 
 
@@ -1942,7 +1972,7 @@ def test_skewed_write_refusal_is_pre_dispatch_not_an_indeterminate_mutation(
     monkeypatch.setattr(uds_module, "daemon_operation_spec", _older_daemon_spec)
 
     session_ids = [f"claude-code-session:{index:040d}" for index in range(8)]
-    payload: dict[str, object] = {"session_ids": session_ids, "add_marks": ["reviewed"]}
+    payload: dict[str, object] = {"session_ids": session_ids, "add_marks": ["star"]}
     client_spec = daemon_operation_spec(skewed)
     assert client_spec is not None
     # The client's own bound admits this body; only the resident daemon refuses.
@@ -2134,7 +2164,7 @@ def test_verified_backup_restore_crosses_the_real_machine_operation_route(tmp_pa
             {"output_dir": str(tmp_path / "packages"), "verify": True, "profile": "full_evidence"},
             archive_root=str(stack.archive_root),
         )
-        assert backup is not None and backup["outcome"] == "completed"
+        assert backup is not None and backup["outcome"] == "completed", backup
         package = backup["result"]["result"]["output_path"]
         package_path = Path(package)
         package_before = (_archive_files(package_path), (package_path / "manifest.json").read_bytes())
@@ -2181,7 +2211,7 @@ def test_restore_machine_operation_preserves_retryable_io_fault_and_pending_evid
             {"output_dir": str(tmp_path / "packages"), "verify": True, "profile": "full_evidence"},
             archive_root=str(stack.archive_root),
         )
-        assert backup is not None and backup["outcome"] == "completed"
+        assert backup is not None and backup["outcome"] == "completed", backup
         monkeypatch.setattr(archive_population, "_populate_authenticated_archive", fault)
         restored = stack.client.operation(
             "maintenance.restore_verified_backup",
@@ -2226,7 +2256,7 @@ def test_accepted_restore_outlives_implicit_deadline_and_control_returns_termina
             {"output_dir": str(tmp_path / "packages"), "verify": True, "profile": "full_evidence"},
             archive_root=str(stack.archive_root),
         )
-        assert backup is not None and backup["outcome"] == "completed"
+        assert backup is not None and backup["outcome"] == "completed", backup
         request_id = "slow-accepted-restore"
 
         def submit() -> None:
@@ -2402,12 +2432,13 @@ def test_slow_aggregate_waits_for_valid_work_unless_the_caller_declares_a_deadli
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     clock = {"now": monotonic()}
-    actual_count = ArchiveStore.count_sessions
+    actual_count = ArchiveStore.aggregate_sessions
     counted: list[int] = []
 
-    def slow_count(self: ArchiveStore, **kwargs: Any) -> int:
+    def slow_count(self: ArchiveStore, mode: str, **kwargs: Any) -> int:
         clock["now"] += 1_000.0
-        count = actual_count(self, **kwargs)
+        count = actual_count(self, mode, **kwargs)
+        assert isinstance(count, int)
         counted.append(count)
         return count
 
@@ -2418,7 +2449,7 @@ def test_slow_aggregate_waits_for_valid_work_unless_the_caller_declares_a_deadli
         _seed_sessions(root, count=1)
 
     with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
-        monkeypatch.setattr(ArchiveStore, "count_sessions", slow_count)
+        monkeypatch.setattr(ArchiveStore, "aggregate_sessions", slow_count)
         monkeypatch.setattr(QueryExecutionContext, "deadline_exceeded", deadline_exceeded)
         monkeypatch.setattr("polylogue.daemon.operation_runtime.monotonic", lambda: clock["now"])
         monkeypatch.setattr(daemon_execution, "monotonic", lambda: clock["now"])
@@ -2699,3 +2730,95 @@ def test_socket_shutdown_physically_settles_an_admitted_incomplete_body(
                 assert not stack.runtime._exchanges
         finally:
             peer.close()
+
+
+def test_annotation_import_commits_summary_and_pages_all_amplified_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-write result-size refusal must not erase the original commit verdict."""
+    import asyncio
+
+    from polylogue.api import Polylogue
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import Provider
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_index_session
+
+    def seed(root: Path) -> None:
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="annotation-amplification",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+                ),
+            )
+
+    jsonl = "\n".join(
+        json.dumps(
+            {
+                "row_key": f"row-{index}",
+                "value": {"activity": "debugging", "confidence": 0.9},
+                "evidence_refs": [""] * 10_000,
+            }
+        )
+        for index in range(20)
+    )
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        envelope = stack.runtime.call(
+            DaemonOperationRequest(
+                "mutation.annotation.import_batch",
+                {
+                    "jsonl": jsonl,
+                    "batch_id": "amplified-errors",
+                    "schema_id": "seed.activity",
+                    "schema_version": 2,
+                    "target_ref": "session:codex-session:annotation-amplification",
+                    "source_result_ref": "result-set:amplification",
+                    "actor_ref": "agent:labeler",
+                    "model_ref": "agent:model",
+                    "prompt_ref": "block:prompt:0",
+                    "metadata": {},
+                },
+                request_id="amplified-annotation-import",
+                archive_root=str(stack.archive_root),
+                deadline_ms=60_000,
+            ),
+            _all_capabilities_principal(),
+        )
+        assert envelope["outcome"] == "completed"
+        operation_result = cast(dict[str, Any], envelope["result"])
+        assert operation_result["effect"] == "committed"
+        summary = cast(dict[str, Any], operation_result["result"])
+        assert summary["status"] == "partial"
+        assert summary["invalid_count"] == summary["total_count"] == 20
+        assert summary["valid_count"] == 0
+        assert "rows" not in summary
+        assert len(json.dumps(envelope).encode()) < 16_000
+
+        def reject_full_batch(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("paged ref read hydrated the complete failure document")
+
+        monkeypatch.setattr(ArchiveStore, "get_annotation_batch", reject_full_batch)
+
+        async def read_pages() -> None:
+            async with Polylogue(archive_root=stack.archive_root, db_path=stack.archive_root / "index.db") as poly:
+                for offset in (0, 9_999, 10_000, 199_999, 200_000):
+                    resolved = await poly.resolve_ref(summary["batch_ref"], limit=1, offset=offset)
+                    assert resolved.resolved and resolved.payload is not None
+                    page = resolved.payload
+                    assert page["total"] == 200_000
+                    if offset == 200_000:
+                        assert page["items"] == [] and page["next_offset"] is None
+                        continue
+                    item = page["items"][0]
+                    assert item["failure_ordinal"] == offset // 10_000
+                    assert item["error_ordinal"] == offset % 10_000
+                    assert item["failure"] == {"line": offset // 10_000 + 1, "row_key": f"row-{offset // 10_000}"}
+                    assert item["error"] == "evidence_ref '' does not resolve in the live archive"
+                    assert page["next_offset"] == (offset + 1 if offset < 199_999 else None)
+
+        asyncio.run(read_pages())

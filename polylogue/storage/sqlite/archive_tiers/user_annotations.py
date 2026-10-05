@@ -62,15 +62,20 @@ def read_durable_annotation_schema(
     conn: sqlite3.Connection,
     schema_id: str,
     version: int | None = None,
+    *,
+    schema: str | None = None,
 ) -> DurableAnnotationSchema | None:
     """Read one schema version, defaulting to the highest durable version."""
 
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError(f"invalid SQLite schema name: {schema!r}")
+    table = f"{schema}.annotation_schemas" if schema is not None else "annotation_schemas"
     conn.row_factory = sqlite3.Row
     if version is None:
         row = conn.execute(
-            """
+            f"""
             SELECT schema_id, schema_version, definition_json, definition_sha256, registered_at_ms
-            FROM annotation_schemas
+            FROM {table}
             WHERE schema_id = ?
             ORDER BY schema_version DESC
             LIMIT 1
@@ -79,9 +84,9 @@ def read_durable_annotation_schema(
         ).fetchone()
     else:
         row = conn.execute(
-            """
+            f"""
             SELECT schema_id, schema_version, definition_json, definition_sha256, registered_at_ms
-            FROM annotation_schemas
+            FROM {table}
             WHERE schema_id = ? AND schema_version = ?
             """,
             (schema_id, version),
@@ -225,6 +230,102 @@ def _batch_from_row(row: sqlite3.Row) -> AnnotationBatch:
         metadata=_load_document(row["metadata_json"], context="annotation batch metadata"),
         created_at_ms=int(row["created_at_ms"]),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class AnnotationBatchReadPage:
+    """One immutable batch header and exact evidence window."""
+
+    header: JSONDocument
+    items: tuple[JSONDocument, ...]
+    total: int
+    offset: int
+    next_offset: int | None
+
+
+def read_annotation_batch_page(
+    conn: sqlite3.Connection, batch_id: str, *, limit: int, offset: int, schema: str | None = None
+) -> AnnotationBatchReadPage | None:
+    """Decode only the selected evidence page on the caller's read transaction.
+
+    SQLite parses the retained JSON values and may scan/sort their entries per
+    offset page. Python does not load the full amplified failure document.
+    """
+    if limit < 1 or offset < 0:
+        raise ValueError("annotation page limit must be positive and offset nonnegative")
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError("invalid SQLite schema")
+    table = "annotation_batches" if schema is None else f"{schema}.annotation_batches"
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        f"""SELECT batch_id, schema_id, schema_version, target_ref, source_result_ref,
+                  actor_ref, model_ref, prompt_ref, total_count, valid_count,
+                  invalid_count, abstained_count, metadata_json, created_at_ms,
+                  json_array_length(assertion_refs_json) AS refs_count,
+                  json_array_length(validation_failures_json) AS failures_count
+           FROM {table} WHERE batch_id = ?""",
+        (batch_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    if row["refs_count"] != row["valid_count"] or row["failures_count"] != row["invalid_count"]:
+        raise AnnotationBatchError("annotation batch evidence counts disagree with its summary")
+    header = require_json_document(
+        {
+            key: value
+            for key, value in dict(row).items()
+            if key not in {"metadata_json", "refs_count", "failures_count"}
+        },
+        context="annotation batch header",
+    )
+    header["metadata"] = _load_document(row["metadata_json"], context="annotation batch metadata")
+    header["batch_ref"] = f"annotation-batch:{batch_id}"
+    header["qualified_schema_id"] = f"{row['schema_id']}@v{row['schema_version']}"
+    total = int(row["valid_count"]) + int(
+        conn.execute(
+            f"""SELECT COALESCE(SUM(CASE WHEN json_type(f.value, '$.errors') = 'array'
+                                    AND json_array_length(f.value, '$.errors') > 0
+                              THEN json_array_length(f.value, '$.errors') ELSE 1 END), 0)
+           FROM {table} b, json_each(b.validation_failures_json) f
+           WHERE b.batch_id = ?""",
+            (batch_id,),
+        ).fetchone()[0]
+    )
+    # Order only ordinal keys before the page cut. Amplified error documents
+    # and repeated failure metadata are serialized only for selected items.
+    selected = conn.execute(
+        f"""WITH failures AS MATERIALIZED (
+          SELECT CAST(f.key AS INTEGER) AS ordinal, f.value AS original,
+                 json_remove(f.value, '$.errors') AS fields,
+                 CASE WHEN json_type(f.value, '$.errors') = 'array'
+                      THEN json_extract(f.value, '$.errors') ELSE '[]' END AS errors
+          FROM {table} b, json_each(b.validation_failures_json) f WHERE b.batch_id = ?
+        ), entries AS (
+          SELECT 0 AS section, CAST(a.key AS INTEGER) AS ordinal, -1 AS error_ordinal
+          FROM {table} b, json_each(b.assertion_refs_json) a WHERE b.batch_id = ?
+          UNION ALL
+          SELECT 1, f.ordinal, CAST(e.key AS INTEGER) FROM failures f, json_each(f.errors) e
+          UNION ALL
+          SELECT 1, f.ordinal, -1 FROM failures f WHERE json_array_length(f.errors) = 0
+        ), selected AS MATERIALIZED (
+          SELECT section, ordinal, error_ordinal FROM entries
+          ORDER BY section, ordinal, error_ordinal LIMIT ? OFFSET ?
+        ) SELECT CASE
+          WHEN s.section = 0 THEN json_object('kind', 'assertion', 'ordinal', s.ordinal,
+                                             'assertion_ref', json_extract(b.assertion_refs_json, '$[' || s.ordinal || ']'))
+          WHEN s.error_ordinal = -1 THEN json_object('kind', 'validation-failure',
+                                                    'failure_ordinal', s.ordinal, 'failure', json(f.original))
+          ELSE json_object('kind', 'validation-error', 'failure_ordinal', s.ordinal,
+                           'error_ordinal', s.error_ordinal, 'failure', json(f.fields),
+                           'error', json(f.errors -> ('$[' || s.error_ordinal || ']')))
+          END AS item
+        FROM selected s LEFT JOIN failures f ON s.section = 1 AND s.ordinal = f.ordinal
+                        JOIN {table} b ON b.batch_id = ?
+        ORDER BY s.section, s.ordinal, s.error_ordinal""",
+        (batch_id, batch_id, limit + 1, offset, batch_id),
+    ).fetchall()
+    items = tuple(_load_document(record[0], context="annotation batch page item") for record in selected[:limit])
+    return AnnotationBatchReadPage(header, items, total, offset, offset + len(items) if len(selected) > limit else None)
 
 
 def read_annotation_batch(conn: sqlite3.Connection, batch_id: str) -> AnnotationBatch | None:
@@ -385,5 +486,7 @@ __all__ = [
     "persist_builtin_annotation_schemas",
     "persist_annotation_schema",
     "read_annotation_batch",
+    "read_annotation_batch_page",
+    "AnnotationBatchReadPage",
     "read_durable_annotation_schema",
 ]

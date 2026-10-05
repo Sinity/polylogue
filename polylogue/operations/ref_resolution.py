@@ -26,10 +26,8 @@ composition for a caller that already holds an open archive.
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Callable, Sequence
-from contextlib import closing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -43,7 +41,6 @@ from polylogue.core.refs import (
     parse_delegation_subtree_object_id,
     parse_public_ref,
 )
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.surfaces.operator_commands import is_shell_quote_canonical, quote_ref_argument
 
 if TYPE_CHECKING:
@@ -98,6 +95,9 @@ def resolve_ref_against_archive(
     ref: str,
     *,
     archive_root: Path | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    continuation: str | None = None,
 ) -> PublicRefResolutionPayload:
     """Resolve ``ref`` against an archive the caller already opened.
 
@@ -107,14 +107,22 @@ def resolve_ref_against_archive(
     (polylogue-j5u2b).
     """
 
-    plan = plan_ref_resolution(ref, archive_root=archive_root or Path(archive.archive_root))
+    plan = plan_ref_resolution(
+        ref,
+        archive_root=archive_root or Path(archive.archive_root),
+        limit=limit,
+        offset=offset,
+        continuation=continuation,
+    )
     if plan.payload is not None:
         return plan.payload
     assert plan.read is not None
     return plan.read(archive)
 
 
-def plan_ref_resolution(ref: str, *, archive_root: Path) -> RefResolutionPlan:
+def plan_ref_resolution(
+    ref: str, *, archive_root: Path, limit: int = 50, offset: int = 0, continuation: str | None = None
+) -> RefResolutionPlan:
     """Classify ``ref`` and name the archive read that resolves it, if any.
 
     Classification is deliberately archive-free: a malformed or oversized ref
@@ -125,7 +133,8 @@ def plan_ref_resolution(ref: str, *, archive_root: Path) -> RefResolutionPlan:
     from polylogue.storage.block_anchor import InvalidBlockAnchorError, parse_block_anchor, resolve_block_anchor
     from polylogue.surfaces.payloads import PublicRefResolutionPayload
 
-    root = archive_root
+    if limit < 1 or offset < 0:
+        raise ValueError("ref page limit must be positive and offset nonnegative")
 
     invalid_unicode_ref = _invalid_unicode_ref_payload(ref)
     if invalid_unicode_ref is not None:
@@ -220,13 +229,17 @@ def plan_ref_resolution(ref: str, *, archive_root: Path) -> RefResolutionPlan:
                 evidence_ref,
             )
         if object_ref.kind == "assertion":
-            return _resolve_assertion_object_ref(root, ref, normalized_ref, object_ref)
+            return _resolve_assertion_object_ref(archive, ref, normalized_ref, object_ref)
         if object_ref.kind == "finding":
-            return _resolve_finding_object_ref(root, ref, normalized_ref, object_ref, archive.index_connection)
+            return _resolve_finding_object_ref(archive, ref, normalized_ref, object_ref)
         if object_ref.kind == "annotation-batch":
-            return _resolve_annotation_batch_object_ref(archive, ref, normalized_ref, object_ref)
+            return _resolve_annotation_batch_object_ref(
+                archive, ref, normalized_ref, object_ref, limit=limit, offset=offset
+            )
         if object_ref.kind == "delegation":
-            return _resolve_delegation_object_ref(archive, ref, normalized_ref, object_ref)
+            return _resolve_delegation_object_ref(
+                archive, ref, normalized_ref, object_ref, limit=limit, offset=offset, continuation=continuation
+            )
         if object_ref.kind in {"run", "observed-event", "context-snapshot"}:
             return _resolve_runtime_object_ref(archive, ref, normalized_ref, object_ref)
         if object_ref.kind in _PENDING_OBJECT_REF_KINDS:
@@ -245,7 +258,7 @@ def plan_ref_resolution(ref: str, *, archive_root: Path) -> RefResolutionPlan:
         ref=ref,
         read=read,
         operation=REF_RESOLUTION_OPERATION,
-        arguments={"ref": normalized_ref},
+        arguments={"ref": normalized_ref, "limit": limit, "offset": offset, "continuation": continuation},
         projection="ref-resolution",
     )
 
@@ -609,7 +622,7 @@ def _resolve_block_object_ref(
 
 
 def _resolve_assertion_object_ref(
-    archive_root: Path,
+    archive: ArchiveStore,
     ref: str,
     normalized_ref: str,
     object_ref: ObjectRef,
@@ -617,15 +630,14 @@ def _resolve_assertion_object_ref(
     from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope
     from polylogue.surfaces.payloads import AssertionClaimPayload, PublicRefResolutionPayload, model_json_document
 
-    user_db = archive_root / "user.db"
-    if not user_db.exists():
+    conn = archive.index_connection
+    if conn is None or not any(row[1] == "user_tier" for row in conn.execute("PRAGMA database_list")):
         return cast(
             PublicRefResolutionPayload,
             _unresolved_ref_payload(ref, "assertion not found", normalized_ref=normalized_ref, kind="assertion"),
         )
-    with closing(open_readonly_connection(user_db)) as conn:
-        conn.row_factory = sqlite3.Row
-        envelope = read_assertion_envelope(conn, object_ref.object_id)
+    archive.check_operation_read()
+    envelope = read_assertion_envelope(conn, object_ref.object_id, schema="user_tier")
     if envelope is None:
         return cast(
             PublicRefResolutionPayload,
@@ -650,11 +662,10 @@ def _resolve_assertion_object_ref(
 
 
 def _resolve_finding_object_ref(
-    archive_root: Path,
+    archive: ArchiveStore,
     ref: str,
     normalized_ref: str,
     object_ref: ObjectRef,
-    index_conn: sqlite3.Connection | None,
 ) -> PublicRefResolutionPayload:
     from polylogue.operations.finding_evidence import evaluate_finding_evidence
     from polylogue.storage.sqlite.finding_provenance import compute_finding_provenance
@@ -665,17 +676,18 @@ def _resolve_finding_object_ref(
         model_json_document,
     )
 
-    user_db = archive_root / "user.db"
-    if not user_db.exists():
+    conn = archive.index_connection
+    if conn is None or not any(row[1] == "user_tier" for row in conn.execute("PRAGMA database_list")):
         return cast(
             PublicRefResolutionPayload,
             _unresolved_ref_payload(ref, "finding not found", normalized_ref=normalized_ref, kind="finding"),
         )
-    with closing(open_readonly_connection(user_db)) as conn:
-        conn.row_factory = sqlite3.Row
-        provenance = compute_finding_provenance(conn, object_ref.object_id, index_conn=index_conn)
-        controls_document = _finding_controls_document(conn, object_ref.object_id)
-        integrity = None if provenance is None else evaluate_finding_evidence(conn, provenance, index_conn=index_conn)
+    archive.check_operation_read()
+    provenance = compute_finding_provenance(conn, object_ref.object_id, index_conn=conn, schema="user_tier")
+    controls_document = _finding_controls_document(conn, object_ref.object_id, schema="user_tier")
+    integrity = (
+        None if provenance is None else evaluate_finding_evidence(conn, provenance, index_conn=conn, schema="user_tier")
+    )
     if provenance is None or integrity is None:
         return cast(
             PublicRefResolutionPayload,
@@ -773,7 +785,7 @@ def _resolve_finding_object_ref(
     )
 
 
-def _finding_controls_document(conn: Any, assertion_id: str) -> dict[str, Any] | None:
+def _finding_controls_document(conn: Any, assertion_id: str, *, schema: str | None = None) -> dict[str, Any] | None:
     """Render claim-vs-control together when the finding declared controls (rxdo.9.7).
 
     Reuses :class:`~polylogue.analysis.judgment.controls.ClaimWithControls`
@@ -783,7 +795,7 @@ def _finding_controls_document(conn: Any, assertion_id: str) -> dict[str, Any] |
     from polylogue.analysis.judgment.controls import ClaimWithControls, ControlOutcome, NegativeControl
     from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope
 
-    envelope = read_assertion_envelope(conn, assertion_id)
+    envelope = read_assertion_envelope(conn, assertion_id, schema=schema)
     if envelope is None or not isinstance(envelope.value, dict):
         return None
     raw_controls = envelope.value.get("controls")
@@ -826,6 +838,9 @@ def _resolve_annotation_batch_object_ref(
     ref: str,
     normalized_ref: str,
     object_ref: ObjectRef,
+    *,
+    limit: int,
+    offset: int,
 ) -> PublicRefResolutionPayload:
     from polylogue.surfaces.payloads import (
         AnnotationBatchPayload,
@@ -834,8 +849,8 @@ def _resolve_annotation_batch_object_ref(
         model_json_document,
     )
 
-    batch = archive.get_annotation_batch(object_ref.object_id)
-    if batch is None:
+    page = archive.get_annotation_batch_page(object_ref.object_id, limit=limit, offset=offset)
+    if page is None:
         bounded = _oversized_annotation_batch_ref_payload(ref)
         if bounded is not None:
             return cast(PublicRefResolutionPayload, bounded)
@@ -848,16 +863,20 @@ def _resolve_annotation_batch_object_ref(
                 kind="annotation-batch",
             ),
         )
-    payload = AnnotationBatchPayload.from_batch(batch)
-    scalar_ref_pairs = (
-        (batch.batch_ref, payload.batch_ref),
-        (batch.target_ref, payload.target_ref),
-        (batch.source_result_ref, payload.source_result_ref),
-        (batch.actor_ref, payload.actor_ref),
-        (batch.model_ref, payload.model_ref),
-        (batch.prompt_ref, payload.prompt_ref),
+    payload = AnnotationBatchPayload.from_page(
+        page.header, page.items, total=page.total, offset=page.offset, next_offset=page.next_offset
     )
-    object_refs = tuple(dict.fromkeys(value for value, preview in scalar_ref_pairs if not preview.truncated))
+    scalar_ref_pairs = (
+        (page.header["batch_ref"], payload.batch_ref),
+        (page.header["target_ref"], payload.target_ref),
+        (page.header["source_result_ref"], payload.source_result_ref),
+        (page.header["actor_ref"], payload.actor_ref),
+        (page.header["model_ref"], payload.model_ref),
+        (page.header["prompt_ref"], payload.prompt_ref),
+    )
+    object_refs = tuple(
+        dict.fromkeys(value for value, preview in scalar_ref_pairs if isinstance(value, str) and not preview.truncated)
+    )
     public_ref = normalized_ref
     public_normalized_ref: str | None = normalized_ref
     if payload.batch_ref.truncated:
@@ -866,7 +885,9 @@ def _resolve_annotation_batch_object_ref(
     actions: tuple[RefResolutionActionPayload, ...] = ()
     if not payload.target_ref.truncated:
         actions = (
-            _resolution_action("read annotation target", _find_ref_command(batch.target_ref, id_prefixed=False)),
+            _resolution_action(
+                "read annotation target", _find_ref_command(str(page.header["target_ref"]), id_prefixed=False)
+            ),
         )
     return PublicRefResolutionPayload(
         ref=public_ref,
@@ -891,6 +912,10 @@ def _resolve_delegation_object_ref(
     ref: str,
     normalized_ref: str,
     object_ref: ObjectRef,
+    *,
+    limit: int,
+    offset: int,
+    continuation: str | None,
 ) -> PublicRefResolutionPayload:
     """Resolve a ``delegation:`` ref against the polylogue-y964
     `delegation_facts` relation. Two id shapes share one lookup: action-observed refs carry an
@@ -913,7 +938,9 @@ def _resolve_delegation_object_ref(
         return _resolve_delegation_ancestry_object_ref(archive, ref, normalized_ref, ancestry_session_id)
     subtree_session_id = parse_delegation_subtree_object_id(object_ref.object_id)
     if subtree_session_id is not None:
-        return _resolve_delegation_subtree_object_ref(archive, ref, normalized_ref, subtree_session_id)
+        return _resolve_delegation_subtree_object_ref(
+            archive, ref, normalized_ref, subtree_session_id, limit=limit, offset=offset, continuation=continuation
+        )
 
     edge_identity = parse_delegation_edge_object_id(object_ref.object_id)
     if edge_identity is not None:
@@ -999,20 +1026,67 @@ def _resolve_delegation_subtree_object_ref(
     ref: str,
     normalized_ref: str,
     session_id: str,
+    *,
+    limit: int,
+    offset: int,
+    continuation: str | None,
 ) -> PublicRefResolutionPayload:
-    """Resolve a ``delegation:subtree:<session_id>`` ref: the full
-    dispatch subtree rooted at ``session_id`` (polylogue-qsb4),
-    depth-annotated, in one recursive-CTE call
-    (``ArchiveStore.get_delegation_subtree``)."""
+    """Resolve one subtree page under its relation-scoped archive frame."""
 
+    from polylogue.archive.query.transaction import (
+        QueryContinuation,
+        QueryContinuationInvalidError,
+        QueryTransactionRequest,
+        archive_snapshot_epoch,
+        validate_continuation_epoch,
+    )
     from polylogue.surfaces.payloads import (
         DelegationSubtreePayload,
         PublicRefResolutionPayload,
         model_json_document,
     )
 
-    rows = archive.get_delegation_subtree(session_id)
-    payload = DelegationSubtreePayload.from_rows(session_id, rows)
+    request = QueryTransactionRequest(
+        operation=REF_RESOLUTION_OPERATION,
+        arguments={"ref": normalized_ref},
+        page_size=limit,
+        offset=offset,
+        projection="delegation-subtree",
+        stable_order="depth-session-path",
+    )
+    after = None
+    if continuation is not None:
+        decoded = QueryContinuation.decode(continuation)
+        issued = decoded.request
+        cursor = (decoded.cursor or {}).get("after")
+        if (
+            issued.operation != request.operation
+            or issued.arguments != request.arguments
+            or issued.projection != request.projection
+            or issued.stable_order != request.stable_order
+            or decoded.result_ref != issued.result_ref
+            or not isinstance(cursor, list)
+            or len(cursor) != 3
+            or not isinstance(cursor[0], int)
+            or isinstance(cursor[0], bool)
+            or cursor[0] < 0
+            or not isinstance(cursor[1], str)
+            or not isinstance(cursor[2], str)
+        ):
+            raise QueryContinuationInvalidError("continuation does not identify this delegation subtree")
+        validate_continuation_epoch(issued, archive=archive)
+        request = issued
+        after = (cursor[0], cursor[1], cursor[2])
+    else:
+        request = replace(request, archive_epoch=archive_snapshot_epoch(archive, relations=("delegation_facts",)))
+    page = archive.get_delegation_subtree(session_id, limit=request.page_size, offset=request.offset, after=after)
+    next_continuation = None
+    if page.next_cursor is not None:
+        advancing = replace(request, offset=page.offset + len(page.rows))
+        next_continuation = QueryContinuation(
+            request=advancing, result_ref=advancing.result_ref, cursor={"after": list(page.next_cursor)}
+        ).encode()
+    payload = DelegationSubtreePayload.from_page(session_id, page, continuation=next_continuation)
     object_refs = tuple(f"session:{node.session_id}" for node in payload.nodes)
     return PublicRefResolutionPayload(
         ref=ref,

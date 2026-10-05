@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from polylogue.analysis.archive_models import (
     ARCHIVE_INSIGHT_CONTRACT_VERSION,
@@ -57,6 +57,8 @@ class ArchiveInsightUnavailableError(PolylogueError):
 
 
 class PaginatedInsightQuery(ArchiveInsightModel):
+    model_config = ConfigDict(extra="forbid")
+
     limit: int | None = 50
     offset: int = 0
 

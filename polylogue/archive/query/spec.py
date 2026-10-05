@@ -306,7 +306,7 @@ def session_count_unit_label(root: bool | None) -> str:
 
 
 # Set of all recognized query-spec parameter names (drives strict-param mode).
-_RECOGNIZED_PARAMS: frozenset[str] = frozenset(
+QUERY_PARAMETER_NAMES: frozenset[str] = frozenset(
     {
         "query",
         "contains",
@@ -373,14 +373,14 @@ def validate_params_known(params: Mapping[str, object], *, strict: bool = False)
     if not strict:
         return
     for key in params:
-        if key not in _RECOGNIZED_PARAMS:
+        if key not in QUERY_PARAMETER_NAMES:
             # from_params accepts CLI parameter spellings, not dataclass attributes.
             alternatives = sorted(
                 {
                     alternative
                     for boundary in ("mcp", "spec", "storage", "api", "dsl")
                     for alternative in query_boundary_alternatives(key, boundary)
-                    if alternative in _RECOGNIZED_PARAMS
+                    if alternative in QUERY_PARAMETER_NAMES
                 }
             )
             suffix = f"; accepted alternatives: {', '.join(alternatives)}" if alternatives else ""
