@@ -216,14 +216,19 @@ def write_fixture_raw_session(
     with its inline attachments acquired first, and its parser census is
     published on the Source seal. The result maps the writer's own outcome.
     """
+    from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+    from polylogue.core.sources import origin_from_provider
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.sqlite.archive_tiers.revision_governance import (
         ArchiveRawParsedWriteResult,
         record_current_parser_source_census,
     )
+    from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_blob_hash
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome
     from tests.infra.index_writer import write_fixture_index_session
 
+    # A first observation of its logical source is a FULL/ASSERTED baseline,
+    # exactly as canonical raw admission records it.
     raw_id = archive.write_raw_payload(
         provider=session.source_name,
         payload=payload,
@@ -232,6 +237,13 @@ def write_fixture_raw_session(
         acquired_at_ms=acquired_at_ms,
         file_mtime_ms=file_mtime_ms,
         native_id=session.provider_session_id,
+        revision=RawRevisionEnvelope(
+            logical_source_key=f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}",
+            kind=RawRevisionKind.FULL,
+            source_revision=deterministic_blob_hash(payload).hex(),
+            acquisition_generation=0,
+            authority=RawRevisionAuthority.ASSERTED,
+        ),
     )
     archive.commit()
     blobs = BlobStore(archive.archive_root / "blob")
