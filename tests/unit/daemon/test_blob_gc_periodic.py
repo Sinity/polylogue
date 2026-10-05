@@ -19,6 +19,8 @@ import polylogue.storage.blob_gc as blob_gc
 from polylogue.daemon import blob_gc_periodic
 from polylogue.daemon.blob_gc_periodic import run_blob_gc_once
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
+from polylogue.storage.blob_gc import BlobGCResult
+from polylogue.storage.blob_publication import ArchiveBlobPublisher, BlobPublicationReceipt
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.write_lease import write_lease
@@ -28,6 +30,18 @@ def _make_source_db(path: Path) -> None:
     """Create the supported current archive shape used by the daemon."""
     assert path.name == "source.db"
     initialize_active_archive_root(path.parent)
+
+
+def _gc_once(db_path: Path, blob_dir: Path) -> BlobGCResult | None:
+    """One GC pass as the daemon runs it: under the archive writer lease."""
+    with write_lease("test.maintenance.blob_gc", archive_root=db_path.parent):
+        return run_blob_gc_once(db_path, blob_dir)
+
+
+def _flush(publisher: ArchiveBlobPublisher, archive_root: Path) -> tuple[BlobPublicationReceipt, ...]:
+    """Publish fixture blobs under the writer lease their Source rows require."""
+    with write_lease("test.blob-publication-fixture", archive_root=archive_root):
+        return publisher.flush()
 
 
 def _backdate(blob_store: BlobStore, blob_hash: str) -> None:
@@ -65,7 +79,7 @@ def test_run_blob_gc_once_reclaims_unreferenced_aged_blob(tmp_path: Path) -> Non
     blob_hash, _ = blob_store.write_from_bytes(b"orphan blob for daemon gc")
     _backdate(blob_store, blob_hash)
 
-    result = run_blob_gc_once(db_path, blob_dir)
+    result = _gc_once(db_path, blob_dir)
 
     assert result is not None
     assert result.deleted_count == 1
@@ -88,11 +102,11 @@ def test_daemon_gc_keeps_pending_intent_when_blob_root_disappears(
 
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", crash_after_intent)
     with pytest.raises(RuntimeError, match="leave daemon intent pending"):
-        run_blob_gc_once(db_path, store.root)
+        _gc_once(db_path, store.root)
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", original_final)
     store.root.rename(tmp_path / "blob.unmounted")
 
-    report = run_blob_gc_once(db_path, store.root)
+    report = _gc_once(db_path, store.root)
 
     assert report is not None
     assert report.blocked_reason is not None
@@ -210,8 +224,7 @@ def _make_publication_reconciliation_fixture(tmp_path: Path) -> tuple[Path, str]
     missing_hash, _ = publisher.write_from_bytes(b"periodic-missing-terminal")
     referenced_hash, referenced_size = publisher.write_from_bytes(b"periodic-referenced-terminal")
     unresolved_hash, _ = publisher.write_from_bytes(b"periodic-unresolved")
-    with write_lease("test.fixture.blob_publication", archive_root=archive_root):
-        publisher.flush()
+    _flush(publisher, archive_root)
     store.blob_path(missing_hash).unlink()
     with sqlite3.connect(source_db) as conn:
         write_source_raw_session_blob_ref(
@@ -295,8 +308,7 @@ def test_periodic_publication_reconciliation_pages_past_unresolved_rows(
     unresolved_b, _ = publisher.write_from_bytes(b"bounded-unresolved-b")
     missing_hash, _ = publisher.write_from_bytes(b"bounded-missing")
     referenced_hash, referenced_size = publisher.write_from_bytes(b"bounded-referenced")
-    with write_lease("test.fixture.blob_publication", archive_root=archive_root):
-        receipts = publisher.flush()
+    receipts = _flush(publisher, archive_root)
     deterministic_ids = {
         unresolved_a: "publication-a",
         unresolved_b: "publication-b",
@@ -378,8 +390,7 @@ def test_blob_publication_reconciliation_reads_attachment_refs_from_active_index
     store = BlobStore(archive_root / "blob")
     publisher = ArchiveBlobPublisher(source_db, store.root)
     blob_hash, size = publisher.write_from_bytes(b"active-generation-attachment")
-    with write_lease("test.fixture.blob_publication", archive_root=archive_root):
-        publisher.flush()
+    _flush(publisher, archive_root)
 
     active_index = archive_root / ".index-generations" / "gen-active" / "index.db"
     active_index.parent.mkdir(parents=True)

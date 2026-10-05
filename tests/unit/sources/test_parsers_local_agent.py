@@ -1531,7 +1531,7 @@ async def test_antigravity_metadata_sidecar_is_rejected_without_blocking_convers
                     "SELECT source_path,canonical_source_path,blob_hash FROM raw_sessions"
                 ).fetchall()
                 assert {(row[0], row[1], row[2]) for row in raws} == {
-                    (str(path), str(path.resolve()), hashlib.sha256(path.read_bytes()).hexdigest())
+                    (str(path), str(path.resolve()), hashlib.sha256(path.read_bytes()).digest())
                     for path in (metadata_path, conversation_path)
                 }
                 [sidecar] = stored.source_connection.execute(

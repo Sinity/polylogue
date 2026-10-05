@@ -22,6 +22,7 @@ from polylogue.storage.derived.session import storage as session_storage
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.write import IDENTITY_INVALIDATION_DEBT_STAGE
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.compute_owner import owned_compute_adapter
 
 
@@ -131,7 +132,8 @@ def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_
     # A zero pass budget stops after one bounded batch, which is what the two
     # executions below observe.
     monkeypatch.setattr(stages, "_DAEMON_RAW_AUTHORITY_CACHE_PASS_SECONDS", 0.0)
-    with plog.capture() as records:
+    # The daemon executes cache-warming stages under its writer lease.
+    with write_lease("test.raw-authority-cache", archive_root=tmp_path), plog.capture() as records:
         assert stage.check(path) is True
         assert stage.execute_many((path,)) is False
         assert stage.check(path) is True
@@ -190,7 +192,8 @@ def test_raw_authority_verdict_cache_execution_keeps_warming_batches_within_its_
     stage = make_raw_authority_verdict_cache_stage(tmp_path / "index.db")
     assert stage.execute_many is not None
     path = tmp_path / "source.jsonl"
-    assert stage.execute_many((path,)) is True
+    with write_lease("test.raw-authority-cache", archive_root=tmp_path):
+        assert stage.execute_many((path,)) is True
     assert stage.check(path) is False
 
 

@@ -1177,13 +1177,19 @@ def materialize_session_insights(
 
     from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.sqlite.connection import open_connection
+    from tests.infra.archive_templates import run_off_event_loop
 
-    with open_connection(db_path) as conn:
-        return rebuild_session_insights_sync(
-            conn,
-            session_ids=None if session_ids is None else list(session_ids),
-            progress_callback=progress_callback,
-        )
+    def materialize() -> Any:
+        # The writer opens a synchronous write lease, which refuses to block a
+        # running event loop; async tests run it on a loop-free thread.
+        with open_connection(db_path) as conn:
+            return rebuild_session_insights_sync(
+                conn,
+                session_ids=None if session_ids is None else list(session_ids),
+                progress_callback=progress_callback,
+            )
+
+    return run_off_event_loop(materialize)
 
 
 def seed_insight_scope_archive(root: Path) -> None:
@@ -1334,7 +1340,10 @@ def seed_attachment_library_lineage_archive(root: Path) -> dict[str, str]:
     foreign.add_attachment("foreign", message_id="foreign", display_name="foreign.txt")
     foreign.save()
     parent_id, child_id = parent.native_session_id(), child.native_session_id()
-    with write_lease("test.attachment-library-lineage"), ArchiveStore.open_existing(root, read_only=False) as archive:
+    with (
+        write_lease("test.attachment-library-lineage", archive_root=root),
+        ArchiveStore.open_existing(root, read_only=False) as archive,
+    ):
         message = archive._conn.execute(
             "SELECT message_id,content_address FROM messages WHERE session_id=? ORDER BY position LIMIT 1",
             (parent_id,),

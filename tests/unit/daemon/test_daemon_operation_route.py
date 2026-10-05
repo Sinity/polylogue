@@ -939,7 +939,7 @@ def test_crash_recovery_replays_a_delete_on_exactly_the_recorded_id_not_a_prefix
                 request_id="prefix-execute",
             )
             assert lost is not None and lost["outcome"] == "indeterminate"
-            assert not first.session_exists(target)
+            assert not first.session_exists(target), lost
             assert first.session_exists(sibling)
 
     # Startup recovery replays the unknown run with the real actuator.
@@ -998,7 +998,7 @@ def test_delete_preview_count_equals_the_applied_count_and_spares_prefix_sibling
         )
         assert executed is not None
         assert prepared_count == len(selected)
-        assert executed["result"]["affected_count"] == prepared_count
+        assert executed["result"]["affected_count"] == prepared_count, (executed, preview)
         assert not any(stack.session_exists(session_id) for session_id in selected)
         assert all(stack.session_exists(session_id) for session_id in spared)
 
@@ -1479,7 +1479,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
         final = stack.client.await_operation(execute_request_id, archive_root=str(stack.archive_root), timeout_ms=2_000)
         assert final is not None
         state = final["result"]
-        assert state["outcome"] == "cancelled"
+        assert state["outcome"] == "cancelled", state
         assert state["completed_chunks"] == 1
         assert state["not_attempted"] == [1]
         assert state["stop_reason"] == "cancelled"
@@ -1838,7 +1838,10 @@ def test_cancelled_queued_operation_reports_cancelled_not_failed(
             assert not exchange.future.done(), "the operation must still be queued or this test is vacuous"
             assert not exchange.acceptance_started
             request_bytes = len(json.dumps(request.to_dict(), separators=(",", ":"), allow_nan=False).encode())
-            assert stack.execution_kernel.snapshot().used_bytes == request_bytes
+            assert stack.execution_kernel.snapshot().used_bytes == request_bytes, (
+                stack.execution_kernel.snapshot(),
+                request_bytes,
+            )
             if operation == "query.aggregate":
                 assert exchange.deadline is None
                 assert exchange.context.read_control is not None
@@ -2295,7 +2298,7 @@ def test_accepted_restore_outlives_implicit_deadline_and_control_returns_termina
                 def refuse_terminal_transfer(exchange: Any) -> None:
                     raise OSError("synthetic result publication refusal")
 
-                monkeypatch.setattr(stack.runtime, "_retain_unbound_terminal", refuse_terminal_transfer)
+                monkeypatch.setattr(stack.runtime, "_retain_terminal", refuse_terminal_transfer)
             release.set()
             terminal = stack.client.await_operation(request_id, archive_root=str(stack.archive_root))
             while terminal is not None and terminal["result"]["outcome"] in {"accepted", "running", "indeterminate"}:

@@ -27,6 +27,7 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveRawParsedWriteResult
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.raw_owner_routes import live_owner_set
 
 
@@ -305,6 +306,7 @@ def test_zip_member_publication_on_a_full_archive_escapes_instead_of_excluding(t
             b'"uuid":"u1","timestamp":"2025-01-01T00:00:00Z"}\n',
         )
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="claude-code", root=tmp_path),),

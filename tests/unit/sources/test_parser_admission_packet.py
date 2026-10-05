@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 import pytest
@@ -24,7 +23,10 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.sources.parsers.chatgpt import extract_messages_from_mapping
 from polylogue.sources.parsers.codex import parse as parse_codex
-from tests.infra.index_writer import write_fixture_index_session
+from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.index_writer import close_fixture_index_connection, write_fixture_index_session
 
 
 def test_unknown_structured_segment_is_retained_as_typed_evidence() -> None:
@@ -191,13 +193,17 @@ def test_writer_refuses_nonconserving_parse_before_sqlite_mutation() -> None:
         ),
     )
 
-    conn = sqlite3.connect(":memory:")
+    # Preparation reads the Index schema; the refusal still precedes every write.
+    conn = connect_measured(":memory:")
     try:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        baseline = conn.total_changes
         with pytest.raises(ValueError, match="parse admission conservation refused"):
             write_fixture_index_session(conn, session, standalone_memory=True)
         assert conn.execute("SELECT 1").fetchone() == (1,)
+        assert conn.total_changes == baseline
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
 
 # polylogue-ro922. A session file is untrusted input, so the admission ledger's

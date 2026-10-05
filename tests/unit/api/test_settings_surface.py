@@ -22,14 +22,20 @@ from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.user_settings_write import set_user_setting
 from polylogue.storage.sqlite.connection_profile import open_connection
+from tests.infra.archive_templates import run_off_event_loop
 
 
-def _init_tiers(archive_root: Path, *, with_user: bool = True) -> None:
+def _init_tiers_on_writer(archive_root: Path, *, with_user: bool = True) -> None:
     """Bootstrap through the production owner, not a hand-rolled tier set."""
 
     initialize_active_archive_root(archive_root)
     if not with_user:
         (archive_root / "user.db").unlink()
+
+
+def _init_tiers(archive_root: Path, *, with_user: bool = True) -> None:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _init_tiers_on_writer(archive_root, with_user=with_user))
 
 
 def _seed_setting(archive_root: Path, setting_key: str, value: object) -> None:

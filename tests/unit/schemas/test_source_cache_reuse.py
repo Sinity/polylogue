@@ -713,7 +713,6 @@ def test_old_zip_count_poison_becomes_a_flatfile_cache_miss(tmp_path: Path, monk
 def test_implementation_provenance_does_not_invalidate_semantically_unchanged_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    local_workers: None,
 ) -> None:
     """Tying the cache key to reporting/import changes repeats both source passes."""
     root = tmp_path / "inputs"
@@ -742,7 +741,6 @@ def test_implementation_provenance_does_not_invalidate_semantically_unchanged_ev
 def test_semantic_revision_invalidates_only_the_dependent_phase(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    local_workers: None,
     recipe: SourceEvidenceRecipe,
     hits: dict[str, int],
     misses: dict[str, int],
@@ -810,7 +808,6 @@ def test_structure_recipe_upgrade_replaces_old_shape_hashes_while_reusing_statis
 def test_key_limit_upgrade_recovers_collapsed_fields_and_reuses_other_structure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    local_workers: None,
 ) -> None:
     """A wildcard summary cannot supply the erased field names or separate field counters."""
     root = tmp_path / "inputs"
@@ -832,7 +829,6 @@ def test_key_limit_upgrade_recovers_collapsed_fields_and_reuses_other_structure(
 
 def test_new_dynamic_path_only_reprocesses_sources_containing_that_path(
     tmp_path: Path,
-    local_workers: None,
 ) -> None:
     """A global normalization-map key must not invalidate unrelated source contributions."""
     root = tmp_path / "inputs"
@@ -851,7 +847,6 @@ def test_new_dynamic_path_only_reprocesses_sources_containing_that_path(
 @pytest.mark.parametrize("name", ["a.b", "a[*]", "*"])
 def test_literal_path_punctuation_invalidates_affected_statistics(
     tmp_path: Path,
-    local_workers: None,
     name: str,
 ) -> None:
     """Parsing a field name as a path incorrectly reuses its pre-normalization counters."""
