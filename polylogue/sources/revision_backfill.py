@@ -1582,9 +1582,7 @@ def prepare_membership_replay(
                         session.messages.provider_message_ids(include_none=False)
                         if isinstance(session.messages, SqliteMessageSink)
                         else frozenset(
-                            message.provider_message_id
-                            for message in session.messages
-                            if message.provider_message_id is not None
+                            message.provider_message_id for message in session.messages if message.provider_message_id
                         )
                     ),
                     provider_attachment_ids=frozenset(
