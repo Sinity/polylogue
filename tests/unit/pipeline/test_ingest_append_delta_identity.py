@@ -42,17 +42,17 @@ import pytest
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
-from polylogue.pipeline.ids import bound_session_content_hash, session_content_hash
+from polylogue.pipeline.ids import bound_session_content_hash, message_content_identities, session_content_hash
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.write import (
-    PreparedSessionWriteRefusedError,
     prepare_session_rows,
-    prepare_session_write,
 )
-from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import (
+    close_fixture_index_connection,
     write_fixture_index_session,
     write_fixture_ingest_payload,
 )
@@ -92,7 +92,10 @@ def _payload(*texts: str, append_only: bool) -> SessionWritePayload:
 
 
 def _seeded(tmp_path: Path) -> sqlite3.Connection:
-    conn = open_connection(tmp_path / "index.db").__enter__()
+    """A lease-free measured Index connection holding the first write; the caller closes it."""
+    bootstrap_archive_root(tmp_path)
+    conn = connect_measured(tmp_path / "index.db")
+    conn.row_factory = sqlite3.Row
     write_fixture_ingest_payload(conn, _payload("first", append_only=False))
     conn.commit()
     return conn
@@ -119,55 +122,56 @@ def test_delta_digest_covers_only_delta_rows(tmp_path: Path) -> None:
         assert prepared.session_content_hash == bytes.fromhex(str(session_content_hash(delta)))
         assert prepared.session_content_hash != bytes.fromhex(payload.content_hash)
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
 
 def test_append_carrier_admitted_and_reused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A carrier prepared for the delta is admitted on the ingest_batch route.
+    """The ingest_batch route admits a carrier prepared for the delta before the writer.
 
-    The writer is wrapped exactly where ``_write_session`` calls it, so the
-    carrier is introduced on the production route rather than beside it. The
-    writer's own identity computation is made fatal: reaching it means the
-    carrier was not used.
+    Canonical preparation (polylogue-fdzb3) builds the append delta's carrier
+    before writer custody. The writer is wrapped exactly where
+    ``_write_session`` calls it: the merge-append write must arrive with that
+    carrier, and the writer's own identity computation is fatal while it runs,
+    so reaching it means the carrier was not used.
     """
     conn = _seeded(tmp_path)
     try:
         payload = _payload("first", "second", append_only=True)
-        # Prepared ahead of the writer hold, from the delta the append branch
-        # will itself derive -- what polylogue-fdzb3 moves to the parse worker.
-        delta, _skipped = ingest_batch_core._append_delta_payload(conn, payload)
-        assert delta is not None
-        carrier = prepare_session_write(conn, delta, merge_append=True)
-
         real_write = archive_tier_write.write_parsed_session_to_archive
-
-        def _write_with_carrier(connection: sqlite3.Connection, session: ParsedSession, **kwargs: Any) -> str:
-            if kwargs.get("merge_append"):
-                kwargs["prepared_write"] = carrier
-            return real_write(connection, session, **kwargs)
-
-        monkeypatch.setattr(ingest_batch_core, "write_parsed_session_to_archive", _write_with_carrier)
+        real_identities = message_content_identities
+        carriers: list[object] = []
 
         def _boom(*args: object, **kwargs: object) -> object:
             raise AssertionError("writer recomputed identities instead of using the prepared carrier")
 
-        monkeypatch.setattr(archive_tier_write, "message_content_identities", _boom)
+        def _write_with_trap(connection: sqlite3.Connection, session: ParsedSession, **kwargs: Any) -> str:
+            if not kwargs.get("merge_append"):
+                return real_write(connection, session, **kwargs)
+            carriers.append(kwargs.get("prepared_write"))
+            monkeypatch.setattr(archive_tier_write, "message_content_identities", _boom)
+            try:
+                return real_write(connection, session, **kwargs)
+            finally:
+                monkeypatch.setattr(archive_tier_write, "message_content_identities", real_identities)
+
+        monkeypatch.setattr(ingest_batch_core, "write_parsed_session_to_archive", _write_with_trap)
 
         changed, counts = write_fixture_ingest_payload(conn, payload)
         conn.commit()
 
         assert changed is True
+        assert len(carriers) == 1 and carriers[0] is not None
         assert counts["skipped_messages"] == 1
         stored = conn.execute(
             "SELECT native_id FROM messages WHERE session_id = ? ORDER BY position", (_SESSION_ID,)
         ).fetchall()
         assert [row[0] for row in stored] == ["m0", "m1"]
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
 
-def test_merged_carrier_refused_on_append(tmp_path: Path) -> None:
-    """A carrier describing the merged session is refused, naming the cause."""
+def test_merged_carrier_is_never_published_on_append(tmp_path: Path) -> None:
+    """A carrier describing the merged session is declined; only the delta is appended."""
     conn = _seeded(tmp_path)
     try:
         payload = _payload("first", "second", append_only=True)
@@ -175,17 +179,27 @@ def test_merged_carrier_refused_on_append(tmp_path: Path) -> None:
         assert delta is not None
         merged_carrier = prepare_session_rows(payload.parsed_session)
 
-        with pytest.raises(PreparedSessionWriteRefusedError, match="merged session"):
-            write_fixture_index_session(
-                conn,
-                delta,
-                content_hash=payload.content_hash,
-                pending_input_content_hash=bound_session_content_hash(delta),
-                merge_append=True,
-                prepared_rows=merged_carrier,
+        # A merge-append declines a prepared carrier: the merged session's
+        # rows are never published in place of the delta. Admitting them
+        # would re-append ``m0`` beside the stored one.
+        write_fixture_index_session(
+            conn,
+            delta,
+            content_hash=payload.content_hash,
+            pending_input_content_hash=bound_session_content_hash(delta),
+            merge_append=True,
+            prepared_rows=merged_carrier,
+        )
+        conn.commit()
+        native_ids = [
+            row[0]
+            for row in conn.execute(
+                "SELECT native_id FROM messages WHERE session_id = ? ORDER BY position", (_SESSION_ID,)
             )
+        ]
+        assert native_ids == ["m0", "m1"]
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
 
 def test_stored_hash_stays_merged_digest(tmp_path: Path) -> None:
@@ -209,7 +223,7 @@ def test_stored_hash_stays_merged_digest(tmp_path: Path) -> None:
         assert replay_counts["skipped_sessions"] == 1
         assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (_SESSION_ID,)).fetchone()[0] == 2
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
 
 def test_tail_only_append_that_repeats_earlier_content_is_kept(tmp_path: Path) -> None:
@@ -243,4 +257,4 @@ def test_tail_only_append_that_repeats_earlier_content_is_kept(tmp_path: Path) -
         assert skipped == 0
         assert [message.provider_message_id for message in delta.messages] == ["m1"]
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)

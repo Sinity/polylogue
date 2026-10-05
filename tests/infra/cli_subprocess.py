@@ -72,13 +72,11 @@ def run_cli(
         CliResult with exit_code, stdout, stderr, and combined output
     """
     # Start with minimal environment to avoid inheriting user's config
-    # Must include HOME for uv/Python to function, but use temp HOME to isolate config
+    # Must include HOME for Python to function, but use temp HOME to isolate config
     clean_env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
-        # Required for uv to work
-        "UV_SYSTEM_PYTHON": "1",
         # Disable vector search in tests (no Voyage API key)
         "VOYAGE_API_KEY": "",
         # Use test-provided HOME if set via env, otherwise use system HOME
@@ -96,12 +94,17 @@ def run_cli(
     if env:
         clean_env.update(env)
 
-    # Point uv at the project root explicitly so tests can still exercise
-    # arbitrary working directories via `cwd`.
     project_root = Path(__file__).parent.parent.parent
 
     if entrypoint == "script":
-        command = ["uv", "run", "--project", str(project_root), "polylogue"] + args
+        # The provisioned environment's own console script: the real entry
+        # point, with no package manager in the loop. ``uv run`` re-syncs the
+        # project, rebuilding the editable install into the source tree, and
+        # a test must never write the checkout.
+        script = Path(sys.executable).parent / "polylogue"
+        if not script.is_file():
+            raise FileNotFoundError(f"provisioned console script is missing: {script}")
+        command = [str(script)] + args
     elif entrypoint == "module":
         command = [sys.executable, "-m", "polylogue"] + args
     else:  # pragma: no cover - Literal keeps callers honest
