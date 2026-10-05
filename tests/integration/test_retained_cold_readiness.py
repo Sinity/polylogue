@@ -83,7 +83,10 @@ async def test_owned_empty_generation_uses_cold_build_policy_and_finishes_ready(
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
             assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
             assert conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
-        assert dropped == [DEFERRED_SECONDARY_INDEX_NAMES]
+        # Every cold writer open asks for deferral; only the first open drops
+        # the secondary indexes and later opens find nothing left to defer.
+        assert [names for names in dropped if names] == [DEFERRED_SECONDARY_INDEX_NAMES], dropped
+        assert all(names == () for names in dropped[1:]), dropped
         assert stamped_tiers == ["index"]
     finally:
         clear_cold_build_generation()
