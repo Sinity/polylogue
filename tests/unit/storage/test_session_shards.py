@@ -70,6 +70,12 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _archive_index(root: Path) -> Path:
+    """Give each comparison archive its own root: a root owns one active Index."""
+    root.mkdir()
+    return root / "index.db"
+
+
 def _synthetic_sessions() -> list[ParsedSession]:
     return [
         ParsedSession(
@@ -212,8 +218,8 @@ def _write_through_shard(conn: sqlite3.Connection, sessions: list[ParsedSession]
 
 def test_shard_and_inline_writes_produce_identical_rows(tmp_path: Path) -> None:
     sessions = _synthetic_sessions()
-    inline_conn = _connect(tmp_path / "inline.db")
-    shard_conn = _connect(tmp_path / "shard-written.db")
+    inline_conn = _connect(_archive_index(tmp_path / "inline"))
+    shard_conn = _connect(_archive_index(tmp_path / "shard-written"))
     try:
         _write_inline(inline_conn, sessions)
         _write_through_shard(shard_conn, sessions, tmp_path / "shards")
@@ -307,8 +313,8 @@ def test_sealed_message_sink_preserves_attachment_owner_projection(tmp_path: Pat
     sealed = SqliteMessageSink(store.path, sink.session_ordinal, count=len(sink))
     publication = worker_session.model_copy(update={"messages": sealed})
 
-    inline = _connect(tmp_path / "inline-attachment.db")
-    streamed = _connect(tmp_path / "streamed-attachment.db")
+    inline = _connect(_archive_index(tmp_path / "inline-attachment"))
+    streamed = _connect(_archive_index(tmp_path / "streamed-attachment"))
     try:
         write_fixture_index_session(inline, session, content_hash=str(session_content_hash(session)))
         with attached_session_shard(streamed, shard) as schema:
@@ -450,8 +456,8 @@ def test_shared_prefix_prior_rows_demote_shard_and_preserve_finished_projection(
             ]
         }
     )
-    control = _connect(tmp_path / "inline-control.db")
-    witness = _connect(tmp_path / "shard-fallback-witness.db")
+    control = _connect(_archive_index(tmp_path / "inline-control"))
+    witness = _connect(_archive_index(tmp_path / "shard-fallback-witness"))
     try:
         _write_inline(control, [parent, child, rewritten])
         _write_inline(witness, [parent, child])
