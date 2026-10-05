@@ -58,6 +58,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
 
 pytestmark = pytest.mark.xdist_group("web-reader")
@@ -510,7 +511,8 @@ async def test_db_backed_window_composes_no_transcript(
     """
 
     session_id = seeded_archive["session_ids"][0]
-    target = _deep_message_id(session_id, seeded_archive["archive_root"])
+    # Opening the archive store may bootstrap under the synchronous lease; keep it off the loop.
+    target = run_off_event_loop(lambda: _deep_message_id(session_id, seeded_archive["archive_root"]))
     composed = _composed_row_counter(monkeypatch)
 
     paged = await _db_backed(seeded_archive["archive_root"], monkeypatch, "_do_get_messages", session_id, _PAGE, 0)
