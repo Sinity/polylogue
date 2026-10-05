@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import sys
+import tempfile
 from builtins import BaseExceptionGroup
-from collections.abc import Callable
-from contextlib import closing
+from collections.abc import Callable, Iterator
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -16,6 +18,7 @@ if TYPE_CHECKING:
     from polylogue.archive.revision_replay import RevisionReplayPlan
     from polylogue.sources.parsers.base import ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import ArchiveRawParsedWriteResult
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 
 T = TypeVar("T")
@@ -37,7 +40,13 @@ def run_on_convergence_owner(root: Path, actor: str, operation: Callable[[Bounde
     return asyncio.run(run())
 
 
-def publish_prepared_source(root: Path, actor: str, prepare: Callable[[PreparedIndexMutation], None]) -> None:
+def publish_prepared_source(
+    root: Path,
+    actor: str,
+    prepare: Callable[[PreparedIndexMutation], None],
+    *,
+    after_prepare: Callable[[], None] | None = None,
+) -> None:
     """Prepare Source statements on an original seal, then publish that tape.
 
     ``prepare`` runs inside the seal's original read window and Source
@@ -58,6 +67,9 @@ def publish_prepared_source(root: Path, actor: str, prepare: Callable[[PreparedI
             with seal.original_read_snapshot(), seal.source_producer():
                 prepare(seal)
             permit = seal.prepare_source_mutation()
+            if after_prepare is not None:
+                # Durable evidence moves after preparation and before publication.
+                admit_stage_write(f"{actor}.intervening", after_prepare)
 
             def publish() -> None:
                 with permit.hold_authority(), permit.mutation_connection() as source:
@@ -185,3 +197,221 @@ def publish_membership_census(archive: ArchiveStore, raw_id: str, sessions: Any,
         "test.membership-census",
         lambda seal: replace_raw_membership_census(seal, raw_id, sessions, **census),
     )
+
+
+def write_fixture_raw_session(
+    archive: ArchiveStore,
+    session: ParsedSession,
+    *,
+    payload: bytes,
+    source_path: str,
+    acquired_at_ms: int,
+    source_index: int = 0,
+    file_mtime_ms: int | None = None,
+) -> ArchiveRawParsedWriteResult:
+    """Admit raw bytes, then publish a supplied parsed session for that raw.
+
+    The raw is admitted through the store's canonical raw writer; the parsed
+    session is prepared and published by the original-seal fixture writer
+    with its inline attachments acquired first, and its parser census is
+    published on the Source seal. The result maps the writer's own outcome.
+    """
+    from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        ArchiveRawParsedWriteResult,
+        record_current_parser_source_census,
+    )
+    from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_blob_hash
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome
+    from tests.infra.index_writer import write_fixture_index_session
+
+    # A first observation of its logical source is a FULL/ASSERTED baseline,
+    # exactly as canonical raw admission records it.
+    raw_id = archive.write_raw_payload(
+        provider=session.source_name,
+        payload=payload,
+        source_path=source_path,
+        source_index=source_index,
+        acquired_at_ms=acquired_at_ms,
+        file_mtime_ms=file_mtime_ms,
+        native_id=session.provider_session_id,
+        revision=RawRevisionEnvelope(
+            logical_source_key=f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}",
+            kind=RawRevisionKind.FULL,
+            source_revision=deterministic_blob_hash(payload).hex(),
+            acquisition_generation=0,
+            authority=RawRevisionAuthority.ASSERTED,
+        ),
+    )
+    archive.commit()
+    blobs = BlobStore(archive.archive_root / "blob")
+    preacquired: dict[object, tuple[bytes | None, int, str]] = {}
+    for attachment in session.attachments:
+        if attachment.inline_bytes is not None:
+            blob_hash, size = blobs.write_from_bytes(attachment.inline_bytes)
+            preacquired[id(attachment)] = (bytes.fromhex(blob_hash), size, "acquired")
+    from polylogue.pipeline.ids import session_id as make_session_id
+
+    expected_session_id = str(make_session_id(session.source_name, session.provider_session_id))
+
+    def stored_hash() -> object:
+        row = archive._conn.execute(
+            "SELECT content_hash FROM sessions WHERE session_id=?", (expected_session_id,)
+        ).fetchone()
+        return None if row is None else bytes(row[0])
+
+    before = stored_hash()
+    outcomes: list[ArchiveWriteOutcome] = []
+    session_id = write_fixture_index_session(
+        archive._conn,
+        session,
+        archive_root=archive.archive_root,
+        raw_id=raw_id,
+        preacquired_attachment_blobs=preacquired,
+        write_outcome=outcomes,
+    )
+    # The parser census binds the original prepared artifact output for this
+    # raw, never a loose parsed list.
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+
+    source = archive._ensure_source_conn()
+    blob_row = source.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone()
+    assert blob_row is not None
+    with tempfile.TemporaryDirectory(prefix="fixture-census-", dir=archive.archive_root / "blob") as directory:
+        artifact = PreparedJsonl.from_sessions(
+            [session],
+            blob_hash=bytes(blob_row[0]).hex(),
+            artifact_directory=Path(directory),
+            publication_publisher=None,
+        )
+        try:
+            publish_prepared_source(
+                archive.archive_root,
+                "test.fixture.raw-session-census",
+                lambda seal: record_current_parser_source_census(
+                    seal, raw_id, parser_sessions=artifact.session_sequence()
+                ),
+            )
+        finally:
+            artifact.discard()
+    outcome = outcomes[-1]
+    # Content change is the stored session hash moving, as the retained
+    # writer reported it; re-binding identical content to a new raw is not.
+    wrote = outcome.wrote and stored_hash() != before
+    return ArchiveRawParsedWriteResult(
+        raw_id=raw_id,
+        session_id=session_id,
+        content_changed=wrote,
+        counts=archive._write_counts(session) if wrote else archive._skipped_counts(session),
+        publication_refused=outcome.stale_skipped or outcome.suppression_skipped,
+        unresolved_attachment_owners=outcome.unresolved_attachment_owners,
+    )
+
+
+def apply_prepared_membership_classification(
+    archive: ArchiveStore,
+    logical_source_key: str,
+    classification: Any,
+    parsed_by_raw_id: dict[str, ParsedSession],
+    projections_by_raw_id: dict[str, Any],
+    *,
+    acquired_at_ms: int,
+    **apply_options: Any,
+) -> str | None:
+    """Prepare the accepted membership write off-writer, then apply the classification.
+
+    An accepted member's session write is prepared on an original seal and its
+    inline attachments are acquired with their canonical provider coordinate
+    before the store applies the classification under that same seal.
+    """
+    from polylogue.core.identity_law import attachment_acquisition_coordinate
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_raw_revision_file_mtime
+    from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead, prepare_session_write
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    accepted = tuple(classification.accepted_raw_ids)
+    blobs: dict[object, tuple[bytes | None, int, str]] = {}
+    refs: list[ArchiveSourceBlobRef] = []
+    root = archive.archive_root
+    if not accepted:
+        apply_options.setdefault("preacquired_attachment_blobs", blobs)
+        apply_options.setdefault("preacquired_attachment_refs", lambda: iter(refs))
+        return archive.apply_raw_membership_classification(
+            logical_source_key,
+            classification,
+            parsed_by_raw_id,
+            projections_by_raw_id,
+            acquired_at_ms=acquired_at_ms,
+            **apply_options,
+        )
+    accepted_raw_id = accepted[-1]
+    session = parsed_by_raw_id[accepted_raw_id]
+    store = BlobStore(root / "blob")
+    for attachment in session.attachments:
+        if attachment.inline_bytes is None:
+            continue
+        blob_hash, size = store.write_from_bytes(attachment.inline_bytes)
+        blobs[id(attachment)] = (bytes.fromhex(blob_hash), size, "acquired")
+        refs.append(
+            ArchiveSourceBlobRef(
+                blob_hash=bytes.fromhex(blob_hash),
+                raw_id=accepted_raw_id,
+                ref_type="attachment",
+                source_path=attachment_acquisition_coordinate(
+                    attachment.provider_file_id, attachment.provider_attachment_id
+                ),
+                size_bytes=size,
+                acquired_at_ms=acquired_at_ms,
+            )
+        )
+    archive.commit()
+    with PreparedIndexMutation(archive.index_db_path, archive_root=root) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            read = PreparedSessionSourceRead(seal, blob_store=store)
+            prepared_write = prepare_session_write(
+                seal.observer("index"),
+                session,
+                merge_append=False,
+                fallback_timestamp=prepared_raw_revision_file_mtime(seal, accepted_raw_id),
+                source_read=read,
+                raw_id=accepted_raw_id,
+                force_replace=True,
+                before_input=seal.before_index_input,
+            )
+        apply_options.setdefault("preacquired_attachment_blobs", blobs)
+        apply_options.setdefault("preacquired_attachment_refs", lambda: iter(refs))
+        apply_options.setdefault("prepared_write", prepared_write)
+        with archive.index_mutation_scope(prepared_seal=seal):
+            return archive.apply_raw_membership_classification(
+                logical_source_key,
+                classification,
+                parsed_by_raw_id,
+                projections_by_raw_id,
+                acquired_at_ms=acquired_at_ms,
+                **apply_options,
+            )
+
+
+def open_independent_source(archive: ArchiveStore) -> sqlite3.Connection:
+    """Commit the store, then open an independent Source writer for law seeding.
+
+    A law that plants durable evidence the production writers would refuse
+    (an ambiguous decision, a damaged append coordinate) writes it as another
+    process would, outside the store's authorized custody connection.
+    """
+    archive.commit()
+    return sqlite3.connect(archive.archive_root / "source.db")
+
+
+@contextmanager
+def independent_source_connection(archive: ArchiveStore) -> Iterator[sqlite3.Connection]:
+    connection = open_independent_source(archive)
+    try:
+        yield connection
+        connection.commit()
+    finally:
+        connection.close()

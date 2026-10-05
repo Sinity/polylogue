@@ -51,15 +51,21 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
             str(row[0]): str(row[1])
             for row in historical.execute("SELECT name, sql FROM sqlite_schema WHERE type='index' AND sql IS NOT NULL")
         }
+        historical_trigger_sql = {
+            str(row[0]): str(row[1])
+            for row in historical.execute("SELECT name, sql FROM sqlite_schema WHERE type='trigger'")
+        }
+        historical_triggers = set(historical_trigger_sql)
     table_pattern = re.compile(r"CREATE TABLE (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)")
     index_pattern = re.compile(r"CREATE (?:UNIQUE )?INDEX (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)")
     view_pattern = re.compile(r"CREATE VIEW (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)")
+    trigger_pattern = re.compile(r"CREATE TRIGGER (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*)")
     rebuild_pattern = re.compile(
         r"(?:DROP TABLE (?:IF EXISTS )?([A-Za-z_][A-Za-z0-9_]*)"
         r"|ALTER TABLE ([A-Za-z_][A-Za-z0-9_]*)\s+RENAME)",
         re.I,
     )
-    below: set[str] = set(historical_indexes)
+    below: set[str] = set(historical_indexes) | historical_triggers
     above: list[tuple[str, str]] = []
     for path in sorted(migrations.glob("*.sql")):
         slot = int(path.name.split("_", 1)[0])
@@ -72,6 +78,7 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
         created = [("table", m.group(1)) for m in table_pattern.finditer(text) if m.group(1) not in rebuilt]
         created += [("index", m.group(1)) for m in index_pattern.finditer(text)]
         created += [("view", m.group(1)) for m in view_pattern.finditer(text)]
+        created += [("trigger", m.group(1)) for m in trigger_pattern.finditer(text)]
         if slot <= version:
             below.update(name for _kind, name in created)
         else:
@@ -118,6 +125,8 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
             conn.execute(f"DROP TABLE IF EXISTS {name}")
         elif kind == "index":
             conn.execute(f"DROP INDEX IF EXISTS {name}")
+        elif kind == "trigger":
+            conn.execute(f"DROP TRIGGER IF EXISTS {name}")
     dropped_tables = {name for kind, name in above if kind == "table" and name not in below}
     for table, column in dict.fromkeys(columns_above):
         if (table, column) in columns_below or table in dropped_tables:
@@ -141,3 +150,8 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
         if historical_sql is None:
             raise AssertionError(f"no historical definition found for replaced source view: {view_name}")
         conn.executescript(historical_sql)
+    # A later migration may also drop a trigger the requested version still
+    # had; reinstall its historical definition.
+    present_triggers = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='trigger'")}
+    for name in sorted(historical_triggers - present_triggers):
+        conn.execute(historical_trigger_sql[name])

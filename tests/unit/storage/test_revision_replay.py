@@ -41,10 +41,14 @@ from polylogue.storage.sqlite.archive_tiers import revision_governance as archiv
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.prepared_replay import (
+    apply_prepared_membership_classification,
     apply_prepared_revision_replay,
+    independent_source_connection,
+    open_independent_source,
     publish_membership_census,
     publish_prepared_source,
     run_on_convergence_owner,
+    write_fixture_raw_session,
 )
 
 
@@ -388,8 +392,7 @@ def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys
             source_index=-1,
             acquired_at_ms=1,
         )
-        with archive._ensure_source_conn():
-            conn = archive._ensure_source_conn()
+        with independent_source_connection(archive) as conn:
             conn.execute(
                 """
                 INSERT INTO raw_session_memberships (
@@ -442,8 +445,7 @@ def test_typed_non_session_receipt_preserves_durable_membership_on_restart(tmp_p
             acquired_at_ms=1,
             kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
         )
-        with archive._ensure_source_conn():
-            conn = archive._ensure_source_conn()
+        with independent_source_connection(archive) as conn:
             conn.execute(
                 """
                 INSERT INTO raw_session_memberships (
@@ -632,7 +634,8 @@ def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: P
         members = [add_member("representative-b"), add_member("equivalent-z")]
         first = classify_membership_revisions(members)
         assert first.accepted_raw_ids == ("equivalent-z",)
-        archive.apply_raw_membership_classification(
+        apply_prepared_membership_classification(
+            archive,
             "codex-session:session",
             first,
             {member.raw_id: session for member in members},
@@ -643,7 +646,8 @@ def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: P
         members.append(add_member("accepted-a"))
         second = classify_membership_revisions(members)
         assert second.accepted_raw_ids == ("accepted-a",)
-        archive.apply_raw_membership_classification(
+        apply_prepared_membership_classification(
+            archive,
             "codex-session:session",
             second,
             {member.raw_id: session for member in members},
@@ -740,7 +744,8 @@ def test_headless_cohort_keeps_equivalents_quarantined_ambiguous(tmp_path: Path)
         assert classification.equivalent_raw_ids
 
         session_by_raw = {"branch-a": branch_a, "branch-a-dup": branch_a, "branch-b": branch_b}
-        archive.apply_raw_membership_classification(
+        apply_prepared_membership_classification(
+            archive,
             "codex-session:session",
             classification,
             session_by_raw,
@@ -1327,8 +1332,7 @@ def test_precedence_write_refuses_a_raw_recorded_ambiguous(tmp_path: Path) -> No
         # genuinely divergent cohort (reproduced directly here so the test
         # isolates the WRITE-PATH guard from the classifier that produces
         # this state).
-        source_conn = archive._ensure_source_conn()
-        with source_conn:
+        with independent_source_connection(archive) as source_conn:
             source_conn.execute(
                 """
                 INSERT INTO raw_session_memberships (
@@ -1383,8 +1387,7 @@ def test_precedence_write_allows_a_non_ambiguous_sibling_membership_on_the_same_
         raw_id = archive.write_raw_payload(
             provider=Provider.CHATGPT, payload=b"two-sessions", source_path="bundle.json", acquired_at_ms=1
         )
-        source_conn = archive._ensure_source_conn()
-        with source_conn:
+        with independent_source_connection(archive) as source_conn:
             # One raw, two memberships, arbitrated differently -- the live shape.
             source_conn.execute(
                 """
@@ -1548,8 +1551,7 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
         # With the recognized marker the isolated third raw stays refused.
         assert archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1").accepted_raw_ids == ()
 
-        conn = archive._ensure_source_conn()
-        with conn:
+        with independent_source_connection(archive) as conn:
             conn.executemany(
                 "UPDATE raw_membership_census SET detail = ? WHERE raw_id = ?",
                 [(unrecognized, raw_id) for raw_id in retired],
@@ -1605,8 +1607,7 @@ def test_retired_raw_stays_fail_closed_when_census_authority_is_unknown(tmp_path
             )
             retired.append(raw_id)
 
-        conn = archive._ensure_source_conn()
-        with conn:
+        with independent_source_connection(archive) as conn:
             conn.executemany(
                 "UPDATE raw_membership_census SET detail = ?, revision_authority = NULL WHERE raw_id = ?",
                 [("historical wording no longer classifies this row", raw_id) for raw_id in retired],
@@ -2078,7 +2079,7 @@ def test_real_append_fold_proof_mutations_roll_back(
                 "codex-session:session", RawRevisionKind.FULL, "folded", 2, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
-        source = archive._ensure_source_conn()
+        source = open_independent_source(archive)
         if mutation == "gap":
             source.execute(
                 "UPDATE raw_sessions SET append_start_offset = ? WHERE raw_id = ?", (len(baseline_payload) + 1, append)
@@ -2108,6 +2109,7 @@ def test_real_append_fold_proof_mutations_roll_back(
                 mutated_material,
             )
         source.commit()
+        source.close()
         before = state(archive)
         assert before["blocks"]
         assert before["session_events"]
@@ -2129,13 +2131,15 @@ def test_write_raw_and_parsed_persists_file_mtime_across_reopen(tmp_path: Path) 
         messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="no timeline")],
     )
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id, _session_id = archive.write_raw_and_parsed(
+        written = write_fixture_raw_session(
+            archive,
             session,
             payload=b"wrapper raw",
             source_path="wrapper-mtime.jsonl",
             acquired_at_ms=1,
             file_mtime_ms=file_mtime_ms,
         )
+        raw_id, _session_id = written.raw_id, written.session_id
         row = (
             archive._ensure_source_conn()
             .execute("SELECT file_mtime_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,))
@@ -2255,7 +2259,8 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         base_session = parsed(("m0", "zero"), event_timestamp="2026-07-01T00:00:00Z")
         base = write_full(archive, "base", 1)
-        archive.apply_raw_membership_classification(
+        apply_prepared_membership_classification(
+            archive,
             "codex-session:session",
             MembershipClassification((base,), (), ()),
             {base: base_session},
@@ -2350,7 +2355,8 @@ def _write_chain_full(archive: ArchiveStore, label: str, generation: int) -> str
 
 
 def _apply_membership_head(archive: ArchiveStore, raw_id: str, session: ParsedSession) -> None:
-    archive.apply_raw_membership_classification(
+    apply_prepared_membership_classification(
+        archive,
         "codex-session:session",
         MembershipClassification((raw_id,), (), ()),
         {raw_id: session},
@@ -2374,7 +2380,8 @@ def test_batched_membership_success_supersedes_deferred_cas_evidence(tmp_path: P
             kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
         )
         with archive.index_mutation_scope():
-            archive.apply_raw_membership_classification(
+            apply_prepared_membership_classification(
+                archive,
                 "codex-session:session",
                 MembershipClassification((raw_id,), (), ()),
                 {raw_id: session},
@@ -2543,7 +2550,8 @@ def test_membership_replay_yields_to_chain_governed_head(tmp_path: Path) -> None
 
         capture_session = _parsed_session(("m0", "zero"), ("m1", "capture flavour"))
         capture = _write_quarantined_member(archive, "capture", capture_session)
-        result = archive.apply_raw_membership_classification(
+        result = apply_prepared_membership_classification(
+            archive,
             "codex-session:session",
             MembershipClassification((capture,), (), ()),
             {capture: capture_session},
@@ -2594,7 +2602,8 @@ def test_membership_replay_yields_when_resumed_cohort_head_masks_byte_session(tm
             (capture,),
         )
 
-        archive.apply_raw_membership_classification(
+        apply_prepared_membership_classification(
+            archive,
             "codex-session:session",
             MembershipClassification((capture,), (), ()),
             {capture: capture_session},
@@ -2633,7 +2642,8 @@ def test_membership_replay_yields_to_semantic_chain_head_even_when_capture_has_m
         ]
         classification = classify_membership_revisions(revisions)
         assert capture2 in classification.accepted_raw_ids
-        archive.apply_raw_membership_classification(
+        apply_prepared_membership_classification(
+            archive,
             "codex-session:session",
             classification,
             {capture1: capture1_session, capture2: capture2_session},
@@ -3346,7 +3356,8 @@ def test_incomplete_cohort_correction_does_not_commit_batched_source_authority(t
         assert all(decision is None for _raw, decision, _authority in undecided)
 
         with archive.index_mutation_scope():
-            archive.apply_raw_membership_classification(
+            apply_prepared_membership_classification(
+                archive,
                 "codex-session:session",
                 classification,
                 session_by_raw,
@@ -3417,7 +3428,8 @@ def test_incomplete_cohort_correction_failure_keeps_the_batch_open(tmp_path: Pat
 
         with archive.index_mutation_scope():
             with pytest.raises(sqlite3.IntegrityError, match="correction refused"):
-                archive.apply_raw_membership_classification(
+                apply_prepared_membership_classification(
+                    archive,
                     "codex-session:session",
                     classification,
                     session_by_raw,
