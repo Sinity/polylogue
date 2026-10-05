@@ -10,10 +10,12 @@ substrate and an adapter is caught by the same semantic assertions.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import sqlite3
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -285,6 +287,23 @@ class FacadeSurface:
         await self._archive.close()
 
 
+def _off_event_loop(work: Callable[[], object]) -> None:
+    """Run ``work`` to completion on a worker thread, re-raising its failure."""
+    failures: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            work()
+        except BaseException as failure:
+            failures.append(failure)
+
+    thread = threading.Thread(target=run, name="cli-surface-daemon-start")
+    thread.start()
+    thread.join()
+    if failures:
+        raise failures[0]
+
+
 class CLISurface:
     """Click-CLI adapter projection.
 
@@ -312,7 +331,9 @@ class CLISurface:
         self._db_path = db_path
         self._runner = CliRunner()
         self._daemon = contextlib.ExitStack()
-        self._daemon.enter_context(daemon_serving_archive(archive_root))
+        # The stack bootstraps the archive under the synchronous write lease,
+        # which refuses to block a running event loop; start it off the loop.
+        _off_event_loop(lambda: self._daemon.enter_context(daemon_serving_archive(archive_root)))
 
     def _invoke_args(self, args: list[str]) -> tuple[int, str]:
         from polylogue.cli.click_app import cli
@@ -445,7 +466,7 @@ class CLISurface:
         return len(await self.query_ids(query_case))
 
     async def close(self) -> None:
-        self._daemon.close()
+        await asyncio.to_thread(self._daemon.close)
 
 
 class MCPSurface:
