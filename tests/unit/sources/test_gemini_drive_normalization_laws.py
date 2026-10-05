@@ -285,11 +285,16 @@ def test_ai_studio_normalizes_identity_authorship_config_blocks_artifacts_usage_
     assert thought.material_origin is MaterialOrigin.ASSISTANT_AUTHORED
     assert thought.output_tokens == 3
     thought_block = next(block for block in thought.blocks if block.type is BlockType.THINKING)
-    assert thought_block.metadata == {
-        "isThought": True,
-        "thinkingBudget": 64,
-        "thoughtSignatures": ["signature-safe-top"],
-    }
+    # Thought signatures leave the block (replay-continuity evidence, not block
+    # content) and land on the session's thinking-evidence event instead.
+    assert thought_block.metadata == {"isThought": True, "thinkingBudget": 64}
+    thinking_evidence = [
+        event.payload
+        for event in session.session_events
+        if event.event_type == "gemini_thinking_evidence" and event.source_message_provider_id == "turn-thought-native"
+    ]
+    assert [payload.get("thoughtSignatures") for payload in thinking_evidence] == [["signature-safe-top"]]
+    assert [payload.get("thinkingBudget") for payload in thinking_evidence] == [64]
 
     code = by_id["turn-code-native"]
     assert code.parent_message_provider_id is None
@@ -309,7 +314,12 @@ def test_ai_studio_normalizes_identity_authorship_config_blocks_artifacts_usage_
     assert successful_result.text == "5\n"
     assert successful_result.is_error is False
     part_thought = next(block for block in code.blocks if block.type is BlockType.THINKING)
-    assert part_thought.metadata and part_thought.metadata["thoughtSignature"] == "signature-safe-part"
+    assert "thoughtSignature" not in (part_thought.metadata or {})
+    assert [
+        event.payload.get("thoughtSignature")
+        for event in session.session_events
+        if event.event_type == "gemini_thinking_evidence" and event.source_message_provider_id == "turn-code-native"
+    ] == ["signature-safe-part"]
     inline_part = next(
         block
         for block in code.blocks

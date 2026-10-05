@@ -96,26 +96,30 @@ async def _acquire(archive_root: Path, spool_root: Path) -> int:
     from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
     from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
     from polylogue.sources.live.watcher import LiveWatcher
+    from tests.infra.raw_owner_routes import live_owner_set
 
     sources = _carrier_sources(spool_root)
-    watcher = LiveWatcher(_ArchiveRootOwner(archive_root), sources)
-    context = DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=sources)
-    dispatcher = FairIntakeDispatcher(
-        tuple(
-            IntakeClassSpec(
-                name=f"hook_carrier:{source.name}",
-                adapter=FileIntakeAdapter(context, source, class_name=f"hook_carrier:{source.name}"),
+    # The daemon constructs its watcher with the live writer owners; without
+    # them every carrier batch is refused outside writer admission.
+    async with live_owner_set(archive_root) as owners:
+        watcher = LiveWatcher(_ArchiveRootOwner(archive_root), sources, **owners.watcher_kwargs())
+        context = DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=sources)
+        dispatcher = FairIntakeDispatcher(
+            tuple(
+                IntakeClassSpec(
+                    name=f"hook_carrier:{source.name}",
+                    adapter=FileIntakeAdapter(context, source, class_name=f"hook_carrier:{source.name}"),
+                )
+                for source in sources
             )
-            for source in sources
         )
-    )
-    admitted = 0
-    for _pass in range(_MAX_PASSES):
-        report = await dispatcher.run_once()
-        moved = sum(int(entry.admitted) for entry in report.classes)
-        admitted += moved
-        if not moved:
-            break
+        admitted = 0
+        for _pass in range(_MAX_PASSES):
+            report = await dispatcher.run_once()
+            moved = sum(int(entry.admitted) for entry in report.classes)
+            admitted += moved
+            if not moved:
+                break
     return admitted
 
 
