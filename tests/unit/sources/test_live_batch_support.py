@@ -2519,6 +2519,7 @@ def test_full_ingest_heartbeats_small_file_groups_with_current_path(
     db_path = tmp_path / "archive.sqlite"
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))
     cursor = CursorStore(db_path)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -5000,6 +5001,7 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
         mtime_ns=captured_stat.st_mtime_ns,
         authority=fixture_cursor_authority(path),
     )
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         polylogue,
         (WatchSource(name="codex", root=root),),
@@ -5146,6 +5148,7 @@ def test_full_ingest_does_not_advance_cursor_across_same_size_replacement(
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
     polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         polylogue,
         (WatchSource(name="codex", root=root),),
@@ -5243,6 +5246,7 @@ def test_archive_cursor_reconciliation_rejects_restored_mtime_rewrite(
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
     polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         polylogue,
         (WatchSource(name="codex", root=root),),
@@ -5464,6 +5468,7 @@ def test_append_cursor_redetects_source_rewrite_after_handoff(
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
     polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         polylogue,
         (WatchSource(name="codex", root=root),),
@@ -5579,6 +5584,7 @@ def test_append_cursor_rejects_truncation_after_append_persistence(
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
     polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         polylogue,
         (WatchSource(name="codex", root=root),),
@@ -5630,6 +5636,7 @@ def test_rewrite_plus_growth_before_planning_fails_closed_to_full_route(tmp_path
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
     polylogue = cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)))
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         polylogue,
         (WatchSource(name="codex", root=root),),
