@@ -30,6 +30,7 @@ from polylogue.archive.revision_authority import (
     raw_authority_parser_fingerprint,
 )
 from polylogue.archive.revision_replay import RevisionReplayPlan
+from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.core.compute import (
     BoundedComputeAdapter,
     DaemonBackpressureError,
@@ -1730,6 +1731,12 @@ class RawObservationDerivation(RawObservationInspection):
                                             persisted_session=preceding_byte.effective_session_revision,
                                         )
                                     membership_plan = replace(membership_plan, head_plan=head_plan)
+                                    if head_plan.conflict is not None:
+                                        # A refused cohort publishes nothing this pass;
+                                        # its members carry the retryable evidence.
+                                        membership_plan = replace(
+                                            membership_plan, classification=MembershipClassification((), (), ())
+                                        )
                                     accepted_members = membership_plan.classification.accepted_raw_ids
                                     if accepted_members:
                                         prepared_replay_adoption[(logical_key, accepted_members)] = (

@@ -7956,13 +7956,17 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
     # real content, so no further real ingest can ever promote it; the
     # accepted head itself must be retired, matching
     # ``release_provisional_full_revisions``'s existing "provisional
-    # evidence rejected" shape for full revisions).
+    # evidence rejected" shape for full revisions). The live identity had
+    # neither a head nor a session row: an ungoverned session left behind
+    # would be incomparable Index state that replay refuses to adopt.
     with sqlite3.connect(index_db) as conn:
         conn.execute(
             "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
             (f"codex-session:{native_id}",),
         )
         conn.commit()
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        assert archive.delete_sessions((session_id,)) == 1
 
     # This is the AC#2 assertion: once the accepted head no longer
     # interferes, a retry over the SAME durable incident-recovery raw

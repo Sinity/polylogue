@@ -3170,8 +3170,11 @@ class LiveBatchProcessor:
         outcomes = await self._retained_runner(result.acquired_raw_ids, on_terminal_refusal=settle_terminal_refusal)
         written = tuple(dict.fromkeys(sid for outcome in outcomes for sid in outcome.written_session_ids))
         changed = tuple(dict.fromkeys(sid for outcome in outcomes for sid in outcome.changed_session_ids))
+        retry_failed = self._retained_retryable_failures(result)
         return replace(
             result,
+            succeeded=[path for path in result.succeeded if path not in retry_failed],
+            failed=[*result.failed, *(path for path in result.succeeded if path in retry_failed)],
             settled_exclusions={
                 **result.settled_exclusions,
                 **self._retained_settled_exclusions(result, terminal_refusals),
@@ -3182,6 +3185,31 @@ class LiveBatchProcessor:
             changed_session_count=len(changed),
             changed_session_ids=changed,
         )
+
+    def _retained_retryable_failures(self, result: _FullIngestResult) -> set[Path]:
+        """Paths whose retained publication settled a retryable refusal.
+
+        Publication records the refusal as typed Source evidence beside the
+        failure (a membership cohort that may not move its accepted head this
+        pass). The observation is complete but not admitted, so its cursor
+        must retry rather than settle.
+        """
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        failed: set[Path] = set()
+        with closing(open_readonly_connection(archive_root / "source.db")) as source:
+            for path, raw_id in result.raw_fingerprints.items():
+                if path not in result.succeeded:
+                    continue
+                if (
+                    source.execute(
+                        "SELECT 1 FROM raw_sessions AS r JOIN raw_artifacts AS a ON a.raw_id = r.raw_id "
+                        "WHERE r.raw_id = ? AND r.parse_error IS NOT NULL AND a.artifact_kind = ? LIMIT 1",
+                        (raw_id, RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value),
+                    ).fetchone()
+                    is not None
+                ):
+                    failed.add(path)
+        return failed
 
     def _retained_settled_exclusions(
         self, result: _FullIngestResult, terminal_refusals: Mapping[str, RetainedRawDecodeRefusalError]
