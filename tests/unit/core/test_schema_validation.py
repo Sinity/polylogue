@@ -18,7 +18,7 @@ from polylogue.schemas import ValidationResult
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
-from polylogue.schemas.validation.corpus import verify_raw_corpus
+from polylogue.schemas.validation.corpus import quarantine_raw_sessions, verify_raw_corpus
 from polylogue.schemas.validation.requests import SchemaVerificationRequest
 from polylogue.schemas.validator import (
     PayloadValidation,
@@ -1164,6 +1164,8 @@ def test_verify_raw_corpus_quarantine_malformed_updates_validation_state(db_path
             max_samples=16,
             quarantine_malformed=True,
         ),
+        # The daemon handler's writer, applied directly to this test archive.
+        quarantine=lambda verdicts: quarantine_raw_sessions(db_path.parent, verdicts),
     )
     stats = report.providers["codex"]
 
@@ -1200,7 +1202,7 @@ def test_verify_raw_corpus_quarantine_advances_past_an_existing_parse_transition
     with sqlite3.connect(db_path.parent / "source.db") as conn:
         apply_quarantine_updates(
             conn,
-            updates=[(raw_id, "malformed retained JSONL", "codex", "codex")],
+            updates=[(raw_id, "malformed retained JSONL")],
         )
 
     with sqlite3.connect(db_path.parent / "source.db") as conn:
@@ -1227,6 +1229,8 @@ def test_verify_raw_corpus_quarantine_empty_payload_updates_validation_state(db_
             max_samples=16,
             quarantine_malformed=True,
         ),
+        # The daemon handler's writer, applied directly to this test archive.
+        quarantine=lambda verdicts: quarantine_raw_sessions(db_path.parent, verdicts),
     )
     stats = report.providers["codex"]
 

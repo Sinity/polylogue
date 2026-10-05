@@ -310,6 +310,10 @@ _MATRIX_EXEMPT: Mapping[str, str] = {
     "maintenance.demo.augment": (
         "submitted only after `import --demo --wait` saw its ingest complete, and that ingest already needs the daemon"
     ),
+    "maintenance.schema.quarantine": (
+        "submitted by `ops doctor --schemas --schema-quarantine-malformed` only after verification "
+        "found a malformed raw row, which the matrix archive does not hold"
+    ),
     "mutation.facade.context_ledger": (
         "a best-effort receipt the `read context` views submit after a read the daemon already served"
     ),
