@@ -195,6 +195,14 @@ class TestApplySessionExcision:
 
     def test_apply_removes_rows_from_every_tier(self, tmp_path: Path) -> None:
         session_id = _seed_session(tmp_path, native_id="apply-1", with_embedding=True)
+        # The frontier journal records one existence change per acquisition
+        # effect on the raw (raw row, parser census, blob ref); excision removes
+        # every row naming the excised raw, however many the journal holds.
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            journal_rows = source.execute(
+                "SELECT COUNT(*) FROM raw_existence_changes WHERE raw_id IN (SELECT raw_id FROM raw_sessions)"
+            ).fetchone()[0]
+        assert journal_rows >= 1
 
         receipt = execute_excision(tmp_path, session_id, reason="contained a secret", actor="user:local")
         assert receipt["found"] is True
@@ -202,7 +210,7 @@ class TestApplySessionExcision:
         assert receipt["counts"]["index_messages"] == 1
         assert receipt["counts"]["index_blocks"] == 1
         assert receipt["counts"]["source_raw_rows"] == 1
-        assert receipt["counts"]["source_raw_existence_changes"] == 1
+        assert receipt["counts"]["source_raw_existence_changes"] == journal_rows
         assert receipt["counts"]["source_blob_refs"] == 1
         assert receipt["counts"]["embeddings_vectors"] == 1
         assert len(receipt["removed_blob_hashes"]) == 1

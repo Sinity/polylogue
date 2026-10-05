@@ -1595,7 +1595,12 @@ def _load_excision_source_target(seal: PreparedIndexMutation, target: ExcisionTa
         fields = dict(zip(image.columns, image.cells, strict=True))
         if not seal._literal_scalar_equal(fields["raw_blob_hash"], member.raw_blob_hash):
             raise ReferenceSealError("frozen Excision container member differs from its original bytes")
-        if not any(seal._literal_scalar_equal(fields["raw_id"], raw.raw_id) for raw in target.raw_targets):
+        # A lineage cascade resolves container liveness over the whole frozen
+        # closure, so a member can belong to another cascade target's raw.
+        # Ownership is therefore checked against the begun closure, exactly as
+        # removable items are below; without a cascade the closure is this
+        # session's own raws.
+        if not seal.excision_source_raw_in_closure(fields["raw_id"]):
             raise ReferenceSealError("frozen Excision container member differs from its original raw ownership")
 
     for item in (*target.containers.removable_items, *target.containers.retained_items):
