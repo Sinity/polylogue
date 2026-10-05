@@ -113,6 +113,7 @@ def _seed_cohort_and_append_plan(
     return _AppendPlan(
         path=source_path,
         canonical_source_path=str(source_path),
+        captured_profile_key=None,
         source_name="codex",
         start_offset=len(snapshots[-1]),
         last_complete_newline=stat.st_size,
@@ -152,6 +153,7 @@ def _seed_partially_classified_cohort_and_append_plan(archive_root: Path) -> _Ap
     return _AppendPlan(
         path=source_path,
         canonical_source_path=str(source_path),
+        captured_profile_key=None,
         source_name="codex",
         start_offset=len(snapshots[-1]),
         last_complete_newline=stat.st_size,

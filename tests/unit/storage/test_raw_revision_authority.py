@@ -707,6 +707,7 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
     plan = _AppendPlan(
         path=path,
         canonical_source_path=str(path),
+        captured_profile_key=None,
         source_name="codex",
         start_offset=len(full_payload),
         last_complete_newline=stat.st_size,
@@ -801,6 +802,7 @@ def test_live_append_admits_declared_non_session_artifact(tmp_path: Path) -> Non
     plan = _AppendPlan(
         path=path,
         canonical_source_path=str(path),
+        captured_profile_key=None,
         source_name="claude-code",
         start_offset=len(full_payload),
         last_complete_newline=stat.st_size,
@@ -853,6 +855,7 @@ def test_live_append_retains_cursor_identity_until_baseline_arrives(
     plan = _AppendPlan(
         path=path,
         canonical_source_path=str(path),
+        captured_profile_key=None,
         source_name="codex",
         start_offset=100,
         last_complete_newline=stat.st_size,

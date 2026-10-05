@@ -331,6 +331,18 @@ def _file_observation(stat: os.stat_result) -> tuple[int, int, int, int, int]:
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
+def _vanished_truncated_capture(record: RawSessionRecord) -> bool:
+    """Whether a JSONL capture ends in an unterminated record and its file is gone."""
+    prefix = record.complete_prefix_size
+    if not record.requires_complete_record_boundary or prefix is None or not 0 <= prefix < record.blob_size:
+        return False
+    try:
+        Path(record.source_path).stat()
+    except FileNotFoundError:
+        return True
+    return False
+
+
 def _stable_truncated_tail_admission(record: RawSessionRecord) -> PartialAdmission | None:
     """The typed partial for a stable capture whose final record is truncated."""
     prefix = record.complete_prefix_size
@@ -2431,6 +2443,11 @@ class LiveBatchProcessor:
     ) -> int:
         self._last_cursor_write_stale = False
         resolved_source_name = source_name or self._source_name_for(path)
+        captured_authority = (
+            CursorPathAuthority(canonical_source_path, captured_profile_key)
+            if canonical_source_path is not None
+            else None
+        )
         try:
             stat = path.stat()
         except FileNotFoundError:
@@ -2439,6 +2456,7 @@ class LiveBatchProcessor:
                 path,
                 source_name=resolved_source_name,
                 captured_file_observation=captured_file_observation,
+                authority=captured_authority,
             )
             return 0
         raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
@@ -2478,7 +2496,9 @@ class LiveBatchProcessor:
                 "live.watcher: captured prefix remained busy; preserving raw for cursor reconciliation: %s",
                 path,
             )
-            self._defer_full_cursor_retry(path, source_name=resolved_source_name, stat=stat)
+            self._defer_full_cursor_retry(
+                path, source_name=resolved_source_name, stat=stat, authority=captured_authority
+            )
             return bytes_read
         if prefix_proof.outcome != "verified":
             self._last_cursor_write_stale = True
@@ -2486,7 +2506,9 @@ class LiveBatchProcessor:
                 "live.watcher: source changed after full capture; cursor invalidated for full retry: %s",
                 path,
             )
-            self._invalidate_cursor_for_full_retry(path, source_name=resolved_source_name, stat=stat)
+            self._invalidate_cursor_for_full_retry(
+                path, source_name=resolved_source_name, stat=stat, authority=captured_authority
+            )
             return bytes_read
         assert prefix_proof.stat is not None
         stat = prefix_proof.stat
@@ -2549,7 +2571,9 @@ class LiveBatchProcessor:
                 bytes_read += last_nl
             elif raw_fingerprint is None or not self._raw_failure_requires_full_replay(path, raw_fingerprint):
                 self._last_cursor_write_stale = True
-                self._invalidate_cursor_for_full_retry(path, source_name=resolved_source_name, stat=stat)
+                self._invalidate_cursor_for_full_retry(
+                    path, source_name=resolved_source_name, stat=stat, authority=captured_authority
+                )
                 return bytes_read
             # Otherwise the retained raw is settled with terminal failure
             # evidence (a malformed complete record has no semantic frontier):
@@ -2571,7 +2595,9 @@ class LiveBatchProcessor:
                 "live.watcher: captured prefix remained busy after cursor proof; preserving raw for reconciliation: %s",
                 path,
             )
-            self._defer_full_cursor_retry(path, source_name=resolved_source_name, stat=stat)
+            self._defer_full_cursor_retry(
+                path, source_name=resolved_source_name, stat=stat, authority=captured_authority
+            )
             return bytes_read
         if final_prefix_proof.outcome != "verified":
             self._last_cursor_write_stale = True
@@ -2580,6 +2606,7 @@ class LiveBatchProcessor:
                 source_name=resolved_source_name,
                 stat=final_prefix_proof.stat,
                 captured_file_observation=captured_file_observation,
+                authority=captured_authority,
             )
             return bytes_read
         assert final_prefix_proof.stat is not None
@@ -2587,11 +2614,7 @@ class LiveBatchProcessor:
         updated = self._cursor.set(
             path,
             byte_size,
-            authority=(
-                CursorPathAuthority(canonical_source_path, captured_profile_key)
-                if canonical_source_path is not None
-                else CursorPathAuthority.observe(path)
-            ),
+            authority=captured_authority or CursorPathAuthority.observe(path),
             byte_offset=last_nl,
             last_complete_newline=last_nl,
             parser_fingerprint=self._current_parser_fingerprint(),
@@ -2617,6 +2640,7 @@ class LiveBatchProcessor:
                 source_name=resolved_source_name,
                 stat=final_stat,
                 captured_file_observation=captured_file_observation,
+                authority=captured_authority,
             )
             return bytes_read
         self._cursor.reset_failures(path)
@@ -2705,6 +2729,7 @@ class LiveBatchProcessor:
         source_name: str,
         stat: os.stat_result | None = None,
         captured_file_observation: tuple[int, int, int, int, int] | None = None,
+        authority: CursorPathAuthority | None = None,
     ) -> None:
         """Back off a busy full-prefix handoff without discarding its raw evidence."""
 
@@ -2713,6 +2738,7 @@ class LiveBatchProcessor:
             source_name=source_name,
             stat=stat,
             captured_file_observation=captured_file_observation,
+            authority=authority,
         )
         self._cursor.defer_full_cursor_reconciliation(path)
 
@@ -2723,8 +2749,21 @@ class LiveBatchProcessor:
         source_name: str,
         stat: os.stat_result | None = None,
         captured_file_observation: tuple[int, int, int, int, int] | None = None,
+        authority: CursorPathAuthority | None = None,
     ) -> None:
         existing = self._cursor.get_record(path)
+        if authority is None:
+            # A writer with no capture of its own takes the cursor's recorded
+            # authority, and observes the file only when there is none.
+            authority = CursorPathAuthority.of_record(existing) if existing is not None else None
+        if authority is None:
+            try:
+                authority = CursorPathAuthority.observe(path)
+            except FileNotFoundError:
+                # The file vanished before any authority was captured: a
+                # typed failed cursor, retried when the path reappears.
+                self._cursor.mark_failed(path, authority=None)
+                return
         if stat is not None:
             observation = _file_observation(stat)
         elif captured_file_observation is not None:
@@ -2743,7 +2782,7 @@ class LiveBatchProcessor:
         updated = self._cursor.set(
             path,
             byte_size,
-            authority=CursorPathAuthority.observe(path),
+            authority=authority,
             byte_offset=0,
             last_complete_newline=0,
             parser_fingerprint=self._current_parser_fingerprint(),
@@ -4226,6 +4265,25 @@ class LiveBatchProcessor:
                     _accumulate_stage_timings(
                         result.stage_timings_s, {source_write_name: time.perf_counter() - started}
                     )
+                    if _vanished_truncated_capture(record):
+                        # The unterminated tail can never complete: the file
+                        # is gone. The retained capture is terminal corrupt
+                        # input, settled by its retained publication.
+                        archive.record_raw_failure_evidence(
+                            source_raw_id,
+                            provider=acquisition_provider,
+                            source_path=record.source_path,
+                            source_index=record.source_index or 0,
+                            acquired_at_ms=_iso_to_epoch_ms(record.acquired_at),
+                            kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+                        )
+                        archive.mark_raw_parse_failed(
+                            source_raw_id,
+                            provider=acquisition_provider,
+                            error=ValueError("captured JSONL payload ends before a complete record boundary"),
+                            preserve_existing_failure_evidence=True,
+                        )
+                        continue
                     partial = _stable_truncated_tail_admission(record)
                     if partial is not None:
                         # The full raw is conserved; its canonical parse admits
@@ -4534,10 +4592,17 @@ class LiveBatchProcessor:
         if excluded is not None:
             excluded[path] = reason
         st_size = int(getattr(stat, "st_size", 0))
+        try:
+            authority = CursorPathAuthority.observe(path)
+        except FileNotFoundError:
+            # The file vanished before its exclusion was recorded: a typed
+            # failed cursor, re-evaluated when the path reappears.
+            self._cursor.mark_failed(path, authority=None)
+            return
         self._cursor.set(
             path,
             st_size,
-            authority=CursorPathAuthority.observe(path),
+            authority=authority,
             byte_offset=st_size,
             last_complete_newline=st_size,
             parser_fingerprint=self._current_parser_fingerprint(),
@@ -4606,10 +4671,17 @@ class LiveBatchProcessor:
             source_path=str(path),
             reason=reason,
         )
+        try:
+            authority = CursorPathAuthority.observe(path)
+        except FileNotFoundError:
+            # The file vanished before its refusal was recorded: a typed
+            # failed cursor, re-evaluated when the path reappears.
+            self._cursor.mark_failed(path, authority=None)
+            return
         self._cursor.set(
             path,
             st_size,
-            authority=CursorPathAuthority.observe(path),
+            authority=authority,
             byte_offset=0,
             last_complete_newline=0,
             parser_fingerprint=self._current_parser_fingerprint(),
@@ -5266,6 +5338,11 @@ class LiveBatchProcessor:
             with path.open("rb") as handle:
                 stat = os.fstat(handle.fileno())
                 canonical_source_path = captured_path_coordinate(path, handle.fileno())
+                # The cursor this plan extends already carries the file's
+                # captured authority; observe only when it does not.
+                captured_authority = CursorPathAuthority.of_record(cursor)
+                if captured_authority is None or captured_authority.canonical_source_path != canonical_source_path:
+                    captured_authority = CursorPathAuthority.observe(path)
                 if claude_frontier is None and stat.st_size <= cursor.byte_offset:
                     return None
                 if cursor.st_dev is not None and cursor.st_dev != stat.st_dev:
@@ -5387,6 +5464,7 @@ class LiveBatchProcessor:
         return _AppendPlan(
             path=path,
             canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_authority.captured_profile_key,
             source_name=self._source_name_for(path),
             start_offset=start_offset,
             last_complete_newline=last_complete_newline,
@@ -5912,7 +5990,12 @@ class LiveBatchProcessor:
                 raise ValueError("source changed during cursor verification")
         except FileNotFoundError:
             if proof_start is not None:
-                self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=latest_stat)
+                self._invalidate_cursor_for_full_retry(
+                    plan.path,
+                    source_name=plan.source_name,
+                    stat=latest_stat,
+                    authority=CursorPathAuthority(plan.canonical_source_path, plan.captured_profile_key),
+                )
                 return False
             disappeared_after_admission = True
         except (EOFError, OSError, ValueError) as exc:
@@ -5925,6 +6008,7 @@ class LiveBatchProcessor:
                 plan.path,
                 source_name=plan.source_name,
                 stat=latest_stat,
+                authority=CursorPathAuthority(plan.canonical_source_path, plan.captured_profile_key),
                 captured_file_observation=(
                     plan.st_dev,
                     plan.st_ino,
@@ -5943,7 +6027,12 @@ class LiveBatchProcessor:
                     or plan.accepted_claude_publication_body_sha256 is None
                     or plan.accepted_claude_body_bytes is None
                 ):
-                    self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=None)
+                    self._invalidate_cursor_for_full_retry(
+                        plan.path,
+                        source_name=plan.source_name,
+                        stat=None,
+                        authority=CursorPathAuthority(plan.canonical_source_path, plan.captured_profile_key),
+                    )
                     return False
                 stored_tail_hash = encode_claude_semantic_frontier_digests(
                     header_sha256=plan.accepted_claude_header_sha256,
@@ -5978,10 +6067,9 @@ class LiveBatchProcessor:
             cursor_mtime_ns = proof_end.st_mtime_ns if proof_end.st_size == planned_size else plan.mtime_ns
         assert stored_tail_hash is not None
         content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
-        authority = CursorPathAuthority.observe(plan.path)
-        if authority.canonical_source_path != plan.canonical_source_path:
-            # The path now names another file than the one the plan captured.
-            return False
+        # The plan captured its file's authority at acquisition; the source
+        # may have vanished since, so it is never re-observed here.
+        authority = CursorPathAuthority(plan.canonical_source_path, plan.captured_profile_key)
         updated = self._cursor.set(
             plan.path,
             cursor_stat_size,

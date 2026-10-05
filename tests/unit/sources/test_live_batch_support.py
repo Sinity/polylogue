@@ -616,6 +616,7 @@ def _append_plan(path: Path, payload: bytes, *, payload_hash: str, native_id_hin
     return _AppendPlan(
         path=path,
         canonical_source_path=str(path),
+        captured_profile_key=None,
         source_name="codex",
         start_offset=0,
         last_complete_newline=stat.st_size,
@@ -4544,6 +4545,7 @@ def test_append_ingest_preserves_successes_when_other_plan_fails(
         _AppendPlan(
             path=tmp_path / "ok.jsonl",
             canonical_source_path=str(tmp_path / "ok.jsonl"),
+            captured_profile_key=None,
             source_name="codex",
             start_offset=0,
             last_complete_newline=8,
@@ -4559,6 +4561,7 @@ def test_append_ingest_preserves_successes_when_other_plan_fails(
         _AppendPlan(
             path=tmp_path / "bad.jsonl",
             canonical_source_path=str(tmp_path / "bad.jsonl"),
+            captured_profile_key=None,
             source_name="unknown",
             start_offset=0,
             last_complete_newline=9,
@@ -8287,6 +8290,7 @@ def test_append_ingest_bootstraps_archive_root(
     plan = _AppendPlan(
         path=path,
         canonical_source_path=str(path),
+        captured_profile_key=None,
         source_name="codex",
         start_offset=0,
         last_complete_newline=stat.st_size,
@@ -8444,6 +8448,7 @@ async def test_live_append_plans_flush_in_bounded_groups(
         return _AppendPlan(
             path=path,
             canonical_source_path=str(path),
+            captured_profile_key=None,
             source_name="codex",
             start_offset=0,
             last_complete_newline=10,

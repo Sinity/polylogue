@@ -250,6 +250,9 @@ class _AppendPlan:
     # The physical coordinate frozen from the opened file; every append raw
     # records it.
     canonical_source_path: str
+    # The profile identity captured with that coordinate (Hermes profiles);
+    # the cursor written after publication carries this captured authority.
+    captured_profile_key: str | None
     # Historical fixture/replay callers can preserve a source ordering index;
     # live watcher plans retain the legacy sentinel when no index is known.
     source_index: int = -1
