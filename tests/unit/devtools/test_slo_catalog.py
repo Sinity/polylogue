@@ -740,3 +740,76 @@ surfaces:
     assert measured["actual_p50_ms"] < measured["target_p50_ms"]
     assert measured["estimated_p95_ms"] < measured["target_p95_ms"]
     assert "actual_p95_ms" not in measured
+
+
+def test_parameterized_routes_are_scored_separately_without_prefix_collisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    benchmark = "tests/benchmarks/test_neutral.py::test_route"
+    catalog = _write_slo_catalog(
+        tmp_path,
+        f"""
+surfaces:
+  route:
+    benchmark_test: "{benchmark}"
+    p50_ms: 500
+    p95_ms: 800
+    gate: "required"
+""",
+    )
+    fast = {"mean": 0.1, "median": 0.1, "min": 0.1, "max": 0.1, "stddev": 0.0, "rounds": 5}
+    slow = {**fast, "mean": 1.0, "median": 1.0, "min": 1.0, "max": 1.0}
+    monkeypatch.setattr(
+        verify_slos,
+        "_run_benchmarks",
+        lambda _ids: {
+            benchmark + "[existing-small]": fast,
+            benchmark + "[empty-large]": slow,
+            benchmark + "_unrelated[empty-large]": slow,
+        },
+    )
+    output = io.StringIO()
+    with redirect_stdout(output):
+        result = verify_slos.main(["--yaml", str(catalog), "--json"])
+    payload = json.loads(output.getvalue())
+    assert result == 1
+    assert payload["missing_required"] == []
+    assert [item["benchmark_test"] for item in payload["passed"]] == [benchmark + "[existing-small]"]
+    assert [item["benchmark_test"] for item in payload["violations"]] == [benchmark + "[empty-large]"]
+    assert payload["violations"][0]["actual_p50_ms"] == 1000.0
+    assert payload["violations"][0]["estimated_p95_ms"] == 1000.0
+    assert payload["violations"][0]["rounds"] == 5
+
+
+def test_only_a_similarly_named_benchmark_remains_unmeasured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    benchmark = "tests/benchmarks/test_neutral.py::test_route"
+    catalog = _write_slo_catalog(
+        tmp_path,
+        f"""
+surfaces:
+  route:
+    benchmark_test: "{benchmark}"
+    p50_ms: 500
+    p95_ms: 800
+    gate: "required"
+""",
+    )
+    monkeypatch.setattr(
+        verify_slos,
+        "_run_benchmarks",
+        lambda _ids: {
+            benchmark + "_other[small]": {"mean": 0.1, "median": 0.1, "stddev": 0.0, "rounds": 5},
+        },
+    )
+    output = io.StringIO()
+    with redirect_stdout(output):
+        result = verify_slos.main(["--yaml", str(catalog), "--json"])
+    payload = json.loads(output.getvalue())
+    assert result == 1
+    assert payload["passed"] == []
+    assert payload["violations"] == []
+    assert [item["benchmark_test"] for item in payload["missing_required"]] == [benchmark]
