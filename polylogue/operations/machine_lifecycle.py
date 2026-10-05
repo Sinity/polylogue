@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterable
+from itertools import chain
 
 from polylogue.operations.audit import MACHINE_PAGE_KINDS, MACHINE_PAGE_PARTS, AuditRepository, MachineRequestBinding
 from polylogue.operations.daemon_protocol import AcceptedOperationReference, MutationResult, daemon_operation_spec
@@ -104,9 +105,14 @@ def machine_request_state(
         }
         if kind == "source-generation":
             state["source_generation_id"] = record["artifact_ref"]
-            if _audit_int(record["part_count"], field="part count") == 0:
-                # An unpaired manifest has no historical execution receipt.
+            # ``part_count`` counts the accepted manifest itself (the column is
+            # at least 1); only a paired ingest writes a part row. A manifest
+            # without one has no execution and no historical receipt.
+            part_rows = iter(parts)
+            first_part = next(part_rows, None)
+            if first_part is None:
                 return {**state, "outcome": "accepted", "effect": "indeterminate"}
+            parts = chain((first_part,), part_rows)
         if kind == "insight-preview-pages":
             return {**state, "outcome": "running", "effect": "no-effect", "accepted": False}
         if kind in MACHINE_PAGE_KINDS:
