@@ -742,13 +742,14 @@ class TestParsingServiceStreaming:
             ]
         )
         config = Config(archive_root=tmp_path / "archive", render_root=tmp_path / "render", sources=[])
-        # One raw per parse page, so every page is its own write boundary.
-        monkeypatch.setattr(ParsingService, "RAW_BATCH_SIZE", 1)
         service = ParsingService(
             repository=repository,
             archive_root=config.archive_root,
             config=config,
         )
+        # One raw per parse page, so every page is its own write boundary. Set
+        # on the instance: the clock patch below is undone mid-test.
+        service.RAW_BATCH_SIZE = 1
 
         # A monotonic clock that always advances well past any small budget
         # after its very first read -- deterministic regardless of exactly
