@@ -443,8 +443,12 @@ def main(argv: list[str] | None = None) -> int:
                 catalog_errors.append(f"{surface_name}: required surface must declare benchmark_test (string)")
             continue
 
-        stats = benchmark_stats.get(benchmark_test)
-        if stats is None:
+        matches = {
+            name: stats
+            for name, stats in benchmark_stats.items()
+            if name == benchmark_test or (name.startswith(benchmark_test + "[") and name.endswith("]"))
+        }
+        if not matches:
             # A run that never happened is not the same fact as a surface with
             # no benchmark: only the second is "missing".
             if benchmark_outcome == "failed":
@@ -472,34 +476,35 @@ def main(argv: list[str] | None = None) -> int:
                 uncovered_informational.append(missing_result)
             continue
 
-        actual_p50_ms = stats["median"] * 1000  # pytest-benchmark reports in seconds
-        estimated_p95_ms = _estimate_p95(stats) * 1000
-        actual_mean_ms = stats["mean"] * 1000
+        for matched_test, stats in sorted(matches.items()):
+            actual_p50_ms = stats["median"] * 1000  # pytest-benchmark reports in seconds
+            estimated_p95_ms = _estimate_p95(stats) * 1000
+            actual_mean_ms = stats["mean"] * 1000
 
-        p50_ok = actual_p50_ms <= target_p50
-        p95_ok = estimated_p95_ms <= target_p95
-        ok = p50_ok and p95_ok
+            p50_ok = actual_p50_ms <= target_p50
+            p95_ok = estimated_p95_ms <= target_p95
+            ok = p50_ok and p95_ok
 
-        result: dict[str, object] = {
-            "surface": surface_name,
-            "gate": gate,
-            "tier": tier,
-            "description": config.get("description", ""),
-            "benchmark_test": benchmark_test,
-            "target_p50_ms": target_p50,
-            "target_p95_ms": target_p95,
-            "actual_p50_ms": round(actual_p50_ms, 2),
-            "estimated_p95_ms": round(estimated_p95_ms, 2),
-            "actual_mean_ms": round(actual_mean_ms, 2),
-            "p50_ok": p50_ok,
-            "p95_ok": p95_ok,
-            "rounds": stats.get("rounds", 0),
-        }
+            result: dict[str, object] = {
+                "surface": surface_name,
+                "gate": gate,
+                "tier": tier,
+                "description": config.get("description", ""),
+                "benchmark_test": matched_test,
+                "target_p50_ms": target_p50,
+                "target_p95_ms": target_p95,
+                "actual_p50_ms": round(actual_p50_ms, 2),
+                "estimated_p95_ms": round(estimated_p95_ms, 2),
+                "actual_mean_ms": round(actual_mean_ms, 2),
+                "p50_ok": p50_ok,
+                "p95_ok": p95_ok,
+                "rounds": stats.get("rounds", 0),
+            }
 
-        if ok:
-            passed.append(result)
-        else:
-            violations.append(result)
+            if ok:
+                passed.append(result)
+            else:
+                violations.append(result)
 
     # 5. Report
     blocking = bool(catalog_errors or violations or missing_required or benchmark_error)
@@ -552,7 +557,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"PASS ({len(passed)} surfaces):")
             for p in passed:
                 print(
-                    f"  {p['surface']}: "
+                    f"  {p['surface']} ({p['benchmark_test']}): "
                     f"p50={p['actual_p50_ms']:.1f}ms (target ≤{p['target_p50_ms']}ms), "
                     f"estimated p95={p['estimated_p95_ms']:.1f}ms (target ≤{p['target_p95_ms']}ms)"
                 )
@@ -572,7 +577,7 @@ def main(argv: list[str] | None = None) -> int:
                     parts.append(f"p50={v['actual_p50_ms']:.1f}ms > {v['target_p50_ms']}ms")
                 if not v["p95_ok"]:
                     parts.append(f"estimated p95={v['estimated_p95_ms']:.1f}ms > {v['target_p95_ms']}ms")
-                print(f"  {v['surface']}: {', '.join(parts)}")
+                print(f"  {v['surface']} ({v['benchmark_test']}): {', '.join(parts)}")
             print()
 
         if uncovered_informational:
