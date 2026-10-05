@@ -22,14 +22,12 @@ from pathlib import Path
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
-from polylogue import Polylogue
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
-from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.origin_specs import artifact_suffixes_for_provider
 from polylogue.sources.source_walk import census_source_root
+from tests.infra.live_batch import prepared_live_batch_processor
 
 _CLAUDE_MEMORY = "---\nname: archive-root\n---\n\nResolve the live root first.\n"
 _CODEX_MEMORY = "# MEMORY\n\n- Codex keeps its own memory documents here.\n"
@@ -59,18 +57,11 @@ async def _acquire(
     source: WatchSource,
     paths: list[Path],
 ) -> None:
-    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "index.db")
-    cursor = CursorStore(workspace_env["data_root"] / "cursor.db")
-    processor = LiveBatchProcessor(
-        archive,
-        (source,),
-        cursor=cursor,
-        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
-    )
-    try:
+    """Acquire through the live processor bound to the daemon's retained Raw owner."""
+    async with prepared_live_batch_processor(
+        workspace_env["archive_root"], (source,), parser_fingerprint=live_watcher._PARSER_FINGERPRINT
+    ) as processor:
         await processor.ingest_files(paths, emit_event=False)
-    finally:
-        await archive.close()
 
 
 def _source_rows(archive_root: Path, sql: str, params: tuple[object, ...] = ()) -> list[tuple[object, ...]]:
@@ -169,7 +160,7 @@ async def test_memory_documents_create_no_session_and_no_user_assertion(
 
     await _acquire(workspace_env, _claude_source(root), [memory])
 
-    index = sqlite3.connect(f"file:{workspace_env['data_root'] / 'index.db'}?mode=ro", uri=True)
+    index = sqlite3.connect(f"file:{workspace_env['archive_root'] / 'index.db'}?mode=ro", uri=True)
     try:
         assert index.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
         assert index.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
