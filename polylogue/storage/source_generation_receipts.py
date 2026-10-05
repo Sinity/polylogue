@@ -432,10 +432,15 @@ def _parser_census_state(
     primary_revision_identity = (
         census is None and membership_count == 0 and raw[3] is not None and raw[4] in ("full", "append")
     )
+    # A typed non-session artifact is censused from its durable memberships
+    # alone (``record_current_parser_source_census``); no membership census
+    # row is ever written for it, so its absence is the expected shape.
+    typed_non_session_identity = typed_non_session and census is None
     expected_census = (
         parser_confirmed_non_session
         or byte_governed_fragment
         or primary_revision_identity
+        or typed_non_session_identity
         or current
         and census_status == "complete"
         and recorded_count == membership_count

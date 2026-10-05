@@ -29,6 +29,7 @@ from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root,
     initialize_archive_database,
@@ -88,7 +89,7 @@ def _tombstone(archive_root: Path, session_id: str) -> None:
 def _replay(archive_root: Path, session: ParsedSession) -> ArchiveWriteOutcome:
     """Write one parsed session exactly as a rebuild's replay does."""
     outcomes: list[ArchiveWriteOutcome] = []
-    conn = sqlite3.connect(_index_path(archive_root))
+    conn = connect_measured(_index_path(archive_root))
     conn.row_factory = sqlite3.Row
     try:
         write_fixture_index_session(conn, session, write_outcome=outcomes)
@@ -180,7 +181,7 @@ def test_an_archive_without_a_user_tier_is_not_blocked(tmp_path: Path) -> None:
     index_db = tmp_path / "bare" / "index.db"
     index_db.parent.mkdir(parents=True)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    conn = sqlite3.connect(index_db)
+    conn = connect_measured(index_db)
     conn.row_factory = sqlite3.Row
     try:
         outcomes: list[ArchiveWriteOutcome] = []
@@ -241,7 +242,7 @@ def test_a_suppressed_replay_hands_its_blob_receipts_to_the_batch(
     )
     session_id = _session_id("suppressed-attachment")
     _tombstone(archive_root, session_id)
-    conn = sqlite3.connect(_index_path(archive_root))
+    conn = connect_measured(_index_path(archive_root))
     conn.row_factory = sqlite3.Row
     try:
         changed, counts = write_fixture_ingest_payload(
