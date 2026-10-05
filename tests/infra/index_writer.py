@@ -5,11 +5,12 @@ from __future__ import annotations
 import sqlite3
 import sys
 from builtins import BaseExceptionGroup
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
+from polylogue.core.stage_admission import stage_write_admission
 from polylogue.pipeline.services.ingest_batch._core import _prepare_ingest_payloads
 from polylogue.pipeline.services.ingest_batch._core import _write_session as _lower_ingest_session
 from polylogue.sources.parsers.base import ParsedSession
@@ -147,8 +148,17 @@ def write_fixture_ingest_payload(conn: sqlite3.Connection, payload: Any, **kwarg
                 kwargs["source_conn"] = seal.observer("source")
             _prepare_ingest_payloads(index, kwargs["source_conn"], (payload,))
             seal.validate_observers_current()
-            with write_lease("test.fixture.ingest", archive_root=root):
+
+            # Blob reservations are prepared lease-free against the seal and
+            # each page is flushed through stage admission, as the retained
+            # owner does under the daemon writer.
+            def admitted(actor: str, work: Callable[[], Any]) -> Any:
+                with write_lease(actor, archive_root=root):
+                    return work()
+
+            with stage_write_admission(admitted):
                 artifact.publish_blobs(reference_seal=seal)
+            with write_lease("test.fixture.ingest", archive_root=root):
                 with seal.mutation_scope(conn):
                     result = _lower_ingest_session(conn, payload, **kwargs)
                 with (
