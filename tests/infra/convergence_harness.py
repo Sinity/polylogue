@@ -68,6 +68,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
 from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.index_writer import write_fixture_index_session, write_fixture_ingest_payload
 from tests.infra.source_composer import (
     ComposedSources,
@@ -167,7 +168,26 @@ def build_converged_archive(
     incremental: bool = False,
     append_only: bool = False,
 ) -> ConvergenceArchive:
-    """Materialize a composed corpus through production writes, then converge it."""
+    """Materialize a composed corpus through production writes, then converge it.
+
+    Archive bootstrap and raw admission take the synchronous write lease, so
+    an async law's seeding runs off its event loop.
+    """
+    return run_off_event_loop(
+        lambda: _build_converged_archive(
+            root, composed, session_order=session_order, incremental=incremental, append_only=append_only
+        )
+    )
+
+
+def _build_converged_archive(
+    root: Path,
+    composed: ComposedSources,
+    *,
+    session_order: Sequence[int] | None,
+    incremental: bool,
+    append_only: bool,
+) -> ConvergenceArchive:
     initialize_active_archive(root)
     archive = ingest_composed_sources(
         root,
@@ -765,7 +785,15 @@ def _analyze_registry_tables(index_db: Path) -> None:
 
 
 def seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> PartialConvergenceArchive:
-    """Seed the current partial-convergence workload through typed archive writes."""
+    """Seed the current partial-convergence workload through typed archive writes.
+
+    Bootstrap takes the synchronous write lease, so an async law's seeding
+    runs off its event loop.
+    """
+    return run_off_event_loop(lambda: _seed_partial_convergence_archive(root, target_hot=target_hot))
+
+
+def _seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> PartialConvergenceArchive:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     root.mkdir(parents=True, exist_ok=True)
