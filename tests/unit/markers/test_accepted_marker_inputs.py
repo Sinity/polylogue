@@ -295,7 +295,10 @@ def test_prepared_identical_markers_in_one_block_keep_one_stable_candidate(
 
 def test_prepared_fallback_append_and_lineage_coordinates_match_writer(workspace_env: dict[str, Path]) -> None:
     """A synthetic ordinal ID or ignored append occurrence offset makes this red."""
-    conn = sqlite3.connect(workspace_env["archive_root"] / "index.db")
+    from polylogue.storage.io_phase_metrics import connect_measured
+
+    # The Index seal requires the writer's original measured physical creator.
+    conn = connect_measured(workspace_env["archive_root"] / "index.db")
     conn.row_factory = sqlite3.Row
     try:
         session = _session("::note: repeated")

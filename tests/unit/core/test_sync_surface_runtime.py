@@ -229,7 +229,8 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
     archive.list_session_tag_rollup_insights.return_value = []
     archive.stats_by.return_value = {}
     archive.get_thread_insight.return_value = "thread"
-    archive.list_thread_insights.return_value = ["threads"]
+    # Thread lists page through the same streaming reader as API and MCP (#5988).
+    archive.iter_thread_insights.side_effect = lambda **_kwargs: (row for row in ["threads"])
     archive.list_archive_coverage_insights.return_value = ["coverage"]
     archive.list_tool_usage_insights.return_value = [
         ToolUsageInsight(
@@ -278,7 +279,7 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
 
     archive.list_session_tag_rollup_insights.assert_called_once()
     archive.get_thread_insight.assert_called_once_with("thread-1")
-    archive.list_thread_insights.assert_called_once()
+    archive.iter_thread_insights.assert_called_once()
     archive.list_archive_coverage_insights.assert_called_once()
     archive.list_tool_usage_insights.assert_called_once()
     archive.list_session_cost_insights.assert_called()  # also called by cost-rollup derivation
