@@ -110,7 +110,7 @@ async def test_claude_memory_document_is_discovered_and_retained(workspace_env: 
     assert len(raws) == 1, "the memory document must leave exactly one retained raw row"
     origin, blob_hash, parse_error = raws[0]
     assert origin == "claude-code-session"
-    assert parse_error is None
+    assert parse_error is None, parse_error
     assert _retained_bytes(workspace_env["archive_root"], blob_hash) == _CLAUDE_MEMORY.encode("utf-8")
     assert _source_rows(
         workspace_env["archive_root"],
@@ -141,7 +141,7 @@ async def test_codex_memory_document_is_discovered_and_retained(workspace_env: d
     assert len(raws) == 1
     origin, blob_hash, parse_error = raws[0]
     assert origin == "codex-session"
-    assert parse_error is None
+    assert parse_error is None, parse_error
     assert _retained_bytes(workspace_env["archive_root"], blob_hash) == _CODEX_MEMORY.encode("utf-8")
     assert _source_rows(
         workspace_env["archive_root"],

@@ -34,6 +34,8 @@ async def prepared_live_batch_processor(
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator(archive_root=root)
     stage = LiveSQLiteCaptureStage(compute_adapter=compute)
+    # Archive custody admits only an existing root directory.
+    root.mkdir(parents=True, exist_ok=True)
     try:
         await coordinator.run_sync("fixture.live.bootstrap", lambda: bootstrap_archive_root(root))
         async with prepared_live_convergence_owner(
