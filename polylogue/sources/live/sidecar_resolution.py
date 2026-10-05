@@ -469,16 +469,16 @@ def select_retained_claude_sidecar_owner_raw_ids(
         check_compute_cancelled()
         root_path = (session_dir.parent / f"{session_dir.name}.jsonl").as_posix()
         low, high = _prefix_range(f"{(session_dir / 'subagents').as_posix()}/")
-        # The seal admits one statement per observer at a time, so the sibling
-        # page settles before each candidate's descriptor is read.
         candidates: list[str] = []
         with reader.retained_sibling_rows(root_path, low, high) as rows:
             for row in rows:
                 check_compute_cancelled()
                 source_path, raw_id = str(row[0]), str(row[6])
-                if source_path != root_path and not source_path.endswith(".jsonl"):
-                    continue
-                candidates.append(raw_id)
+                if source_path == root_path or source_path.endswith(".jsonl"):
+                    candidates.append(raw_id)
+        # Reading a descriptor retains its original blob input (a seal write),
+        # which the seal refuses while a Source row read is open; read them
+        # once the sibling cursor has settled.
         for raw_id in candidates:
             check_compute_cancelled()
             provider, _hash, _path, _kind, _size = reader.raw_revision_descriptor(raw_id)

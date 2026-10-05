@@ -2093,14 +2093,8 @@ def _namespace_verified_per_row(method: _Method) -> _Method:
 
     @wraps(method)
     def verified(self: PreparedIndexMutation, *args: Any, **kwargs: Any) -> Any:
-        if self._namespace_verified_depth:
+        with self.verified_namespace():
             return method(self, *args, **kwargs)
-        self._require_new_work()
-        self._namespace_verified_depth += 1
-        try:
-            return method(self, *args, **kwargs)
-        finally:
-            self._namespace_verified_depth -= 1
 
     return cast(_Method, verified)
 
@@ -2468,17 +2462,26 @@ class PreparedIndexMutation:
         return identity
 
     def _assert_configured_namespace(self) -> None:
-        from polylogue.storage.archive_identity import resolve_active_index_path
+        from polylogue.storage.archive_identity import active_index_configured_path
 
         for path, identity in self._namespace.items():
             if self._namespace_identity(path) != identity:
                 raise ReferenceSealStaleError("configured archive namespace changed after reference preparation")
+        resolved_root = self._configured_root.resolve(strict=True) if self._configured_paths else None
         for name, path in self._configured_paths.items():
-            if path.resolve(strict=True) != self._paths[name]:
+            # The walk above pinned each entry's inode and link text, so an
+            # entry that is not a link resolves through the root alone.
+            identity = self._namespace[path]
+            resolved = (
+                path.resolve(strict=True)
+                if resolved_root is None or identity is None or identity[3] is not None
+                else resolved_root / path.name
+            )
+            if resolved != self._paths[name]:
                 raise ReferenceSealStaleError(f"configured {name}.db target changed after reference preparation")
         if (
             "index" in self._capabilities
-            and resolve_active_index_path(self._configured_root).resolve(strict=True) != self._active_index_path
+            and active_index_configured_path(self._configured_root).resolve(strict=True) != self._active_index_path
         ):
             raise ReferenceSealStaleError("configured active Index changed after reference preparation")
 
@@ -9537,6 +9540,25 @@ class PreparedIndexMutation:
             release_pending = False
         del self._live_literal_readers[owner]
         self._literal_custody_release_pending = release_pending
+
+    @contextmanager
+    def verified_namespace(self) -> Iterator[None]:
+        """Verify the configured namespace once for one row's seal operations.
+
+        A caller hydrating many rows wraps each row in this scope: the row's
+        lookups, retains and loads then share one namespace walk instead of
+        repeating it at every nested gate. Acceptance gates verify directly
+        and are unaffected.
+        """
+        if self._namespace_verified_depth:
+            yield
+            return
+        self._require_new_work()
+        self._namespace_verified_depth += 1
+        try:
+            yield
+        finally:
+            self._namespace_verified_depth -= 1
 
     def _require_new_work(self) -> None:
         self._require_live_owner()

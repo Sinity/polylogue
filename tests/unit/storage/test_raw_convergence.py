@@ -35,7 +35,7 @@ from polylogue.operations.raw_observation_derivation import (
     converge_raw_observations,
     raw_observation_frame,
 )
-from polylogue.storage.derived.raw import RawObservationDerivation
+from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
@@ -592,11 +592,6 @@ def test_canonical_reset_index_replays_only_when_parse_is_newer_than_validation_
     active_index = tmp_path / "generations" / "active" / "index.db"
     initialize_archive_database(active_index, ArchiveTier.INDEX)
     (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
-    # The reset Index takes its writer profile before any preparation records
-    # its file identity, as the daemon's retained destination does; opening it
-    # first inside publication would change the incarnation the seal bound.
-    with ArchiveStore.open_existing(tmp_path, read_only=False):
-        pass
 
     expected_state = "missing" if expected_materialized else "valid"
     assert _inspect(tmp_path, raw_id) == expected_state
@@ -928,7 +923,15 @@ def test_canonical_failed_publication_cannot_report_done(tmp_path: Path, monkeyp
     bootstrap_archive_root(tmp_path)
     _admit(tmp_path, ("publication-blocked",))
 
-    monkeypatch.setattr(RawObservationDerivation, "publish", lambda *_args, **_kwargs: False)
+    def refuse(
+        _self: RawObservationDerivation, _frame: object, replacement: RawObservationReplacement, **_kwargs: object
+    ) -> bool:
+        # Once publication starts the adapter owns its carrier and settles it
+        # on every outcome, exactly as the real publish does in its finally.
+        replacement.close()
+        return False
+
+    monkeypatch.setattr(RawObservationDerivation, "publish", refuse)
     report = _derive(tmp_path)
     assert report.done == 0
     assert report.pending + report.failed >= 1

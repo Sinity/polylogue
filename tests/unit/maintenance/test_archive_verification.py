@@ -11,7 +11,6 @@ import shutil
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -32,7 +31,6 @@ from polylogue.maintenance.archive_verification import (
     passes_strict_acceptance,
     verify_archive,
 )
-from polylogue.pipeline.services.ingest_batch import _persist_batch_raw_state_updates, _RawIngestOutcome
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
@@ -53,6 +51,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.claude_vintage_live_proof import (
     CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
     CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
@@ -601,12 +600,14 @@ async def test_head_typed_by_another_ledger_is_not_reported_as_untyped(tmp_path:
     boundary must retain ``validation_status = 'failed'`` on that raw before
     the operator-facing coverage route runs. I1 then asks the one durable
     typing ladder and reports the ``validation_rejected`` escape class instead
-    of claiming the logical source has no typed state.
+    of claiming the logical source has no typed state. The disposition is
+    persisted through the repository write the production validation flow
+    uses (``validation_flow`` -> ``mark_raw_validated``).
 
     Anti-vacuity: clearing the boundary's durable validation disposition
     restores the pre-fix shape and makes I1 red again.
     """
-    _seed_coherent_archive(tmp_path)
+    run_off_event_loop(lambda: _seed_coherent_archive(tmp_path))
     source_path = tmp_path / "source.db"
     source_conn = _connect(source_path)
     try:
@@ -624,29 +625,13 @@ async def test_head_typed_by_another_ledger_is_not_reported_as_untyped(tmp_path:
         source_conn.close()
 
     repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
-    outcome = _RawIngestOutcome(
-        raw_id=raw_id,
-        payload_provider="codex",
-        validation_status="failed",
-        validation_error="strict schema validation rejected the raw",
-        parse_error=None,
-        error="strict schema validation rejected the raw",
-        had_sessions=False,
-        outcome_code="validation_rejected",
-        retryable=False,
-        evidence_ref="schema_validation_strict",
-        remediation="repair the source schema",
-        diagnostic="missing required session field",
-    )
     try:
-        await _persist_batch_raw_state_updates(
-            SimpleNamespace(repository=repository),
-            repository.backend,
-            outcomes={raw_id: outcome},
-            succeeded_raw_ids=set(),
-            skipped_raw_ids=set(),
-            failed_raw_ids={raw_id: outcome.error or "worker failure"},
-            validation_mode="strict",
+        await repository.mark_raw_validated(
+            raw_id,
+            status="failed",
+            error="strict schema validation rejected the raw",
+            provider="codex",
+            mode="strict",
         )
     finally:
         await repository.close()
@@ -2809,7 +2794,6 @@ def test_full_rebuild_candidate_profile_covers_cross_tier_acceptance_and_canary_
 
 
 def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path: Path) -> None:
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 
     conn = _connect(tmp_path / "index.db")
     try:
@@ -2868,20 +2852,21 @@ _CLOSURE_PAYLOAD = {
 }
 
 
-def _closure_tier_conn(path: Path, tier: ArchiveTier) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+def _closure_tier_conn(path: Path) -> sqlite3.Connection:
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, tier)
     return conn
 
 
 def _closure_fixture(tmp_path: Path) -> tuple[Path, sqlite3.Connection, sqlite3.Connection]:
     """An archive whose acquired attachment blob has lost its ``attachment_refs`` row."""
     root = tmp_path
+    # The canonical bootstrap writes the format marker the fixture writer requires.
+    bootstrap_archive_root(root)
     blob_store = BlobStore(root / "blob")
-    source = _closure_tier_conn(root / "source.db", ArchiveTier.SOURCE)
-    index = _closure_tier_conn(root / "index.db", ArchiveTier.INDEX)
+    source = _closure_tier_conn(root / "source.db")
+    index = _closure_tier_conn(root / "index.db")
     payload = json.dumps(_CLOSURE_PAYLOAD).encode()
     blob_hash, blob_size = blob_store.write_from_bytes(payload)
     source.execute(

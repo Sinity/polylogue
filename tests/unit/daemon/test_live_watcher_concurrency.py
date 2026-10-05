@@ -23,15 +23,20 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.cursor_authority import fixture_cursor_authority
 
 
 def test_cursor_rejects_backward_write(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     src = tmp_path / "session.jsonl"
     src.write_text("ignored")
-    assert store.set(src, byte_size=500, byte_offset=500, parser_fingerprint="v1")
+    assert store.set(
+        src, byte_size=500, byte_offset=500, parser_fingerprint="v1", authority=fixture_cursor_authority(src)
+    )
     # Smaller size + offset under same fingerprint: must be rejected.
-    accepted = store.set(src, byte_size=100, byte_offset=100, parser_fingerprint="v1")
+    accepted = store.set(
+        src, byte_size=100, byte_offset=100, parser_fingerprint="v1", authority=fixture_cursor_authority(src)
+    )
     assert accepted is False
     record = store.get_record(src)
     assert record is not None
@@ -44,9 +49,11 @@ def test_cursor_allows_backward_when_explicitly_requested(tmp_path: Path) -> Non
     store = CursorStore(tmp_path / "live.sqlite")
     src = tmp_path / "session.jsonl"
     src.write_text("ignored")
-    store.set(src, byte_size=500, byte_offset=500, parser_fingerprint="v1")
+    store.set(src, byte_size=500, byte_offset=500, parser_fingerprint="v1", authority=fixture_cursor_authority(src))
     # Different parser fingerprint OR explicit allow_backward → write wins.
-    assert store.set(src, byte_size=100, byte_offset=100, parser_fingerprint="v2")
+    assert store.set(
+        src, byte_size=100, byte_offset=100, parser_fingerprint="v2", authority=fixture_cursor_authority(src)
+    )
     record = store.get_record(src)
     assert record is not None and record.byte_size == 100
 
@@ -70,7 +77,13 @@ def test_concurrent_cursor_writers_never_regress(tmp_path: Path) -> None:
         try:
             for i in range(steps):
                 value = offset_base + i * 100
-                store.set(src, byte_size=value, byte_offset=value, parser_fingerprint="v1")
+                store.set(
+                    src,
+                    byte_size=value,
+                    byte_offset=value,
+                    parser_fingerprint="v1",
+                    authority=fixture_cursor_authority(src),
+                )
         except BaseException as exc:  # pragma: no cover - defensive thread error capture
             error.append(exc)
 
@@ -168,7 +181,9 @@ def test_hypothesis_cursor_monotone_against_arbitrary_offsets(
     src = base / "session.jsonl"
     src.write_text("x")
     for offset in offsets:
-        store.set(src, byte_size=offset, byte_offset=offset, parser_fingerprint="v1")
+        store.set(
+            src, byte_size=offset, byte_offset=offset, parser_fingerprint="v1", authority=fixture_cursor_authority(src)
+        )
     record = store.get_record(src)
     assert record is not None
     assert record.byte_size == max(offsets), (
