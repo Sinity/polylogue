@@ -2424,7 +2424,6 @@ class LiveBatchProcessor:
                 else source_revision
             )
             last_nl = frontier_byte_size if frontier_byte_size is not None else byte_size
-            tail_hash = source_fingerprint or sqlite_source_revision(path)
             if captured_content_hash is not None:
                 bounded_tail_hash, tail_bytes = tail_hash_from_path(path, byte_size)
                 tail_hash = encode_cursor_hash_authority(
@@ -2433,6 +2432,10 @@ class LiveBatchProcessor:
                     ctime_ns=stat.st_ctime_ns,
                 )
                 bytes_read += tail_bytes
+            else:
+                # Only a capture without a content hash keys its cursor on the
+                # bound file revision; binding opens a fresh reader process.
+                tail_hash = source_fingerprint or sqlite_source_revision(path)
         else:
             fp, last_nl, tail_hash, cursor_state_bytes = cursor_state_after_full_ingest(
                 path,
