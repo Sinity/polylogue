@@ -54,6 +54,22 @@ def bootstrap_archive_root(root: Path) -> Path:
     return root
 
 
+def bootstrapped_tier_path(path: Path) -> Path:
+    """Bootstrap the archive a law's named tier file belongs to; return its tier file.
+
+    ``<root>/index.db`` and ``<root>/source.db`` are tiers of ``<root>``. Any
+    other name (``inline.db``, ``codex.db``) is its own archive, because a root
+    owns exactly one active Index: it becomes ``<parent>/<stem>/index.db``.
+    """
+    path = Path(path)
+    if path.name in ("index.db", "source.db"):
+        bootstrap_archive_root(path.parent)
+        return path
+    root = path.parent / path.stem
+    bootstrap_archive_root(root)
+    return root / "index.db"
+
+
 async def run_archive_fixture_write(root: Path, prepare: Callable[[], _T]) -> _T:
     """Prepare an async law's archive on the real admitted writer creator."""
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriterSettlementError

@@ -38,13 +38,12 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 from polylogue.storage.sqlite.queries.message_query_reads import get_messages
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrapped_tier_path
 from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    bootstrap_archive_root(Path(path).parent)
-    conn = connect_measured(path)
+    conn = connect_measured(bootstrapped_tier_path(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -391,6 +390,8 @@ def test_a_walk_stopped_by_a_foreign_loop_is_not_recorded_as_a_cycle_and_keeps_p
         "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
         ("codex-session:deep-1", parent_id),
     )
+    # The fixture writer opens its own Index mutation scope before BEGIN.
+    conn.commit()
 
     child_v2 = ParsedSession(
         source_name=Provider.CODEX,

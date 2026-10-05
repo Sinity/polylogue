@@ -78,7 +78,7 @@ async def test_provider_title_survives_production_ingest_and_public_session_conv
 
     run_off_event_loop(_seed_0)
 
-    session_id = write_session_sync(db_path, parsed)
+    session_id = run_off_event_loop(lambda: write_session_sync(db_path, parsed))
     origin = origin_from_provider(parsed.source_name)
     assert isinstance(origin, Origin)
 
@@ -125,7 +125,7 @@ async def test_provider_title_degrades_when_parser_provenance_is_removed(
 
     run_off_event_loop(_seed_1)
 
-    session_id = write_session_sync(db_path, mutated)
+    session_id = run_off_event_loop(lambda: write_session_sync(db_path, mutated))
     with ArchiveStore(archive_root, initialize=False, read_only=True) as archive:
         stored_summary = archive.read_summary(session_id)
 

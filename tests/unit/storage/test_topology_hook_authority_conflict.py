@@ -44,6 +44,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -65,7 +66,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_write,
     raw_source_path,
 )
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrapped_tier_path
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.thread_state import seed_spawn_edges
 
@@ -75,16 +76,14 @@ _PARSER_PARENT = "parser-parent-thread"
 
 
 def _index_conn(path: Path) -> sqlite3.Connection:
-    bootstrap_archive_root(Path(path).parent)
-    conn = connect_measured(path)
+    conn = connect_measured(bootstrapped_tier_path(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
 def _source_conn(path: Path) -> sqlite3.Connection:
-    bootstrap_archive_root(Path(path).parent)
-    conn = connect_measured(path)
+    conn = connect_measured(bootstrapped_tier_path(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -621,9 +620,9 @@ def test_rederiving_a_deep_chain_projects_each_session_once(tmp_path: Path, monk
     calls: list[str] = []
     original = write_module._refresh_session_projection
 
-    def counting(conn: sqlite3.Connection, session_id: str, *, seen: set[str]) -> None:
+    def counting(conn: sqlite3.Connection, session_id: str, *, seen: set[str], read: Any = None) -> None:
         calls.append(session_id)
-        original(conn, session_id, seen=seen)
+        original(conn, session_id, seen=seen, read=read)
 
     monkeypatch.setattr(write_module, "_refresh_session_projection", counting)
     snapshot = codex_state.CodexStateSnapshot(

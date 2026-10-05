@@ -12,7 +12,7 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.archive import _summary_order_by
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrapped_tier_path
 from tests.infra.index_writer import write_fixture_index_session
 
 
@@ -47,8 +47,7 @@ def test_ascending_token_sort_ranks_measured_zero_ahead_of_unmeasured(tmp_path: 
     returns to the front of the ascending band, making this red.
     """
     path = tmp_path / "index.db"
-    bootstrap_archive_root(Path(path).parent)
-    conn = connect_measured(path)
+    conn = connect_measured(bootstrapped_tier_path(path))
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")

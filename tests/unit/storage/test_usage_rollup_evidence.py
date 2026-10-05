@@ -25,13 +25,12 @@ from polylogue.sources.parsers.base import (
 from polylogue.storage.derived.session.usage_rollup import reconcile_session_usage_rollups
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrapped_tier_path
 from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    bootstrap_archive_root(Path(path).parent)
-    conn = connect_measured(path)
+    conn = connect_measured(bootstrapped_tier_path(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

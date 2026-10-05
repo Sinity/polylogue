@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.operations.daemon_errors import DaemonOperationRejectedError
 from tests.infra.archive_scenarios import (
     ArchiveScenario,
     ScenarioMessage,
@@ -43,9 +44,11 @@ MULTI_SESSION_CASES: list[tuple[int, str]] = [
 
 
 TAG_VALIDATION_CASES: list[tuple[str, str, type[Exception], str]] = [
-    ("", "empty string tag", ValueError, "add_tag rejects empty string"),
+    # The daemon's tag actuator owns validation and refuses before durable
+    # acceptance; the facade normalizes whitespace-only input itself.
+    ("", "empty string tag", DaemonOperationRejectedError, "add_tag rejects empty string"),
     ("   ", "whitespace-only tag", ValueError, "add_tag rejects whitespace-only"),
-    ("x" * 201, "201-char tag exceeds limit", ValueError, "add_tag rejects >200 char tag"),
+    ("x" * 201, "201-char tag exceeds limit", DaemonOperationRejectedError, "add_tag rejects >200 char tag"),
 ]
 
 

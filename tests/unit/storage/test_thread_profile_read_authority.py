@@ -33,6 +33,7 @@ from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection, open_read_connection
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.index_writer import write_fixture_index_session
 
 _CHILD_ID = "codex-session:child"
@@ -117,9 +118,12 @@ async def test_thread_read_reports_a_stale_profile_as_written_not_as_recovered(t
     await asyncio.to_thread(initialize_active_archive_root, archive_root)
     index_db = archive_root / "index.db"
 
-    with open_connection(index_db) as conn:
-        write_fixture_index_session(conn, _subagent_child())
-        conn.commit()
+    def _seed_0() -> None:
+        with open_connection(index_db) as conn:
+            write_fixture_index_session(conn, _subagent_child())
+            conn.commit()
+
+    run_off_event_loop(_seed_0)
     await _materialize_child(index_db)
     assert _stored_profile_lineage(index_db) == (None, False)
 
@@ -162,9 +166,12 @@ async def test_reconvergence_is_what_makes_the_profile_lineage_current(tmp_path:
     await asyncio.to_thread(initialize_active_archive_root, archive_root)
     index_db = archive_root / "index.db"
 
-    with open_connection(index_db) as conn:
-        write_fixture_index_session(conn, _subagent_child())
-        conn.commit()
+    def _seed_1() -> None:
+        with open_connection(index_db) as conn:
+            write_fixture_index_session(conn, _subagent_child())
+            conn.commit()
+
+    run_off_event_loop(_seed_1)
     await _materialize_child(index_db)
     with open_connection(index_db) as conn:
         write_fixture_index_session(conn, _parent())

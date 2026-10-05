@@ -36,7 +36,7 @@ from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.write import ConnectionSessionSourceRead
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrapped_tier_path
 from tests.infra.index_writer import write_fixture_index_session
 
 _PARENT = "8f6c4d02-1f4a-4f2f-9a1e-1b2c3d4e5f60"
@@ -50,16 +50,14 @@ _OBSERVED_AT_MS = 1_760_000_000_000
 
 
 def _index_conn(path: Path) -> sqlite3.Connection:
-    bootstrap_archive_root(Path(path).parent)
-    conn = connect_measured(path)
+    conn = connect_measured(bootstrapped_tier_path(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
 def _source_conn(path: Path) -> sqlite3.Connection:
-    bootstrap_archive_root(Path(path).parent)
-    conn = connect_measured(path)
+    conn = connect_measured(bootstrapped_tier_path(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
