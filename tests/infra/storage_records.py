@@ -761,12 +761,18 @@ class SessionBuilder:
 
     def save(self) -> SessionRecord:
         parsed = _record_to_parsed_session(self.conv, self.messages, self.attachments)
-        with _WRITE_LOCK, open_connection(self.db_path) as conn:
-            write_fixture_index_session(
-                conn,
-                parsed,
-                content_hash=_writer_hash(self.conv.content_hash),
-            )
+
+        def write() -> None:
+            with _WRITE_LOCK, open_connection(self.db_path) as conn:
+                write_fixture_index_session(
+                    conn,
+                    parsed,
+                    content_hash=_writer_hash(self.conv.content_hash),
+                )
+
+        from tests.infra.archive_templates import run_off_event_loop
+
+        run_off_event_loop(write)
         return self.conv
 
     def native_session_id(self) -> str:

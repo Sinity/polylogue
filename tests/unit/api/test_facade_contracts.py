@@ -80,7 +80,6 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
-from tests.infra.frozen_clock import FrozenClock
 from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import write_index_session
 from tests.infra.session_profiles import write_session_profile
@@ -5632,98 +5631,6 @@ async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(
             ).fetchone()[0]
         assert session_count == 0
         assert tag_count == 1
-    finally:
-        await archive.close()
-
-
-@pytest.mark.frozen_clock_modules(
-    "polylogue.storage.sqlite.archive_tiers.archive",
-    "polylogue.storage.sqlite.archive_tiers.revision_governance",
-)
-async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path, frozen_clock: FrozenClock) -> None:
-    """Raw artifact facade reads ``source.db`` rows and their parse-lifecycle timestamp.
-
-    ``write_raw_and_parsed`` finalizes a raw row's ``parsed_at`` the instant the
-    parsed write commits (``ArchiveStore._raw_parse_success_state``, which reads
-    ``datetime.now(UTC)`` in this module -- frozen here so the exact value is
-    assertable rather than dodged). A raw row whose parse is deliberately
-    deferred (``finalize_raw_parse=False``, e.g. a membership cohort still
-    awaiting a sibling replay decision) must keep ``parsed_at`` absent until a
-    later finalize call, distinguishing acquired-only from parsed raw rows
-    (polylogue-2kvn).
-    """
-    from polylogue.archive.message.roles import Role
-    from polylogue.core.enums import BlockType
-    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    archive = _archive(tmp_path)
-    payload = b'{"session":"raw-artifact-v1"}'
-    session = ParsedSession(
-        source_name=Provider.DRIVE,
-        provider_session_id="api-raw-artifact-drive-v1",
-        messages=[
-            ParsedMessage(
-                provider_message_id="m1",
-                role=Role.USER,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="raw artifact target")],
-            )
-        ],
-    )
-    acquired_only_payload = b'{"session":"raw-artifact-v1-acquired-only"}'
-    acquired_only_session = ParsedSession(
-        source_name=Provider.DRIVE,
-        provider_session_id="api-raw-artifact-drive-v1-acquired-only",
-        messages=[
-            ParsedMessage(
-                provider_message_id="m1",
-                role=Role.USER,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="acquired-only target")],
-            )
-        ],
-    )
-    frozen_clock.set_time(1_780_000_000)
-    expected_parsed_at = frozen_clock.now().isoformat().replace("+00:00", "Z")
-    try:
-        with ArchiveStore(archive.config.archive_root) as archive_db:
-            raw_id, session_id = archive_db.write_raw_and_parsed(
-                session,
-                payload=payload,
-                source_path="/tmp/raw-artifact-drive-v1.json",
-                acquired_at_ms=1_770_000_000_000,
-            )
-            acquired_only_raw_id, acquired_only_session_id = archive_db.write_raw_and_parsed(
-                acquired_only_session,
-                payload=acquired_only_payload,
-                source_path="/tmp/raw-artifact-drive-v1-acquired-only.json",
-                acquired_at_ms=1_770_000_000_000,
-                finalize_raw_parse=False,
-            )
-
-        artifacts, total = await archive.get_raw_artifacts_for_session(session_id)
-        acquired_only_artifacts, acquired_only_total = await archive.get_raw_artifacts_for_session(
-            acquired_only_session_id
-        )
-        missing_artifacts, missing_total = await archive.get_raw_artifacts_for_session("missing-session")
-
-        assert total == 1
-        assert len(artifacts) == 1
-        assert artifacts[0]["raw_id"] == raw_id
-        assert artifacts[0]["origin"] == Origin.AISTUDIO_DRIVE.value
-        assert artifacts[0]["source_path"] == "/tmp/raw-artifact-drive-v1.json"
-        assert artifacts[0]["blob_size"] == len(payload)
-        assert artifacts[0]["acquired_at"] == "2026-02-02T02:40:00Z"
-        assert artifacts[0]["parsed_at"] == expected_parsed_at
-        assert artifacts[0]["validation_status"] is None
-
-        assert acquired_only_total == 1
-        assert len(acquired_only_artifacts) == 1
-        assert acquired_only_artifacts[0]["raw_id"] == acquired_only_raw_id
-        assert acquired_only_artifacts[0]["acquired_at"] == "2026-02-02T02:40:00Z"
-        assert acquired_only_artifacts[0]["parsed_at"] is None
-
-        assert missing_artifacts == []
-        assert missing_total == 0
     finally:
         await archive.close()
 

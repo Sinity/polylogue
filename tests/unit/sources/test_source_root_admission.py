@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
+from polylogue.sources.parsers.base_models import RawSessionData
 from polylogue.sources.source_acquisition import iter_source_acquisition_records
 from polylogue.sources.source_root_admission import SourceRootRefusedError
 from polylogue.storage.blob_store import BlobStore
@@ -43,7 +44,7 @@ def _archive(root: Path) -> Path:
     return root
 
 
-def _acquire(source_root: Path, destination: Path) -> list[object]:
+def _acquire(source_root: Path, destination: Path) -> list[RawSessionData]:
     store = BlobStore(destination / "blob")
     return list(
         acquired_payloads(

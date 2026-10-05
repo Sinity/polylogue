@@ -6,8 +6,6 @@ session and inspects the stored archive rows.
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
 import json
 import sqlite3
 from contextlib import closing
@@ -18,15 +16,16 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.core.enums import Provider
-from polylogue.operations.operation_context import open_operation_read
-from polylogue.sources.acquisition_boundary import capture_bound_path
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
 from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.raw_owner_routes import (
+    converge_raw_observations_with_owner,
+    inspect_raw_observations,
+    run_ingest_files,
+)
 
 
 def _codex_lines(native_id: str, messages: tuple[tuple[str, str], ...], *, meta: bool = True) -> bytes:
@@ -48,19 +47,15 @@ def _codex_lines(native_id: str, messages: tuple[tuple[str, str], ...], *, meta:
     return b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in rows)
 
 
-def _ingest(
-    archive_root: Path, source: Path, *, parse_stage: LiveParseStage | None = None, provider: Provider = Provider.CODEX
-) -> None:
+def _ingest(archive_root: Path, source: Path, *, provider: Provider = Provider.CODEX) -> None:
     archive_root.mkdir(parents=True, exist_ok=True)
     processor = LiveBatchProcessor(
         Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
         (WatchSource(name=provider.value, root=source.parent),),
         cursor=CursorStore(archive_root / "index.db"),
         parser_fingerprint=_PARSER_FINGERPRINT,
-        parse_stage=parse_stage,
-        read_snapshot=open_operation_read,
     )
-    metrics = asyncio.run(processor.ingest_files([source], emit_event=False))
+    metrics = run_ingest_files(processor, [source], emit_event=False)
     assert metrics.failed_file_count == 0
     assert metrics.succeeded_file_count == 1
 
@@ -68,45 +63,6 @@ def _ingest(
 def _titles(archive_root: Path) -> list[tuple[str, str | None]]:
     with sqlite3.connect(archive_root / "index.db") as conn:
         return [(str(row[0]), row[1]) for row in conn.execute("SELECT title, title_source FROM sessions")]
-
-
-@pytest.mark.parametrize("capture_before_retarget", [False, True], ids=["new-profile", "accepted-old-profile"])
-def test_live_preparation_matches_the_acquired_profile_after_equal_byte_alias_retarget(
-    tmp_path: Path, capture_before_retarget: bool
-) -> None:
-    first = tmp_path / "profile-a"
-    second = tmp_path / "profile-b"
-    document = json.dumps({"session_id": "shared", "messages": [{"role": "user", "content": "same input"}]})
-    for root in (first, second):
-        (root / "sessions").mkdir(parents=True)
-        (root / "sessions" / "session_shared.json").write_text(document)
-    alias = tmp_path / "profile"
-    alias.symlink_to(first, target_is_directory=True)
-    path = alias / "sessions" / "session_shared.json"
-    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
-    store = BlobStore(tmp_path / "blobs")
-    try:
-        stage.warm_paths([(str(path), Provider.HERMES, False)])
-        assert stage.resolved_path_provider(str(path)) is Provider.HERMES
-        capture = capture_bound_path(store, path, Provider.HERMES) if capture_before_retarget else None
-        alias.unlink()
-        alias.symlink_to(second, target_is_directory=True)
-        if capture is None:
-            capture = capture_bound_path(store, path, Provider.HERMES)
-        prepared = stage.pop_path(str(path), blob_hash=capture.blob_hash, profile_identity=capture.captured_profile_key)
-        assert prepared is not None
-        if capture_before_retarget:
-            assert not prepared.deferred and prepared.error is None
-            assert [session.provider_session_id for session in prepared.iter_sessions()] == [
-                qualified_session_id("shared", profile_key(first))
-            ]
-        else:
-            assert prepared.deferred
-            assert prepared.sessions_path is None
-            assert capture.captured_profile_key == profile_key(second)
-        prepared.discard()
-    finally:
-        stage.shutdown()
 
 
 def test_live_hermes_profile_receipts_replay_without_mutable_alias_or_original_files(tmp_path: Path) -> None:
@@ -146,17 +102,22 @@ def test_live_hermes_profile_receipts_replay_without_mutable_alias_or_original_f
     for root in (first, second):
         (root / "sessions" / "session_shared.json").unlink()
     store = BlobStore(archive_root / "blob")
-    replayed = set()
+    replayed: set[str] = set()
     for _raw_id, blob_hash, coordinate, _physical, key in rows:
         payload = store.read_all(bytes(blob_hash).hex())
         replayed.update(
             session.provider_session_id
             for session in _parse_one(
-                Provider.HERMES, payload, str(coordinate), profile_identity=str(key), archive_root=archive_root
+                Provider.HERMES,
+                payload,
+                str(coordinate),
+                profile_identity=str(key),
+                archive_root=archive_root,
+                sidecar_resolver=None,
             )
         )
         with pytest.raises(MissingProfileIdentityError):
-            _parse_one(Provider.HERMES, payload, str(coordinate), archive_root=archive_root)
+            _parse_one(Provider.HERMES, payload, str(coordinate), archive_root=archive_root, sidecar_resolver=None)
     assert replayed == {
         qualified_session_id("shared", profile_key(first)),
         qualified_session_id("shared", profile_key(second)),
@@ -184,91 +145,6 @@ def test_live_append_keeps_the_chain_title_winner(tmp_path: Path) -> None:
     assert _titles(archive_root) == [("opening prompt", "heuristic")]
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
-
-
-def test_prewarm_seals_existing_retained_members_outside_the_writer(tmp_path: Path) -> None:
-    """A pending live path carries sealed carriers for its prior raws.
-
-    Anti-vacuity: without ``prepare_live_retained_raws`` the stage hands the
-    writer no retained member, and the writer must reparse the prior raw
-    under its lease. The carrier is also bound to the raw's descriptor, so a
-    changed descriptor stops ``current`` from accepting it.
-    """
-    source = tmp_path / "sessions" / "revised.jsonl"
-    source.parent.mkdir()
-    source.write_bytes(_codex_lines("revised-session", (("m0", "first draft"),)))
-    archive_root = tmp_path / "archive"
-    _ingest(archive_root, source)
-    with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
-        [prior_raw_id] = [str(row[0]) for row in archive.source_connection.execute("SELECT raw_id FROM raw_sessions")]
-
-    source.write_bytes(_codex_lines("revised-session", (("m0", "second draft"),)))
-    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
-    try:
-        stage.warm_paths(
-            [(str(source), Provider.CODEX, True)], archive_root=archive_root, read_snapshot=open_operation_read
-        )
-        prepared = stage.pop_path(str(source), blob_hash=hashlib.sha256(source.read_bytes()).hexdigest())
-        assert prepared is not None and prepared.error is None and not prepared.deferred
-        [current] = list(prepared.iter_sessions())
-        assert current.title == "second draft"
-        retained = stage.take_retained_path(str(source))
-        assert set(retained) == {prior_raw_id}
-        member = retained[prior_raw_id]
-        with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
-            assert member.current(archive)
-        [prior] = list(member.artifact.session_sequence())
-        assert prior.title == "first draft"
-        member.discard()
-        prepared.discard()
-    finally:
-        stage.shutdown()
-
-
-def test_retained_prewarm_stops_between_members_and_during_verification(tmp_path: Path) -> None:
-    """A cancelled warm seals no retained member and leaves no carrier behind.
-
-    Anti-vacuity: without the ``stop`` poll before each member the first
-    cancelled call returns the prior raw's carrier; without the discard on a
-    cancelled verification the second leaves its sealed files on disk.
-    """
-    from concurrent.futures import ThreadPoolExecutor
-
-    from polylogue.core.identity_law import session_id as archive_session_id
-    from polylogue.core.sources import origin_from_provider
-    from polylogue.sources.live.retained_prefetch import prepare_live_retained_raws
-
-    source = tmp_path / "sessions" / "stopped.jsonl"
-    source.parent.mkdir()
-    source.write_bytes(_codex_lines("stopped-session", (("m0", "first draft"),)))
-    archive_root = tmp_path / "archive"
-    _ingest(archive_root, source)
-    logical_key = archive_session_id(origin_from_provider(Provider.CODEX).value, "stopped-session")
-    polls: list[bool] = []
-
-    def stop_after_first_poll() -> bool:
-        polls.append(True)
-        return len(polls) > 1
-
-    with ThreadPoolExecutor(max_workers=1) as executor, open_operation_read(archive_root) as pinned:
-        for name, stop in (("ready", None), ("before", lambda: True), ("verifying", stop_after_first_poll)):
-            directory = tmp_path / "retained" / name
-            prepared = prepare_live_retained_raws(
-                pinned.archive,
-                logical_keys={logical_key},
-                current_raw_id="not-a-retained-raw",
-                directory=directory,
-                worker_executor=executor,
-                stop=stop,
-            )
-            if stop is None:
-                assert len(prepared) == 1
-                for member in prepared.values():
-                    member.discard()
-                continue
-            assert prepared == {}
-            assert not directory.exists() or not any(path.is_file() for path in directory.rglob("*"))
-    assert len(polls) >= 2
 
 
 def test_live_claude_code_intake_uses_retained_index_titles_parsed_once(
@@ -333,9 +209,8 @@ def test_live_claude_code_intake_uses_retained_index_titles_parsed_once(
             (watch,),
             cursor=CursorStore(archive_root / "index.db"),
             parser_fingerprint=_PARSER_FINGERPRINT,
-            read_snapshot=open_operation_read,
         )
-        metrics = asyncio.run(processor.ingest_files(paths, emit_event=False))
+        metrics = run_ingest_files(processor, paths, emit_event=False)
         assert metrics.failed_file_count == 0
 
     ingest([index_path])
@@ -371,9 +246,7 @@ def _claude_project(root: Path) -> tuple[Path, Path, Path]:
     return project, transcript, index_path
 
 
-def _claude_ingest(
-    archive_root: Path, project: Path, paths: list[Path], *, parse_stage: LiveParseStage | None = None
-) -> None:
+def _claude_ingest(archive_root: Path, project: Path, paths: list[Path]) -> None:
     from polylogue.sources.origin_specs import artifact_suffixes_for_provider
 
     archive_root.mkdir(parents=True, exist_ok=True)
@@ -388,10 +261,8 @@ def _claude_ingest(
         ),
         cursor=CursorStore(archive_root / "index.db"),
         parser_fingerprint=_PARSER_FINGERPRINT,
-        parse_stage=parse_stage,
-        read_snapshot=open_operation_read,
     )
-    metrics = asyncio.run(processor.ingest_files(paths, emit_event=False))
+    metrics = run_ingest_files(processor, paths, emit_event=False)
     assert metrics.failed_file_count == 0
 
 
@@ -400,12 +271,12 @@ def _session_rows(archive_root: Path) -> list[tuple[object, ...]]:
         return [tuple(row) for row in conn.execute("SELECT session_id, title, content_hash FROM sessions")]
 
 
-def test_parse_stage_reenriches_when_a_sidecar_lands_in_the_same_pass(
+def test_preparation_reenriches_when_a_sidecar_lands_in_the_same_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A carrier enriched before the pass admitted its sidecar is not published.
 
-    The worker enriches during warm-up, before the writer admits the
+    Retained preparation may enrich before the writer admits the
     ``sessions-index.json`` arriving in the same pass. The writer recomputes
     the evidence digest against what it has admitted and re-enriches.
 
@@ -413,8 +284,8 @@ def test_parse_stage_reenriches_when_a_sidecar_lands_in_the_same_pass(
     check, or the evidence-first ordering of the source before it is split into
     progress groups (``_enrichment_evidence_first``; the transcript is offered
     first here, one file per group), and
-    the parse-stage route stores the heuristic ``"prompt 0"`` title with a
-    different content hash than the route without the stage.
+    the transcript-first pass stores the heuristic ``"prompt 0"`` title with a
+    different content hash than the index-first pass.
     """
     project, transcript, index_path = _claude_project(tmp_path / "live")
 
@@ -427,12 +298,8 @@ def test_parse_stage_reenriches_when_a_sidecar_lands_in_the_same_pass(
     # One file per progress group: the index must still lead, so evidence is
     # ordered across the whole source before the list is split.
     monkeypatch.setattr("polylogue.sources.live.batch_support._FULL_PARSE_PROGRESS_MAX_FILES", 1)
-    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
-    try:
-        # Discovery order: the UUID-named transcript sorts before the index.
-        _claude_ingest(staged_root, project, [transcript, index_path], parse_stage=stage)
-    finally:
-        stage.shutdown()
+    # Discovery order: the UUID-named transcript sorts before the index.
+    _claude_ingest(staged_root, project, [transcript, index_path])
     assert _session_rows(staged_root) == plain
 
 
@@ -555,11 +422,12 @@ def test_live_append_keeps_the_chain_cost_across_a_model_switch(tmp_path: Path) 
 
 
 def test_stage_shutdown_retains_shared_compute_owner(tmp_path: Path) -> None:
+    """The live capture stage borrows the resident kernel; closing it keeps the kernel open."""
     from polylogue.core.compute import compute_adapter
+    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 
     adapter = compute_adapter()
-    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
-    assert stage._executor is adapter
+    stage = LiveSQLiteCaptureStage(compute_adapter=adapter)
     stage.shutdown()
     assert adapter.submit(lambda: "still-open").future.result(timeout=2) == "still-open"
 
@@ -612,72 +480,35 @@ def test_live_append_keeps_origin_provenance_for_an_equal_heuristic_title(tmp_pa
 def test_writer_enrichment_resolves_an_unknown_acquisition_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     """An ``UNKNOWN`` raw enriches with its parsed provider's assembly.
 
-    Anti-vacuity: drop the resolution in ``enrich_sessions_from_archive`` and
-    the enricher is built for ``UNKNOWN``, which has no assembly spec.
+    Anti-vacuity: drop the provider resolution in
+    ``iter_enriched_sessions_from_retained_read`` and the assembly is looked up
+    for ``UNKNOWN``, which has no spec.
     """
     from types import SimpleNamespace
+    from typing import Any
 
     import polylogue.sources.revision_backfill as revision_backfill
+    from polylogue.sources import assembly
     from polylogue.sources.parsers.base import ParsedSession
 
     seen: list[Provider] = []
 
-    class RecordingEnricher:
-        def __init__(self, provider: Provider, **_kwargs: object) -> None:
-            seen.append(provider)
+    def recording_spec(provider: Provider) -> None:
+        seen.append(provider)
 
-        def enrich_all(self, sessions: list[ParsedSession]) -> list[ParsedSession]:
-            return sessions
-
-    monkeypatch.setattr(revision_backfill, "RetainedSessionEnricher", RecordingEnricher)
+    monkeypatch.setattr(assembly, "get_assembly_spec", recording_spec)
     session = ParsedSession(source_name=Provider.CLAUDE_CODE, provider_session_id="resolved", messages=[])
-    archive = SimpleNamespace(archive_root=Path("/nonexistent"), index_connection=None, source_connection=None)
-    revision_backfill.enrich_sessions_from_archive(
-        archive, Provider.UNKNOWN, "/nonexistent/x.jsonl", [session], captured_zip_coordinate=None
+    revision_backfill.enrich_sessions_from_retained_read(
+        cast(Any, SimpleNamespace()), Provider.UNKNOWN, "/nonexistent/x.jsonl", [session], captured_zip_coordinate=None
     )
     assert seen == [Provider.CLAUDE_CODE]
-
-
-def test_unpublishable_retained_carrier_falls_back_to_the_writer_parse(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A carrier the writer cannot publish is a prewarm miss, not a refusal.
-
-    During a cold build the carrier may be enriched against the active index
-    while the writer publishes into the candidate. Anti-vacuity: restore the
-    ``PreparedSessionWriteRefusedError`` raise in ``_parse_raw_revision_chain``
-    and this chain defers instead of replaying the member inline.
-    """
-    from types import SimpleNamespace
-
-    from polylogue.sources.parsers.base import ParsedSession
-
-    processor = LiveBatchProcessor(
-        Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db"),
-        (),
-        cursor=CursorStore(tmp_path / "index.db"),
-        parser_fingerprint=_PARSER_FINGERPRINT,
-    )
-    replayed = ParsedSession(source_name=Provider.CODEX, provider_session_id="inline", messages=[])
-    monkeypatch.setattr(processor, "_parse_retained_raw_sessions", lambda _archive, _raw_id: [replayed])
-    stale = SimpleNamespace(current=lambda _archive: False)
-    parsed = processor._parse_raw_revision_chain(
-        SimpleNamespace(),
-        SimpleNamespace(accepted_raw_ids=("older",)),
-        retained_preparations_by_raw_id={"older": stale},  # type: ignore[dict-item]
-    )
-    assert parsed == {"older": replayed}
 
 
 def _converge_to_fixpoint(archive_root: Path, root: Path) -> None:
     """Run the canonical raw-observation convergence until nothing is pending."""
     from polylogue.daemon.derivation import Outcome
-    from polylogue.operations.raw_observation_derivation import converge_raw_observations
 
-    report = None
-    for _attempt in range(3):
-        report = converge_raw_observations(archive_root, source_roots=(root,), limit=64)
-    assert report is not None
+    report = converge_raw_observations_with_owner(archive_root, source_roots=(root,), limit=64, passes=3)
     unsettled = [outcome for outcome in report.outcomes if outcome.outcome is not Outcome.DONE]
     assert not unsettled, unsettled
 
@@ -914,12 +745,15 @@ def test_parsed_sidecars_of_another_origin_are_released(monkeypatch: pytest.Monk
     from polylogue.sources import retained_assembly
 
     retained_assembly._parsed_retained_cache.clear()
-    monkeypatch.setattr(retained_assembly, "_read", lambda _store, _artifact: b"payload")
+    monkeypatch.setattr(retained_assembly, "_read", lambda _source_read, _artifact: b"payload")
+    source_read = cast(Any, SimpleNamespace())
     store = cast(Any, SimpleNamespace(root="/archive/blob"))
     for kind, digest in (("claude_code.session_index", "a"), ("claude_code.history_paste_index", "b")):
-        retained_assembly._read_parsed(store, cast(Any, SimpleNamespace(blob_hash=digest, source_path=kind)), kind, len)
+        retained_assembly._read_parsed(
+            source_read, store, cast(Any, SimpleNamespace(blob_hash=digest, source_path=kind)), kind, len
+        )
     retained_assembly._read_parsed(
-        store, cast(Any, SimpleNamespace(blob_hash="c", source_path="codex")), "codex.session_index", len
+        source_read, store, cast(Any, SimpleNamespace(blob_hash="c", source_path="codex")), "codex.session_index", len
     )
 
     assert set(retained_assembly._parsed_retained_cache) == {"codex.session_index"}
@@ -938,10 +772,6 @@ def test_a_superseded_sibling_from_another_directory_reads_the_accepted_evidence
     ``source_path`` and the sibling is ``stale`` forever, so convergence never
     settles and this inspection is not all ``valid``.
     """
-    from polylogue.operations.raw_observation_derivation import (
-        make_raw_observation_derivation,
-        raw_observation_frame,
-    )
 
     projects = tmp_path / "live" / ".claude" / "projects"
     session_id = "bbbbbbbb-1111-2222-3333-444444444441"
@@ -982,7 +812,5 @@ def test_a_superseded_sibling_from_another_directory_reads_the_accepted_evidence
             )
         ]
     assert len(raws) == 2
-    statuses = make_raw_observation_derivation(archive_root).inspect(
-        raw_observation_frame(archive_root, source_roots=(projects,)), raws
-    )
+    statuses = inspect_raw_observations(archive_root, raws, source_roots=(projects,))
     assert set(statuses.values()) == {"valid"}

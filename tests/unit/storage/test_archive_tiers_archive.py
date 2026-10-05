@@ -50,6 +50,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 from polylogue.surfaces.payloads import ActionQueryRowPayload
 from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import write_index_session
+from tests.infra.prepared_replay import write_fixture_raw_session
 from tests.infra.session_profiles import write_session_profile
 from tests.infra.workload_artifacts import build_seeded_archive
 
@@ -85,7 +86,8 @@ def test_replay_result_reports_typed_unresolved_attachment_owner(tmp_path: Path)
     )
 
     with ArchiveStore(tmp_path / "archive") as archive:
-        result = archive.write_raw_and_parsed_result(
+        result = write_fixture_raw_session(
+            archive,
             session,
             payload=b"replay-owner-receipt",
             source_path="/tmp/replay-owner-receipt.json",
@@ -118,13 +120,15 @@ def test_hash_unchanged_replay_reports_the_recorded_owner_gaps(tmp_path: Path) -
     )
 
     with ArchiveStore(tmp_path / "archive") as archive:
-        first = archive.write_raw_and_parsed_result(
+        first = write_fixture_raw_session(
+            archive,
             session,
             payload=b"replay-unchanged-owner",
             source_path="/tmp/replay-unchanged-owner.json",
             acquired_at_ms=1_767_000_000_000,
         )
-        second = archive.write_raw_and_parsed_result(
+        second = write_fixture_raw_session(
+            archive,
             session,
             payload=b"replay-unchanged-owner",
             source_path="/tmp/replay-unchanged-owner-again.json",
@@ -181,7 +185,8 @@ def test_session_reads_resolve_attachment_bytes_in_the_opened_archive(
         attachments=[_attachment("held.txt", held), _attachment("borrowed.txt", borrowed)],
     )
     with ArchiveStore(selected) as archive:
-        session_id = archive.write_raw_and_parsed_result(
+        session_id = write_fixture_raw_session(
+            archive,
             session,
             payload=b"opened-archive-attachments",
             source_path="/tmp/opened-archive-attachments.json",
@@ -1114,12 +1119,14 @@ def test_archive_facade_raw_admission_governs_parsed_write(tmp_path: Path) -> No
     index_path = root / "index.db"
 
     with ArchiveStore(root) as facade:
-        raw_id, session_id = facade.write_raw_and_parsed(
+        written = write_fixture_raw_session(
+            facade,
             session,
             payload=b'{"provider":"codex","id":"codex-archive-raw-1"}',
             source_path="/tmp/codex-session.jsonl",
             acquired_at_ms=1_767_000_000_000,
         )
+        raw_id, session_id = written.raw_id, written.session_id
 
     conn = sqlite3.connect(index_path)
     conn.row_factory = sqlite3.Row
@@ -1165,13 +1172,15 @@ def test_archive_tiers_archive_facade_skips_lower_precedence_dom_fallback(tmp_pa
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
+        first = write_fixture_raw_session(
+            facade,
             native,
             payload=b'{"native": true}',
             source_path="/tmp/native.json",
             acquired_at_ms=1_767_000_000_000,
         )
-        second = facade.write_raw_and_parsed_result(
+        second = write_fixture_raw_session(
+            facade,
             dom_fallback,
             payload=b'{"dom": true}',
             source_path="/tmp/dom.json",
@@ -1224,13 +1233,15 @@ def test_archive_tiers_archive_facade_replaces_dom_fallback_with_native(tmp_path
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
+        first = write_fixture_raw_session(
+            facade,
             dom_fallback,
             payload=b'{"dom": true}',
             source_path="/tmp/dom.json",
             acquired_at_ms=1_767_000_000_000,
         )
-        second = facade.write_raw_and_parsed_result(
+        second = write_fixture_raw_session(
+            facade,
             native,
             payload=b'{"native": true}',
             source_path="/tmp/native.json",
@@ -1337,13 +1348,15 @@ def test_archive_tiers_archive_facade_native_browser_precedence_matrix(
 
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        initial = facade.write_raw_and_parsed_result(
+        initial = write_fixture_raw_session(
+            facade,
             session(initial_kind, initial_count, updated_at="2026-04-03T00:00:00Z"),
             payload=f"{initial_kind}-initial".encode(),
             source_path=f"/tmp/{initial_kind}-initial.json",
             acquired_at_ms=1_767_000_000_000,
         )
-        incoming = facade.write_raw_and_parsed_result(
+        incoming = write_fixture_raw_session(
+            facade,
             session(
                 incoming_kind,
                 incoming_count,
@@ -1429,13 +1442,15 @@ def test_archive_tiers_archive_facade_export_vs_native_precedence_is_order_indep
             else (native_session(native_id), export_session(native_id))
         )
         with ArchiveStore(root) as facade:
-            first_result = facade.write_raw_and_parsed_result(
+            first_result = write_fixture_raw_session(
+                facade,
                 first,
                 payload=b"first",
                 source_path="/tmp/first.json",
                 acquired_at_ms=1_767_000_000_000,
             )
-            facade.write_raw_and_parsed_result(
+            write_fixture_raw_session(
+                facade,
                 second,
                 payload=b"second",
                 source_path="/tmp/second.json",
@@ -1539,7 +1554,8 @@ def test_archive_tiers_archive_facade_tracks_three_browser_arrivals(
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
         outcomes = [
-            facade.write_raw_and_parsed_result(
+            write_fixture_raw_session(
+                facade,
                 session(kind, count, title, updated_at),
                 payload=f"arrival-{index}-{title}".encode(),
                 source_path=f"/tmp/arrival-{index}.json",
@@ -1593,13 +1609,15 @@ def test_archive_tiers_archive_facade_hash_skips_identical_content_and_refreshes
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
+        first = write_fixture_raw_session(
+            facade,
             session,
             payload=b'[{"capture":"first"}]',
             source_path="/tmp/first.json",
             acquired_at_ms=1_767_000_000_000,
         )
-        second = facade.write_raw_and_parsed_result(
+        second = write_fixture_raw_session(
+            facade,
             session,
             payload=b'[{"capture":"second"}]',
             source_path="/tmp/second.json",
@@ -1661,13 +1679,15 @@ def test_archive_tiers_archive_facade_reingests_duplicate_idless_owner_reassignm
 
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
+        first = write_fixture_raw_session(
+            facade,
             session(0),
             payload=b'{"owner":0}',
             source_path="/tmp/duplicate-owner-first.json",
             acquired_at_ms=1_767_000_000_000,
         )
-        reassigned = facade.write_raw_and_parsed_result(
+        reassigned = write_fixture_raw_session(
+            facade,
             session(1),
             payload=b'{"owner":1}',
             source_path="/tmp/duplicate-owner-second.json",
@@ -1708,13 +1728,15 @@ def test_archive_tiers_archive_facade_replaces_same_size_changed_attachment_byte
 
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
+        first = write_fixture_raw_session(
+            facade,
             session(b"one"),
             payload=b"first raw",
             source_path="/tmp/first.json",
             acquired_at_ms=1_767_000_000_000,
         )
-        second = facade.write_raw_and_parsed_result(
+        second = write_fixture_raw_session(
+            facade,
             session(b"two"),
             payload=b"second raw",
             source_path="/tmp/second.json",
@@ -1759,7 +1781,8 @@ def test_archive_tiers_archive_facade_acquires_empty_inline_attachment(tmp_path:
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as archive:
-        archive.write_raw_and_parsed_result(
+        write_fixture_raw_session(
+            archive,
             session,
             payload=b"raw",
             source_path="/tmp/empty.json",
@@ -1794,7 +1817,8 @@ def test_archive_tiers_archive_facade_repairs_missing_fts_on_identical_repeat(tm
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        first = facade.write_raw_and_parsed_result(
+        first = write_fixture_raw_session(
+            facade,
             session,
             payload=b"stable raw",
             source_path="/tmp/stable.json",
@@ -1807,7 +1831,8 @@ def test_archive_tiers_archive_facade_repairs_missing_fts_on_identical_repeat(tm
         assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
 
     with ArchiveStore(root) as facade:
-        repeated = facade.write_raw_and_parsed_result(
+        repeated = write_fixture_raw_session(
+            facade,
             session,
             payload=b"stable raw",
             source_path="/tmp/stable.json",

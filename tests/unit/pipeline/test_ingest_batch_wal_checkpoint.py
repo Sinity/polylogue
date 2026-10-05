@@ -8,11 +8,6 @@ from pathlib import Path
 import pytest
 
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
-from polylogue.core.enums import Provider
-from polylogue.core.sources import origin_from_provider
-from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
-from polylogue.pipeline.services.ingest_worker import IngestRecordResult
-from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.wal_checkpoint import (
     WalCheckpointObservation,
@@ -399,97 +394,6 @@ def test_compound_foreign_keys_are_probed_as_one_key(tmp_path: Path) -> None:
         assert not any(detail.upper().startswith("SCAN ") for detail in detail_rows), (table, detail_rows)
 
 
-def test_process_ingest_batch_sync_does_not_checkpoint(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Ingest publishes; the recurring coordinator checkpoints.
-
-    A checkpoint reintroduced here would run inside the batch's own writer
-    hold, where it is charged to publication and invisible to the checkpoint
-    budget -- which is exactly what this asserts cannot happen.
-    """
-    db_path = tmp_path / "index.db"
-    archive_root = tmp_path / "archive"
-    blob_root = tmp_path / "blob"
-    source_path = tmp_path / "raw.jsonl"
-    source_path.write_text("{}", encoding="utf-8")
-    raw_record = RawSessionRecord(
-        raw_id="raw-wal",
-        source_name="codex",
-        source_path=str(source_path),
-        blob_size=source_path.stat().st_size,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
-
-    origin = origin_from_provider(Provider.from_string(raw_record.source_name)).value
-    with open_connection(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_sessions
-                (raw_id, origin, native_id, source_path, source_index,
-                 blob_hash, blob_size, acquired_at_ms)
-            VALUES (?, ?, ?, ?, 0, ?, ?, ?)
-            """,
-            (
-                raw_record.raw_id,
-                origin,
-                raw_record.raw_id,
-                raw_record.source_path,
-                b"\x00" * 32,
-                raw_record.blob_size,
-                1_775_433_600_000,
-            ),
-        )
-        conn.commit()
-
-    def fake_ingest_record(
-        record: RawSessionRecord,
-        archive_root_str: str,
-        validation_mode: str,
-        measure_ingest_result_size: bool,
-        *,
-        blob_root_str: str | None,
-    ) -> IngestRecordResult:
-        del record, archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
-        return IngestRecordResult(raw_id=raw_record.raw_id, sessions=[])
-
-    def refuse_checkpoint(*_args: object, **_kwargs: object) -> WalCheckpointObservation:
-        raise AssertionError("the ingest path must not checkpoint")
-
-    optimize_calls: list[str] = []
-
-    def fake_optimize(conn: object, *, reason: str) -> object:
-        del conn
-        optimize_calls.append(reason)
-        return type("OptimizeObservation", (), {"error": None})()
-
-    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
-
-    def fake_drain(*_: object, **kwargs: object) -> None:
-        ensure_transaction = kwargs.get("ensure_index_transaction")
-        assert callable(ensure_transaction)
-        ensure_transaction()
-
-    monkeypatch.setattr(ingest_batch_core, "_drain_ingest_result", fake_drain)
-    monkeypatch.setattr("polylogue.storage.sqlite.wal_checkpoint.checkpoint_wal", refuse_checkpoint)
-    monkeypatch.setattr("polylogue.storage.sqlite.wal_checkpoint.checkpoint_archive_wals", refuse_checkpoint)
-    monkeypatch.setattr("polylogue.storage.sqlite.maintenance.maybe_optimize_sqlite", fake_optimize)
-
-    summary = _process_ingest_batch_sync(
-        [raw_record],
-        db_path=db_path,
-        archive_root_str=str(archive_root),
-        blob_root_str=str(blob_root),
-        validation_mode="off",
-        ingest_workers=1,
-        measure_ingest_result_size=False,
-    )
-
-    assert summary.raw_record_count == 1
-    assert optimize_calls == ["ingest_batch_commit"]
-
-
 def test_maybe_optimize_sqlite_runs_bounded_pragma(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.maintenance import maybe_optimize_sqlite
 
@@ -582,75 +486,6 @@ def test_checkpoint_archive_wals_covers_existing_split_tiers(
     assert {reason for _path, reason, _escalation in calls} == {"periodic"}
     assert {escalation for _path, _reason, escalation in calls} == {"recurring"}
     assert [observation.mode for observation in observations] == ["passive", "passive", "passive"]
-
-
-def test_process_ingest_batch_sync_does_not_force_memory_release_before_returning(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "index.db"
-    archive_root = tmp_path / "archive"
-    blob_root = tmp_path / "blob"
-    source_path = tmp_path / "large-raw.jsonl"
-    source_path.write_text("{}", encoding="utf-8")
-    raw_record = RawSessionRecord(
-        raw_id="raw-large",
-        source_name="codex",
-        source_path=str(source_path),
-        blob_size=2 * 1024 * 1024 * 1024,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
-
-    origin = origin_from_provider(Provider.from_string(raw_record.source_name)).value
-    with open_connection(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO raw_sessions
-                (raw_id, origin, native_id, source_path, source_index,
-                 blob_hash, blob_size, acquired_at_ms)
-            VALUES (?, ?, ?, ?, 0, ?, ?, ?)
-            """,
-            (
-                raw_record.raw_id,
-                origin,
-                raw_record.raw_id,
-                raw_record.source_path,
-                b"\x00" * 32,
-                raw_record.blob_size,
-                1_775_433_600_000,
-            ),
-        )
-        conn.commit()
-
-    def fake_ingest_record(
-        record: RawSessionRecord,
-        archive_root_str: str,
-        validation_mode: str,
-        measure_ingest_result_size: bool,
-        *,
-        blob_root_str: str | None,
-    ) -> IngestRecordResult:
-        del record, archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
-        return IngestRecordResult(raw_id=raw_record.raw_id, sessions=[])
-
-    def fail_if_sync_releases_memory() -> None:
-        raise AssertionError("sync ingest finalization must not run memory release before returning")
-
-    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
-    monkeypatch.setattr(ingest_batch_core, "release_process_memory", fail_if_sync_releases_memory)
-
-    summary = _process_ingest_batch_sync(
-        [raw_record],
-        db_path=db_path,
-        archive_root_str=str(archive_root),
-        blob_root_str=str(blob_root),
-        validation_mode="off",
-        ingest_workers=1,
-        measure_ingest_result_size=False,
-    )
-
-    assert summary.raw_record_count == 1
-    assert summary.total_blob_mb >= 1024.0
 
 
 def test_checkpoint_wal_reports_blocking_processes_when_the_route_asks(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import pickle
+from typing import Any
 
 import pytest
 
@@ -149,9 +150,9 @@ def test_indexed_spool_retained_python_memory_does_not_grow_per_ordinal() -> Non
 
 
 def test_indexed_spool_close_failure_settles_sibling_and_keeps_original_retry(monkeypatch: pytest.MonkeyPatch) -> None:
-    from polylogue.sources import pickle_spool
+    import tempfile
 
-    actual = pickle_spool.tempfile.TemporaryFile
+    actual = tempfile.TemporaryFile
     handles: list[object] = []
     failure = OSError("synthetic original value-file close failure")
 
@@ -169,12 +170,12 @@ def test_indexed_spool_close_failure_settles_sibling_and_keeps_original_retry(mo
                 raise failure
             self.underlying.close()  # type: ignore[attr-defined]
 
-    def opened(*args: object, **kwargs: object) -> Handle:
-        handle = Handle(actual(*args, **kwargs), not handles)  # type: ignore[arg-type]
+    def opened(*args: Any, **kwargs: Any) -> Handle:
+        handle = Handle(actual(*args, **kwargs), not handles)
         handles.append(handle)
         return handle
 
-    monkeypatch.setattr(pickle_spool.tempfile, "TemporaryFile", opened)
+    monkeypatch.setattr("polylogue.sources.pickle_spool.tempfile.TemporaryFile", opened)
     spool = PickleSpool[int](indexed=True)
     spool.append(7)
     with pytest.raises(OSError) as observed:

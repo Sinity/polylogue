@@ -72,11 +72,11 @@ def test_retained_state_scopes_follow_receipt_order_across_a_clock_rollback(
         archive.commit()
     replay_retained_components(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
-        assert read_thread_titles(archive.index_connection, source_scope=str(left.parent)) == {"left-thread": "State A"}
-        assert read_thread_titles(archive.index_connection, source_scope=str(right.parent)) == {
-            "right-thread": "State C"
-        }
-        provenance = read_provenance(archive.index_connection, source_scope=str(left.parent))
+        index = archive.index_connection
+        assert index is not None
+        assert read_thread_titles(index, source_scope=str(left.parent)) == {"left-thread": "State A"}
+        assert read_thread_titles(index, source_scope=str(right.parent)) == {"right-thread": "State C"}
+        provenance = read_provenance(index, source_scope=str(left.parent))
         assert provenance is not None and (provenance.raw_id, provenance.observed_at_ms) == (raw_a, 250)
 
 

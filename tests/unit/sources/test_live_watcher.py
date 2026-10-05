@@ -9,7 +9,7 @@ import shutil
 import sqlite3
 import time
 import zipfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -52,12 +52,14 @@ from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, LiveBatchMetrics
 from polylogue.sources.live.watcher import WriteCoordinator
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.frozen_clock import FrozenClock
+from tests.infra.raw_owner_routes import replay_retained_raws_async, seed_membership_census
 
 
 class _FullIngestMock:
@@ -121,7 +123,7 @@ def _sqlite_snapshot(path: Path) -> tuple[tuple[str, tuple[tuple[object, ...], .
         return tuple((table, tuple(conn.execute(f'SELECT * FROM "{table}"').fetchall())) for table in tables)
 
 
-def _seed_live_cursor_authority_case(
+async def _seed_live_cursor_authority_case(
     root: Path,
     *,
     force_full_fallback: bool = False,
@@ -145,7 +147,7 @@ def _seed_live_cursor_authority_case(
         + b"\n"
     )
     source_path.write_bytes(prefix + tail)
-    initialize_active_archive_root(root)
+    await asyncio.to_thread(initialize_active_archive_root, root)
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -164,17 +166,9 @@ def _seed_live_cursor_authority_case(
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        archive.apply_raw_revision_replay(
-            archive.raw_revision_replay_plan("codex-session:session-1"),
-            {
-                raw_id: ParsedSession(
-                    source_name=Provider.CODEX,
-                    provider_session_id="session-1",
-                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
-                )
-            },
-            acquired_at_ms=1,
-        )
+    # The accepted head is published from the acquired prefix through the
+    # canonical retained replay route.
+    await replay_retained_raws_async(root, [raw_id])
 
     cursor = CursorStore(root / "ops.db")
     stat = source_path.stat()
@@ -204,7 +198,6 @@ def _seed_live_cursor_authority_case(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=source_root),),
         cursor=cursor,
-        parse_stage=None,
     )
     watcher._batch_processor = processor
     return processor, watcher, cursor, source_path
@@ -229,7 +222,7 @@ async def test_live_watcher_refuses_ahead_cursor_before_append_or_full_write(
     force_full_fallback: bool,
 ) -> None:
     """An ahead cursor with a locally matching prefix cannot select either live route."""
-    processor, watcher, cursor, source_path = _seed_live_cursor_authority_case(
+    processor, watcher, cursor, source_path = await _seed_live_cursor_authority_case(
         tmp_path,
         force_full_fallback=force_full_fallback,
     )
@@ -261,7 +254,7 @@ async def test_page_admission_refuses_an_ahead_cursor_before_touching_cursor_sta
     after the selection) in ``FileIntakeAdapter.admit_page`` and the call
     counters below go non-zero.
     """
-    _processor, watcher, cursor, source_path = _seed_live_cursor_authority_case(
+    _processor, watcher, cursor, source_path = await _seed_live_cursor_authority_case(
         tmp_path,
         force_full_fallback=force_full_fallback,
     )
@@ -306,7 +299,7 @@ async def test_page_admission_refuses_an_ahead_cursor_before_touching_cursor_sta
 @pytest.mark.asyncio
 async def test_live_watcher_allows_append_at_authoritative_frontier(tmp_path: Path) -> None:
     """An exact accepted frontier retains the real append success path."""
-    processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(
+    processor, watcher, _cursor, source_path = await _seed_live_cursor_authority_case(
         tmp_path,
         exact_frontier=True,
     )
@@ -325,7 +318,7 @@ async def test_live_watcher_allows_append_at_authoritative_frontier(tmp_path: Pa
 async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path) -> None:
     from polylogue.sources.live.batch import cursor_authority_path_digest, scoped_cursor_authority_authorization
 
-    processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
+    processor, watcher, _cursor, source_path = await _seed_live_cursor_authority_case(tmp_path)
     shadow_index = tmp_path / "index.db"
     active_index = tmp_path / "generations" / "active" / "index.db"
     active_index.parent.mkdir(parents=True)
@@ -360,7 +353,7 @@ async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path
 @pytest.mark.asyncio
 async def test_cursor_authority_seam_blocks_normal_live_route_before_writes(tmp_path: Path) -> None:
     """The exact selector exercises the production live authority seam."""
-    _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
+    _processor, watcher, _cursor, source_path = await _seed_live_cursor_authority_case(tmp_path)
     before = _live_archive_snapshot(tmp_path)
 
     with pytest.raises(CursorAuthorityBlockedError, match="source-selection gate blocked"):
@@ -378,7 +371,7 @@ async def test_cursor_authority_refuses_only_the_named_path(tmp_path: Path) -> N
     reason is non-None) makes this batch raise instead of ingesting the
     sibling, and the sibling's raw never lands in source.db.
     """
-    _processor, watcher, _cursor, blocked_path = _seed_live_cursor_authority_case(tmp_path)
+    _processor, watcher, _cursor, blocked_path = await _seed_live_cursor_authority_case(tmp_path)
     sibling = blocked_path.parent / "sibling.jsonl"
     sibling.write_bytes(
         json.dumps(_codex_session_meta("session-2")).encode()
@@ -1559,9 +1552,10 @@ def test_hermes_profile_retarget_reopens_same_inode_cursor(
 
     def acquire() -> tuple[str, str]:
         if sqlite_input:
-            capture = snapshot_sqlite_to_blob(path, store)
-        else:
-            capture = capture_bound_path(store, path, Provider.HERMES)
+            snapshot = snapshot_sqlite_to_blob(path, store)
+            assert snapshot.captured_profile_key is not None
+            return snapshot.blob_hash, snapshot.captured_profile_key
+        capture = capture_bound_path(store, path, Provider.HERMES)
         assert capture.captured_profile_key is not None
         return capture.blob_hash, capture.captured_profile_key
 
@@ -1643,16 +1637,16 @@ def test_hermes_sqlite_profile_retarget_between_probe_and_bound_gate_requires_ac
         st_ino=before.st_ino,
         mtime_ns=before.st_mtime_ns,
     )
-    original_bind = live_watcher.bind_source_input
+    from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
 
     @contextmanager
-    def retarget_then_bind(path: Path):
+    def retarget_then_bind(path: Path) -> Iterator[SourceInputBinding]:
         alias.unlink()
         alias.symlink_to(profiles[1], target_is_directory=True)
-        with original_bind(path) as binding:
+        with bind_source_input(path) as binding:
             yield binding
 
-    monkeypatch.setattr(live_watcher, "bind_source_input", retarget_then_bind)
+    monkeypatch.setattr("polylogue.sources.live.watcher.bind_source_input", retarget_then_bind)
     assert watcher._needs_work(declared)
     captured = snapshot_sqlite_to_blob(declared, store)
     assert captured.blob_hash == accepted.blob_hash
@@ -3658,22 +3652,20 @@ def test_page_admission_acquires_source_without_reading_unavailable_index(
     )
     pointer = tmp_path / ".index-active-pointer"
     pointer.write_bytes(b"\xff")
+    # Retained preparation is the batch's off-writer route after acquisition.
+    # Derived-only mode must not reach it; the guard records any call.
+    prepared: list[tuple[str, ...]] = []
+
+    async def recording_retained(raw_ids: Sequence[str]) -> tuple[PreparedRevisionReplayResult, ...]:
+        prepared.append(tuple(raw_ids))
+        return ()
+
     watcher = LiveWatcher(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="codex", root=root),),
         cursor=CursorStore(tmp_path / "cursor.sqlite", ops_db_path=tmp_path / "ops.db"),
+        retained_runner=recording_retained,
     )
-    parse_stage = watcher._parse_stage
-    assert parse_stage is not None
-    # ``warm_paths`` is the batch's prewarm (``_ingest_full_paths``). The batch
-    # swallows a prewarm exception, so the guard records the call instead.
-    prewarmed: list[object] = []
-
-    def recording_warm_paths(*args: object, **_kwargs: object) -> frozenset[str]:
-        prewarmed.append(args)
-        return frozenset()
-
-    monkeypatch.setattr(parse_stage, "warm_paths", recording_warm_paths)
     set_degraded(
         DegradedReason(
             code="schema_version_mismatch",
@@ -3685,9 +3677,8 @@ def test_page_admission_acquires_source_without_reading_unavailable_index(
         asyncio.run(watcher._ingest_files([path], queued_file_count=1))
     finally:
         clear_degraded()
-        parse_stage.shutdown()
 
-    assert prewarmed == []
+    assert prepared == []
     assert pointer.read_bytes() == b"\xff"
     with sqlite3.connect(tmp_path / "source.db") as conn:
         row = conn.execute(
@@ -3851,22 +3842,16 @@ def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> Non
         ),
         cursor=CursorStore(tmp_path / "cursor.db"),
     )
-    parse_stage = watcher._parse_stage
-    assert parse_stage is not None
-
-    try:
-        assert watcher._source_accepts(path) is True
-        assert watcher._source_name_for(path) == "codex"
-        assert watcher._batch_processor._source_name_for(path) == "codex"
-        directory_source = watcher._source_for_directory(sessions)
-        assert directory_source is not None
-        assert directory_source.name == "codex"
-        discovered = _bounded_source_paths(
-            watcher._sources[1], watcher._sources, limit=8, after=None
-        ) + _bounded_source_paths(watcher._sources[0], watcher._sources, limit=8, after=None)
-        assert discovered == [path]
-    finally:
-        parse_stage.shutdown()
+    assert watcher._source_accepts(path) is True
+    assert watcher._source_name_for(path) == "codex"
+    assert watcher._batch_processor._source_name_for(path) == "codex"
+    directory_source = watcher._source_for_directory(sessions)
+    assert directory_source is not None
+    assert directory_source.name == "codex"
+    discovered = _bounded_source_paths(
+        watcher._sources[1], watcher._sources, limit=8, after=None
+    ) + _bounded_source_paths(watcher._sources[0], watcher._sources, limit=8, after=None)
+    assert discovered == [path]
 
 
 def test_inbox_source_accepts_zip_and_archive_formats() -> None:
@@ -4259,9 +4244,8 @@ def test_decided_unresolved_membership_reconciles_the_cursor_instead_of_re_readi
             source_path=str(source_path),
             acquired_at_ms=1,
         )
-        archive.replace_raw_membership_census(
-            raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
-        )
+    seed_membership_census(tmp_path, [(raw_id, [session])], parser_fingerprint="test-parser")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.apply_raw_membership_classification(
             "codex-session:decided-unresolved",
             MembershipClassification((), (), (raw_id,)),
@@ -4346,10 +4330,12 @@ def test_cursor_reconciliation_restores_the_newest_archived_outcome(
             acquired_at_ms=decided_at_ms,
         )
         parsed = {materialized: session("m0"), decided: session("m0", "m1")}
-        for raw_id, parsed_session in parsed.items():
-            archive.replace_raw_membership_census(
-                raw_id, [parsed_session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
-            )
+    seed_membership_census(
+        tmp_path,
+        [(raw_id, [parsed_session]) for raw_id, parsed_session in parsed.items()],
+        parser_fingerprint="test-parser",
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.apply_raw_membership_classification(
             "codex-session:newest-outcome",
             MembershipClassification((materialized,), (), (decided,)),

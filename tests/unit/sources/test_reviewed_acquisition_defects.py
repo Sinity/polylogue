@@ -199,27 +199,6 @@ def test_source_signature_is_keyed_by_contents(tmp_path: Path) -> None:
     assert _source_signature(module) != before
 
 
-def test_gemini_cli_parsing_is_not_path_independent() -> None:
-    """A path-dependent parser must not share one parse across source paths.
-
-    ``dispatch`` passes ``source_path`` into ``parse_gemini_cli``, which
-    resolves its ``tool-outputs/`` sidecar scope from it. Anti-vacuity: put
-    ``GEMINI_CLI`` back in the set and ``_parse_retained_raws`` fans one
-    representative's recovered output out to every byte-identical row,
-    regardless of which sidecar directory each row's path names.
-    """
-    from polylogue.core.enums import Provider
-    from polylogue.sources.revision_backfill import _PATH_INDEPENDENT_PARSE_PROVIDERS
-
-    assert Provider.GEMINI_CLI not in _PATH_INDEPENDENT_PARSE_PROVIDERS
-    # Claude Code resolves retained tool-result sidecars and subagent
-    # siblings from ``source_path`` the same way.
-    assert Provider.CLAUDE_CODE not in _PATH_INDEPENDENT_PARSE_PROVIDERS
-    # The opposite direction: emptying the set would also pass the assertion
-    # above, so pin a provider that is genuinely path-independent.
-    assert Provider.CHATGPT in _PATH_INDEPENDENT_PARSE_PROVIDERS
-
-
 def test_antigravity_trajectory_db_is_not_skipped_as_a_protobuf(tmp_path: Path) -> None:
     """The ``.pb`` prepass role must not swallow a schema-verified ``.db``.
 

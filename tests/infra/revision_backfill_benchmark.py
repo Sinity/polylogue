@@ -41,8 +41,7 @@ LARGE_PAYLOAD_SHAPE: dict[str, int] = {"raw_count": 80, "avg_payload_bytes": 1_7
 # absolute byte count, and a multi-hundred-MB fixture would make the test
 # suite itself slow. Benchmarks that need the real threshold math to trigger
 # on a payload this size shrink ``_ParsedSessionSpill``'s cache-size class
-# constants instead of growing the fixture (see
-# ``tests/benchmarks/test_whale_census_spill_bench.py``).
+# constants instead of growing the fixture.
 WHALE_BEARING_SHAPE: dict[str, int] = {
     "small_raw_count": 40,
     "small_avg_payload_bytes": 20_000,

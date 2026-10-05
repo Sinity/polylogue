@@ -12,6 +12,7 @@ from __future__ import annotations
 import errno
 import json
 import sqlite3
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -21,12 +22,12 @@ from polylogue import Polylogue
 from polylogue.daemon.intake import AdmissionOutcome
 from polylogue.logging import capture
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
-from polylogue.operations.operation_context import open_operation_read
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveRawParsedWriteResult
+from tests.infra.raw_owner_routes import live_owner_set
 
 
 def _write_session(path: Path, session_id: str) -> None:
@@ -120,7 +121,7 @@ def _fail_first_blob_copy(monkeypatch: pytest.MonkeyPatch, failure: OSError) -> 
 
 
 @pytest.fixture
-def storage_env(workspace_env: dict[str, Path]) -> tuple[Polylogue, LiveWatcher, Path]:
+async def storage_env(workspace_env: dict[str, Path]) -> AsyncIterator[tuple[Polylogue, LiveWatcher, Path]]:
     root = workspace_env["data_root"] / "claude-projects"
     root.mkdir(parents=True)
     source_path = root / "session.jsonl"
@@ -129,15 +130,16 @@ def storage_env(workspace_env: dict[str, Path]) -> tuple[Polylogue, LiveWatcher,
         archive_root=workspace_env["archive_root"],
         db_path=workspace_env["archive_root"] / "index.db",
     )
-    watcher = LiveWatcher(
-        archive,
-        (WatchSource(name="claude-code", root=root),),
-        cursor=CursorStore(archive.archive_root / "index.db"),
-        # The daemon's read route; without it off-writer preparation defers
-        # every full-route file and nothing reaches the index write.
-        read_snapshot=open_operation_read,
-    )
-    return archive, watcher, source_path
+    # The daemon's intake owners; without them full-route preparation never
+    # publishes and nothing reaches the index write.
+    async with live_owner_set(archive.archive_root) as owners:
+        watcher = LiveWatcher(
+            archive,
+            (WatchSource(name="claude-code", root=root),),
+            cursor=CursorStore(archive.archive_root / "index.db"),
+            **owners.watcher_kwargs(),
+        )
+        yield archive, watcher, source_path
 
 
 async def _assert_recovers(archive: Polylogue, watcher: LiveWatcher, source_path: Path) -> None:
@@ -318,14 +320,8 @@ def test_zip_member_publication_on_a_full_archive_escapes_instead_of_excluding(t
             raise OSError(errno.ENOSPC, "No space left on device")
 
     full = _FullBlobStore(tmp_path / "blob")
-    with pytest.raises(ArchiveStorageFaultError):
-        processor._extract_zip_member_records(
-            bundle,
-            blob_store=full,
-            fallback_provider=Provider.CLAUDE_CODE,
-            file_mtime="2026-09-04T00:00:00+00:00",
-            zip_inputs={},
-        )
+    # The eager member route is retired; source-only extraction is the single
+    # remaining ZIP member route and must still type the full-disk refusal.
     with pytest.raises(ArchiveStorageFaultError):
         processor._extract_source_only_zip_member_records(
             bundle,

@@ -933,27 +933,36 @@ class ProductionCorpusRuntime:
         source_name = "browser-capture" if artifact.attachments else artifact.source_name
 
         async def run() -> AcquireResult:
+            from polylogue.daemon.drive_catchup import DriveCatchupExecution
+            from tests.infra.live_ingest import prepared_live_convergence_owner
+
             backend = SQLiteBackend(db_path=self.archive_root / "index.db")
             try:
-                result = await AcquisitionService(backend).acquire_sources([Source(name=source_name, path=path)])
-                self.last_results.append(result)
-                wire_hash = hashlib.sha256(wire_payload).digest()
-                wire_key = (source_name, wire_hash)
-                source_revision = (source_name, path, wire_hash)
-                # Prefer the exact acquisition coordinate on a skipped
-                # reacquisition. Equal bytes at another path can have their
-                # own raw identity; wire evidence remains valid for a newly
-                # observed duplicate whose admission reports only a skip.
-                known_ids = self._raw_ids_by_source_revision.get(source_revision) or self._raw_ids_by_wire.get(
-                    wire_key, ()
-                )
-                if result.errors or (not result.raw_ids and not (result.skipped > 0 and known_ids)):
-                    raise CorpusAcquisitionRejectedError(artifact.artifact_id, result)
-                self._raw_ids[artifact.artifact_id] = tuple(result.raw_ids) or known_ids
-                self._raw_ids_by_wire[wire_key] = self._raw_ids[artifact.artifact_id]
-                self._raw_ids_by_source_revision[source_revision] = self._raw_ids[artifact.artifact_id]
-                self._source_paths[artifact.artifact_id] = path
-                return result
+                # Acquisition publishes raw rows and blobs through the daemon's
+                # admitted writer, exactly as configured-source catch-up does.
+                async with prepared_live_convergence_owner(self.archive_root) as owner:
+                    execution = DriveCatchupExecution(owner._write_coordinator, compute_adapter=owner._compute_adapter)
+                    result = await AcquisitionService(backend, execution=execution).acquire_sources(
+                        [Source(name=source_name, path=path)]
+                    )
+                    self.last_results.append(result)
+                    wire_hash = hashlib.sha256(wire_payload).digest()
+                    wire_key = (source_name, wire_hash)
+                    source_revision = (source_name, path, wire_hash)
+                    # Prefer the exact acquisition coordinate on a skipped
+                    # reacquisition. Equal bytes at another path can have their
+                    # own raw identity; wire evidence remains valid for a newly
+                    # observed duplicate whose admission reports only a skip.
+                    known_ids = self._raw_ids_by_source_revision.get(source_revision) or self._raw_ids_by_wire.get(
+                        wire_key, ()
+                    )
+                    if result.errors or (not result.raw_ids and not (result.skipped > 0 and known_ids)):
+                        raise CorpusAcquisitionRejectedError(artifact.artifact_id, result)
+                    self._raw_ids[artifact.artifact_id] = tuple(result.raw_ids) or known_ids
+                    self._raw_ids_by_wire[wire_key] = self._raw_ids[artifact.artifact_id]
+                    self._raw_ids_by_source_revision[source_revision] = self._raw_ids[artifact.artifact_id]
+                    self._source_paths[artifact.artifact_id] = path
+                    return result
             finally:
                 await backend.close()
 
@@ -1010,6 +1019,8 @@ class ProductionCorpusRuntime:
         paths = tuple(dict.fromkeys(self._source_paths.values()))
 
         async def parse() -> ParseResult:
+            from tests.infra.live_ingest import prepared_live_convergence_owner
+
             backend = SQLiteBackend(db_path=self.archive_root / "index.db")
             try:
                 config = Config(
@@ -1018,13 +1029,16 @@ class ProductionCorpusRuntime:
                     sources=[],
                     db_path=self.archive_root / "index.db",
                 )
-                service = ParsingService(
-                    repository=SessionRepository(backend=backend),
-                    archive_root=self.archive_root,
-                    config=config,
-                    ingest_workers=1,
-                )
-                return await service.parse_from_raw(raw_ids=list(raw_ids), force_write=True)
+                # Publication goes through the canonical retained Raw owner.
+                async with prepared_live_convergence_owner(self.archive_root) as owner:
+                    service = ParsingService(
+                        repository=SessionRepository(backend=backend),
+                        archive_root=self.archive_root,
+                        config=config,
+                        ingest_workers=1,
+                        retained_runner=owner.replay_retained_raw_ids,
+                    )
+                    return await service.parse_from_raw(raw_ids=list(raw_ids), force_write=True)
             finally:
                 await backend.close()
 
