@@ -41,6 +41,7 @@ from polylogue.sources.live.batch import (
     fingerprint_file,
 )
 from polylogue.sources.live.batch_support import (
+    LiveRetainedRunner,
     _AppendPlan,
     _AppendResult,
     _archive_blob_exists,
@@ -62,7 +63,6 @@ from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
-from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
 from polylogue.sources.sqlite_snapshot import (
     is_sqlite_path,
@@ -391,7 +391,7 @@ class LiveWatcher:
         session_profile_callback: SessionProfileConvergenceCallback | None = None,
         append_runner: Callable[[Any, list[_AppendPlan]], Awaitable[_AppendResult]] | None = None,
         convergence_runner: Callable[..., Awaitable[Any]] | None = None,
-        retained_runner: Callable[[Sequence[str]], Awaitable[Sequence[PreparedRevisionReplayResult]]] | None = None,
+        retained_runner: LiveRetainedRunner | None = None,
         intake_wakeup: asyncio.Event | None = None,
     ) -> None:
         self._polylogue = polylogue

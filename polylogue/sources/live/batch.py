@@ -61,9 +61,12 @@ from polylogue.core.raw_coordinates import (
     zip_member_source_index,
 )
 from polylogue.core.raw_failure_evidence import (
+    PARTIAL_TRUNCATED_TAIL,
     RAW_FAILURE_EVIDENCE_KINDS,
     RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
     PartialAdmission,
+    RawFailureEvidenceKind,
+    RetainedRawDecodeRefusalError,
 )
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.stage_admission import admit_stage_write
@@ -111,6 +114,7 @@ from polylogue.sources.live.batch_support import (
     _STREAMING_FULL_INGEST_BYTES,
     JsonlBoundary,
     JsonlFrontier,
+    LiveRetainedRunner,
     RetryableSourceReadError,
     _accumulate_stage_timings,
     _append_plan_group_ready,
@@ -190,7 +194,6 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.retained_acquisition import SourceInputRecord
 from polylogue.sources.revision_backfill import (
-    PreparedRevisionReplayResult,
     RetainedPreparationRetryableError,
 )
 from polylogue.sources.source_acquisition_components import (
@@ -209,6 +212,7 @@ from polylogue.sources.sqlite_snapshot import (
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -322,6 +326,27 @@ def scoped_cursor_authority_authorization(
 
 def _file_observation(stat: os.stat_result) -> tuple[int, int, int, int, int]:
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _stable_truncated_tail_admission(record: RawSessionRecord) -> PartialAdmission | None:
+    """The typed partial for a stable capture whose final record is truncated."""
+    prefix = record.complete_prefix_size
+    if prefix is None or not 0 < prefix < record.blob_size:
+        return None
+    try:
+        stable = _file_observation(Path(record.source_path).stat()) == record.captured_file_observation
+    except OSError:
+        return None
+    if not stable:
+        return None
+    if record.complete_prefix_record_count is None:
+        raise AssertionError("a stable partial JSONL admission has no off-writer record count")
+    return PartialAdmission(
+        reason=PARTIAL_TRUNCATED_TAIL,
+        complete_record_count=record.complete_prefix_record_count,
+        complete_prefix_bytes=prefix,
+        source_bytes=record.blob_size,
+    )
 
 
 def _hot_capture_prefix_is_proven(
@@ -854,7 +879,7 @@ class LiveBatchProcessor:
         sync_runner: LiveBatchSyncRunner | None = None,
         convergence_runner: LiveBatchSyncRunner | None = None,
         append_runner: Callable[[Any, list[_AppendPlan]], Awaitable[_AppendResult]] | None = None,
-        retained_runner: Callable[[Sequence[str]], Awaitable[Sequence[PreparedRevisionReplayResult]]] | None = None,
+        retained_runner: LiveRetainedRunner | None = None,
         sqlite_capture_stage: LiveSQLiteCaptureStage | None = None,
     ) -> None:
         self._refused_paths: frozenset[Path] = frozenset()
@@ -3122,17 +3147,63 @@ class LiveBatchProcessor:
             raise RetainedPreparationRetryableError("Live retained publication requires its supplied owner")
         # Acquisition's writer has physically returned before the same long-lived
         # owner opens the original preparation window and publishes its outcome.
-        outcomes = await self._retained_runner(result.acquired_raw_ids)
+        terminal_refusals: dict[str, RetainedRawDecodeRefusalError] = {}
+
+        def settle_terminal_refusal(_keys: tuple[str, ...], refusal: RetainedRawDecodeRefusalError) -> None:
+            terminal_refusals[refusal.raw_id] = refusal
+
+        outcomes = await self._retained_runner(result.acquired_raw_ids, on_terminal_refusal=settle_terminal_refusal)
         written = tuple(dict.fromkeys(sid for outcome in outcomes for sid in outcome.written_session_ids))
         changed = tuple(dict.fromkeys(sid for outcome in outcomes for sid in outcome.changed_session_ids))
         return replace(
             result,
+            settled_exclusions={
+                **result.settled_exclusions,
+                **self._retained_settled_exclusions(result, terminal_refusals),
+            },
             worker_count=1,
             ingested_session_count=len(written),
             ingested_message_count=sum(outcome.written_message_count for outcome in outcomes),
             changed_session_count=len(changed),
             changed_session_ids=changed,
         )
+
+    def _retained_settled_exclusions(
+        self, result: _FullIngestResult, terminal_refusals: Mapping[str, RetainedRawDecodeRefusalError]
+    ) -> dict[Path, str]:
+        """Read each acquired raw's terminal outcome after its retained publication.
+
+        Acquisition no longer parses, so a path's exclusion comes from the
+        typed Source evidence its canonical publication settled: a terminal
+        decode refusal is corrupt input, and a current-parser census that
+        found no session is a settled no-session observation (xf8qp).
+        """
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        fingerprint = raw_authority_parser_fingerprint()
+        settled: dict[Path, str] = {}
+        with closing(open_readonly_connection(archive_root / "source.db")) as source:
+            for path, raw_id in result.raw_fingerprints.items():
+                if path not in result.succeeded:
+                    continue
+                corrupt = raw_id in terminal_refusals or (
+                    source.execute(
+                        "SELECT 1 FROM raw_artifacts WHERE raw_id = ? AND artifact_kind = ? LIMIT 1",
+                        (raw_id, RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value),
+                    ).fetchone()
+                    is not None
+                )
+                if corrupt:
+                    settled[path] = REFUSED_CORRUPT_INPUT
+                elif (
+                    source.execute(
+                        "SELECT 1 FROM raw_membership_census WHERE raw_id = ? AND parser_fingerprint = ? "
+                        "AND status = 'non_session'",
+                        (raw_id, fingerprint),
+                    ).fetchone()
+                    is not None
+                ):
+                    settled[path] = REFUSED_NO_SESSIONS
+        return settled
 
     async def _run_sync(
         self,
@@ -4054,6 +4125,11 @@ class LiveBatchProcessor:
                     _accumulate_stage_timings(
                         result.stage_timings_s, {source_write_name: time.perf_counter() - started}
                     )
+                    partial = _stable_truncated_tail_admission(record)
+                    if partial is not None:
+                        # The full raw is conserved; its canonical parse admits
+                        # only the proven complete records. Say so (xf8qp).
+                        result.partial_admissions[_full_record_key(record)] = partial
                 except ContentExcisedError as exc:
                     # The archive can forget on purpose (polylogue-27m): this
                     # record's blob hash is durably excised, so acquire
