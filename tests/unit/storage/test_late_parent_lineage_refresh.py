@@ -21,8 +21,9 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write
 from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
-from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.index_writer import fixture_index_mutation_scope, write_fixture_index_session
 
 _DISPATCH_TOOL_ID = "toolu_dispatch_survey"
 
@@ -135,9 +136,15 @@ def test_late_parent_refreshes_the_child_dispatch_cohort(tmp_path: Path, foreign
     if foreign_keys:
         parent_id = write_fixture_index_session(conn, parent)
     else:
+        # Bulk ingest suspends foreign keys and publishes a prepared carrier
+        # inside its own explicitly owned Index transaction scope.
         conn.execute("PRAGMA foreign_keys = OFF")
-        conn.execute("BEGIN IMMEDIATE")
-        parent_id = write_fixture_index_session(conn, parent, manage_transaction=False)
+        prepared = prepare_session_write(conn, parent, merge_append=False)
+        try:
+            with fixture_index_mutation_scope(conn):
+                parent_id = write_fixture_index_session(conn, parent, prepared_write=prepared)
+        finally:
+            prepared.close()
 
     stored = conn.execute(
         "SELECT position FROM messages WHERE session_id = ? ORDER BY position", (child_id,)
