@@ -42,6 +42,7 @@ from polylogue.storage.materials import MaterialObservation
 from polylogue.storage.sqlite.agent_thread_state import read_provenance, read_spawn_edges, read_thread_titles
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.live_batch import prepared_live_batch_processor
 from tests.infra.live_ingest import prepared_live_convergence_owner
 from tests.infra.raw_owner_routes import ingest_files_with_owners, live_owner_set
@@ -164,6 +165,7 @@ def _make_processor(workspace_env: dict[str, Path], root_name: str, db_name: str
     codex_root.mkdir(parents=True)
     codex_state_root = workspace_env["data_root"] / root_name
     db_path = workspace_env["archive_root"] / "index.db"
+    run_off_event_loop(lambda: bootstrap_archive_root(workspace_env["archive_root"]))
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     return archive, codex_root, codex_state_root
 
@@ -285,7 +287,7 @@ async def test_codex_out_of_scope_state_db_is_excluded_not_read(
     archive, codex_root, codex_state_root = _make_processor(
         workspace_env, "codex-home-out-of-scope", "codex-state-out-of-scope.db"
     )
-    cursor = CursorStore(workspace_env["data_root"] / "codex-state-out-of-scope.db")
+    cursor = CursorStore(workspace_env["archive_root"] / "ops.db")
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),),
@@ -302,7 +304,7 @@ async def test_codex_out_of_scope_state_db_is_excluded_not_read(
                 "INSERT INTO logs (ts, level, target, module_path, file, line) VALUES (1, 'INFO', 't', 'm', 'f', 1)"
             )
 
-        metrics = await processor.ingest_files([logs_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [logs_path], emit_event=False)
         assert metrics.failed_file_count == 0
         assert metrics.ingested_session_count == 0
 
@@ -528,7 +530,7 @@ async def test_codex_state_embedded_nul_and_utf8_boundary_reach_complete_materia
             WatchSource(name="codex", root=codex_root),
             WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
         ),
-        cursor=CursorStore(workspace_env["data_root"] / "codex-state-nul.db"),
+        cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
     archive_root = workspace_env["archive_root"]
@@ -541,7 +543,7 @@ async def test_codex_state_embedded_nul_and_utf8_boundary_reach_complete_materia
         memories_path = codex_state_root / "memories_1.sqlite"
         _write_goals_1_sqlite(goals_path, objective=goal_text)
         _write_memories_1_sqlite(memories_path, raw_memory=memory_text, rollout_summary=summary_text)
-        result = await processor.ingest_files([goals_path, memories_path], emit_event=False)
+        result = await ingest_files_with_owners(processor, [goals_path, memories_path], emit_event=False)
         assert result.failed_file_count == 0
 
         with sqlite3.connect(archive_root / "source.db") as conn:
@@ -592,6 +594,7 @@ async def test_codex_goal_materials_do_not_cross_supersede_source_roots(
     sessions_a = root_a / "sessions"
     sessions_a.mkdir(parents=True)
     root_b.mkdir()
+    run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
     archive = Polylogue(archive_root=archive_root, db_path=workspace_env["data_root"] / "codex-state-scopes.db")
     processor = LiveBatchProcessor(
         archive,
@@ -600,18 +603,18 @@ async def test_codex_goal_materials_do_not_cross_supersede_source_roots(
             WatchSource(name="codex-state-a", root=root_a, suffixes=(".sqlite", ".db")),
             WatchSource(name="codex-state-b", root=root_b, suffixes=(".sqlite", ".db")),
         ),
-        cursor=CursorStore(workspace_env["data_root"] / "codex-state-scopes.db"),
+        cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
     try:
         rollout_path = sessions_a / f"rollout-2026-07-20T10-00-00-{_THREAD_ID}.jsonl"
         _write_codex_rollout(rollout_path)
-        assert (await processor.ingest_files([rollout_path], emit_event=False)).failed_file_count == 0
+        assert (await ingest_files_with_owners(processor, [rollout_path], emit_event=False)).failed_file_count == 0
         goals_a = root_a / "goals_1.sqlite"
         goals_b = root_b / "goals_1.sqlite"
         _write_goals_1_sqlite(goals_a, objective="goal from install A")
         _write_goals_1_sqlite(goals_b, objective="goal from install B")
-        assert (await processor.ingest_files([goals_a, goals_b], emit_event=False)).failed_file_count == 0
+        assert (await ingest_files_with_owners(processor, [goals_a, goals_b], emit_event=False)).failed_file_count == 0
 
         materials = _material_payloads(archive_root)
         assert len(materials) == 2
@@ -670,13 +673,13 @@ async def test_codex_state_snapshot_raw_never_blocks_cursor_authority(
     try:
         first_rollout = codex_root / f"rollout-2026-07-20T10-00-00-{_THREAD_ID}.jsonl"
         _write_codex_rollout(first_rollout)
-        metrics = await processor.ingest_files([first_rollout], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [first_rollout], emit_event=False)
         assert metrics.ingested_session_count == 1
         assert processor.cursor_authority_block_reason() is None
 
         goals_path = codex_state_root / "goals_1.sqlite"
         _write_goals_1_sqlite(goals_path)
-        state_metrics = await processor.ingest_files([goals_path], emit_event=False)
+        state_metrics = await ingest_files_with_owners(processor, [goals_path], emit_event=False)
         assert state_metrics.failed_file_count == 0
         assert state_metrics.ingested_session_count == 0
 
@@ -701,7 +704,7 @@ async def test_codex_state_snapshot_raw_never_blocks_cursor_authority(
         second_rollout.write_text(
             first_rollout.read_text(encoding="utf-8").replace(_THREAD_ID, _CHILD_THREAD_ID), encoding="utf-8"
         )
-        follow_up = await processor.ingest_files([second_rollout], emit_event=False)
+        follow_up = await ingest_files_with_owners(processor, [second_rollout], emit_event=False)
         assert follow_up.failed_file_count == 0
         assert follow_up.ingested_session_count == 1
         assert await archive.count_sessions() == 2
@@ -732,12 +735,12 @@ async def _seed_unreceipted_codex_state_raws(workspace_env: dict[str, Path]) -> 
     try:
         rollout = codex_root / f"rollout-2026-07-20T10-00-00-{_THREAD_ID}.jsonl"
         _write_codex_rollout(rollout)
-        await processor.ingest_files([rollout], emit_event=False)
+        await ingest_files_with_owners(processor, [rollout], emit_event=False)
         goals_path = codex_state_root / "goals_1.sqlite"
         _write_goals_1_sqlite(goals_path)
         state_path = codex_state_root / "state_5.sqlite"
         _write_state_5_sqlite(state_path)
-        await processor.ingest_files([goals_path, state_path], emit_event=False)
+        await ingest_files_with_owners(processor, [goals_path, state_path], emit_event=False)
         assert raw_frontier_source_selection_block_reason(archive_root) is None
     finally:
         await archive.close()
@@ -899,7 +902,7 @@ async def test_schema_drift_candidate_does_not_block_other_retained_state_receip
     _write_state_5_sqlite(bad_path, include_agent_role=False)
     _write_goals_1_sqlite(good_path)
     try:
-        await processor.ingest_files([bad_path, good_path], emit_event=False)
+        await ingest_files_with_owners(processor, [bad_path, good_path], emit_event=False)
     finally:
         await archive.close()
 
@@ -1063,6 +1066,7 @@ async def test_codex_state_title_does_not_depend_on_admission_order(tmp_path: Pa
     _write_state_5_sqlite(state_path)
 
     archive_root = tmp_path / "archive"
+    run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     processor = LiveBatchProcessor(
         archive,
@@ -1117,7 +1121,7 @@ async def test_codex_state_title_does_not_depend_on_admission_order(tmp_path: Pa
 
     async with prepared_live_convergence_owner(archive_root) as owner:
         statuses = await owner.run_convergence_sync("test.codex-state.inspect", inspect, owner._compute_adapter)
-    assert set(statuses.values()) == {"valid"}
+    assert set(statuses.values()) == {"valid"}, statuses
 
 
 def test_enrichment_evidence_moved_reads_titles_through_a_real_index_connection(tmp_path: Path) -> None:
@@ -1225,6 +1229,7 @@ async def test_a_rollout_takes_its_spawn_parent_from_its_own_install_root(
         sources.append(WatchSource(name="codex", root=root / "sessions"))
         sources.append(WatchSource(name="codex-state", root=root, suffixes=(".sqlite", ".db")))
     db_path = workspace_env["data_root"] / "codex-two-roots.db"
+    run_off_event_loop(lambda: bootstrap_archive_root(workspace_env["archive_root"]))
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     processor = LiveBatchProcessor(
         archive,
@@ -1239,13 +1244,13 @@ async def test_a_rollout_takes_its_spawn_parent_from_its_own_install_root(
         for name in ("a", "b"):
             state_path = roots[name] / "state_5.sqlite"
             _write_spawn_state(state_path, parent=f"{name}-parent")
-            metrics = await processor.ingest_files([state_path], emit_event=False)
+            metrics = await ingest_files_with_owners(processor, [state_path], emit_event=False)
             assert metrics.failed_file_count == 0
 
     try:
         if state_first:
             await ingest_states()
-        metrics = await processor.ingest_files([rollout_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [rollout_path], emit_event=False)
         assert metrics.ingested_session_count == 1
         if not state_first:
             await ingest_states()
@@ -1297,7 +1302,7 @@ async def test_live_state_publishes_every_captured_page_after_source_changes(
 
     monkeypatch.setattr(processor, "_ingest_full_paths_prepared", change_live_source_then_publish)
     try:
-        result = await processor.ingest_files([source], emit_event=False)
+        result = await ingest_files_with_owners(processor, [source], emit_event=False)
         assert result.failed_file_count == 0
         with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
             assert read_thread_titles(conn) == expected
