@@ -57,12 +57,12 @@ CREATE TABLE messages (
 """
 
 
-def _make_processor(
-    workspace_env: dict[str, Path], root_name: str, db_name: str
-) -> tuple[Polylogue, LiveBatchProcessor, Path]:
+def _make_processor(workspace_env: dict[str, Path], root_name: str) -> tuple[Polylogue, LiveBatchProcessor, Path]:
     root = workspace_env["data_root"] / root_name
     root.mkdir(parents=True)
-    db_path = workspace_env["data_root"] / db_name
+    # Live ingest bookkeeping is scoped to the archive its writer is bound to;
+    # the cursor store lives in that archive's index tier.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -173,7 +173,7 @@ async def test_healthy_state_db_reaches_healthy_verdict_through_named_freshness(
     stage, and the assertion below fails.
     """
 
-    archive, processor, root = _make_processor(workspace_env, "hermes-home-healthy", "hermes-state-healthy.db")
+    archive, processor, root = _make_processor(workspace_env, "hermes-home-healthy")
     source_path = root / "state.db"
     try:
         with sqlite3.connect(source_path) as conn:
