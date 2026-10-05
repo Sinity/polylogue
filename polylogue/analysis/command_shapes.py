@@ -234,11 +234,15 @@ def build_command_shape_usage(
                 "WHEN last_ms IS NULL THEN excluded.last_ms ELSE MAX(last_ms, excluded.last_ms) END",
                 normalized_rows(),
             )
+            cursor.execute("SELECT COUNT(*) FROM (SELECT 1 FROM usage GROUP BY origin, repository, shape)")
+            total = int(cursor.fetchone()[0])
+            stop = query.offset + query.limit if query.limit is not None else None
+            start, end, _step = slice(query.offset, stop).indices(total)
             cursor.execute(
                 "SELECT origin, repository, shape, SUM(executions), COUNT(*), MAX(last_ms) FROM usage "
                 "GROUP BY origin, repository, shape "
                 "ORDER BY SUM(executions) DESC, shape, origin, repository LIMIT ? OFFSET ?",
-                (query.limit if query.limit is not None else -1, query.offset),
+                (max(0, end - start), start),
             )
             result: list[CommandShapeUsage] = []
             for origin, repository, shape, executions, sessions, last_ms in cursor:

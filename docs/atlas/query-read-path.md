@@ -228,7 +228,9 @@ normalizer into a disposable SQLite fold. It retains execution multiplicity and
 counts distinct sessions before selecting the requested aggregate page. Python
 memory holds one command and the returned page; the fold and SQL sort can use
 disk proportional to the selected actions and distinct session/shape pairs. Each
-page still scans its selected input relation. Cancellation checks cover both
+page still scans its selected input relation and counts aggregate groups to
+resolve the declared Python slice operands, including negative or oversized
+integers, before binding finite SQLite page bounds. Cancellation checks cover both
 normalization and scratch SQL, and scratch resources settle before the read
 returns. A repository filter projects that admitted repository; unfiltered
 reads retain the alphabetical representative. MCP lowers its public `repo`

@@ -176,3 +176,11 @@ def test_scratch_cleanup_preserves_primary_and_distinct_faults(
         assert caught.value.exceptions == (primary, cleanup)
     assert closed
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(("offset", "limit"), [(0, 10**100), (10**100, 1), (-1, None), (0, -1), (-2, 1), (1, -1)])
+def test_scratch_page_preserves_declared_python_slice_operands(offset: int, limit: int | None) -> None:
+    rows = ({"origin": "codex", "session_id": "s", "tool_command": shape} for shape in ("a", "b", "c"))
+    result = build_command_shape_usage(rows, CommandShapeUsageQuery(offset=offset, limit=limit), materialized_at="now")
+    stop = offset + limit if limit is not None else None
+    assert [item.command_shape for item in result] == ["a", "b", "c"][offset:stop]
