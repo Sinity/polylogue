@@ -13,6 +13,7 @@ import json
 import sqlite3
 import sys
 import tempfile
+import time
 import weakref
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -192,6 +193,9 @@ class RawObservationReplacement:
     already_valid: bool = False
     blob_restorations: StagedBlobRestorations | None = None
     reference_seal: PreparedIndexMutation | None = None
+    # Wall time this compute spent in the provider parsers that sealed its
+    # carriers. Publication reports it beside its own writer timings.
+    provider_parse_seconds: float = 0.0
 
     def close(self) -> None:
         """Drain this prepared carrier when publication is cancelled or ends."""
@@ -1072,6 +1076,7 @@ class RawObservationDerivation(RawObservationInspection):
                     prepared_byte_logical_keys: tuple[str, ...] = ()
                     prepared_key_refusals: dict[str, CohortMembershipRefusalError] = {}
                     prepared_artifacts: dict[tuple[object, ...], PreparedJsonl] = {}
+                    provider_parse_seconds = 0.0
                     try:
                         for raw_id in raw_ids:
                             provider, blob_hash, path, kind, size = descriptors[raw_id]
@@ -1134,7 +1139,9 @@ class RawObservationDerivation(RawObservationInspection):
                                             reference_seal,
                                             blob_store=blob_store,
                                         )
+                                        parse_started = time.perf_counter()
                                         artifact = worker(retained_read, raw_id, directory=scratch)
+                                        provider_parse_seconds += time.perf_counter() - parse_started
                                     check_compute_cancelled()
                                 except DaemonOperationCancelled:
                                     raise
@@ -1656,6 +1663,7 @@ class RawObservationDerivation(RawObservationInspection):
                         prepared_key_refusals=tuple(prepared_key_refusals.values()),
                         scratch_directory=scratch,
                         scratch_owner=scratch_owner,
+                        provider_parse_seconds=provider_parse_seconds,
                     )
             # An empty raw selection has no parse payload; the canonical replay
             # owner remains responsible for its final authority verdict.
@@ -1901,6 +1909,9 @@ class RawObservationDerivation(RawObservationInspection):
                     if publication_failure is not None:
                         publication_failure(failure)
                     return False
+                replay_receipt.stage_timings_s["provider_parse"] = (
+                    replay_receipt.stage_timings_s.get("provider_parse", 0.0) + replacement.provider_parse_seconds
+                )
                 if phase_receipt is not None:
                     phase_receipt("replay", replay_receipt)
                 if replay_receipt.changed_session_ids:

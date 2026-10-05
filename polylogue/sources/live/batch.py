@@ -804,6 +804,24 @@ def _zip_member_debt_subject(path: Path, ordinal: int, member: str) -> str:
     return f"{_zip_member_debt_prefix(path)}{ordinal}:{member}"
 
 
+def _full_publication_stage_timings(timings: Mapping[str, float]) -> dict[str, float]:
+    """Report a retained publication's stages as this full pass's own.
+
+    Live full acquisition no longer parses or writes Index itself; the
+    retained owner does both for the raws it acquired. Its replay-route
+    segment (``revision_replay``, ``membership_replay``) names how the owner
+    published, so the batch reports the stage under ``full.`` instead:
+    ``revision_replay.index.session_upsert`` becomes
+    ``full.index.session_upsert`` and ``provider_parse`` ``full.provider_parse``.
+    """
+    reported: dict[str, float] = {}
+    for key, elapsed in timings.items():
+        route, separator, stage = key.partition(".")
+        name = stage if separator and route.endswith("_replay") else key
+        reported[f"full.{name}"] = reported.get(f"full.{name}", 0.0) + float(elapsed)
+    return reported
+
+
 def _declared_evidence_raw(source: sqlite3.Connection, raw_id: str, path: Path) -> bool:
     """Whether a raw's path is declared non-session evidence (a carrier, a memory document).
 
@@ -3195,8 +3213,12 @@ class LiveBatchProcessor:
         outcomes = await self._retained_runner(result.acquired_raw_ids, on_terminal_refusal=settle_terminal_refusal)
         written = tuple(dict.fromkeys(sid for outcome in outcomes for sid in outcome.written_session_ids))
         changed = tuple(dict.fromkeys(sid for outcome in outcomes for sid in outcome.changed_session_ids))
+        stage_timings = dict(result.stage_timings_s)
+        for outcome in outcomes:
+            _accumulate_stage_timings(stage_timings, _full_publication_stage_timings(outcome.stage_timings_s))
         return replace(
             result,
+            stage_timings_s=stage_timings,
             settled_exclusions={
                 **result.settled_exclusions,
                 **self._retained_settled_exclusions(result, terminal_refusals),
