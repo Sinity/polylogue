@@ -39,6 +39,7 @@ from polylogue.sources.live.batch_support import (
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.raw_owner_routes import ingest_append_with_owner
 
 
 def _session_meta(session_id: str) -> bytes:
@@ -324,7 +325,7 @@ def test_deferred_append_without_marker_replans_every_tick_forever(tmp_path: Pat
 
     plan = processor._append_plan(source)
     assert isinstance(plan, _AppendPlan)
-    first_result = processor._ingest_append_plans([plan])
+    first_result = ingest_append_with_owner(processor, [plan])
     assert first_result.deferred == [plan]
     assert _raw_session_count(tmp_path) == 1
 
@@ -338,7 +339,7 @@ def test_deferred_append_without_marker_replans_every_tick_forever(tmp_path: Pat
         )
         assert replayed_plan.start_offset == plan.start_offset
         assert replayed_plan.payload == plan.payload
-        processor._ingest_append_plans([replayed_plan])
+        ingest_append_with_owner(processor, [replayed_plan])
 
     # Content-hash idempotency means no literal duplicate row accumulates
     # for byte-identical replans -- but see the next test for the case
@@ -366,7 +367,7 @@ def test_deferred_append_without_marker_accumulates_a_new_raw_id_per_growth_tick
 
     plan = processor._append_plan(source)
     assert isinstance(plan, _AppendPlan)
-    processor._ingest_append_plans([plan])
+    ingest_append_with_owner(processor, [plan])
     assert _raw_session_count(tmp_path) == 1
 
     for tick in range(3):
@@ -375,7 +376,7 @@ def test_deferred_append_without_marker_accumulates_a_new_raw_id_per_growth_tick
         grown_plan = processor._append_plan(source)
         assert isinstance(grown_plan, _AppendPlan)
         assert grown_plan.start_offset == plan.start_offset, "start_offset never advances without the fix"
-        processor._ingest_append_plans([grown_plan])
+        ingest_append_with_owner(processor, [grown_plan])
         assert _raw_session_count(tmp_path) == tick + 2, (
             "each growth tick against an unadvanced start_offset mints a new, distinct, "
             "overlapping raw_id -- unbounded durable storage growth for a session that never converges"
@@ -385,7 +386,7 @@ def test_deferred_append_without_marker_accumulates_a_new_raw_id_per_growth_tick
 def test_append_plan_skips_replanning_an_unchanged_already_deferred_range(tmp_path: Path) -> None:
     """The actual fix: once ``deferred_end_offset`` is recorded, a second,
     unchanged observation of the same file must not produce a fresh append
-    plan at all, so ``_ingest_append_plans`` is never called a second time
+    plan at all, so append ingest is never called a second time
     and no duplicate raw_id is minted.
     """
     source = _seed_quarantine_prone_append(tmp_path, session_id="stuck-fixed")
@@ -394,7 +395,7 @@ def test_append_plan_skips_replanning_an_unchanged_already_deferred_range(tmp_pa
 
     plan = processor._append_plan(source)
     assert isinstance(plan, _AppendPlan)
-    result = processor._ingest_append_plans([plan])
+    result = ingest_append_with_owner(processor, [plan])
     assert result.deferred == [plan]
     assert _raw_session_count(tmp_path) == 1
 
@@ -435,7 +436,7 @@ def test_append_plan_still_captures_genuine_growth_past_a_deferred_range(tmp_pat
 
     plan = processor._append_plan(source)
     assert isinstance(plan, _AppendPlan)
-    processor._ingest_append_plans([plan])
+    ingest_append_with_owner(processor, [plan])
     record_deferred_append_cursor(
         cursor,
         source,

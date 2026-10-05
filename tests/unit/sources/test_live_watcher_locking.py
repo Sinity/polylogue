@@ -10,21 +10,24 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
-import threading
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.intake import AdmissionOutcome
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.live.parse_prefetch import LiveParseStage
+from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
+from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.live_ingest import prepared_live_convergence_owner
 
 
 def _make_watcher(tmp_path: Path, root: Path) -> LiveWatcher:
@@ -373,15 +376,16 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
 
 @pytest.mark.asyncio
 async def test_watcher_queues_behind_daemon_maintenance_writer(tmp_path: Path) -> None:
-    """A page's off-writer parse yields to maintenance before publication.
+    """A page's off-writer preparation yields to maintenance before publication.
 
-    This exercises the production watcher -> batch -> parse-prefetch route and
-    a real temporary SQLite archive.  The parser is paused after the batch has
-    recorded its initial ops evidence but before the archive publication.  A
-    maintenance writer must run during that pause; the later archive write
-    then queues behind it.  Reinstating ``coordinator.run('watcher.live_ingest',
-    ...)`` around the whole page leaves maintenance blocked until parsing ends,
-    so ``maintenance_entered`` never sets and pytest-timeout fails the test.
+    This exercises the production watcher -> batch -> raw-owner retained route
+    and a real temporary SQLite archive.  Retained preparation is paused after
+    the batch has acquired its raw but before the archive publication.  A
+    maintenance writer must run during that pause; the later publication
+    (``watcher.live_ingest.retained``) then queues behind it.  Reinstating
+    ``coordinator.run('watcher.live_ingest', ...)`` around the whole page leaves
+    maintenance blocked until preparation ends, so ``maintenance_entered``
+    never sets and pytest-timeout fails the test.
     """
     archive_root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, archive_root)
@@ -405,61 +409,66 @@ async def test_watcher_queues_behind_daemon_maintenance_writer(tmp_path: Path) -
             )
         )
     )
-    loop = asyncio.get_running_loop()
-    parser_started = asyncio.Event()
-    release_parser = threading.Event()
-    stage = LiveParseStage(max_workers=1, max_inflight_bytes=1_000_000)
-    original_warm_paths = stage.warm_paths
-
-    # ``warm_paths`` is the batch's off-writer preparation of path-backed
-    # sources (``LiveBatchProcessor._ingest_full_paths``); pausing it holds
-    # the page between its ops evidence and its archive publication. Every
-    # wait below is on the event it means; pytest-timeout bounds a hang.
-    def paused_warm_paths(*args: Any, **kwargs: Any) -> frozenset[str]:
-        loop.call_soon_threadsafe(parser_started.set)
-        release_parser.wait()
-        return original_warm_paths(*args, **kwargs)
-
-    stage.warm_paths = paused_warm_paths  # type: ignore[method-assign]
+    preparation_started = asyncio.Event()
+    release_preparation = asyncio.Event()
     events: list[DaemonWriteEvent] = []
     coordinator = DaemonWriteCoordinator(observer=events.append, archive_root=archive_root)
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     polylogue = cast(
         Any,
         SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=archive_root / "index.db")),
     )
-    watcher = LiveWatcher(
-        polylogue,
-        (WatchSource(name="codex", root=source_root),),
-        cursor=CursorStore(archive_root / "index.db"),
-        write_coordinator=coordinator,
-        parse_stage=stage,
-    )
-    maintenance_entered = asyncio.Event()
-    release_maintenance = asyncio.Event()
-
-    async def maintenance() -> None:
-        maintenance_entered.set()
-        await release_maintenance.wait()
-
-    ingest_task = asyncio.create_task(watcher._ingest_files([source]))
     try:
-        await parser_started.wait()
-        maintenance_task = asyncio.create_task(coordinator.run("maintenance.raw_materialization", maintenance))
-        await maintenance_entered.wait()
-    finally:
-        # A failure above must not leave the parse thread parked forever.
-        release_parser.set()
-    await asyncio.sleep(0)
-    release_maintenance.set()
-    metrics = await ingest_task
-    await maintenance_task
+        async with prepared_live_convergence_owner(
+            archive_root, compute_adapter=compute, write_coordinator=coordinator
+        ) as raw_owner:
+            # Retained preparation is the batch's off-writer work for path-backed
+            # sources; pausing it holds the page between acquisition and its
+            # archive publication. Every wait below is on the event it means;
+            # pytest-timeout bounds a hang.
+            async def paused_retained(raw_ids: Sequence[str]) -> Sequence[PreparedRevisionReplayResult]:
+                preparation_started.set()
+                await release_preparation.wait()
+                return await raw_owner.ingest_retained_raw_ids(raw_ids)
 
-    assert metrics.succeeded_file_count == 1
-    actors = [event.actor for event in events if event.phase == "queued"]
-    maintenance_index = actors.index("maintenance.raw_materialization")
-    assert any(actor.startswith("watcher.live_ingest.") for actor in actors[maintenance_index + 1 :])
-    watcher.stop()
-    assert await coordinator.shutdown(timeout=1.0)
+            watcher = LiveWatcher(
+                polylogue,
+                (WatchSource(name="codex", root=source_root),),
+                cursor=CursorStore(archive_root / "index.db"),
+                write_coordinator=coordinator,
+                sqlite_capture_stage=LiveSQLiteCaptureStage(compute_adapter=compute),
+                append_runner=raw_owner.ingest_append_plans,
+                convergence_runner=raw_owner.run_convergence_sync,
+                retained_runner=paused_retained,
+            )
+            maintenance_entered = asyncio.Event()
+            release_maintenance = asyncio.Event()
+
+            async def maintenance() -> None:
+                maintenance_entered.set()
+                await release_maintenance.wait()
+
+            ingest_task = asyncio.create_task(watcher._ingest_files([source]))
+            try:
+                await preparation_started.wait()
+                maintenance_task = asyncio.create_task(coordinator.run("maintenance.raw_materialization", maintenance))
+                await maintenance_entered.wait()
+            finally:
+                # A failure above must not leave the preparation parked forever.
+                release_preparation.set()
+            await asyncio.sleep(0)
+            release_maintenance.set()
+            metrics = await ingest_task
+            await maintenance_task
+
+            assert metrics.succeeded_file_count == 1
+            actors = [event.actor for event in events if event.phase == "queued"]
+            maintenance_index = actors.index("maintenance.raw_materialization")
+            assert any(actor.startswith("watcher.live_ingest.") for actor in actors[maintenance_index + 1 :])
+            watcher.stop()
+    finally:
+        assert await coordinator.shutdown(timeout=1.0)
+        await asyncio.to_thread(compute.shutdown, wait=True)
 
 
 def test_a_wrong_shaped_coordinator_cannot_silently_ungate_writes(tmp_path: Path) -> None:

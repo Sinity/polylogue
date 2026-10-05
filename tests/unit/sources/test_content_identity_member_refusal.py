@@ -107,7 +107,7 @@ def test_a_live_zip_refusal_is_recorded_debt_until_the_zip_is_clean(
 
     def extract() -> set[str]:
         with live_zip_capture(tmp_path) as (publisher, zip_inputs):
-            extracted = processor._extract_zip_member_records(
+            extracted = processor._extract_source_only_zip_member_records(
                 zip_path,
                 blob_store=publisher,
                 zip_inputs=zip_inputs,

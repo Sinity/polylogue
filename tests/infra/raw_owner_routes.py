@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import sys
+from builtins import BaseExceptionGroup
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, closing
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,7 +28,13 @@ from tests.infra.archive_templates import run_archive_fixture_write
 from tests.infra.live_ingest import prepared_live_convergence_owner
 
 if TYPE_CHECKING:
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+    from polylogue.sources.live.batch import LiveBatchProcessor
     from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
+    from polylogue.sources.live.metrics import LiveBatchMetrics
+    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
     from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 
 
@@ -93,11 +102,121 @@ async def cold_rebuilt_index(archive_root: Path) -> AsyncIterator[Path]:
         await run_archive_fixture_write(archive_root, generation.discard)
 
 
+@dataclass(frozen=True, slots=True)
+class LiveOwnerSet:
+    """The daemon's live intake owners, bound to the running event loop."""
+
+    compute: BoundedComputeAdapter
+    coordinator: DaemonWriteCoordinator
+    stage: LiveSQLiteCaptureStage
+    raw_owner: RawObservationConvergenceOwner
+
+    def watcher_kwargs(self) -> dict[str, Any]:
+        """``LiveWatcher`` owner arguments, exactly as the daemon passes them."""
+        return {
+            "write_coordinator": self.coordinator,
+            "sqlite_capture_stage": self.stage,
+            "append_runner": self.raw_owner.ingest_append_plans,
+            "convergence_runner": self.raw_owner.run_convergence_sync,
+            "retained_runner": self.raw_owner.ingest_retained_raw_ids,
+        }
+
+    def processor_slots(self) -> dict[str, Any]:
+        """``LiveBatchProcessor`` owner slots, matching its constructor arguments."""
+        return {
+            "_sqlite_capture_stage": self.stage,
+            "_sync_runner": self.coordinator.run_sync,
+            "_append_runner": self.raw_owner.ingest_append_plans,
+            "_retained_runner": self.raw_owner.ingest_retained_raw_ids,
+            "_convergence_runner": self.raw_owner.run_convergence_sync,
+        }
+
+
+@asynccontextmanager
+async def live_owner_set(root: Path) -> AsyncIterator[LiveOwnerSet]:
+    """Build the daemon's live owners for ``root`` and settle them physically."""
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
+
+    root.mkdir(parents=True, exist_ok=True)
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    stage = LiveSQLiteCaptureStage(compute_adapter=compute)
+    try:
+        async with prepared_live_convergence_owner(
+            root, compute_adapter=compute, write_coordinator=coordinator
+        ) as raw_owner:
+            yield LiveOwnerSet(compute=compute, coordinator=coordinator, stage=stage, raw_owner=raw_owner)
+    finally:
+        primary = sys.exception()
+        failures: list[BaseException] = []
+        settled = False
+        try:
+            # Idempotent: a watcher that owned the stage may already have closed it.
+            stage.shutdown()
+        except BaseException as failure:
+            failures.append(failure)
+        try:
+            settled = await coordinator.shutdown(timeout=float("inf"))
+            if not settled:
+                raise RuntimeError("live owner coordinator did not physically settle")
+        except BaseException as failure:
+            failures.append(failure)
+        try:
+            await asyncio.to_thread(compute.shutdown, wait=settled)
+        except BaseException as failure:
+            failures.append(failure)
+        if failures:
+            if primary is not None:
+                failures.insert(0, primary)
+            raise BaseExceptionGroup("live owner settlement failed", failures) from primary
+
+
+@asynccontextmanager
+async def supplied_live_owners(processor: LiveBatchProcessor) -> AsyncIterator[LiveBatchProcessor]:
+    """Supply one pass's canonical owners to a directly constructed processor.
+
+    The daemon constructs ``LiveBatchProcessor`` with its capture stage, writer
+    coordinator and raw owner. A fixture processor built outside an event loop
+    receives the same owners here, bound to the running loop, for one pass;
+    the slots are restored before the owners physically settle.
+    """
+    async with live_owner_set(_owner_archive_root(processor)) as owners:
+        slots = owners.processor_slots()
+        previous = {slot: getattr(processor, slot) for slot in slots}
+        for slot, value in slots.items():
+            setattr(processor, slot, value)
+        try:
+            yield processor
+        finally:
+            for slot, value in previous.items():
+                setattr(processor, slot, value)
+
+
+async def ingest_files_with_owners(
+    processor: LiveBatchProcessor, paths: Sequence[Path], **kwargs: Any
+) -> LiveBatchMetrics:
+    """Run one ``ingest_files`` pass with the canonical owners supplied."""
+    async with supplied_live_owners(processor):
+        return await processor.ingest_files(list(paths), **kwargs)
+
+
+def run_ingest_files(processor: LiveBatchProcessor, paths: Sequence[Path], **kwargs: Any) -> LiveBatchMetrics:
+    """Synchronous form of :func:`ingest_files_with_owners`."""
+    return asyncio.run(ingest_files_with_owners(processor, paths, **kwargs))
+
+
 __all__ = [
+    "LiveOwnerSet",
     "cold_rebuilt_index",
+    "ingest_files_with_owners",
     "ingest_append_with_owner",
     "ingest_append_with_owner_async",
+    "live_owner_set",
     "replay_retained_raws",
     "replay_retained_raws_async",
     "retained_raw_ids",
+    "run_ingest_files",
+    "supplied_live_owners",
 ]

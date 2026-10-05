@@ -16,6 +16,7 @@ from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.parsers import grok
 from polylogue.sources.parsers.base import AdmissionUnit
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
 
 
 @pytest.fixture
@@ -170,12 +171,7 @@ def test_native_result_unsupported_outcome_is_not_reported_as_absence(
     assert session.messages[0].blocks[0].is_error is None
     assert session.messages[0].blocks[0].outcome_unknown_reason == "unsupported_construct"
     with ArchiveStore(workspace_env["archive_root"]) as archive:
-        _, stored_id = archive.write_raw_and_parsed(
-            session,
-            payload=json.dumps(bundle).encode(),
-            source_path="/example/grok-native.json",
-            acquired_at_ms=1735689600000,
-        )
+        stored_id = write_index_session(archive, session)
         hydrated = archive.read_session(stored_id)
         assert hydrated.messages[0].blocks[0].tool_outcome == "unknown"
         assert hydrated.messages[0].blocks[0].tool_result_outcome_unknown_reason == "unsupported_construct"
@@ -267,12 +263,7 @@ def test_native_human_sender_authorship_survives_persisted_hydration(
     assert session.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
     assert session.messages[0].message_type is MessageType.CONTEXT
     with ArchiveStore(archive_root) as archive:
-        _, stored_id = archive.write_raw_and_parsed(
-            session,
-            payload=json.dumps(bundle).encode(),
-            source_path="/example/grok-native.json",
-            acquired_at_ms=1735689600000,
-        )
+        stored_id = write_index_session(archive, session)
         hydrated = archive_envelope_to_session(archive.read_session(stored_id))
         message = next(iter(hydrated.messages))
         assert message.material_origin is MaterialOrigin.HUMAN_AUTHORED

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,7 @@ from polylogue.pipeline.ids import session_id, session_revision_projection
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers import grok
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
 
 
 def _nested_conversation() -> dict[str, Any]:
@@ -375,12 +375,7 @@ def test_export_human_sender_preserves_authorship_of_context_looking_prose(
     assert session.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
     assert session.messages[0].message_type is MessageType.CONTEXT
     with ArchiveStore(archive_root) as archive:
-        _, stored_id = archive.write_raw_and_parsed(
-            session,
-            payload=json.dumps(payload).encode(),
-            source_path="/example/grok.json",
-            acquired_at_ms=1735689600000,
-        )
+        stored_id = write_index_session(archive, session)
         hydrated = archive_envelope_to_session(archive.read_session(stored_id))
         message = next(iter(hydrated.messages))
         assert message.material_origin is MaterialOrigin.HUMAN_AUTHORED
