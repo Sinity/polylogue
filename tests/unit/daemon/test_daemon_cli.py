@@ -4142,7 +4142,10 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
             return {str(row[0]) for row in db.execute("SELECT session_id FROM sessions")}
 
     archive_root = tmp_path / "archive"
-    archive_root.mkdir()
+    from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
+
+    # Source-only acquisition refuses an archive without its durable Source tier.
+    run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
     source_root = tmp_path / "source"
     source_root.mkdir()
     imports_root = tmp_path / "imports"
