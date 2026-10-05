@@ -299,12 +299,18 @@ def test_interrupted_export_never_publishes_a_complete_cache_manifest(
         created_spool_directories.append(Path(directory.name))
         return directory
 
+    put_exports: list[str] = []
+
     def interrupt_second(*args: Any, **kwargs: Any) -> None:
+        # Collection runs on the bounded compute adapter, so either export may
+        # complete first; interrupt whichever export arrives after one is cached.
         candidate = args[1]
         assert isinstance(candidate, _SourceCandidate)
-        if candidate.path.name == "second.json":
+        if put_exports and candidate.path.name not in put_exports:
             raise RuntimeError("synthetic parent interruption")
         real_put(*args, **kwargs)
+        if candidate.path.name not in put_exports:
+            put_exports.append(candidate.path.name)
 
     monkeypatch.setattr(source_inference_module, "_put_contribution", interrupt_second)
     monkeypatch.setattr(tempfile, "TemporaryDirectory", track_temporary_directory)

@@ -439,32 +439,37 @@ class TestPolylogueReadSurfaces:
         # (what hook rows join against via ``session_native_id``) is the bare
         # provider-native token.
         bare_native_id = "provider-hooks-api"
-        with ArchiveStore(archive.archive_root) as archive_db:
-            native_id = write_index_session(archive_db, parsed)
 
-            hook_specs = [
-                ("PreToolUse", 1_735_689_601_000),
-                ("PostToolUse", 1_735_689_602_000),
-                ("PostToolUse", 1_735_689_603_000),
-            ]
-            for index, (event_type, observed_at_ms) in enumerate(hook_specs):
-                archive_db.write_hook_event(
-                    provider=Provider.CODEX,
-                    payload=f'{{"event":"{event_type}","n":{index}}}'.encode(),
-                    source_path="/tmp/hooks/codex-session.jsonl",
-                    acquired_at_ms=observed_at_ms,
-                    carrier_relative_path=f"/tmp/hooks/codex-session.jsonl:{index}",
-                    hook_event=ArchiveHookEvent(
-                        hook_event_id=f"hook-{index}",
-                        origin=Origin.CODEX_SESSION,
+        def seed() -> str:
+            with ArchiveStore(archive.archive_root) as archive_db:
+                seeded_id = write_index_session(archive_db, parsed)
+
+                hook_specs = [
+                    ("PreToolUse", 1_735_689_601_000),
+                    ("PostToolUse", 1_735_689_602_000),
+                    ("PostToolUse", 1_735_689_603_000),
+                ]
+                for index, (event_type, observed_at_ms) in enumerate(hook_specs):
+                    archive_db.write_hook_event(
+                        provider=Provider.CODEX,
+                        payload=f'{{"event":"{event_type}","n":{index}}}'.encode(),
                         source_path="/tmp/hooks/codex-session.jsonl",
-                        event_type=event_type,
-                        payload={"event": event_type, "n": index},
-                        observed_at_ms=observed_at_ms,
-                        native_id=f"{bare_native_id}:{event_type}:{index}",
-                        session_native_id=bare_native_id,
-                    ),
-                )
+                        acquired_at_ms=observed_at_ms,
+                        carrier_relative_path=f"/tmp/hooks/codex-session.jsonl:{index}",
+                        hook_event=ArchiveHookEvent(
+                            hook_event_id=f"hook-{index}",
+                            origin=Origin.CODEX_SESSION,
+                            source_path="/tmp/hooks/codex-session.jsonl",
+                            event_type=event_type,
+                            payload={"event": event_type, "n": index},
+                            observed_at_ms=observed_at_ms,
+                            native_id=f"{bare_native_id}:{event_type}:{index}",
+                            session_native_id=bare_native_id,
+                        ),
+                    )
+            return seeded_id
+
+        native_id = run_off_event_loop(seed)
 
         summary = await archive.get_hook_event_summary_for_session(native_id)
         assert summary is not None

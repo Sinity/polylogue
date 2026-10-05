@@ -16,8 +16,9 @@ from polylogue.schemas.validator import SchemaValidator
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw.models import RawSessionStateUpdate
-from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.connection_profile import open_connection, readonly_connection_context
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update, raw_state_parameter
+from polylogue.storage.sqlite.write_lease import write_lease
 
 from .models import ProviderSchemaVerification, SchemaVerificationReport
 from .requests import SchemaVerificationRequest, bounded_window
@@ -259,10 +260,11 @@ def verify_raw_corpus(
     total_records = 0
     provider_filter = set(request.providers or [])
 
-    conn = open_connection(source_db_path, archive_root=location.configured_root)
-    conn.row_factory = sqlite3.Row
-    try:
-        quarantine_updates: list[VerificationUpdate] = []
+    quarantine_updates: list[VerificationUpdate] = []
+    # Verification only reads Source evidence; the optional quarantine below is
+    # the sole write and takes its own writer under the archive write lease.
+    with readonly_connection_context(source_db_path) as conn:
+        conn.row_factory = sqlite3.Row
         _ignored_limit, _ignored_offset, rows = iter_verification_rows(
             conn,
             providers=request.providers,
@@ -382,10 +384,13 @@ def verify_raw_corpus(
 
             _report_progress(request.progress_callback)
 
-        if quarantine_updates:
-            apply_quarantine_updates(conn, updates=quarantine_updates)
-    finally:
-        conn.close()
+    if quarantine_updates:
+        with write_lease("schema.verify.quarantine", archive_root=location.configured_root):
+            writer = open_connection(source_db_path, archive_root=location.configured_root)
+            try:
+                apply_quarantine_updates(writer, updates=quarantine_updates)
+            finally:
+                writer.close()
 
     return SchemaVerificationReport(
         providers=stats_by_provider,

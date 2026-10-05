@@ -230,10 +230,10 @@ def test_a_zero_raw_artifact_denominator_withholds_raw_materialization() -> None
     (polylogue-o6oct).
 
     Anti-vacuity, both directions: deleting the zero-denominator branch makes
-    the first assertion red, and widening it to any falsy/absent count makes
-    the second and third red -- a populated archive must stay determinate, and
-    a producer that reported no denominator at all must keep its own verdict
-    rather than have a real refutation masked into "unknown".
+    the first assertion red, and widening it to any count makes the second red
+    -- a populated archive must stay determinate. A snapshot that reported no
+    denominator withholds a verdict (#5491), but a measured blocker on that
+    snapshot is still a refutation and must not be masked into "unknown".
     """
     from polylogue.readiness.claim_guard import raw_materialization_unmeasured_reason
 
@@ -241,4 +241,5 @@ def test_a_zero_raw_artifact_denominator_withholds_raw_materialization() -> None
 
     assert raw_materialization_unmeasured_reason({**complete, "raw_artifact_count": 0}) is not None
     assert raw_materialization_unmeasured_reason({**complete, "raw_artifact_count": 4}) is None
-    assert raw_materialization_unmeasured_reason(complete) is None
+    assert raw_materialization_unmeasured_reason(complete) is not None
+    assert raw_materialization_unmeasured_reason({**complete, "blocked": 1}) is None

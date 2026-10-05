@@ -59,7 +59,7 @@ from polylogue.sources.live.metrics import REFUSED_UNATTEMPTED, REFUSED_UNATTEMP
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.cursor_authority import fixture_cursor_authority
 
 
@@ -1531,9 +1531,7 @@ def test_raw_discovery_bounds_valid_prefix_and_resumes_after_it(
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return {key: "valid" if key == valid else "missing" for key in keys}
 
-    monkeypatch.setattr(
-        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
-    )
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationInspection", FakeRawObservationDerivation)
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(1) == ()
@@ -1547,29 +1545,23 @@ async def test_raw_discovery_moves_past_a_cooled_down_poison_in_the_fair_dispatc
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Mutation: reset discovery each pass, and the cooled-down head starves the healthy raw."""
-    bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        valid = archive.write_raw_payload(
-            provider=Provider.CHATGPT,
-            payload=b"v",
-            source_path="valid.json",
-            canonical_source_path="valid.json",
-            acquired_at_ms=1,
-        )
-        poison = archive.write_raw_payload(
-            provider=Provider.CHATGPT,
-            payload=b"p",
-            source_path="poison.json",
-            canonical_source_path="poison.json",
-            acquired_at_ms=1,
-        )
-        healthy = archive.write_raw_payload(
-            provider=Provider.CHATGPT,
-            payload=b"h",
-            source_path="healthy.json",
-            canonical_source_path="healthy.json",
-            acquired_at_ms=1,
-        )
+
+    def seed() -> tuple[str, ...]:
+        # Bootstrap and raw writes take the synchronous lease; keep them off the loop.
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            return tuple(
+                archive.write_raw_payload(
+                    provider=Provider.CHATGPT,
+                    payload=payload,
+                    source_path=source_path,
+                    canonical_source_path=source_path,
+                    acquired_at_ms=1,
+                )
+                for payload, source_path in ((b"v", "valid.json"), (b"p", "poison.json"), (b"h", "healthy.json"))
+            )
+
+    valid, poison, healthy = run_off_event_loop(seed)
 
     class FakeRawObservationDerivation:
         def terminal_decode_refusals(self, keys: Sequence[str]) -> dict[str, RetainedRawDecodeRefusalError]:
@@ -1592,9 +1584,7 @@ async def test_raw_discovery_moves_past_a_cooled_down_poison_in_the_fair_dispatc
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return {key: "valid" if key == valid else "missing" for key in keys}
 
-    monkeypatch.setattr(
-        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
-    )
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationInspection", FakeRawObservationDerivation)
     admitted: list[str] = []
 
     async def admit(raw_id: str) -> AdmissionResult:
@@ -1675,9 +1665,7 @@ def test_raw_discovery_resets_only_for_a_new_generation_binding(
         "polylogue.operations.raw_observation_derivation.raw_observation_frame",
         lambda _archive_root: next(frames),
     )
-    monkeypatch.setattr(
-        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
-    )
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationInspection", FakeRawObservationDerivation)
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(1)[0][0] == first
@@ -1730,9 +1718,7 @@ def test_raw_discovery_cursor_stays_behind_ids_the_dispatcher_never_admitted(
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return {key: "valid" if key in materialized else "missing" for key in keys}
 
-    monkeypatch.setattr(
-        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
-    )
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationInspection", FakeRawObservationDerivation)
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert [raw_id for raw_id, _cost in discovery.discover_pending_raw_ids(8)] == ["a", "b", "c"]
@@ -1816,9 +1802,7 @@ def test_raw_discovery_second_idle_pass_stays_one_page_at_large_scope(
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return dict.fromkeys(keys, "valid")
 
-    monkeypatch.setattr(
-        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
-    )
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationInspection", FakeRawObservationDerivation)
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(32) == ()
@@ -2399,9 +2383,7 @@ def test_raw_discovery_sweep_advances_under_a_sustained_arrival_rate(
             # are outstanding, which is exactly the starvation condition.
             return {key: "valid" if key.startswith("page") else "missing" for key in keys}
 
-    monkeypatch.setattr(
-        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
-    )
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationInspection", FakeRawObservationDerivation)
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(4) == ()
@@ -3473,9 +3455,11 @@ class _LeaseTakingSourceAdapter(FakeAdapter):
         return items
 
     async def admit(self, item: IntakeItem) -> AdmissionResult:
-        from polylogue.core.write_lease import write_lease
+        from polylogue.core.write_lease import async_write_lease
 
-        with write_lease(f"test.intake.{self.source.name}", archive_root=self.archive_root):
+        # Admission runs on the dispatcher's event loop: a synchronous lease
+        # may not block it, so the configured adapter takes the async lease.
+        async with async_write_lease(f"test.intake.{self.source.name}", archive_root=self.archive_root):
             self.lease_acquisitions += 1
             return await super().admit(item)
 
@@ -3983,11 +3967,16 @@ async def test_a_caught_page_error_is_classified_like_an_escaped_one(
     source_root = workspace_env["data_root"] / "claude-projects"
     source_root.mkdir(parents=True)
     (source_root / "a.jsonl").write_text("{}\n", encoding="utf-8")
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    # The daemon watcher writes its cursor through the writer it is given.
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
     watcher = LiveWatcher(
         archive,
         (WatchSource(name="claude-code", root=source_root),),
         cursor=CursorStore(archive_root / "index.db"),
+        write_coordinator=coordinator,
     )
 
     async def failing_ingest(*_args: object, **_kwargs: object) -> object:
@@ -4003,6 +3992,7 @@ async def test_a_caught_page_error_is_classified_like_an_escaped_one(
     finally:
         watcher.stop()
         await archive.close()
+        assert await coordinator.shutdown(timeout=float("inf"))
     assert outcomes
     assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}
     assert {result.transient for result in outcomes.values()} == {transient}

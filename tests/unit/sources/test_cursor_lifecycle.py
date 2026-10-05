@@ -371,11 +371,14 @@ import signal
 import sys
 from pathlib import Path
 
-# Archive writers open ops.db through the measured creator, and the cursor's
-# read-modify-write commits at its ``with conn:`` exit. That exit is the durable
-# commit boundary (the outer ``BEGIN IMMEDIATE`` widens the write lock over the
-# read, polylogue-qug2), so the crash fault straddles exactly this call: the
-# transaction is still uncommitted when the process parks here.
+# The durable commit boundary of a cursor transition is the successful exit
+# of ``with conn:`` in ``CursorStore._connect_ops``: the outer ``BEGIN
+# IMMEDIATE`` in ``_read_modify_write_cursor_record`` widens the write lock to
+# cover the read (polylogue-qug2), and ``upsert_ingest_cursor`` deliberately
+# does not commit inside a held transaction. The context-manager exit commits
+# in C without calling a Python ``commit`` override, so the pause straddles
+# ``__exit__`` itself. A fault merely "somewhere inside mark_failed" can never
+# observe an uncommitted write.
 #
 # ARMED gates the pause so only the write this test cares about is poisoned
 # -- CursorStore.__init__ issues its own unrelated ops-tier commits during
@@ -384,22 +387,30 @@ ARMED = [False]
 
 from polylogue.storage import io_phase_metrics  # noqa: E402
 
-_original_exit = io_phase_metrics._MeasuredConnection.__exit__
+from polylogue.storage import io_phase_metrics  # noqa: E402
 
 
-def _pausing_exit(self, exc_type, exc, traceback):
-    if ARMED[0] and exc_type is None and self.in_transaction:
-        sys.stdout.write("WROTE\\n")
-        sys.stdout.flush()
-        # Genuinely parks this thread in a kernel wait -- no further Python
-        # bytecode can run past this point. The parent sends a real SIGKILL once
-        # it has seen the announcement, so the transaction is torn down while
-        # truly mid-commit, not racing a self-delivered signal.
-        signal.pause()
-    return _original_exit(self, exc_type, exc, traceback)
+# Ops connections are created by ``connect_measured`` with its own measured
+# connection factory; pause inside that same class so the admitted creator
+# and its custody checks stay the production ones.
+class PausingConnection(io_phase_metrics._MeasuredConnection):
+    def __exit__(self, exc_type, exc, traceback):
+        if ARMED[0] and exc_type is None and self.in_transaction:
+            sys.stdout.write("WROTE\\n")
+            sys.stdout.flush()
+            # Genuinely parks this thread in a kernel wait -- no further
+            # Python bytecode can run past this point. The parent sends a
+            # real SIGKILL once it has seen the announcement, so the
+            # transaction is torn down while truly mid-commit, not racing a
+            # self-delivered signal (self os.kill(SIGKILL) is NOT
+            # deterministic here: signal delivery is asynchronous and the
+            # interpreter can -- and, measured empirically, does -- run far
+            # enough to finish the commit before the kernel acts on it).
+            signal.pause()
+        return super().__exit__(exc_type, exc, traceback)
 
 
-io_phase_metrics._MeasuredConnection.__exit__ = _pausing_exit
+io_phase_metrics._MeasuredConnection = PausingConnection
 
 from polylogue.sources.live.cursor import CursorPathAuthority, CursorStore  # noqa: E402
 

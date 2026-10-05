@@ -64,6 +64,7 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.convergence_debt import ConvergenceDebt
 from polylogue.sources.live.cursor import ConvergenceDebtSettlement, CursorStore
+from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, SETTLED_EXCLUSION_REASONS
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.source_acquisition_components import stream_preserved_zip_entry_raw_data
 from polylogue.sources.source_parsing import has_decoded_session_evidence
@@ -71,6 +72,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.raw_owner_routes import (
     ingest_append_with_owner,
     ingest_files_with_owners,
@@ -91,7 +93,10 @@ def _full_paths_sync(processor: LiveBatchProcessor, paths: list[Path], *, source
 
     ``LiveBatchProcessor._ingest_full_paths`` seals declared Codex state
     databases through the capture stage before the writer runs and discards
-    them afterwards; other inputs are acquired by path inside the body.
+    them afterwards; other inputs are acquired by path inside the body. The
+    body runs on the daemon's admitted writer under its own ops scope, as
+    ``_ingest_full_paths_prepared`` dispatches it; the custody authorizer
+    refuses archive writes from any other creator.
     """
     import threading
 
@@ -118,8 +123,13 @@ def _full_paths_sync(processor: LiveBatchProcessor, paths: list[Path], *, source
             captures = LiveSQLiteCaptureStage(compute_adapter=compute).prepare_sqlite_paths(
                 state_paths, archive_root=archive_root, cancelled=threading.Event(), fallback_provider=provider
             )
-        return processor._ingest_full_paths_sync(
-            paths, source_name=source_name, captured_sqlite_by_path=captures, **kwargs
+        return asyncio.run(
+            run_archive_fixture_write(
+                archive_root,
+                lambda: processor._ingest_full_paths_sync_in_ops_scope(
+                    paths, source_name=source_name, captured_sqlite_by_path=captures, **kwargs
+                ),
+            )
         )
     finally:
         for capture in captures.values():
@@ -519,7 +529,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     upsert_raw_artifact,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
@@ -588,6 +598,10 @@ def _append_plan(path: Path, payload: bytes, *, payload_hash: str) -> _AppendPla
 
 
 def _append_owner(archive_root: Path) -> object:
+    # Append acquisition writes the Source tier of a bootstrapped root; a test
+    # that built its own tiers keeps them.
+    if not (archive_root / "source.db").exists():
+        run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
     cursor = CursorStore(archive_root / "append.sqlite")
     return SimpleNamespace(
         _cursor=cursor,
@@ -644,6 +658,7 @@ def _seed_live_append_plan(
     ).encode()
     path.write_bytes(baseline)
     index_db = archive_root / "index.db"
+    bootstrap_archive_root(archive_root)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -725,6 +740,7 @@ def _seed_claude_live_append_plan(
     ).encode()
     path.write_bytes(baseline)
     index_db = archive_root / "index.db"
+    bootstrap_archive_root(archive_root)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="claude-code", root=root),),
@@ -991,6 +1007,7 @@ def test_live_full_replay_streams_retained_jsonl_raw(
         b'"content":[{"type":"input_text","text":"zero"}]}}\n'
     )
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -1087,10 +1104,6 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not classify source-only JSONL")),
-    )
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch.detect_provider_from_path_evidence",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not detect source-only provider")),
     )
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support.detect_provider_from_path_evidence",
@@ -1273,9 +1286,7 @@ def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
     )
     set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
     for target in (
-        "polylogue.sources.live.batch.iter_zip_entry_raw_data",
         "polylogue.sources.source_acquisition_components.sniff_zip_provider",
-        "polylogue.sources.live.batch.detect_provider_from_path_evidence",
         "polylogue.sources.source_acquisition_components.iter_entry_payloads",
         "polylogue.sources.source_acquisition_components.classify_artifact",
     ):
@@ -1474,6 +1485,7 @@ def test_source_only_zip_replay_resolves_unknown_chatgpt_member_and_keeps_duplic
         zf.writestr("first/conversations.json", payload)
         zf.writestr("second/conversations.json", payload)
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="unknown", root=root),),
@@ -1564,6 +1576,7 @@ def test_zip_duplicate_member_coordinates_stay_distinct_on_the_member_route(tmp_
             zf.writestr(member_name, payload)
 
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -1830,6 +1843,7 @@ def test_full_ingest_acquires_when_index_is_genuinely_semantic_distance_stale(
     pointer = tmp_path / ".index-active-pointer"
     pointer.write_bytes(b"\xff")
 
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -1899,8 +1913,10 @@ def test_live_raw_compaction_holds_generation_lease_through_delete(
     monkeypatch.setattr(raw_retention, "active_raw_retention_authority", assert_promotion_excluded)
     monkeypatch.setattr(raw_retention, "compact_paths_superseded_raw_snapshots", assert_delete_excluded)
 
+    # Both destructive steps are replaced by lease probes, so no archive write
+    # needs admission; inside the writer the probe would contend with the
+    # coordinator's own hold instead of observing the compaction lease.
     processor._compact_superseded_raw_snapshots([path])
-
     assert phases == ["authority", "delete"]
     with RebuildLease(tmp_path):
         pass
@@ -1916,6 +1932,7 @@ def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
     path = root / "empty.jsonl"
     path.write_bytes(b"")
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="codex", root=root),),
@@ -1946,6 +1963,7 @@ def test_full_ingest_unknown_export_without_sessions_records_terminal_evidence(t
     path = root / "export.jsonl"
     path.write_bytes(b"")
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root),),
@@ -1953,9 +1971,12 @@ def test_full_ingest_unknown_export_without_sessions_records_terminal_evidence(t
         parser_fingerprint="test-parser",
     )
 
-    result = _full_paths_sync(processor, [path], source_name="unknown")
+    # Terminal classification belongs to retained preparation, so the law
+    # runs the live pass: the file settles as a terminal exclusion.
+    metrics = run_ingest_files(processor, [path], emit_event=False)
 
-    assert result.succeeded == [path]
+    assert metrics.failed_file_count == 0
+    assert set(metrics.refused_bytes_by_reason or {}) <= SETTLED_EXCLUSION_REASONS
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_export_no_session", "unsupported_parseable", 0)
@@ -1969,6 +1990,7 @@ def test_full_ingest_unknown_weak_path_ndjson_records_terminal_evidence(tmp_path
     path.parent.mkdir(parents=True)
     path.write_bytes(b"")
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root, suffixes=(".jsonl", ".ndjson")),),
@@ -1976,9 +1998,12 @@ def test_full_ingest_unknown_weak_path_ndjson_records_terminal_evidence(tmp_path
         parser_fingerprint="test-parser",
     )
 
-    result = _full_paths_sync(processor, [path], source_name="unknown")
+    # Terminal classification belongs to retained preparation, so the law
+    # runs the live pass: the file settles as a terminal exclusion.
+    metrics = run_ingest_files(processor, [path], emit_event=False)
 
-    assert result.succeeded == [path]
+    assert metrics.failed_file_count == 0
+    assert set(metrics.refused_bytes_by_reason or {}) <= SETTLED_EXCLUSION_REASONS
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_export_no_session", 0)
@@ -2007,6 +2032,7 @@ def test_full_ingest_unknown_weak_path_json_retains_terminal_evidence(
     assert not has_decoded_session_evidence(path, provider=Provider.UNKNOWN)
 
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root),),
@@ -2014,10 +2040,12 @@ def test_full_ingest_unknown_weak_path_json_retains_terminal_evidence(
         parser_fingerprint="test-parser",
     )
 
-    result = _full_paths_sync(processor, [path], source_name="unknown")
+    # Terminal classification belongs to retained preparation, so the law
+    # runs the live pass: the file settles as a terminal exclusion.
+    metrics = run_ingest_files(processor, [path], emit_event=False)
 
-    assert result.succeeded == [path]
-    assert result.failed == []
+    assert metrics.failed_file_count == 0
+    assert set(metrics.refused_bytes_by_reason or {}) <= SETTLED_EXCLUSION_REASONS
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw = conn.execute(
             "SELECT raw_id, blob_size, parse_error FROM raw_sessions WHERE source_path = ?", (str(path),)
@@ -2047,6 +2075,7 @@ def test_full_ingest_unknown_weak_directory_still_excludes_strong_sidecar(tmp_pa
     path.write_text('{"mapping":{"looks":"conversational"}}', encoding="utf-8")
     path_artifact = classify_artifact_path(path, provider=Provider.UNKNOWN)
     assert path_artifact is not None and path_artifact.kind.value == "metadata_document"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "ops.db"))),
         (WatchSource(name="unknown", root=root, suffixes=(".json",)),),
@@ -2069,6 +2098,7 @@ def test_full_ingest_unknown_malformed_jsonl_records_terminal_decode_and_stops_r
     path = root / "malformed.jsonl"
     path.write_bytes(b'{"broken":}\n{"also_broken":}\n')
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root),),
@@ -2076,13 +2106,16 @@ def test_full_ingest_unknown_malformed_jsonl_records_terminal_decode_and_stops_r
         parser_fingerprint="test-parser",
     )
 
-    first = _full_paths_sync(processor, [path], source_name="unknown")
-    second = _full_paths_sync(processor, [path], source_name="unknown")
+    # Terminal classification belongs to retained preparation, so the law
+    # runs the live pass twice: the second pass finds nothing to retry.
+    first = run_ingest_files(processor, [path], emit_event=False)
+    second = run_ingest_files(processor, [path], emit_event=False)
 
-    assert first.succeeded == [path]
-    assert first.failed == []
-    assert second.succeeded == [path]
-    assert second.failed == []
+    assert first.failed_file_count == 0
+    assert set(first.refused_bytes_by_reason or {}) <= SETTLED_EXCLUSION_REASONS
+    assert second.failed_file_count == 0
+    record = processor._cursor.get_record(path)
+    assert record is not None and record.failure_count == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_json_decode", "decode_failed")
@@ -2098,6 +2131,7 @@ def test_full_ingest_unknown_malformed_final_jsonl_record_records_terminal_decod
     path = root / "malformed-final.jsonl"
     path.write_bytes(b'{"only_broken":}\n')
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root),),
@@ -2105,10 +2139,12 @@ def test_full_ingest_unknown_malformed_final_jsonl_record_records_terminal_decod
         parser_fingerprint="test-parser",
     )
 
-    result = _full_paths_sync(processor, [path], source_name="unknown")
+    # Terminal classification belongs to retained preparation, so the law
+    # runs the live pass: the file settles as a terminal exclusion.
+    metrics = run_ingest_files(processor, [path], emit_event=False)
 
-    assert result.succeeded == [path]
-    assert result.failed == []
+    assert metrics.failed_file_count == 0
+    assert set(metrics.refused_bytes_by_reason or {}) <= SETTLED_EXCLUSION_REASONS
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_json_decode", "decode_failed")
@@ -2120,6 +2156,7 @@ def test_full_ingest_unknown_json_decode_records_terminal_decode_evidence(tmp_pa
     path = root / "export.json"
     path.write_bytes(b"{")
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root),),
@@ -2127,10 +2164,12 @@ def test_full_ingest_unknown_json_decode_records_terminal_decode_evidence(tmp_pa
         parser_fingerprint="test-parser",
     )
 
-    result = _full_paths_sync(processor, [path], source_name="unknown")
+    # Terminal classification belongs to retained preparation, so the law
+    # runs the live pass: the file settles as a terminal exclusion.
+    metrics = run_ingest_files(processor, [path], emit_event=False)
 
-    assert result.succeeded == [path]
-    assert result.failed == []
+    assert metrics.failed_file_count == 0
+    assert set(metrics.refused_bytes_by_reason or {}) <= SETTLED_EXCLUSION_REASONS
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_json_decode", "decode_failed", 0)
@@ -2142,6 +2181,7 @@ def test_full_ingest_unknown_invalid_utf8_records_terminal_decode_evidence(tmp_p
     path = root / "export.json"
     path.write_bytes(b"\xff")
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root),),
@@ -2149,24 +2189,32 @@ def test_full_ingest_unknown_invalid_utf8_records_terminal_decode_evidence(tmp_p
         parser_fingerprint="test-parser",
     )
 
-    result = _full_paths_sync(processor, [path], source_name="unknown")
+    # Terminal classification belongs to retained preparation, so the law
+    # runs the live pass: the file settles as a terminal exclusion.
+    metrics = run_ingest_files(processor, [path], emit_event=False)
 
-    assert result.succeeded == [path]
-    assert result.failed == []
+    assert metrics.failed_file_count == 0
+    assert set(metrics.refused_bytes_by_reason or {}) <= SETTLED_EXCLUSION_REASONS
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_json_decode", "decode_failed", 0)
 
 
-def test_full_ingest_unknown_semantic_value_error_remains_unexplained(
+def test_full_ingest_unrecognized_unknown_export_stays_a_visible_failed_census(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """An input no provider recognizes is retained and refused visibly, never typed terminal.
+
+    Retained preparation refuses the unrecognized shape before any parser
+    runs; the refusal is a failed parser census naming the typed reason, not a
+    terminal raw-failure artifact that would close the input as explained.
+    """
     root = tmp_path / "unknown"
     root.mkdir()
     path = root / "export.json"
     path.write_bytes(b'{"unrelated": "payload"}')
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="unknown", root=root),),
@@ -2174,19 +2222,20 @@ def test_full_ingest_unknown_semantic_value_error_remains_unexplained(
         parser_fingerprint="test-parser",
     )
 
-    def raise_semantic_value_error(*_args: object, **_kwargs: object) -> list[ParsedSession]:
-        raise ValueError("semantic parser rejection")
+    result = run_ingest_files(processor, [path], emit_event=False)
 
-    monkeypatch.setattr("polylogue.sources.live.batch.parse_payload", raise_semantic_value_error)
-
-    result = _full_paths_sync(processor, [path], source_name="unknown")
-
-    assert result.succeeded == []
+    assert result.succeeded_file_count == 0
+    assert result.ingested_session_count == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact_kinds = {row[0] for row in conn.execute("SELECT artifact_kind FROM raw_artifacts")}
+        retained = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+        census = conn.execute("SELECT status, detail FROM raw_membership_census").fetchall()
+        parser_census = conn.execute("SELECT status FROM raw_authority_parser_census").fetchall()
     assert not artifact_kinds & RAW_FAILURE_EVIDENCE_KINDS
-    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
-    assert lifecycle.unexplained == 1
+    assert retained == 1
+    assert [status for status, _detail in census] == ["failed"]
+    assert "UnsupportedRetainedJsonShapeError" in census[0][1]
+    assert parser_census == [("failed",)]
 
 
 def test_full_ingest_defers_incomplete_jsonl_only_after_hot_prefix_proof(
@@ -2207,6 +2256,7 @@ def test_full_ingest_defers_incomplete_jsonl_only_after_hot_prefix_proof(
     captured = b'{"type":"session_meta"'
     path.write_bytes(captured)
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="codex", root=root),),
@@ -2250,6 +2300,7 @@ def test_full_ingest_applies_incomplete_record_guard_to_jsonl_txt(
     path = root / "active.jsonl.txt"
     captured = b'{"type":"session_meta"'
     path.write_bytes(captured)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "archive.sqlite"))),
         (WatchSource(name="codex", root=root),),
@@ -2287,6 +2338,7 @@ def test_full_ingest_claude_partial_jsonl_has_provider_specific_evidence(
     captured = b'{"type":"assistant"'
     path.write_bytes(captured)
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="claude-code", root=root),),
@@ -2332,6 +2384,7 @@ def test_streamed_incomplete_jsonl_capture_defers_completed_source_until_authori
     path.write_bytes(captured)
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -2387,6 +2440,7 @@ def test_full_ingest_rejects_incomplete_jsonl_without_hot_prefix_proof(
     path = root / "static.jsonl"
     path.write_bytes(b'{"type":"session_meta"')
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="codex", root=root),),
@@ -2487,6 +2541,7 @@ def test_large_full_ingest_uses_archive(
         encoding="utf-8",
     )
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="codex", root=root),),
@@ -2523,6 +2578,7 @@ def test_streaming_sized_full_ingest_uses_archive(
         b'"content":[{"type":"input_text","text":"hello"}]}}\n' + (b" " * (9 * 1024 * 1024))
     )
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="codex", root=root),),
@@ -2533,12 +2589,14 @@ def test_streaming_sized_full_ingest_uses_archive(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True, None),
     )
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch.parse_payload",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("streaming-sized JSONL ingest must not materialize through parse_payload")
-        ),
-    )
+    # Acquisition retains bytes only; parsing belongs to retained preparation.
+    for parser in ("iter_parsed_payload", "iter_parsed_stream"):
+        monkeypatch.setattr(
+            f"polylogue.sources.prepared_jsonl.{parser}",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("streaming-sized JSONL acquisition must not parse the input")
+            ),
+        )
 
     result = _full_paths_sync(processor, [source], source_name="codex")
 
@@ -2594,6 +2652,7 @@ def test_large_weak_path_uses_streaming_route_before_decoded_evidence(
         + (b" " * (9 * 1024 * 1024))
     )
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="chatgpt", root=root, suffixes=(".json",)),),
@@ -2634,6 +2693,7 @@ def test_threshold_crossing_strong_sidecar_is_excluded_before_streaming(
     path = root / "sessions-index.json"
     path.write_bytes(b"{}")
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="chatgpt", root=root, suffixes=(".json",)),),
@@ -2642,12 +2702,6 @@ def test_threshold_crossing_strong_sidecar_is_excluded_before_streaming(
     )
     monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
     monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch.detect_provider_from_path_evidence",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("strong sidecar reached JSON provider detection")
-        ),
-    )
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support.detect_provider_from_path_evidence",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -3133,6 +3187,7 @@ def test_full_ingest_bootstraps_archive_root(
     source.write_bytes(payload)
     db_path = tmp_path / "archive.sqlite"
     cursor = CursorStore(db_path)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="codex", root=root),),
@@ -3300,6 +3355,7 @@ def test_full_ingest_retains_sidecar_evidence_and_ingests_genuine_session(tmp_pa
     session_path.write_bytes(session_payload)
 
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="claude-code", root=root),),
@@ -3309,8 +3365,11 @@ def test_full_ingest_retains_sidecar_evidence_and_ingests_genuine_session(tmp_pa
 
     result = run_ingest_files(processor, [metadata_path, journal_path, session_path], emit_event=False)
 
-    assert result.succeeded_file_count == 3
+    # The metadata sidecar is retained evidence that settles as a terminal
+    # no-session exclusion; the two session-shaped files succeed.
+    assert result.succeeded_file_count == 2
     assert result.failed_file_count == 0
+    assert result.refused_bytes_by_reason == {REFUSED_NO_SESSIONS: len(metadata_payload)}
     assert result.ingested_session_count == 2
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (2,)
@@ -3351,6 +3410,7 @@ def test_unknown_inbox_zip_source_only_route_retains_session_and_sidecars(tmp_pa
         archive.writestr("projects/project/tool-results/toolu.txt", sidecar_payload)
 
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="unknown", root=tmp_path),),
@@ -3517,6 +3577,7 @@ def test_append_plan_chunks_large_tail_without_full_ingest(tmp_path: Path) -> No
     appended = first_chunk + second_chunk
     path.write_bytes(original + appended)
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="chatgpt", root=root),),
@@ -3565,6 +3626,7 @@ def test_append_cursor_survives_source_disappearing_after_admission(
     original = b'{"a":1}\n'
     path.write_bytes(original + b'{"b":2}\n')
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="chatgpt", root=root),),
@@ -3605,6 +3667,7 @@ def test_append_plan_defers_when_tail_has_no_complete_line(tmp_path: Path) -> No
     original = b'{"a":1}\n'
     path.write_bytes(original + b'{"b":')
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="chatgpt", root=root),),
@@ -3653,6 +3716,7 @@ async def test_full_drive_capture_retains_acquisition_mode_after_gemini_detectio
         encoding="utf-8",
     )
     archive = Polylogue(archive_root=tmp_path / "archive")
+    run_off_event_loop(lambda: bootstrap_archive_root(archive.archive_root))
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="drive", root=root, suffixes=(".json",)),),
@@ -3714,6 +3778,7 @@ async def test_inbox_browser_capture_json_replacement_uses_full_ingest(tmp_path:
     }
     path.write_text(json.dumps(capture([first_turn])), encoding="utf-8")
     archive = Polylogue(archive_root=tmp_path / "archive")
+    run_off_event_loop(lambda: bootstrap_archive_root(archive.archive_root))
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="inbox", root=root, suffixes=(".json", ".jsonl")),),
@@ -3797,6 +3862,7 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
     }
     path.write_text(json.dumps(capture([first_turn])), encoding="utf-8")
     archive = Polylogue(archive_root=tmp_path / "archive")
+    run_off_event_loop(lambda: bootstrap_archive_root(archive.archive_root))
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
@@ -3830,15 +3896,21 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
             source_path=str(foreign_path),
         )
         assert len(foreign_sessions) == 1
-        with ArchiveStore.open_existing(archive.archive_root, read_only=False) as foreign_archive:
-            foreign_raw_id = foreign_archive.write_raw_payload(
-                provider=Provider.CHATGPT,
-                payload=foreign_payload,
-                source_path=str(foreign_path),
-                canonical_source_path=str(foreign_path),
-                acquired_at_ms=1,
-            )
-            foreign_archive.commit()
+
+        def acquire_foreign() -> str:
+            # A writable open takes a synchronous lease; keep it off the loop.
+            with ArchiveStore.open_existing(archive.archive_root, read_only=False) as foreign_archive:
+                raw_id = foreign_archive.write_raw_payload(
+                    provider=Provider.CHATGPT,
+                    payload=foreign_payload,
+                    source_path=str(foreign_path),
+                    canonical_source_path=str(foreign_path.resolve()),
+                    acquired_at_ms=1,
+                )
+                foreign_archive.commit()
+                return raw_id
+
+        foreign_raw_id = run_off_event_loop(acquire_foreign)
         await seed_membership_census_async(
             archive.archive_root, [(foreign_raw_id, foreign_sessions)], parser_fingerprint="foreign-quarantined-test"
         )
@@ -3995,6 +4067,7 @@ async def test_browser_capture_provider_timestamp_advances_reordered_native_snap
     tool = {"provider_turn_id": "tool", "role": "assistant", "text": "tool output", "ordinal": 1}
     path.write_text(json.dumps(capture([prompt, context], updated_at="2026-07-16T00:00:00Z")), encoding="utf-8")
     archive = Polylogue(archive_root=tmp_path / "archive")
+    run_off_event_loop(lambda: bootstrap_archive_root(archive.archive_root))
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
@@ -4055,6 +4128,7 @@ def test_jsonl_stream_retains_append_plan(tmp_path: Path) -> None:
         mtime_ns=stat.st_mtime_ns,
         authority=fixture_cursor_authority(path),
     )
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="inbox", root=root, suffixes=(".jsonl",)),),
@@ -4075,6 +4149,7 @@ def test_incomplete_append_is_requeued_not_full_ingested(tmp_path: Path) -> None
     original = b'{"a":1}\n'
     path.write_bytes(original + b'{"b":')
     db_path = tmp_path / "archive.sqlite"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="chatgpt", root=root),),
@@ -4819,6 +4894,7 @@ def test_full_ingest_cursor_hands_off_captured_prefix_after_growth_during_proof(
     path.write_bytes(captured)
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5223,6 +5299,7 @@ def test_rejected_full_cursor_frontier_requires_reauthorization(tmp_path: Path) 
     captured_stat = path.stat()
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5302,6 +5379,7 @@ def test_cursor_invalidation_lock_exhaustion_is_observable(
         failure_count=2,
         authority=fixture_cursor_authority(path),
     )
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5343,6 +5421,7 @@ def test_append_plan_rejects_malformed_hash_authority(tmp_path: Path) -> None:
         mtime_ns=stat.st_mtime_ns,
         authority=fixture_cursor_authority(path),
     )
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5620,6 +5699,7 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
     path.write_bytes(prefix + split_record[:split_at])
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5714,6 +5794,7 @@ def test_deferred_full_jsonl_with_prior_session_replays_completed_snapshot(
     path.write_bytes(baseline)
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5937,6 +6018,7 @@ def test_raw_failure_cursor_guard_rejects_contradictory_or_mismatched_evidence(t
             ),
         )
         source_conn.commit()
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5963,6 +6045,7 @@ def test_captured_incomplete_jsonl_is_rejected_after_source_disappears(
     )
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -6015,6 +6098,7 @@ def test_append_persistence_failure_preserves_frontier_for_next_tick(
     path.write_bytes(baseline)
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -6151,6 +6235,7 @@ def test_failed_parser_upgrade_preserves_accepted_parser_identity(
     )
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor_a = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -6167,6 +6252,7 @@ def test_failed_parser_upgrade_preserves_accepted_parser_identity(
             b'{"type":"response_item","payload":{"type":"message","id":"message-1",'
             b'"role":"assistant","content":[{"type":"output_text","text":"one"}]}}\n'
         )
+    bootstrap_archive_root(tmp_path)
     processor_b = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -6278,6 +6364,7 @@ def test_full_batch_declared_artifact_is_admitted_before_pending_raw_write(
     payload = b'{"contentKey":"call-2","agentId":"agent-b"}\n'
     source.write_bytes(payload)
     expected_mtime_ms = int(source.stat().st_mtime * 1000)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="claude-code", root=root),),
@@ -6291,8 +6378,10 @@ def test_full_batch_declared_artifact_is_admitted_before_pending_raw_write(
 
     metrics = run_ingest_files(processor, [source], emit_event=False)
 
-    assert metrics.succeeded_file_count == 1
+    # The retained artifact settles as a terminal no-session exclusion.
+    assert metrics.succeeded_file_count == 0
     assert metrics.failed_file_count == 0
+    assert metrics.refused_bytes_by_reason == {REFUSED_NO_SESSIONS: len(payload)}
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
         raw = conn.execute(
@@ -6319,6 +6408,7 @@ def test_full_batch_session_shaped_workflow_journal_reaches_parser_idempotently(
         b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
         b'"timestamp":"2025-01-01T00:00:01Z"}\n'
     )
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="claude-code", root=root),),
@@ -6360,6 +6450,7 @@ def test_large_full_batch_session_shaped_workflow_journal_reaches_parser_idempot
         b'"timestamp":"2025-01-01T00:00:01Z"}\n'
     )
     assert source.stat().st_size > _STREAMING_FULL_INGEST_BYTES
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="claude-code", root=root),),
@@ -6385,6 +6476,7 @@ def test_full_batch_malformed_workflow_journal_remains_typed_evidence(tmp_path: 
     source = root / "subagents" / "workflows" / "wf-batch" / "journal.jsonl"
     source.parent.mkdir(parents=True)
     source.write_bytes(b'{"contentKey":"broken"\n')
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="claude-code", root=root),),
@@ -6488,6 +6580,7 @@ def test_public_full_blob_batch_bind_failure_persists_bytes_and_allows_source_on
     )
     source.write_bytes(payload)
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -6588,41 +6681,6 @@ def test_append_archive_lock_propagates_for_watcher_retry(
         ingest_append_with_owner(owner, [plan])
 
 
-def test_full_parse_failure_retains_typed_raw_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = tmp_path / "sessions"
-    root.mkdir()
-    source = root / "full-bad.jsonl"
-    source.write_bytes(b"{bad json}\n")
-    index_db = tmp_path / "index.db"
-    processor = LiveBatchProcessor(
-        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
-        (WatchSource(name="codex", root=root),),
-        cursor=CursorStore(index_db),
-        parser_fingerprint="test-parser",
-    )
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
-    )
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch.parse_stream_payload",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected full parse failure")),
-    )
-
-    result = _full_paths_sync(processor, [source], source_name="codex")
-
-    assert source in result.failed
-    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
-    assert parsed_at_ms is None
-    assert isinstance(parse_error, str) and "injected full parse failure" in parse_error
-    assert len(parse_error) <= 2000
-    with sqlite3.connect(index_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
-
-
 def test_full_archive_lock_propagates_for_watcher_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6636,6 +6694,7 @@ def test_full_archive_lock_propagates_for_watcher_retry(
         b'"role":"user","content":[{"type":"input_text","text":"zero"}]}}\n'
     )
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -6714,6 +6773,7 @@ def test_full_multi_session_failure_retries_without_success_mapping(
     source = root / "full-multi.jsonl"
     source.write_bytes(b"{}\n")
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -6740,7 +6800,10 @@ def test_full_multi_session_failure_retries_without_success_mapping(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True, None),
     )
-    monkeypatch.setattr("polylogue.sources.live.batch.parse_stream_payload", lambda *_args, **_kwargs: sessions)
+    # Retained preparation is the only parser on the live route.
+    monkeypatch.setattr(
+        "polylogue.sources.prepared_jsonl.iter_parsed_stream", lambda *_args, **_kwargs: iter(list(sessions))
+    )
     # polylogue-1r9c: _write_parsed_precedence_result is called internally by
     # revision_governance.py (a direct module-internal function reference),
     # not through ArchiveStore's `self.` dispatch -- patch it there.
@@ -6759,35 +6822,20 @@ def test_full_multi_session_failure_retries_without_success_mapping(
         return original_write(archive, session, **cast(Any, kwargs))
 
     monkeypatch.setattr(archive_revision_governance, "_write_parsed_precedence_result", fail_second_index)
-    archive_results: list[_ArchiveFullWriteResult] = []
-    original_full_write = processor._acquire_full_records_archive
 
-    def capture_full_write(*args: Any, **kwargs: Any) -> _ArchiveFullWriteResult:
-        outcome = original_full_write(*args, **kwargs)
-        archive_results.append(outcome)
-        return outcome
+    with pytest.raises(BaseException, match="full second-session index failure") as failed:
+        run_ingest_files(processor, [source], emit_event=False)
+    del failed
 
-    monkeypatch.setattr(processor, "_acquire_full_records_archive", capture_full_write)
-
-    first = _full_paths_sync(processor, [source], source_name="codex")
-
-    assert first.succeeded == []
-    assert source in first.failed
-    assert archive_results[0].raw_ids == {}
-    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
-    assert parsed_at_ms is None
-    assert isinstance(parse_error, str) and "full second-session index failure" in parse_error
+    # A partially written multi-session raw is not success: the component
+    # transaction rolls back, so no session from it is visible.
     with sqlite3.connect(index_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
-    retry = _full_paths_sync(processor, [source], source_name="codex")
+    retry = run_ingest_files(processor, [source], emit_event=False)
 
-    assert retry.succeeded == [source]
-    assert retry.failed == []
-    assert archive_results[1].raw_ids
-    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
-    assert parsed_at_ms is not None
-    assert parse_error is None
+    assert retry.succeeded_file_count == 1
+    assert retry.failed_file_count == 0
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 2
 
@@ -6969,6 +7017,7 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
         encoding="utf-8",
     )
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="inbox", root=root, suffixes=(".json",)),),
@@ -7205,6 +7254,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
     third = root / "third.json"
     third.write_text(json.dumps([conversation("shared", "base", "left", "extra")]), encoding="utf-8")
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="inbox", root=root, suffixes=(".json",)),),
@@ -7401,6 +7451,7 @@ def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_hea
     # Byte-level formatting changes create a new retained raw while preserving
     # the provider session. The live route reparses the accepted raw too.
     snapshot.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="inbox", root=root, suffixes=(".json",)),),
@@ -7435,6 +7486,7 @@ def test_single_session_full_terminally_supersedes_older_membership_prefix(
     bundle.write_bytes(b'{"bundle":true}\n')
     older.write_bytes(b'{"older":true}\n')
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -7559,6 +7611,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
     current.write_bytes(b'{"current":true}\n')
     older_bundle.write_bytes(b'{"bundle":true}\n')
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -7758,6 +7811,7 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
     current.write_bytes(b'{"current":true}\n')
     incident_recovery.write_bytes(b'{"bundle":true}\n')
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -7985,6 +8039,7 @@ def test_single_session_full_cannot_overwrite_divergent_membership_head(
     bundle.write_bytes(b'{"bundle":true}\n')
     divergent.write_bytes(b'{"divergent":true}\n')
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -8073,6 +8128,7 @@ def test_single_session_full_advances_authorized_metadata_only_head(
     bundle.write_bytes(b'{"bundle":true}\n')
     metadata_update.write_bytes(b'{"metadata_update":true}\n')
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -8135,6 +8191,7 @@ def test_bundle_promotes_prior_single_full_into_membership_authority(
     single.write_bytes(b'{"single":true}\n')
     bundle.write_bytes(b'{"bundle":true}\n')
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -8317,6 +8374,7 @@ def test_live_raw_compaction_ignores_cursor_db_without_source_db(tmp_path: Path)
                 ('raw-old', '/tmp/old.jsonl', 0, 10, '2026-01-01T00:00:00+00:00');
             """
         )
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor_db))),
         (WatchSource(name="codex", root=root),),
@@ -8324,8 +8382,7 @@ def test_live_raw_compaction_ignores_cursor_db_without_source_db(tmp_path: Path)
         parser_fingerprint="test-parser",
     )
 
-    processor._compact_superseded_raw_snapshots([path])
-
+    _compact_on_admitted_writer(processor, [path])
     with cursor._connect() as conn:
         rows = conn.execute("SELECT raw_id FROM raw_sessions").fetchall()
     assert rows == [("raw-old",)]
@@ -8342,6 +8399,7 @@ async def test_live_full_ingest_skips_convergence_without_session_changes(
     path = root / "unchanged.json"
     path.write_text("{}", encoding="utf-8")
     cursor = CursorStore(tmp_path / "live.sqlite")
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path))),
         (WatchSource(name="sessions", root=root, suffixes=(".json",)),),
@@ -8520,6 +8578,7 @@ def test_gemini_cli_checkpoint_over_the_streaming_bound_reaches_the_archive(tmp_
     assert source.stat().st_size > _STREAMING_FULL_INGEST_BYTES
 
     cursor = CursorStore(tmp_path / "index.db")
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="gemini-cli", root=root),),
@@ -8639,6 +8698,7 @@ def test_codex_state_filename_alone_does_not_route_a_foreign_file_to_codex_acqui
 def _live_processor(tmp_path: Path, root: Path, *, source_name: str) -> tuple[LiveBatchProcessor, CursorStore]:
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name=source_name, root=root),),
@@ -8837,6 +8897,17 @@ def _seed_superseded_raw_snapshots(
     return raw_ids[:-1]
 
 
+def _compact_on_admitted_writer(processor: LiveBatchProcessor, paths: list[Path]) -> None:
+    """Run raw compaction on the daemon's admitted writer, as the live pass dispatches it.
+
+    ``LiveBatchProcessor`` hands ``_compact_superseded_raw_snapshots`` to its
+    writer runner; the custody authorizer refuses its Source deletions from
+    any other creator.
+    """
+    archive_root = Path(getattr(processor._polylogue, "archive_root", processor._cursor._db_path.parent))
+    asyncio.run(run_archive_fixture_write(archive_root, lambda: processor._compact_superseded_raw_snapshots(paths)))
+
+
 def _retention_processor(tmp_path: Path, root: Path) -> LiveBatchProcessor:
     return LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
@@ -8893,8 +8964,7 @@ def test_raw_retention_bound_is_retained_as_retryable_backlog(tmp_path: Path, mo
     superseded = _seed_superseded_raw_snapshots(processor, tmp_path / "source.db", path, count=30)
     _grant_full_retention_authority(monkeypatch, superseded)
 
-    processor._compact_superseded_raw_snapshots([path])
-
+    _compact_on_admitted_writer(processor, [path])
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         remaining = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
     # 31 rows seeded, 30 superseded, one bounded pass compacts 25.
@@ -8931,7 +9001,7 @@ def test_raw_retention_drains_its_due_backlog_and_clears_the_debt(
     superseded = _seed_superseded_raw_snapshots(processor, tmp_path / "source.db", backlog_path, count=30)
     _grant_full_retention_authority(monkeypatch, superseded)
 
-    processor._compact_superseded_raw_snapshots([backlog_path])
+    _compact_on_admitted_writer(processor, [backlog_path])
     assert [item.subject_id for item in _retention_debt(processor._cursor)] == [str(backlog_path)]
 
     # The shared backoff put the row ~60 s out. Make it due, the way the clock
@@ -8944,8 +9014,7 @@ def test_raw_retention_drains_its_due_backlog_and_clears_the_debt(
         conn.commit()
 
     # A pass whose own subject is an unrelated path still drains the backlog.
-    processor._compact_superseded_raw_snapshots([other_path])
-
+    _compact_on_admitted_writer(processor, [other_path])
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         remaining = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
     assert remaining == 1
@@ -8976,8 +9045,7 @@ def test_raw_retention_refusal_is_recorded_not_only_logged(tmp_path: Path, monke
 
     monkeypatch.setattr(raw_retention, "active_raw_retention_authority", refuse)
 
-    processor._compact_superseded_raw_snapshots([path])
-
+    _compact_on_admitted_writer(processor, [path])
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 3
 
@@ -9006,7 +9074,7 @@ def test_raw_retention_waits_for_inactive_generation_promotion(tmp_path: Path, m
         raise AssertionError("active index authority was inspected before candidate promotion")
 
     monkeypatch.setattr(raw_retention, "active_raw_retention_authority", wrong_active_authority)
-    processor._compact_superseded_raw_snapshots([path])
+    _compact_on_admitted_writer(processor, [path])
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 3
     debt = _retention_debt(processor._cursor)
@@ -9021,7 +9089,7 @@ def test_raw_retention_waits_for_inactive_generation_promotion(tmp_path: Path, m
             ("2000-01-01T00:00:00+00:00", RAW_RETENTION_STAGE),
         )
         conn.commit()
-    processor._compact_superseded_raw_snapshots([])
+    _compact_on_admitted_writer(processor, [])
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
     assert _retention_debt(processor._cursor) == []
@@ -9042,7 +9110,7 @@ def test_raw_retention_retries_promoted_backlog_after_watcher_restart(
     first = _retention_processor(tmp_path, root)
     superseded = _seed_superseded_raw_snapshots(first, tmp_path / "source.db", path, count=2)
     monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: object())
-    first._compact_superseded_raw_snapshots([path])
+    _compact_on_admitted_writer(first, [path])
     assert [(item.subject_id, item.status) for item in _retention_debt(first._cursor)] == [(str(path), "deferred")]
 
     monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: None)
@@ -9055,19 +9123,39 @@ def test_raw_retention_retries_promoted_backlog_after_watcher_restart(
         conn.commit()
     restarted = _retention_processor(tmp_path, root)
     restarted._raw_compaction_min_acquired_at = "9999-01-01T00:00:00+00:00"
-    watcher = object.__new__(LiveWatcher)
-    watcher._batch_processor = restarted
-    watcher._ingest_lock = asyncio.Lock()
-
-    async def run_writer(_actor: str, function: Any, *args: Any) -> Any:
-        return function(*args)
-
-    monkeypatch.setattr(watcher, "_run_writer_sync", run_writer)
-    asyncio.run(watcher.retry_raw_retention_backlog())
+    _retry_retention_on_admitted_writer(tmp_path, restarted)
 
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
     assert _retention_debt(restarted._cursor) == []
+
+
+def _retry_retention_on_admitted_writer(archive_root: Path, processor: LiveBatchProcessor) -> None:
+    """Drive ``retry_raw_retention_backlog`` through a real daemon writer coordinator.
+
+    The custody authorizer refuses archive writes outside admission, so the
+    watcher is given the coordinator it holds in the daemon rather than an
+    inline stand-in that would run the writes on the event-loop thread.
+    """
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+    async def run() -> None:
+        coordinator = DaemonWriteCoordinator(archive_root=archive_root)
+        watcher = object.__new__(LiveWatcher)
+        watcher._batch_processor = processor
+        watcher._ingest_lock = asyncio.Lock()
+        watcher._write_coordinator = coordinator
+        # The retry's Source body runs on the processor's writer runner.
+        previous_runner = processor._sync_runner
+        processor._sync_runner = coordinator.run_sync
+        try:
+            await watcher.retry_raw_retention_backlog()
+        finally:
+            processor._sync_runner = previous_runner
+            if not await coordinator.shutdown(timeout=float("inf")):
+                raise RuntimeError("retention retry coordinator did not physically settle")
+
+    asyncio.run(run())
 
 
 def test_raw_retention_retry_drains_more_than_one_bounded_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -9094,7 +9182,7 @@ def test_raw_retention_retry_drains_more_than_one_bounded_pass(tmp_path: Path, m
         superseded.extend(
             _seed_superseded_raw_snapshots(processor, tmp_path / "source.db", path, count=1, prefix=10 * index)
         )
-    processor._compact_superseded_raw_snapshots(paths)
+    _compact_on_admitted_writer(processor, paths)
     assert len(_retention_debt(processor._cursor)) == 3
 
     monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: None)
@@ -9106,15 +9194,7 @@ def test_raw_retention_retry_drains_more_than_one_bounded_pass(tmp_path: Path, m
             ("2000-01-01T00:00:00+00:00", RAW_RETENTION_STAGE),
         )
         conn.commit()
-    watcher = object.__new__(LiveWatcher)
-    watcher._batch_processor = processor
-    watcher._ingest_lock = asyncio.Lock()
-
-    async def run_writer(_actor: str, function: Any, *args: Any) -> Any:
-        return function(*args)
-
-    monkeypatch.setattr(watcher, "_run_writer_sync", run_writer)
-    asyncio.run(watcher.retry_raw_retention_backlog())
+    _retry_retention_on_admitted_writer(tmp_path, processor)
 
     assert _retention_debt(processor._cursor) == []
 
@@ -9137,7 +9217,7 @@ def test_raw_retention_backlog_does_not_widen_unrelated_batch_path(
     old_current = _seed_superseded_raw_snapshots(first, tmp_path / "source.db", current_path, count=2, prefix=100)
     old_backlog = _seed_superseded_raw_snapshots(first, tmp_path / "source.db", backlog_path, count=2, prefix=200)
     monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: object())
-    first._compact_superseded_raw_snapshots([backlog_path])
+    _compact_on_admitted_writer(first, [backlog_path])
     monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: None)
     _grant_full_retention_authority(monkeypatch, [*old_current, *old_backlog])
     with closing(sqlite3.connect(tmp_path / "ops.db")) as conn:
@@ -9148,8 +9228,7 @@ def test_raw_retention_backlog_does_not_widen_unrelated_batch_path(
         conn.commit()
     restarted = _retention_processor(tmp_path, root)
     restarted._raw_compaction_min_acquired_at = "9999-01-01T00:00:00+00:00"
-    restarted._compact_superseded_raw_snapshots([current_path])
-
+    _compact_on_admitted_writer(restarted, [current_path])
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         counts = dict(conn.execute("SELECT source_path, COUNT(*) FROM raw_sessions GROUP BY source_path"))
     assert counts == {str(current_path): 3, str(backlog_path): 1}
@@ -9223,6 +9302,7 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
     for path in (first, second):
         path.write_text("{}", encoding="utf-8")
     cursor = CursorStore(tmp_path / "live.sqlite")
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path))),
         (WatchSource(name="sessions", root=root, suffixes=(".json",)),),
@@ -9452,6 +9532,7 @@ def _settled_proof_fixture(tmp_path: Path) -> tuple[Path, bytes, os.stat_result,
     path.write_bytes(captured)
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -9776,6 +9857,7 @@ def test_live_zip_crc_failure_preserves_pending_input_without_prefix_publication
     wire[second_header + 16] ^= 1  # Actual member read now fails its central CRC.
     bundle.write_bytes(wire)
     index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),

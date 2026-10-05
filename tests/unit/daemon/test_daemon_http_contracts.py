@@ -1123,9 +1123,16 @@ class TestBoundedArchiveQueryExecutor:
             capabilities={ServiceCapability.API},
         )
         harness.require_selected("api_server")
-        borrowed_runtime = _StandaloneWriteRuntime(tmp_path / "borrowed", compute_adapter=bounded_compute_adapter)
+        from tests.infra.archive_templates import bootstrap_archive_root
+
+        # The standalone writer prepares its operation journals in a real archive.
+        borrowed_runtime = _StandaloneWriteRuntime(
+            bootstrap_archive_root(tmp_path / "borrowed"), compute_adapter=bounded_compute_adapter
+        )
         try:
-            server = harness.api_server(tmp_path / "server", write_bridge=borrowed_runtime.bridge)
+            server = harness.api_server(
+                bootstrap_archive_root(tmp_path / "server"), write_bridge=borrowed_runtime.bridge
+            )
             server.server_close()
             server.server_close()
             assert borrowed_runtime.thread.is_alive()

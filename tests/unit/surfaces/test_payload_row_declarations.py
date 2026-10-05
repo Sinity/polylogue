@@ -54,7 +54,25 @@ from polylogue.surfaces.payloads import (
 _GENERIC_ROW_DECLARATIONS: tuple[tuple[type[SurfacePayloadModel], type[Any], frozenset[str], frozenset[str]], ...] = (
     # ``text_chars``/``output_text_chars`` are internal full-length counts the
     # attached projection turns into ``{field}_truncated_chars``; not wire fields.
-    (MessageQueryRowPayload, ArchiveMessageQueryRow, frozenset({"blocks", "text_chars"}), frozenset({"unit"})),
+    # Stored usage reaches the domain message through
+    # archive_message_query_row_to_domain; the generic query payload does not
+    # project it.
+    (
+        MessageQueryRowPayload,
+        ArchiveMessageQueryRow,
+        frozenset(
+            {
+                "blocks",
+                "text_chars",
+                "model_name",
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+            }
+        ),
+        frozenset({"unit"}),
+    ),
     (ActionQueryRowPayload, ArchiveActionQueryRow, frozenset({"output_text_chars"}), frozenset({"unit"})),
     (BlockQueryRowPayload, ArchiveBlockQueryRow, frozenset(), frozenset({"unit"})),
     (FileQueryRowPayload, ArchiveFileQueryRow, frozenset(), frozenset({"unit"})),

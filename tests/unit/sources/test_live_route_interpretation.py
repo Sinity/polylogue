@@ -21,6 +21,7 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
 from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
 from polylogue.storage.blob_store import BlobStore
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.raw_owner_routes import (
     converge_raw_observations_with_owner,
     inspect_raw_observations,
@@ -49,6 +50,7 @@ def _codex_lines(native_id: str, messages: tuple[tuple[str, str], ...], *, meta:
 
 def _ingest(archive_root: Path, source: Path, *, provider: Provider = Provider.CODEX) -> None:
     archive_root.mkdir(parents=True, exist_ok=True)
+    bootstrap_archive_root(archive_root)
     processor = LiveBatchProcessor(
         Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
         (WatchSource(name=provider.value, root=source.parent),),
@@ -204,6 +206,7 @@ def test_live_claude_code_intake_uses_retained_index_titles_parsed_once(
     )
 
     def ingest(paths: list[Path]) -> None:
+        bootstrap_archive_root(archive_root)
         processor = LiveBatchProcessor(
             Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
             (watch,),
@@ -250,6 +253,7 @@ def _claude_ingest(archive_root: Path, project: Path, paths: list[Path]) -> None
     from polylogue.sources.origin_specs import artifact_suffixes_for_provider
 
     archive_root.mkdir(parents=True, exist_ok=True)
+    bootstrap_archive_root(archive_root)
     processor = LiveBatchProcessor(
         Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
         (
@@ -618,6 +622,10 @@ def test_session_index_dependents_are_paged_not_listed(tmp_path: Path, monkeypat
         def inspect(self, _frame: object, keys: tuple[str, ...]) -> dict[str, str]:
             return dict.fromkeys(keys, "stale")
 
+        def terminal_decode_refusals(self, _keys: object) -> dict[str, object]:
+            # No dependent is a terminal decode refusal in these paging laws.
+            return {}
+
     pages = []
     while page := discovery._dependents_selected(None, _Adapter(), 2):
         pages.append(page)
@@ -648,6 +656,10 @@ def test_a_revised_session_index_restarts_its_queued_project_scan(
     class _Adapter:
         def inspect(self, _frame: object, keys: tuple[str, ...]) -> dict[str, str]:
             return dict.fromkeys(keys, "stale")
+
+        def terminal_decode_refusals(self, _keys: object) -> dict[str, object]:
+            # No dependent is a terminal decode refusal in these paging laws.
+            return {}
 
     discovery = intake_adapters.RawMaterializationDiscovery(tmp_path)
     discovery._queue_evidence_dependents(["index"])

@@ -102,7 +102,7 @@ def test_selected_maintenance_rechecks_the_barrier_at_publication() -> None:
     class _Adapter(_SelectedAdapter):
         def compute(self, frame: object, session_id: str) -> object:
             staged.add(session_id)
-            return type("R", (), {"input_binding": "b1"})()
+            return type("R", (), {"input_binding": "b1", "close": lambda _self: None})()
 
         def publish(self, frame: object, replacement: object) -> bool:
             published.append(replacement)

@@ -293,17 +293,9 @@ def assess_raw_materialization(readiness: Mapping[str, Any] | object | None) -> 
             )
         blocking_counts.append((key, count))
     frozen_blocking_counts = tuple(blocking_counts)
-    if raw_artifact_count is None:
-        return RawMaterializationAssessment(
-            RawMaterializationAssessmentState.UNMEASURED,
-            "raw_artifact_count_unavailable",
-            None,
-            materialized_raw_artifact_count,
-            frozen_blocking_counts,
-        )
-    # An already-observed blocker remains a refutation when a separate debt
-    # classifier or census is unavailable. Unknown auxiliary evidence must
-    # never erase a measured reason this archive is not converged.
+    # An already-observed blocker remains a refutation when the denominator, a
+    # separate debt classifier or census is unavailable. Unknown auxiliary
+    # evidence must never erase a measured reason this archive is not converged.
     if any(count > 0 for _, count in frozen_blocking_counts):
         return RawMaterializationAssessment(
             RawMaterializationAssessmentState.POPULATED_UNCONVERGED,
@@ -312,6 +304,14 @@ def assess_raw_materialization(readiness: Mapping[str, Any] | object | None) -> 
             materialized_raw_artifact_count,
             frozen_blocking_counts,
             detail=str(payload.get("debt_classifier_error")) if payload.get("debt_classifier_error") else None,
+        )
+    if raw_artifact_count is None:
+        return RawMaterializationAssessment(
+            RawMaterializationAssessmentState.UNMEASURED,
+            "raw_artifact_count_unavailable",
+            None,
+            materialized_raw_artifact_count,
+            frozen_blocking_counts,
         )
     if raw_artifact_count == 0:
         return RawMaterializationAssessment(

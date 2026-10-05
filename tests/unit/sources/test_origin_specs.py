@@ -609,16 +609,26 @@ def test_database_consumer_implementation_is_in_origin_parser_closure(
     reader.write_text("def read(connection):\n    return connection.execute('select 1')\n", encoding="utf-8")
     capability_origin = next(spec for spec in ORIGIN_SPECS if spec.database_capability is not None)
     assert capability_origin.database_capability is not None
+    # The synthetic closure contains only the synthetic consumer: other members'
+    # consumers and the origin's own parser modules are absent from this root.
     capability = replace(
         capability_origin.database_capability,
         members=(
             replace(
                 capability_origin.database_capability.members[0], consumer="polylogue/sources/database_reader.py:read"
             ),
-            *capability_origin.database_capability.members[1:],
+            *(replace(member, consumer=None) for member in capability_origin.database_capability.members[1:]),
         ),
     )
-    synthetic = replace(capability_origin, database_capability=capability)
+    synthetic = replace(
+        capability_origin,
+        database_capability=capability,
+        parser_paths=(),
+        stream_parser_path=None,
+        assembly_paths=(),
+        assembly_spec_path=None,
+        artifact_rules=(),
+    )
     monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", source_root)
     origin_specs._invalidate_source_signatures()
 
@@ -674,6 +684,8 @@ def test_parser_fingerprints_ignore_diagnostic_module_but_lowering_and_materiali
         assembly_paths=(),
         assembly_spec_path=None,
         artifact_rules=(),
+        # Database consumers are parser routes; this synthetic closure has none.
+        database_capability=None,
     )
     second = replace(
         next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CHATGPT_EXPORT),
