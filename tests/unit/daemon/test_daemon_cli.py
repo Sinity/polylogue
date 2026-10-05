@@ -4431,6 +4431,7 @@ _DECLARED_UNSUPERVISED_TASK_PREFIXES: dict[str, str] = {
     "polylogue-ingest-redrive:": "DaemonOperationRuntime: the ingest owner's accepted-ingest re-drive",
     "polylogue-prepared-writer:": "DaemonWriteCoordinator: one prepared writer-worker body",
     "polylogue-writer-custody:": "async_write_lease: archive custody acquisition and settlement wait",
+    "polylogue-writer-hold:": "DaemonWriteThreadBridge.hold: the write gate held for one delegated thread",
 }
 
 

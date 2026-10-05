@@ -19,14 +19,14 @@ import threading
 import time
 import weakref
 from builtins import BaseExceptionGroup
-from collections.abc import Awaitable, Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping
 from concurrent.futures import Future as ConcurrentFuture
 from concurrent.futures import InvalidStateError
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Literal, ParamSpec, TypeVar
 
 from polylogue.core.write_admission import WriteAdmission, active_write_admission
 from polylogue.core.write_hold import enter_write_hold, exit_write_hold
@@ -1148,6 +1148,60 @@ async def _run_writer_worker(
     return await asyncio.wrap_future(result, loop=loop)
 
 
+class StagedTask(Generic[T]):
+    """A coroutine on the owner loop whose future settles only with its task.
+
+    ``run_coroutine_threadsafe`` marks its proxy future cancelled at once,
+    while the task behind it may still be awaiting a running compute phase and
+    its ``finally`` cleanup. Shutdown and the exchange's settled callback wait
+    on this future, so cancellation is forwarded to the task and the future
+    takes the task's terminal state only when the task has actually finished.
+    """
+
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        start: Callable[[], Coroutine[Any, Any, T]],
+        *,
+        name: str | None = None,
+    ) -> None:
+        self.future: ConcurrentFuture[T] = ConcurrentFuture()
+        self._loop = loop
+        self._task: asyncio.Task[T] | None = None
+        self._cancelled = False
+        self._name = name
+        loop.call_soon_threadsafe(self._start, start)
+
+    def cancel(self) -> None:
+        """Request cancellation from any thread; the future settles with the task."""
+        self._loop.call_soon_threadsafe(self._cancel)
+
+    def _start(self, start: Callable[[], Coroutine[Any, Any, T]]) -> None:
+        # ``_start`` and ``_cancel`` both run on the owner loop in submission
+        # order, so a cancellation either precedes the task or reaches it.
+        if self._cancelled:
+            return
+        self._task = self._loop.create_task(start(), name=self._name)
+        self._task.add_done_callback(self._settle)
+
+    def _cancel(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+        elif not self._cancelled:
+            self._cancelled = True
+            self.future.cancel()
+
+    def _settle(self, task: asyncio.Task[T]) -> None:
+        if self.future.done():
+            return
+        if task.cancelled():
+            self.future.cancel()
+        elif (exc := task.exception()) is not None:
+            self.future.set_exception(exc)
+        else:
+            self.future.set_result(task.result())
+
+
 class DaemonWriteThreadBridge:
     """Let synchronous daemon request threads hold the main-loop write gate."""
 
@@ -1255,7 +1309,8 @@ class DaemonWriteThreadBridge:
             raise DaemonWriterOwnerLoopStopped(
                 f"daemon writer owner loop closed before {actor} was admitted; the write did not start"
             )
-        future = asyncio.run_coroutine_threadsafe(hold_lease(), self._loop)
+        # A named task, so the daemon's task inventory attributes the held gate.
+        future = StagedTask(self._loop, hold_lease, name=f"polylogue-writer-hold:{actor}").future
         future.add_done_callback(lambda _future: settled.set())
         while not settled.wait(_DELEGATION_SETTLEMENT_POLL_S):
             # This observes an actual stopped execution owner, not elapsed
