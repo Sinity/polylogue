@@ -273,6 +273,8 @@ _SOURCE_COUNT_KEYS = tuple(
             "source_raw_rows",
             "source_raw_existence_changes",
             "source_hook_events",
+            "source_fact_rows",
+            "source_sidecar_rows",
             "source_container_members",
             "source_container_items",
             "source_materials",

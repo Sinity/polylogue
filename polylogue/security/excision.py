@@ -1845,6 +1845,8 @@ def _stage_excision_source_target(
         "source_raw_rows": 0,
         "source_raw_existence_changes": 0,
         "source_hook_events": 0,
+        "source_fact_rows": 0,
+        "source_sidecar_rows": 0,
         "source_container_members": 0,
         "source_container_items": 0,
         "source_materials": 0,
@@ -1950,7 +1952,14 @@ def _stage_excision_source_target(
             writable_targets=_excision_source_writable_keys(seal, "blob_refs", predicate, parameters),
         ) as cursor:
             counts["source_blob_refs"] += max(cursor.rowcount, 0)
-        counts["source_raw_rows"] += _stage_excision_raw_delete(seal, raw.raw_id)
+        removed_raw_rows = _stage_excision_raw_delete(seal, raw.raw_id)
+        counts["source_raw_rows"] += removed_raw_rows
+        # Fact and sidecar raws are raw rows of a named class; the receipt
+        # accounts for each class it removes, as the plan previews them.
+        if raw.raw_id in target.fact_raw_ids:
+            counts["source_fact_rows"] += removed_raw_rows
+        if raw.raw_id in target.sidecar_raw_ids:
+            counts["source_sidecar_rows"] += removed_raw_rows
         predicate, parameters = _excision_source_equal_predicate(seal, (("raw_id", raw.raw_id),))
         with seal.source_statement(
             f"DELETE FROM raw_existence_changes WHERE {predicate}",
