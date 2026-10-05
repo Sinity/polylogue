@@ -3870,14 +3870,20 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
             source_path=str(foreign_path),
         )
         assert len(foreign_sessions) == 1
-        with ArchiveStore.open_existing(archive.archive_root, read_only=False) as foreign_archive:
-            foreign_raw_id = foreign_archive.write_raw_payload(
-                provider=Provider.CHATGPT,
-                payload=foreign_payload,
-                source_path=str(foreign_path),
-                acquired_at_ms=1,
-            )
-            foreign_archive.commit()
+
+        def acquire_foreign() -> str:
+            # A writable open takes a synchronous lease; keep it off the loop.
+            with ArchiveStore.open_existing(archive.archive_root, read_only=False) as foreign_archive:
+                raw_id = foreign_archive.write_raw_payload(
+                    provider=Provider.CHATGPT,
+                    payload=foreign_payload,
+                    source_path=str(foreign_path),
+                    acquired_at_ms=1,
+                )
+                foreign_archive.commit()
+                return raw_id
+
+        foreign_raw_id = run_off_event_loop(acquire_foreign)
         await seed_membership_census_async(
             archive.archive_root, [(foreign_raw_id, foreign_sessions)], parser_fingerprint="foreign-quarantined-test"
         )
