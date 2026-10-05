@@ -37,6 +37,7 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.search import search_messages
 from polylogue.storage.search.query_support import escape_fts5_query
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.fts import rebuild_fts
 from tests.infra.storage_records import make_message, make_session, save_current_archive_records
 
@@ -283,7 +284,7 @@ class TestFtsUnicodeTokenizer:
             messages=[msg],
             attachments=[],
         )
-        rebuild_fts()
+        run_off_event_loop(rebuild_fts)
         results = search_messages(ARABIC_HELLO, archive_root=workspace_env["archive_root"], limit=10)
         assert len(results.hits) == 1
         assert results.hits[0].session_id == "claude-ai-export:conv-ar"
@@ -306,7 +307,7 @@ class TestFtsUnicodeTokenizer:
             messages=[msg],
             attachments=[],
         )
-        rebuild_fts()
+        run_off_event_loop(rebuild_fts)
         # The English sentinel proves the row reached the FTS index even
         # though the CJK run itself is not substring-searchable.
         results = search_messages("cjkmarker", archive_root=workspace_env["archive_root"], limit=10)
@@ -330,7 +331,7 @@ class TestFtsUnicodeTokenizer:
         )
         # Indexing must not raise. We do not assert on tokenizer-internal
         # decisions about whether ZWJ/ZWNJ split tokens.
-        rebuild_fts()
+        run_off_event_loop(rebuild_fts)
 
     async def test_indexes_nfc_and_nfd_independently(
         self,
@@ -348,7 +349,7 @@ class TestFtsUnicodeTokenizer:
             messages=[msg],
             attachments=[],
         )
-        rebuild_fts()
+        run_off_event_loop(rebuild_fts)
         results = search_messages(NFC_CAFE, archive_root=workspace_env["archive_root"], limit=10)
         assert len(results.hits) == 1
 

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
 from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery, build_command_shape_usage
 from polylogue.api import Polylogue
@@ -14,6 +14,7 @@ from polylogue.cli.click_app import cli
 from polylogue.mcp.server import build_server
 from polylogue.services import RuntimeServices
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.json_contracts import extract_json_result
 from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
@@ -44,7 +45,8 @@ async def test_command_shapes_repository_projection_and_paging_reach_api_cli_mcp
 
     monkeypatch.setattr(readers, "build_command_shape_usage", require_stream)
     root = cli_workspace["archive_root"]
-    session_id = seed_command_shape_archive(root)
+    # Seeding takes the archive writer's synchronous lease, off this event loop.
+    session_id = run_off_event_loop(lambda: seed_command_shape_archive(root))
     with ArchiveStore.open_existing(root, read_only=True) as archive:
         archive.begin_read_snapshot()
         try:
@@ -86,12 +88,18 @@ async def test_command_shapes_repository_projection_and_paging_reach_api_cli_mcp
                         for row in result["command_shapes"]
                     ] == [(shape, repository, 2)]
             assert await poly.list_command_shape_usage(CommandShapeUsageQuery(repository="absent")) == []
-    with cli_daemon_archive(root, monkeypatch):
-        cli_result = CliRunner().invoke(
-            cli,
-            ["analyze", "insights", "command-shapes", "--repository", "B", "--limit", "1", "--format", "json"],
-            catch_exceptions=False,
-        )
+
+    def run_cli() -> Result:
+        # The CLI daemon's bootstrap takes the synchronous lease, which must
+        # not block this test's event loop.
+        with cli_daemon_archive(root, monkeypatch):
+            return CliRunner().invoke(
+                cli,
+                ["analyze", "insights", "command-shapes", "--repository", "B", "--limit", "1", "--format", "json"],
+                catch_exceptions=False,
+            )
+
+    cli_result = run_off_event_loop(run_cli)
     assert cli_result.exit_code == 0
     payload = extract_json_result(cli_result.output)
     cli_rows = payload["command_shapes"]

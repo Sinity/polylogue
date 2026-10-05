@@ -200,7 +200,8 @@ def test_context_delivery_retains_original_failed_statement_until_creator_retry(
                     if operation == "write"
                     else sql.lstrip().startswith("SELECT snapshot_ref, recipient_ref")
                     if operation == "read"
-                    else sql.lstrip().startswith("SELECT snapshot_ref FROM context_deliveries")
+                    # A paged list read opens with its exact total.
+                    else sql.lstrip().startswith("SELECT COUNT(*) FROM context_deliveries")
                 )
                 if matches:
                     selected.append(self)
