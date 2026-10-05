@@ -10,8 +10,14 @@ from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisi
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.pipeline.ids import message_content_identity
+from polylogue.sources.live import WatchSource
+from polylogue.sources.live.cold_build import (
+    ColdBuildGeneration,
+    clear_cold_build_generation,
+    register_cold_build_generation,
+)
 from polylogue.sources.parsers.claude.ai_parser import parse_ai
-from polylogue.storage.index_generation import IndexGenerationStore, source_revision_snapshot
+from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.reference_seal import ReferenceSealError
@@ -84,11 +90,25 @@ def test_retained_replay_and_promotion_preserve_or_refuse_prior_annotated_identi
             archive.commit()
     generations = IndexGenerationStore.for_archive_root(tmp_path)
     before = Path(generations.active_pointer).resolve(strict=True)
+    # Retained replay publishes only into the registered cold-build
+    # destination, so the candidate is begun and registered as one.
     with write_lease("test.retained-identity-candidate", archive_root=tmp_path):
-        candidate = generations.create(
-            owner_id="identity-replay-owner", source_snapshot=source_revision_snapshot(tmp_path)
+        cold_build = ColdBuildGeneration.begin(
+            tmp_path, reason="test-retained-identity", sources=(WatchSource("fixture", tmp_path / "absent"),)
         )
-    result = replay_retained_components(tmp_path, selected_raw_ids=[raw_id], owned_generation=candidate)
+    candidate = cold_build.generation
+    register_cold_build_generation(cold_build)
+    try:
+        # The daemon owner establishes the cold writer profile before any
+        # preparation records the destination's file identity.
+        with write_lease("test.retained-identity-destination", archive_root=tmp_path), cold_build.open_writer():
+            pass
+        result = replay_retained_components(tmp_path, selected_raw_ids=[raw_id], owned_generation=candidate)
+        # The readiness pass builds the candidate's deferred indexes and FTS.
+        with write_lease("test.retained-identity-readiness", archive_root=tmp_path):
+            cold_build.prepare_promotion_candidate()
+    finally:
+        clear_cold_build_generation()
     assert result.replayed_logical_sources == 1
     with closing(sqlite3.connect(tmp_path / "source.db")) as source:
         census = source.execute(
