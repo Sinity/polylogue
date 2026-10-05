@@ -449,14 +449,17 @@ def test_source_to_action_oracle_refuses_a_mutated_pairing(
 
     from polylogue.storage.sqlite.connection import open_connection
 
-    clean_db = tmp_path / f"clean-{label}.db"
+    # Each write owns its own archive root: one root has one active Index.
+    clean_db = tmp_path / f"clean-{label}" / "index.db"
+    clean_db.parent.mkdir()
     with open_connection(clean_db):
         pass
     clean_actions, clean_results = _write_and_read(clean_db, session)
     baseline = judge_conservation(evidence, clean_actions, physical_results=clean_results)
     assert baseline.conserved, baseline.to_dict()
 
-    mutated_db = tmp_path / f"mutated-{label}.db"
+    mutated_db = tmp_path / f"mutated-{label}" / "index.db"
+    mutated_db.parent.mkdir()
     with open_connection(mutated_db):
         pass
     mutated_actions, mutated_results = _write_and_read(mutated_db, mutate(session))
@@ -577,22 +580,20 @@ def test_parent_proven_fanout_preserves_all_results_and_aggregate_verdict(
     expected = reported if parent_proved else "unknown"
     assert browser_use.tool_outcome is ToolOutcome(expected)
     if append:
+        appended_ids = {"res-fanout-2", "call-abandoned"}
         baseline = parsed.model_copy(
-            update={
-                "messages": [
-                    message
-                    for message in parsed.messages
-                    if message.provider_message_id not in {"res-fanout-2", "call-abandoned"}
-                ]
-            }
+            update={"messages": [m for m in parsed.messages if m.provider_message_id not in appended_ids]}
+        )
+        # A merge-append write carries only the new records; the later reply
+        # must still re-decide the earlier invocation's verdict.
+        tail = parsed.model_copy(
+            update={"messages": [m for m in parsed.messages if m.provider_message_id in appended_ids]}
         )
         write_session_sync(test_db, baseline)
         conn = connect_measured(test_db)
         conn.row_factory = sqlite3.Row
         try:
-            sid = write_fixture_index_session(
-                conn, parsed, merge_append=True, content_hash=session_content_hash(parsed)
-            )
+            sid = write_fixture_index_session(conn, tail, merge_append=True, content_hash=session_content_hash(parsed))
         finally:
             close_fixture_index_connection(conn)
     else:
@@ -601,7 +602,7 @@ def test_parent_proven_fanout_preserves_all_results_and_aggregate_verdict(
     with sqlite3.connect(f"file:{test_db}?mode=ro", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         generic = conn.execute(action_relation_select_sql() + " ORDER BY tool_use_block_id").fetchall()
-        cached = conn.execute("SELECT * FROM actions ORDER BY tool_use_block_id").fetchall()
+        cached = conn.execute("SELECT * FROM action_pairs ORDER BY tool_use_block_id").fetchall()
         assert [(row["tool_use_block_id"], row["tool_outcome"], row["tool_result_block_id"]) for row in generic] == [
             (row["tool_use_block_id"], row["tool_outcome"], row["tool_result_block_id"]) for row in cached
         ]

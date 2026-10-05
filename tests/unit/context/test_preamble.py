@@ -253,8 +253,12 @@ def _judging_archive(
 
     archive_root = (tmp_path / "archive").resolve()
     monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_args, **_kwargs: None)
+    from tests.infra.archive_templates import run_off_event_loop
+
     daemon = running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root))
-    daemon.__enter__()
+    # The stack bootstraps the archive under a synchronous write lease, which
+    # may not block the async test's running loop.
+    run_off_event_loop(daemon.__enter__)
     request.addfinalizer(lambda: daemon.__exit__(None, None, None))
     return archive_root, Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
 

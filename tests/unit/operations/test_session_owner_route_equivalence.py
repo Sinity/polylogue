@@ -39,6 +39,7 @@ from polylogue.operations.session_contracts import SessionList, SessionRead, Ses
 from polylogue.operations.session_reads import execute_session_operation
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
 
 
@@ -132,7 +133,7 @@ async def test_session_listing_agrees_across_the_generic_and_owner_read_routes(t
     """
 
     root = tmp_path / "archive"
-    seeded = _seed(root, count=25)
+    seeded = run_off_event_loop(lambda: _seed(root, count=25))
 
     # Anti-vacuity: 25 rows make the omitted-limit page boundary observable.
     first_owner = await _owner_list(root, origin=Origin.CODEX_SESSION)
@@ -166,7 +167,7 @@ async def test_session_filters_agree_across_the_generic_and_owner_read_routes(tm
     """
 
     root = tmp_path / "archive"
-    _seed(root)
+    run_off_event_loop(lambda: _seed(root))
 
     owner = await _owner_list(root, min_messages=3, limit=50)
     generic = _generic_list(root, min_messages=3, limit=50)
@@ -185,7 +186,7 @@ async def test_lexical_search_selects_the_same_sessions_on_both_read_routes(tmp_
     """
 
     root = tmp_path / "archive"
-    seeded = _seed(root)
+    seeded = run_off_event_loop(lambda: _seed(root))
 
     async with Polylogue(archive_root=root) as api:
         owner_page = await execute_session_operation(api, SessionSearch(expression="needle", limit=50))
@@ -263,7 +264,7 @@ async def test_ranked_search_with_text_exclusion_is_refused_on_mcp_and_generic_r
     """
 
     root = tmp_path / "archive"
-    _seed_exclusion(root)
+    run_off_event_loop(lambda: _seed_exclusion(root))
 
     with open_operation_read(root) as pinned, pytest.raises(ValueError, match="text exclusions"):
         execute_read_operation(
@@ -288,7 +289,7 @@ async def test_text_exclusion_listing_agrees_between_mcp_and_generic_routes(tmp_
     """
 
     root = tmp_path / "archive"
-    ids = _seed_exclusion(root)
+    ids = run_off_event_loop(lambda: _seed_exclusion(root))
 
     generic = _generic_list(root, query="-secret", limit=50)
     result = await _mcp_sessions(root, "-secret")
@@ -325,7 +326,7 @@ async def test_text_exclusion_listing_pages_a_scope_larger_than_one_hydration_ch
     monkeypatch.setattr(archive_api, "POST_FILTER_HYDRATION_CHUNK", 2)
     root = tmp_path / "archive"
     texts = {f"s{index}": ("needle secret" if index in (1, 4) else f"needle plain {index}") for index in range(7)}
-    ids = _seed_exclusion(root, texts)
+    ids = run_off_event_loop(lambda: _seed_exclusion(root, texts))
     survivors = {ids[name] for name in texts if "secret" not in texts[name]}
 
     generic = _generic_list(root, query="-secret", limit=50)
@@ -367,7 +368,7 @@ async def test_transcript_windows_agree_across_the_generic_and_owner_read_routes
     """
 
     root = tmp_path / "archive"
-    session_id = _seed(root)[-1]  # five messages: three windows of two
+    session_id = run_off_event_loop(lambda: _seed(root))[-1]  # five messages: three windows of two
 
     owner_pages: list[tuple[list[str], int | None, int, int | None]] = []
     async with Polylogue(archive_root=root) as api:

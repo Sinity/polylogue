@@ -442,7 +442,7 @@ async def test_small_transport_budget_preserves_unicode_json_nulls_and_empty_fie
     from polylogue.operations.session_evidence import SESSION_EVIDENCE_PAGE_READERS
 
     root = tmp_path / "archive"
-    _seed_fragment_evidence(root, kind, 'zażółć\x00🧪"\\\n' * 5000)
+    run_off_event_loop(lambda: _seed_fragment_evidence(root, kind, 'zażółć\x00🧪"\\\n' * 5000))
     with ArchiveStore.open_existing(root) as store:
         expected, _ = SESSION_EVIDENCE_PAGE_READERS[kind](store, _SESSION_ID, 100, 0)
     archive = Polylogue(archive_root=root)
@@ -573,7 +573,7 @@ async def test_oversized_web_construct_resumes_from_daemon_on_api(tmp_path: Path
     from polylogue.operations.session_evidence import SESSION_EVIDENCE_PAGE_READERS
 
     root = tmp_path / "archive"
-    _seed_fragment_evidence(root, "web-content", "x" * (large_fixture_bytes + 4096))
+    run_off_event_loop(lambda: _seed_fragment_evidence(root, "web-content", "x" * (large_fixture_bytes + 4096)))
     ref = f"session:{_SESSION_ID}"
     with ArchiveStore.open_existing(root) as store:
         expected, _ = SESSION_EVIDENCE_PAGE_READERS["web-content"](store, _SESSION_ID, 1, 0)

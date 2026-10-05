@@ -669,21 +669,6 @@ async def test_batched_grouped_ingest_commits_census_before_next_raw(
     _first_parent, first_child = _write_carryover_chain(first_root)
     _second_parent, second_child = _write_carryover_chain(second_root, session_prefix="second-")
 
-    from polylogue.sources import revision_backfill
-
-    original_census = revision_backfill.apply_prepared_revision_census
-    census_calls = 0
-
-    def require_source_transaction(seal: Any, prepared: Any) -> Any:
-        # The canonical census publishes on its own dedicated Source writer
-        # transaction (``publish_prepared_revision_source``), never inside the
-        # caller's index batch.
-        nonlocal census_calls
-        census_calls += 1
-        return original_census(seal, prepared)
-
-    monkeypatch.setattr(revision_backfill, "apply_prepared_revision_census", require_source_transaction)
-
     result = await ingest_one_shot_archive(
         archive_root,
         [Source(name="claude-code", path=first_child), Source(name="claude-code", path=second_child)],
@@ -696,8 +681,16 @@ async def test_batched_grouped_ingest_commits_census_before_next_raw(
     # call, and without that guard the next file's publisher blocks on the
     # census transaction's source.db write lock.
     assert result.parse_failures == 0
-    # One membership census per raw, over every session that raw carries.
-    assert census_calls == 2
+    # One complete membership census per raw, over every session that raw
+    # carries. The canonical route may publish it as a preparatory census or
+    # inside its replay's own Source transaction; either way it is durable,
+    # complete and never inside the caller's index batch.
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+        census = conn.execute("SELECT raw_id, status FROM raw_authority_parser_census ORDER BY raw_id").fetchall()
+        raws = {row[0] for row in conn.execute("SELECT raw_id FROM raw_sessions")}
+    assert {raw_id for raw_id, _status in census} == raws
+    assert len(census) == 2
+    assert {status for _raw_id, status in census} == {"complete"}
     assert result.counts["sessions"] == 4
     assert len(_raw_rows_for_path(archive_root / "source.db", str(first_child))) == 1
     assert len(_raw_rows_for_path(archive_root / "source.db", str(second_child))) == 1

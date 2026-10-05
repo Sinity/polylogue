@@ -361,7 +361,7 @@ async def parse_from_raw(
         processed_so_far = 0
         for batch_ids in _iter_raw_id_batches(
             raw_headers,
-            max_records=service.raw_batch_size,
+            max_records=service.RAW_BATCH_SIZE,
             max_blob_bytes=service.raw_batch_blob_limit_bytes,
         ):
             if batches_processed > 0 and _pass_deadline_exceeded():
@@ -423,7 +423,7 @@ async def parse_from_raw(
         processed_so_far = 0
         for batch_ids in _iter_raw_id_batches(
             raw_headers,
-            max_records=service.raw_batch_size,
+            max_records=service.RAW_BATCH_SIZE,
             max_blob_bytes=service.raw_batch_blob_limit_bytes,
         ):
             if batches_processed > 0 and _pass_deadline_exceeded():
