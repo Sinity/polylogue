@@ -315,6 +315,9 @@ class WorkCounters:
     prerequisites_inspected: int = 0
     computed: int = 0
     published: int = 0
+    #: Declared publication phases continued within one key (census,
+    #: classification, restored bytes before replay). Not separate keys.
+    phase_continuations: int = 0
 
 
 class DiscoveryPhase(Enum):
@@ -628,6 +631,7 @@ class _Pass:
         self.visited_cursors: dict[tuple[str, DiscoveryPhase], set[object]] = {}
         self.computed = 0
         self.published = 0
+        self.phase_continuations = 0
         #: Every key this pass reached a verdict on, so a dependant can be gated
         #: on what just happened rather than on a re-read that would not see it.
         self.verdicts: dict[DerivationKey, Outcome] = {}
@@ -660,6 +664,7 @@ class _Pass:
             prerequisites_inspected=self.prerequisites_inspected,
             computed=self.computed,
             published=self.published,
+            phase_continuations=self.phase_continuations,
         )
 
     # ── bounds ─────────────────────────────────────────────────────
@@ -947,102 +952,131 @@ class _Pass:
             return
 
         started_key = time.monotonic()
+        # Budgets count the key once; a declared phase continuation is the same
+        # key's unit of work, bounded by the adapter's own phase count.
+        phases_remaining = max(0, int(getattr(adapter, "publication_phases", 1)) - 1)
         self.computed += 1
-        try:
-            replacement = adapter.compute(self.frame, key)
-        except Exception as exc:
-            emit(
-                "daemon.derivation.key_failed",
-                level=WARNING,
-                outcome="error",
-                phase="compute",
-                domain=adapter.domain,
-                derivation_key=key,
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            self.record(
-                KeyOutcome(
-                    key=derivation_key,
-                    outcome=Outcome.FAILED,
-                    error=f"compute {type(exc).__name__}: {exc}",
-                    transient=_is_transient_failure(exc),
-                    terminal_refusal=exc.kind if isinstance(exc, RetainedRawDecodeRefusalError) else None,
-                    elapsed_s=time.monotonic() - started_key,
-                )
-            )
-            return
-
-        held_at_admission: dict[str, str] = {}
-        publication_started = False
-
-        def _publish(adapter: DerivationAdapter = adapter, replacement: ReplacementLike = replacement) -> bool:
-            nonlocal publication_started
-            # Compute ran outside the writer, so the pre-compute barrier
-            # decision may be stale: an ingest can stage a newer, unpublished
-            # revision meanwhile. Re-decide inside the writer admission, where
-            # no such ingest can interleave, and refuse the publication.
-            if not retiring:
-                held_at_admission.update(self.barrier_blocks(adapter, (key,), phase=DiscoveryPhase.REQUIRED))
-                if held_at_admission:
-                    return False
-            publication_started = True
-            return adapter.publish(self.frame, replacement)
-
-        # The publication budget bounds *attempts*, not successes. Counting
-        # only certified publications lets an adapter that always mis-publishes
-        # issue unbounded publish() calls inside one pass (polylogue-tjtua).
-        self.published += 1
-        try:
+        first_attempt = True
+        while True:
             try:
-                accepted = self.publisher(adapter.domain, _publish) if self.publisher is not None else _publish()
-            except BaseException as primary:
-                if not publication_started:
-                    try:
-                        replacement.close()
-                    except BaseException as cleanup:
-                        raise BaseExceptionGroup(
-                            "publication admission and carrier cleanup failed", [primary, cleanup]
-                        ) from primary
-                raise
-            else:
-                if not publication_started:
-                    replacement.close()
-        except Exception as exc:
-            emit(
-                "daemon.derivation.key_failed",
-                level=WARNING,
-                outcome="error",
-                phase="publish",
-                domain=adapter.domain,
-                derivation_key=key,
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
-            self.record(
-                KeyOutcome(
-                    key=derivation_key,
-                    outcome=Outcome.FAILED,
-                    error=f"publish {type(exc).__name__}: {exc}",
-                    transient=_is_transient_failure(exc),
-                    terminal_refusal=exc.kind if isinstance(exc, RetainedRawDecodeRefusalError) else None,
-                    elapsed_s=time.monotonic() - started_key,
+                replacement = adapter.compute(self.frame, key)
+            except Exception as exc:
+                emit(
+                    "daemon.derivation.key_failed",
+                    level=WARNING,
+                    outcome="error",
+                    phase="compute",
+                    domain=adapter.domain,
+                    derivation_key=key,
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
                 )
-            )
-            return
+                self.record(
+                    KeyOutcome(
+                        key=derivation_key,
+                        outcome=Outcome.FAILED,
+                        error=f"compute {type(exc).__name__}: {exc}",
+                        transient=_is_transient_failure(exc),
+                        terminal_refusal=exc.kind if isinstance(exc, RetainedRawDecodeRefusalError) else None,
+                        elapsed_s=time.monotonic() - started_key,
+                    )
+                )
+                return
 
-        elapsed = time.monotonic() - started_key
-        if not accepted:
-            self.record(
-                KeyOutcome(
-                    key=derivation_key,
-                    outcome=Outcome.PENDING,
-                    reason=PendingReason.BLOCKED if held_at_admission else PendingReason.BINDING_MOVED,
-                    error=held_at_admission.get(key),
-                    elapsed_s=elapsed,
+            held_at_admission: dict[str, str] = {}
+            publication_started = False
+
+            def _publish(
+                adapter: DerivationAdapter = adapter,
+                replacement: ReplacementLike = replacement,
+                held: dict[str, str] = held_at_admission,
+            ) -> bool:
+                nonlocal publication_started
+                # Compute ran outside the writer, so the pre-compute barrier
+                # decision may be stale: an ingest can stage a newer, unpublished
+                # revision meanwhile. Re-decide inside the writer admission, where
+                # no such ingest can interleave, and refuse the publication.
+                if not retiring:
+                    held.update(self.barrier_blocks(adapter, (key,), phase=DiscoveryPhase.REQUIRED))
+                    if held:
+                        return False
+                publication_started = True
+                return adapter.publish(self.frame, replacement)
+
+            # The publication budget bounds *attempts*, not successes. Counting
+            # only certified publications lets an adapter that always mis-publishes
+            # issue unbounded publish() calls inside one pass (polylogue-tjtua).
+            if first_attempt:
+                self.published += 1
+            first_attempt = False
+            try:
+                try:
+                    accepted = self.publisher(adapter.domain, _publish) if self.publisher is not None else _publish()
+                except BaseException as primary:
+                    if not publication_started:
+                        try:
+                            replacement.close()
+                        except BaseException as cleanup:
+                            raise BaseExceptionGroup(
+                                "publication admission and carrier cleanup failed", [primary, cleanup]
+                            ) from primary
+                    raise
+                else:
+                    if not publication_started:
+                        replacement.close()
+            except Exception as exc:
+                emit(
+                    "daemon.derivation.key_failed",
+                    level=WARNING,
+                    outcome="error",
+                    phase="publish",
+                    domain=adapter.domain,
+                    derivation_key=key,
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
                 )
-            )
-            return
+                self.record(
+                    KeyOutcome(
+                        key=derivation_key,
+                        outcome=Outcome.FAILED,
+                        error=f"publish {type(exc).__name__}: {exc}",
+                        transient=_is_transient_failure(exc),
+                        terminal_refusal=exc.kind if isinstance(exc, RetainedRawDecodeRefusalError) else None,
+                        elapsed_s=time.monotonic() - started_key,
+                    )
+                )
+                return
+
+            elapsed = time.monotonic() - started_key
+            elapsed = time.monotonic() - started_key
+            if accepted:
+                break
+            # An adapter whose publication applies a prerequisite phase
+            # (restored bytes, Source census, classification) returns False
+            # after committing it: its next phase must be prepared off the
+            # writer against that committed state. That is the key's own
+            # progress, not an external binding move, so continue in this pass
+            # up to the adapter's declared phase count.
+            advanced = getattr(adapter, "publication_advanced", None)
+            if (
+                held_at_admission
+                or phases_remaining <= 0
+                or not callable(advanced)
+                or not advanced(replacement)
+                or self.out_of_time()
+            ):
+                self.record(
+                    KeyOutcome(
+                        key=derivation_key,
+                        outcome=Outcome.PENDING,
+                        reason=PendingReason.BLOCKED if held_at_admission else PendingReason.BINDING_MOVED,
+                        error=held_at_admission.get(key),
+                        elapsed_s=elapsed,
+                    )
+                )
+                return
+            phases_remaining -= 1
+            self.phase_continuations += 1
 
         # The output relation certifies the publication, not its return value.
         # This inspection is part of publishing and is therefore counted but
