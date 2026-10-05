@@ -177,17 +177,19 @@ def apply_prepared_revision_replay(
     if result[1]:
         # Retained replay acknowledges an applied outcome's terminal raws on
         # Source after the Index outcome, as prepare_retained_replay_source does.
-        from polylogue.core.enums import Provider
         from polylogue.storage.sqlite.archive_tiers.revision_governance import (
             prepare_raw_parse_success,
+            raw_revision_descriptor,
             revision_replay_terminal_raw_ids,
         )
 
+        terminal = {
+            raw_id: raw_revision_descriptor(archive, raw_id)[0] for raw_id in revision_replay_terminal_raw_ids(plan)
+        }
         archive.commit()
 
         def acknowledge(source_seal: PreparedIndexMutation) -> None:
-            for raw_id in revision_replay_terminal_raw_ids(plan):
-                provider = Provider.from_string(parsed_by_raw_id[raw_id].source_name)
+            for raw_id, provider in terminal.items():
                 prepare_raw_parse_success(source_seal, raw_id, provider=provider)
 
         publish_prepared_source(root, "test.revision-replay", acknowledge)
