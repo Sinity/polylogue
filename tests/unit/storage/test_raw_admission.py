@@ -22,6 +22,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     bind_source_raw_revision,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.write_lease import write_lease
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -66,8 +67,11 @@ def test_non_post_parse_blob_ref_persists_file_mtime(tmp_path: Path) -> None:
     file_mtime_ms = 1_767_225_600_000
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         assert archive._blob_publisher is not None
-        blob_hash, blob_size = archive._blob_publisher.write_from_bytes(payload)
-        archive._blob_publisher.flush()
+        # Blob publication writes Source rows; it runs under the archive's
+        # write lease as the store's own raw routes do.
+        with write_lease("test.raw-admission.blob-publication", archive_root=tmp_path):
+            blob_hash, blob_size = archive._blob_publisher.write_from_bytes(payload)
+            archive._blob_publisher.flush()
         raw_id = archive.write_raw_blob_ref(
             provider=Provider.CODEX,
             blob_hash_hex=blob_hash,
@@ -309,8 +313,9 @@ def test_archive_store_write_raw_blob_ref_post_parse_preserves_explicit_batch_id
     source_path = str(tmp_path / "batch.jsonl")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
         assert store._blob_publisher is not None
-        published_hash, published_size = store._blob_publisher.write_from_bytes(payload)
-        store._blob_publisher.flush()
+        with write_lease("test.raw-admission.blob-publication", archive_root=tmp_path):
+            published_hash, published_size = store._blob_publisher.write_from_bytes(payload)
+            store._blob_publisher.flush()
         assert published_hash == blob_hash.hex()
         assert published_size == len(payload)
         assert (
