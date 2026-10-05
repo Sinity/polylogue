@@ -23,7 +23,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from polylogue.sources.live.watcher import WatchSource
 
-__all__ = ["acquire_hook_carriers", "hook_event_count", "materialize_hook_carriers"]
+__all__ = [
+    "acquire_hook_carriers",
+    "hook_event_count",
+    "materialize_acquired_hook_carriers",
+    "materialize_hook_carriers",
+]
 
 #: A pass that admits nothing is the end of the backlog. The cap only bounds a
 #: test that has wired something into a loop; a real backlog drains in one pass
@@ -152,6 +157,12 @@ def materialize_hook_carriers(archive_root: Path, *, spool_root: Path | None = N
     """Acquire every pending carrier, materialize its events, and count them."""
 
     acquire_hook_carriers(archive_root, spool_root=spool_root)
+    return materialize_acquired_hook_carriers(archive_root)
+
+
+def materialize_acquired_hook_carriers(archive_root: Path) -> int:
+    """Materialize the events of every already-acquired carrier, and count them."""
+
     with _pinned_archive_root(archive_root):
         return _converge(archive_root)
 
