@@ -237,7 +237,9 @@ def plan_ref_resolution(
         if object_ref.kind == "finding":
             return _resolve_finding_object_ref(root, ref, normalized_ref, object_ref, archive.index_connection)
         if object_ref.kind == "annotation-batch":
-            return _resolve_annotation_batch_object_ref(archive, ref, normalized_ref, object_ref)
+            return _resolve_annotation_batch_object_ref(
+                archive, ref, normalized_ref, object_ref, limit=limit, offset=offset
+            )
         if object_ref.kind == "delegation":
             return _resolve_delegation_object_ref(
                 archive, ref, normalized_ref, object_ref, limit=limit, offset=offset, continuation=continuation
@@ -808,6 +810,9 @@ def _resolve_annotation_batch_object_ref(
     ref: str,
     normalized_ref: str,
     object_ref: ObjectRef,
+    *,
+    limit: int,
+    offset: int,
 ) -> PublicRefResolutionPayload:
     from polylogue.surfaces.payloads import (
         AnnotationBatchPayload,
@@ -816,8 +821,8 @@ def _resolve_annotation_batch_object_ref(
         model_json_document,
     )
 
-    batch = archive.get_annotation_batch(object_ref.object_id)
-    if batch is None:
+    page = archive.get_annotation_batch_page(object_ref.object_id, limit=limit, offset=offset)
+    if page is None:
         bounded = _oversized_annotation_batch_ref_payload(ref)
         if bounded is not None:
             return cast(PublicRefResolutionPayload, bounded)
@@ -830,16 +835,20 @@ def _resolve_annotation_batch_object_ref(
                 kind="annotation-batch",
             ),
         )
-    payload = AnnotationBatchPayload.from_batch(batch)
-    scalar_ref_pairs = (
-        (batch.batch_ref, payload.batch_ref),
-        (batch.target_ref, payload.target_ref),
-        (batch.source_result_ref, payload.source_result_ref),
-        (batch.actor_ref, payload.actor_ref),
-        (batch.model_ref, payload.model_ref),
-        (batch.prompt_ref, payload.prompt_ref),
+    payload = AnnotationBatchPayload.from_page(
+        page.header, page.items, total=page.total, offset=page.offset, next_offset=page.next_offset
     )
-    object_refs = tuple(dict.fromkeys(value for value, preview in scalar_ref_pairs if not preview.truncated))
+    scalar_ref_pairs = (
+        (page.header["batch_ref"], payload.batch_ref),
+        (page.header["target_ref"], payload.target_ref),
+        (page.header["source_result_ref"], payload.source_result_ref),
+        (page.header["actor_ref"], payload.actor_ref),
+        (page.header["model_ref"], payload.model_ref),
+        (page.header["prompt_ref"], payload.prompt_ref),
+    )
+    object_refs = tuple(
+        dict.fromkeys(value for value, preview in scalar_ref_pairs if isinstance(value, str) and not preview.truncated)
+    )
     public_ref = normalized_ref
     public_normalized_ref: str | None = normalized_ref
     if payload.batch_ref.truncated:
@@ -848,7 +857,9 @@ def _resolve_annotation_batch_object_ref(
     actions: tuple[RefResolutionActionPayload, ...] = ()
     if not payload.target_ref.truncated:
         actions = (
-            _resolution_action("read annotation target", _find_ref_command(batch.target_ref, id_prefixed=False)),
+            _resolution_action(
+                "read annotation target", _find_ref_command(str(page.header["target_ref"]), id_prefixed=False)
+            ),
         )
     return PublicRefResolutionPayload(
         ref=public_ref,

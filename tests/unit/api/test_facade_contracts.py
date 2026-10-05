@@ -3640,12 +3640,9 @@ async def test_resolve_ref_reads_persisted_annotation_batch_and_reports_missing(
         assert payload.payload["qualified_schema_id"]["text_prefix"] == batch.qualified_schema_id
         assert json.loads(payload.payload["metadata"]["json_prefix"]) == {"campaign": "facade-contract"}
         assert payload.payload["metadata"]["truncated"] is False
-        assert payload.payload["assertion_refs_total_count"] == 0
-        assert payload.payload["assertion_refs_omitted_count"] == 0
-        assert payload.payload["assertion_refs_truncated"] is False
-        assert payload.payload["validation_failures_total_count"] == 0
-        assert payload.payload["validation_failures_omitted_count"] == 0
-        assert payload.payload["validation_failures_truncated"] is False
+        assert payload.payload["total"] == 0
+        assert payload.payload["items"] == []
+        assert payload.payload["next_offset"] is None
         assert payload.caveats == ()
         assert payload.object_refs == (
             batch.batch_ref,
@@ -3743,14 +3740,17 @@ async def test_resolve_ref_bounds_oversized_annotation_batch_payload(tmp_path: P
 
     Anti-vacuity: this persists the complete batch, proves the repository still
     returns every row, and then calls production ``Polylogue.resolve_ref``.
-    Removing the resolver's count or JSON-byte caps breaks the sample, caveat,
-    top-level ref, and serialized-size assertions below.
+    Paging preserves all collection evidence while independent metadata previews
+    and scalar references retain their declared bounds.
     """
     from polylogue.annotations.batch import AnnotationBatch
 
     assertion_refs = tuple(f"assertion:oversized-{index:03d}-{'a' * 160}" for index in range(64))
     validation_failures: tuple[JSONDocument, ...] = tuple(
-        {"row": index, "errors": ["invalid label"], "details": "f" * 4096} for index in range(64)
+        cast(JSONDocument, {"row": index, "errors": ["invalid label"], "details": "f" * 4096}) for index in range(62)
+    ) + (
+        cast(JSONDocument, {"row": 62, "errors": [], "details": "empty errors"}),
+        cast(JSONDocument, {"row": 63, "errors": {"code": "opaque"}, "details": "non-array errors"}),
     )
     batch = AnnotationBatch(
         batch_id="batch-ref-resolution-oversized",
@@ -3786,23 +3786,25 @@ async def test_resolve_ref_bounds_oversized_annotation_batch_payload(tmp_path: P
         assert resolution.resolved is True
         assert resolution.payload is not None
         document = resolution.payload
-        assert [item["text_sha256"] for item in document["assertion_refs"]] == [
-            hashlib.sha256(ref.encode("utf-8")).hexdigest() for ref in assertion_refs[:20]
-        ]
-        assert all(item["truncated"] is True for item in document["assertion_refs"])
-        assert document["assertion_ref_values_truncated_count"] == 20
-        assert document["assertion_refs_total_count"] == 64
-        assert document["assertion_refs_omitted_count"] == 44
-        assert document["assertion_refs_truncated"] is True
-        assert len(document["validation_failures"]) == 5
-        assert document["validation_failures_total_count"] == 64
-        assert document["validation_failures_omitted_count"] == 59
-        assert document["validation_failures_truncated"] is True
-        assert all(item["truncated"] is True for item in document["validation_failures"])
-        assert all(len(item["json_prefix"].encode("utf-8")) <= 1024 for item in document["validation_failures"])
-        assert document["metadata"]["truncated"] is True
+        assert document["total"] == 128
+        collected = list(document["items"])
+        next_offset = document["next_offset"]
+        while next_offset is not None:
+            page = await archive.resolve_ref(batch.batch_ref, limit=17, offset=next_offset)
+            assert page.payload is not None
+            assert len(page.payload["items"]) <= 17
+            collected.extend(page.payload["items"])
+            next_offset = page.payload["next_offset"]
+        assert [item["assertion_ref"] for item in collected if item["kind"] == "assertion"] == list(assertion_refs)
+        errors = [item for item in collected if item["kind"] == "validation-error"]
+        assert [item["failure"]["row"] for item in errors] == list(range(62))
+        assert [item["failure"]["details"] for item in errors] == ["f" * 4096] * 62
+        assert [item["error"] for item in errors] == ["invalid label"] * 62
+        failures = [item for item in collected if item["kind"] == "validation-failure"]
+        assert [item["failure_ordinal"] for item in failures] == [62, 63]
+        assert [item["failure"] for item in failures] == list(validation_failures[62:])
         assert document["metadata"]["json_bytes_total"] > 1024
-        assert len(document["metadata"]["json_prefix"].encode("utf-8")) <= 1024
+        assert len(document["metadata"]["json_prefix"].encode("utf-8")) <= 256
         assert resolution.object_refs == (
             batch.batch_ref,
             batch.target_ref,
@@ -3812,15 +3814,10 @@ async def test_resolve_ref_bounds_oversized_annotation_batch_payload(tmp_path: P
             batch.prompt_ref,
         )
         assert not any(ref.startswith("assertion:") for ref in resolution.object_refs)
+        assert document["metadata"]["truncated"] is True
         assert resolution.caveats == (
-            "annotation_batch_assertion_refs_capped: returned=20 total=64 omitted=44",
-            "annotation_batch_assertion_ref_values_capped: clipped=20 json_byte_cap=96",
-            "annotation_batch_validation_failures_capped: returned=5 total=64 omitted=59",
-            "annotation_batch_validation_failure_json_capped: clipped=5 byte_cap=256",
-            f"annotation_batch_metadata_json_capped: total_bytes={document['metadata']['json_bytes_total']} "
-            "byte_cap=256",
+            f"annotation_batch_metadata_json_capped: total_bytes={document['metadata']['json_bytes_total']} byte_cap=256",
         )
-        assert len(resolution.model_dump_json().encode("utf-8")) < 16_000
     finally:
         await archive.close()
 
@@ -3857,20 +3854,20 @@ async def test_resolve_ref_byte_bounds_opaque_annotation_refs_and_scalars(tmp_pa
             assert persisted.assertion_refs == assertion_refs
             assert persisted.target_ref == batch.target_ref
 
-        resolution = await archive.resolve_ref(batch.batch_ref)
+        resolution = await archive.resolve_ref(batch.batch_ref, limit=1)
 
         assert resolution.resolved is True
         assert resolution.normalized_ref is None
         assert resolution.ref.startswith("annotation-batch:sha256-")
         assert resolution.payload is not None
-        assert resolution.payload["assertion_ref_values_truncated_count"] == 20
-        assert all(item["truncated"] is True for item in resolution.payload["assertion_refs"])
+        assert resolution.payload["items"] == [{"kind": "assertion", "ordinal": 0, "assertion_ref": assertion_refs[0]}]
+        assert resolution.payload["total"] == 20
+        assert resolution.payload["next_offset"] == 1
         assert resolution.payload["target_ref"]["truncated"] is True
         assert resolution.object_refs == ()
         assert resolution.actions == ()
-        assert any("assertion_ref_values_capped" in caveat for caveat in resolution.caveats)
         assert any("scalar_values_capped" in caveat for caveat in resolution.caveats)
-        assert len(resolution.model_dump_json().encode("utf-8")) < 16_000
+        assert len(resolution.model_dump_json().encode("utf-8")) < 150_000
     finally:
         await archive.close()
 
@@ -6521,12 +6518,13 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(
         assert result.qualified_schema_id == "test.facade-import@v1"
         assert result.valid_count == 1
         assert result.invalid_count == 1
-        assert result.rows[0].assertion_ref is not None
-        assert result.rows[1].status == "invalid"
-        assert result.rows[1].errors == (
+        resolution = await archive.resolve_ref(result.batch_ref)
+        assert resolution.payload is not None
+        assert resolution.payload["items"][0]["kind"] == "assertion"
+        assert [item["error"] for item in resolution.payload["items"] if item["kind"] == "validation-error"] == [
             "field 'label' must be one of ['no', 'yes'], got 'maybe'",
             "evidence_ref 'missing-evidence' does not resolve in the live archive",
-        )
+        ]
         assert not (configured_root / "user.db").exists()
         with sqlite3.connect(active_root / "user.db") as conn:
             persisted = conn.execute("SELECT status, scope_ref FROM assertions WHERE key = 'row-1'").fetchone()
@@ -6596,7 +6594,9 @@ async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Pa
         assert result.status == "ok"
         assert result.qualified_schema_id == "delegation.discourse@v1"
         assert result.valid_count == 1
-        assert result.rows[0].status == "imported"
+        resolution = await archive.resolve_ref(result.batch_ref)
+        assert resolution.payload is not None
+        assert resolution.payload["items"][0]["kind"] == "assertion"
     finally:
         await archive.close()
 

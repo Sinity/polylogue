@@ -179,7 +179,7 @@ async def test_import_roundtrip_keeps_failures_candidates_and_independent_batche
     assert (first.total_count, first.valid_count, first.invalid_count) == (5, 4, 1)
     assert first.status == second.status == "partial"
     assert first.batch_ref != second.batch_ref
-    assert first.rows[-1].errors == ("evidence_ref 'missing-session' does not resolve in the live archive",)
+    assert "rows" not in first.model_dump()
 
     with ArchiveStore.open_existing(archive_root) as archive:
         batches = archive.list_annotation_batches(schema_id="test.import")
@@ -196,7 +196,7 @@ async def test_import_roundtrip_keeps_failures_candidates_and_independent_batche
     assert all(policy["inject"] is False and policy["promotion_required"] is True for policy in policies)
     assert {row[2] for row in assertion_rows} == {"annotation-batch:batch-one", "annotation-batch:batch-two"}
 
-    judgment_refs = [row.assertion_ref for row in first.rows if row.status == "imported"][:3]
+    judgment_refs = list(next(batch.assertion_refs for batch in batches if batch.batch_ref == first.batch_ref))[:3]
     with connect_user_db(archive_root / "user.db") as conn:
         for candidate_ref, decision in zip(judgment_refs, ("accept", "reject", "defer"), strict=True):
             assert candidate_ref is not None
@@ -206,7 +206,7 @@ async def test_import_roundtrip_keeps_failures_candidates_and_independent_batche
             row[0]
             for row in conn.execute(
                 "SELECT status FROM assertions WHERE assertion_id IN (?, ?, ?)",
-                tuple(ref.removeprefix("assertion:") for ref in judgment_refs if ref is not None),
+                tuple(ref.removeprefix("assertion:") for ref in judgment_refs),
             )
         }
         active_count = conn.execute(
@@ -314,7 +314,9 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
             with pytest.raises(ValueError, match="does not resolve"):
                 await import_annotation_batch(poly, missing_target)
 
-            first_refs = [row.assertion_ref for row in first.rows if row.status == "imported"]
+            resolution = await poly.resolve_ref(first.batch_ref)
+            assert resolution.payload is not None
+            first_refs = [item["assertion_ref"] for item in resolution.payload["items"] if item["kind"] == "assertion"]
             judgments = []
             for candidate_ref, decision in zip(first_refs[:3], ("accept", "reject", "defer"), strict=True):
                 assert candidate_ref is not None

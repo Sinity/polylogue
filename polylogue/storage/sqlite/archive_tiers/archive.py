@@ -277,11 +277,13 @@ from polylogue.storage.sqlite.archive_tiers.types import (
     ArchiveTier,
 )
 from polylogue.storage.sqlite.archive_tiers.user_annotations import (
+    AnnotationBatchReadPage,
     DurableAnnotationSchema,
     list_durable_annotation_schemas,
     persist_annotation_batch,
     persist_annotation_schema,
     read_annotation_batch,
+    read_annotation_batch_page,
     read_durable_annotation_schema,
 )
 from polylogue.storage.sqlite.archive_tiers.user_annotations import (
@@ -5329,6 +5331,17 @@ class ArchiveStore:
         user_conn.row_factory = sqlite3.Row
         try:
             return read_annotation_batch(user_conn, batch_id)
+        finally:
+            user_conn.close()
+
+    def get_annotation_batch_page(self, batch_id: str, *, limit: int, offset: int) -> AnnotationBatchReadPage | None:
+        """Read one exact batch evidence window on a single User snapshot."""
+        if not self.user_db_path.exists():
+            return None
+        user_conn = open_readonly_connection(self.user_db_path)
+        try:
+            user_conn.execute("BEGIN")
+            return read_annotation_batch_page(user_conn, batch_id, limit=limit, offset=offset)
         finally:
             user_conn.close()
 
