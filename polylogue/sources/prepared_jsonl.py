@@ -77,6 +77,7 @@ from polylogue.sources.dispatch import (
     parse_generic_messages_stream,
     require_positive_conversational_evidence,
 )
+from polylogue.sources.origin_specs import path_declaration_refuses_session
 from polylogue.sources.parsers import (
     browser_capture,
     chatgpt,
@@ -2489,21 +2490,28 @@ def prepare_jsonl_blob(
         from polylogue.sources.live.batch_support import jsonl_parse_input_of_handle
 
         jsonl_wire = is_stream or is_jsonl_source_path(source_path)
-        with source.open("rb") as classification_source, ExitStack() as classification_lifetime:
-            classification_input = (
-                classification_lifetime.enter_context(
-                    jsonl_parse_input_of_handle(classification_source, check_stop=check_compute_cancelled)
+        raw_only = strong_path_classification(source_path, provider=provider)
+        if raw_only is not None and path_declaration_refuses_session(provider, source_path):
+            # A raw-only rule is terminal: its bytes are evidence whatever
+            # they hold (an export's PNG asset, an index table), so they are
+            # never decoded to decide it, and no envelope probe reads them.
+            taxonomy = ArtifactStreamClassification(raw_only, True, 0)
+        else:
+            with source.open("rb") as classification_source, ExitStack() as classification_lifetime:
+                classification_input = (
+                    classification_lifetime.enter_context(
+                        jsonl_parse_input_of_handle(classification_source, check_stop=check_compute_cancelled)
+                    )
+                    if jsonl_wire
+                    else classification_source
                 )
-                if jsonl_wire
-                else classification_source
-            )
-            taxonomy = classify_artifact_stream(
-                classification_input,
-                provider=provider,
-                source_path=source_path,
-                wire_format="jsonl" if jsonl_wire else "json",
-                check_stop=check_compute_cancelled,
-            )
+                taxonomy = classify_artifact_stream(
+                    classification_input,
+                    provider=provider,
+                    source_path=source_path,
+                    wire_format="jsonl" if jsonl_wire else "json",
+                    check_stop=check_compute_cancelled,
+                )
         input_admitted = not taxonomy.proved_non_session
         record_container: str | None = None
         stream_prefix: str | None = None
@@ -2525,7 +2533,12 @@ def prepare_jsonl_blob(
         gemini_envelope: dict[str, JSONValue] | None = None
         gemini_sidecar_scope: RetainedSidecarScope | None = None
         grok_count: int | None = None
-        if not is_stream and provider is Provider.CHATGPT and Path(source_path).name.lower().endswith(".json"):
+        if (
+            input_admitted
+            and not is_stream
+            and provider is Provider.CHATGPT
+            and Path(source_path).name.lower().endswith(".json")
+        ):
             with source.open("rb") as handle:
                 read_result = read_chatgpt_mapping_object(handle, store.conn)
             if (
@@ -2540,7 +2553,12 @@ def prepare_jsonl_blob(
             else:
                 for table in _CHATGPT_PARSER_SCRATCH_TABLES:
                     store.conn.execute(f"DROP TABLE IF EXISTS {table}")
-        if not is_stream and provider is Provider.GEMINI_CLI and Path(source_path).name.lower().endswith(".json"):
+        if (
+            input_admitted
+            and not is_stream
+            and provider is Provider.GEMINI_CLI
+            and Path(source_path).name.lower().endswith(".json")
+        ):
             store.conn.execute(
                 "CREATE TABLE gemini_raw_message (ordinal INTEGER PRIMARY KEY, message_json TEXT NOT NULL)"
             )
@@ -2565,7 +2583,12 @@ def prepare_jsonl_blob(
                 session_id = gemini_envelope.get("sessionId")
                 if isinstance(session_id, str):
                     gemini_sidecar_scope = sidecar_resolver.gemini_cli_scope(source_path, session_id)
-        if not is_stream and provider is Provider.GEMINI_CLI and Path(source_path).name.lower().endswith(".jsonl"):
+        if (
+            input_admitted
+            and not is_stream
+            and provider is Provider.GEMINI_CLI
+            and Path(source_path).name.lower().endswith(".jsonl")
+        ):
             store.conn.execute(
                 "CREATE TABLE gemini_raw_message (ordinal INTEGER PRIMARY KEY, message_json TEXT NOT NULL)"
             )
@@ -2622,7 +2645,12 @@ def prepare_jsonl_blob(
                         gemini_sidecar_scope = sidecar_resolver.gemini_cli_scope(source_path, session_id)
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
-        if not is_stream and provider is Provider.HERMES and Path(source_path).name.lower().endswith(".json"):
+        if (
+            input_admitted
+            and not is_stream
+            and provider is Provider.HERMES
+            and Path(source_path).name.lower().endswith(".json")
+        ):
             with source.open("rb") as handle:
                 hermes_envelope = hermes_snapshot_envelope(handle)
             if hermes_envelope is not None and (
@@ -2631,7 +2659,12 @@ def prepare_jsonl_blob(
                 or hermes_spans.looks_like_atif_payload(hermes_envelope)
             ):
                 hermes_envelope = None
-        if not is_stream and provider is Provider.GROK and Path(source_path).name.lower().endswith(".json"):
+        if (
+            input_admitted
+            and not is_stream
+            and provider is Provider.GROK
+            and Path(source_path).name.lower().endswith(".json")
+        ):
             store.conn.execute(
                 "CREATE TABLE grok_member_valid (ordinal INTEGER PRIMARY KEY, valid INTEGER NOT NULL, future_type TEXT)"
             )
@@ -2646,7 +2679,7 @@ def prepare_jsonl_blob(
                 grok_count = grok_export_item_count(handle, on_item=record_grok_member, detect=False)
             if grok_count is None:
                 store.conn.execute("DROP TABLE grok_member_valid")
-        if not is_stream and provider in BUNDLE_PROVIDERS and is_jsonl_source_path(source_path):
+        if input_admitted and not is_stream and provider in BUNDLE_PROVIDERS and is_jsonl_source_path(source_path):
             bundle_record_stream = True
             with source.open("rb") as handle:
                 for record in _iter_json_stream(
@@ -2656,7 +2689,12 @@ def prepare_jsonl_blob(
                     bundle_count += 1
                     bundle_browser_captures = bundle_browser_captures and browser_capture.looks_like(record)
                     del record
-        if not is_stream and provider in BUNDLE_PROVIDERS and Path(source_path).name.lower().endswith(".json"):
+        if (
+            input_admitted
+            and not is_stream
+            and provider in BUNDLE_PROVIDERS
+            and Path(source_path).name.lower().endswith(".json")
+        ):
             with source.open("rb") as handle:
                 record_container = json_record_container(handle)
             if record_container is not None:
@@ -2677,7 +2715,8 @@ def prepare_jsonl_blob(
                     stream_prefix = record_container
                     bundle_count = scanned
         if (
-            not is_stream
+            input_admitted
+            and not is_stream
             and provider in {Provider.DRIVE, Provider.GEMINI, Provider.UNKNOWN}
             and Path(source_path).name.lower().endswith(".json")
         ):
@@ -2687,7 +2726,8 @@ def prepare_jsonl_blob(
             if candidate is not None and isinstance(asserted_id, str) and asserted_id.strip():
                 generic_envelope = candidate
         if (
-            not is_stream
+            input_admitted
+            and not is_stream
             and provider is Provider.CLAUDE_DESIGN
             and Path(source_path).name.lower().endswith(".json")
             and record_container is None
@@ -2695,7 +2735,8 @@ def prepare_jsonl_blob(
             with source.open("rb") as handle:
                 design_envelope = claude_design_object_envelope(handle)
         if (
-            not is_stream
+            input_admitted
+            and not is_stream
             and provider is Provider.CLAUDE_AI
             and Path(source_path).name.lower().endswith(".json")
             and record_container is None
@@ -2705,7 +2746,8 @@ def prepare_jsonl_blob(
             if claude_ai_object is not None:
                 claude_ai_envelope, claude_ai_arrays = claude_ai_object
         if (
-            not is_stream
+            input_admitted
+            and not is_stream
             and provider in {Provider.DRIVE, Provider.GEMINI}
             and Path(source_path).name.lower().endswith(".json")
             and generic_envelope is None
@@ -2713,7 +2755,8 @@ def prepare_jsonl_blob(
             with source.open("rb") as handle:
                 drive_chunked = drive_chunked_prompt_envelope(handle)
         if (
-            not is_stream
+            input_admitted
+            and not is_stream
             and provider in {Provider.DRIVE, Provider.GEMINI}
             and not jsonl_wire
             and parse_prefix_size is None
@@ -2721,7 +2764,12 @@ def prepare_jsonl_blob(
         ):
             with source.open("rb") as handle:
                 drive_root_array = json_record_container(handle) == "item"
-        if not is_stream and provider in {Provider.DRIVE, Provider.GEMINI} and (jsonl_wire or drive_root_array):
+        if (
+            input_admitted
+            and not is_stream
+            and provider in {Provider.DRIVE, Provider.GEMINI}
+            and (jsonl_wire or drive_root_array)
+        ):
             drive_future_type: str | None = None
 
             def observe_drive_records() -> Iterator[JSONValue]:
@@ -2752,7 +2800,8 @@ def prepare_jsonl_blob(
                 drive_chunked = (drive_envelope, "chunks")
                 drive_record_stream = True
         if (
-            not is_stream
+            input_admitted
+            and not is_stream
             and provider is Provider.HERMES
             and Path(source_path).name.lower().endswith(".json")
             and hermes_envelope is None
@@ -2763,7 +2812,12 @@ def prepare_jsonl_blob(
                 with source.open("rb") as handle:
                     if not _spill_atif_subagents(handle, store.conn):
                         atif = None
-        if not is_stream and provider is Provider.OTEL_GENAI and Path(source_path).name.lower().endswith(".json"):
+        if (
+            input_admitted
+            and not is_stream
+            and provider is Provider.OTEL_GENAI
+            and Path(source_path).name.lower().endswith(".json")
+        ):
             with source.open("rb") as handle:
                 otlp = _otlp_envelope(handle)
             if otlp is not None:

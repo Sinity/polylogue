@@ -86,6 +86,7 @@ from polylogue.sources.live.batch_support import (
     jsonl_parse_prefix_size,
     jsonl_parse_prefix_size_of_handle,
 )
+from polylogue.sources.origin_specs import path_declaration_refuses_session
 from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.pickle_spool import PickleSpool
@@ -675,7 +676,11 @@ def prepare_retained_jsonl_artifact(
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
     provider, blob_hash, source_path, kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
-    if not (is_jsonl_source_path(source_path) or Path(source_path).suffix.lower() == ".json"):
+    if not (
+        is_jsonl_source_path(source_path)
+        or Path(source_path).suffix.lower() == ".json"
+        or path_declaration_refuses_session(provider, source_path)
+    ):
         raise RetainedPreparationRetryableError(f"retained JSON worker cannot parse {raw_id}")
     blob_path = evidence_reader.raw_revision_blob_path(raw_id)
     if blob_path is None:
@@ -833,6 +838,11 @@ def prepare_retained_non_json_artifact(
     from polylogue.storage.sqlite.reference_seal import ReferenceSealError
 
     provider, blob_hash, source_path, _kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
+    if path_declaration_refuses_session(provider, source_path):
+        # A raw-only member (an export's binary asset) is evidence whatever its
+        # suffix: the sealed preparation records its path classification
+        # without decoding the bytes, exactly as for a JSON-suffixed member.
+        return prepare_retained_jsonl_artifact(evidence_reader, raw_id, directory=directory)
     publisher = ArchiveBlobPublisher(
         evidence_reader.archive_root / "source.db",
         evidence_reader.archive_root / "blob",
