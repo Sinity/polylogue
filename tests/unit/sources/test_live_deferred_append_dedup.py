@@ -160,6 +160,49 @@ def test_deferred_claude_cursor_preserves_semantic_frontier(tmp_path: Path) -> N
     assert decoded.body_bytes == len(body)
 
 
+def test_deferred_cursor_keeps_canonical_path_and_profile_authority(tmp_path: Path) -> None:
+    """A deferral records no new acquisition; it must not erase accepted path authority.
+
+    The raw-frontier gate refuses any non-excluded cursor with a byte offset
+    and no canonical source path, so losing it here blocks retention and
+    source selection for the whole archive.
+    """
+    source = tmp_path / "session.jsonl"
+    source.write_bytes(b'{"type":"session_meta","payload":{"id":"kept"}}\n{"partial":')
+    cursor = CursorStore(tmp_path / "ops.db")
+    stat = source.stat()
+    accepted = len(b'{"type":"session_meta","payload":{"id":"kept"}}\n')
+    cursor.set(
+        source,
+        stat.st_size,
+        byte_offset=accepted,
+        last_complete_newline=accepted,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="f" * 64,
+        source_name="codex",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+        canonical_source_path=str(source.resolve()),
+        captured_profile_key="profile-key0",
+    )
+
+    record_deferred_append_cursor(
+        cursor,
+        source,
+        cursor=cursor.get_record(source),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        source_name="codex",
+        deferred_end_offset=None,
+    )
+
+    updated = cursor.get_record(source)
+    assert updated is not None
+    assert updated.canonical_source_path == str(source.resolve())
+    assert updated.captured_profile_key == "profile-key0"
+    assert updated.byte_offset == accepted
+
+
 def test_deferred_claude_cursor_refuses_frontier_over_rewritten_prefix(tmp_path: Path) -> None:
     """A same-length prefix rewrite must not inherit the prior semantic frontier.
 
