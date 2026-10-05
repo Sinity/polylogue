@@ -11,6 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -20,12 +22,12 @@ from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
 from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.derivation import (
     Budget,
     DerivationRegistry,
     DerivationReport,
     PassCursor,
-    PendingReason,
     converge,
 )
 from polylogue.daemon.status import raw_failure_info_for_root
@@ -33,7 +35,8 @@ from polylogue.operations.raw_observation_derivation import (
     converge_raw_observations,
     raw_observation_frame,
 )
-from polylogue.storage.derived.raw import RawObservationDerivation
+from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.raw_retention import RawFrontierBlockedPaths
@@ -41,6 +44,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.reference_seal import ReferenceSealError, ReferenceSealStaleError
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.prepared_replay import run_on_convergence_owner
@@ -194,16 +198,9 @@ def test_prepared_retained_replay_slices_fresh_and_same_raw_fork_prefix(tmp_path
         provider=Provider.CODEX,
         payload=_codex_fork_bytes("retained-child", "retained-parent", shared),
     )
+    # The committed source census re-prepares the fork within the same pass.
     first = _derive(tmp_path)
-    assert first.failed == 0 and first.pending == 1, first.outcomes
-    assert first.outcomes[0].reason is PendingReason.BINDING_MOVED
-    for _ in range(4):
-        retry = _derive(tmp_path)
-        assert retry.failed == 0, retry.outcomes
-        if retry.pending == 0 and _inspect(tmp_path, child_id) == "valid":
-            break
-    else:
-        pytest.fail("retained fork did not converge after its committed source census")
+    assert first.failed == first.pending == 0, first.outcomes
     assert _inspect(tmp_path, child_id) == "valid"
     with sqlite3.connect(tmp_path / "index.db") as conn:
         child_row = conn.execute(
@@ -251,7 +248,8 @@ def test_canonical_replay_cleans_orphaned_messages_before_replacement(tmp_path: 
         payload=_codex_conversation_bytes("orphaned-current-cohort"),
     )
     assert _derive(tmp_path).failed == 0
-    with sqlite3.connect(tmp_path / "index.db") as conn:
+    # The fixture Index writer requires the production measured creator.
+    with closing(connect_measured(tmp_path / "index.db")) as conn:
         target_id = str(conn.execute("SELECT session_id FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0])
         conn.execute("PRAGMA foreign_keys = OFF")
         foreign_id = write_fixture_index_session(
@@ -672,18 +670,21 @@ def test_canonical_publish_revalidates_the_promoted_active_generation(tmp_path: 
     (tmp_path / ".index-active-pointer").write_text(f"{first_index}\n", encoding="utf-8")
     second_index = tmp_path / "generations" / "second" / "index.db"
 
-    def exercise(compute: BoundedComputeAdapter) -> bool:
+    def exercise(compute: BoundedComputeAdapter) -> None:
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
         frame = raw_observation_frame(tmp_path)
         replacement = adapter.compute(frame, raw_id)
         try:
             initialize_archive_database(second_index, ArchiveTier.INDEX)
             (tmp_path / ".index-active-pointer").write_text(f"{second_index}\n", encoding="utf-8")
-            return adapter.publish(frame, replacement)
+            # Publication revalidates the configured active Index and refuses
+            # the moved destination with a typed stale-seal error.
+            with pytest.raises(ReferenceSealStaleError):
+                admit_stage_write("test.raw.promoted-generation", partial(adapter.publish, frame, replacement))
         finally:
             replacement.close()
 
-    assert run_on_convergence_owner(tmp_path, "test.raw.promoted-generation", exercise) is False
+    run_on_convergence_owner(tmp_path, "test.raw.promoted-generation", exercise)
     with sqlite3.connect(second_index) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
@@ -816,6 +817,7 @@ def test_canonical_replay_refreshes_only_the_touched_derived_component(
             DerivationRegistry((RawObservationDerivation(tmp_path, compute_adapter=compute),)),
             raw_observation_frame(tmp_path, raw_ids=(touched_raw_id,)),
             budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
+            publisher=admit_stage_write,
         ),
     )
     assert targeted.failed == 0
@@ -893,7 +895,10 @@ def test_canonical_deadline_bounds_a_pass_without_substituting_a_count_limit(
 
         def compute_then_expire(frame: object, key: str) -> object:
             replacement = original_compute(frame, key)  # type: ignore[arg-type]
-            clock[0] = 2.0
+            # Preparatory Source phases re-prepare within the same component;
+            # expire only once the component reaches its destination write.
+            if replacement.prepared_writes:
+                clock[0] = 2.0
             return replacement
 
         monkeypatch.setattr(adapter, "compute", compute_then_expire)
@@ -901,6 +906,7 @@ def test_canonical_deadline_bounds_a_pass_without_substituting_a_count_limit(
             DerivationRegistry((adapter,)),
             raw_observation_frame(tmp_path),
             budget=Budget(page=3, discovery=3, inspection=6, compute=3, publication=3, deadline_s=1.0),
+            publisher=admit_stage_write,
         )
 
     bounded = run_on_convergence_owner(tmp_path, "test.raw.deadline", exercise)
@@ -917,7 +923,15 @@ def test_canonical_failed_publication_cannot_report_done(tmp_path: Path, monkeyp
     bootstrap_archive_root(tmp_path)
     _admit(tmp_path, ("publication-blocked",))
 
-    monkeypatch.setattr(RawObservationDerivation, "publish", lambda *_args, **_kwargs: False)
+    def refuse(
+        _self: RawObservationDerivation, _frame: object, replacement: RawObservationReplacement, **_kwargs: object
+    ) -> bool:
+        # Once publication starts the adapter owns its carrier and settles it
+        # on every outcome, exactly as the real publish does in its finally.
+        replacement.close()
+        return False
+
+    monkeypatch.setattr(RawObservationDerivation, "publish", refuse)
     report = _derive(tmp_path)
     assert report.done == 0
     assert report.pending + report.failed >= 1
@@ -947,8 +961,14 @@ def test_canonical_replay_does_not_replace_newer_index_authority(tmp_path: Path)
         # runs on that same admitted owner.
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
         frame = raw_observation_frame(tmp_path)
-        old_replacement = adapter.compute(frame, old_raw_id)
-        assert adapter.publish(frame, old_replacement) is True
+        # Each committed preparatory Source phase re-prepares, as the kernel
+        # does within its pass; the replacement that publishes is kept.
+        for _ in range(3):
+            old_replacement = adapter.compute(frame, old_raw_id)
+            if admit_stage_write("test.raw.stale-replacement.first", partial(adapter.publish, frame, old_replacement)):
+                break
+        else:
+            pytest.fail("the original raw did not publish after its preparatory phases")
         new_raw_id = _admit(
             tmp_path,
             (),
@@ -957,13 +977,10 @@ def test_canonical_replay_does_not_replace_newer_index_authority(tmp_path: Path)
             payload=new_payload,
             acquired_at_ms=2,
         )
-        for _ in range(4):
-            report = converge_raw_observations(tmp_path, source_roots=(), compute_adapter=compute, limit=128)
-            assert report.failed == 0, report.outcomes
-            if adapter.inspect(raw_observation_frame(tmp_path), (new_raw_id,))[new_raw_id] == "valid":
-                break
-        else:
-            pytest.fail("new retained raw did not converge after source classification")
+        # Source classification re-prepares the new raw within one pass.
+        report = converge_raw_observations(tmp_path, source_roots=(), compute_adapter=compute, limit=128)
+        assert report.failed == report.pending == 0, report.outcomes
+        assert adapter.inspect(raw_observation_frame(tmp_path), (new_raw_id,))[new_raw_id] == "valid"
 
         with sqlite3.connect(tmp_path / "index.db") as conn:
             head = conn.execute(
@@ -972,8 +989,10 @@ def test_canonical_replay_does_not_replace_newer_index_authority(tmp_path: Path)
             ).fetchone()
             assert head == (new_raw_id,)
         try:
-            adapter.publish(frame, old_replacement)
-        except RawCASFrontierError:
+            admit_stage_write("test.raw.stale-replacement.late", partial(adapter.publish, frame, old_replacement))
+        except (RawCASFrontierError, ReferenceSealError):
+            # A consumed replacement's seal is closed; either typed refusal
+            # leaves the newer head in place, which is asserted below.
             pass
         return new_raw_id
 
