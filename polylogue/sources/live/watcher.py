@@ -429,7 +429,10 @@ class LiveWatcher:
             converger=converger,
             stop_requested=self._stop.is_set,
             event_emitter=event_emitter,
-            sync_runner=self._run_writer_sync,
+            # Without a write coordinator there is no writer to run Source
+            # bodies on; the processor then refuses them instead of running
+            # them unleased.
+            sync_runner=self._run_writer_sync if write_coordinator is not None else None,
             append_runner=append_runner,
             convergence_runner=convergence_runner,
             retained_runner=retained_runner,
@@ -444,9 +447,8 @@ class LiveWatcher:
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        """Run blocking watcher writes without joining the loop executor at exit."""
-        if self._write_coordinator is None:
-            return await asyncio.to_thread(function, *args, **kwargs)
+        """Run blocking watcher writes on the coordinator's writer."""
+        assert self._write_coordinator is not None, "the writer runner exists only with a write coordinator"
         return await self._write_coordinator.run_sync(actor, function, *args, **kwargs)
 
     @property
@@ -476,7 +478,7 @@ class LiveWatcher:
                 backlog = self._batch_processor._raw_retention_backlog_paths(exclude=set())
                 if not backlog or backlog == previous:
                     return
-                await self._run_writer_sync(
+                await self._batch_processor._run_source_writer(
                     "watcher.live_ingest.raw_compaction_retry",
                     self._batch_processor._compact_superseded_raw_snapshots,
                     [],

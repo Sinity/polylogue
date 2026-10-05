@@ -240,6 +240,7 @@ from polylogue.storage.sqlite.connection_profile import (
     open_readonly_connection,
     open_source_tier_write_connection,
 )
+from polylogue.storage.sqlite.write_lease import UnleasedWriteError
 
 if TYPE_CHECKING:
     from polylogue.storage.raw_retention import RawFrontierBlockedPaths
@@ -1668,6 +1669,10 @@ class LiveBatchProcessor:
                     )
                     break
                 except Exception as exc:
+                    if isinstance(exc, UnleasedWriteError):
+                        # A missing writer is a configuration refusal, not a
+                        # property of these files: never count them failed.
+                        raise
                     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
                         # Archive contention is infrastructure state, not a
                         # poison payload. Let LiveWatcher requeue the source
@@ -1899,7 +1904,7 @@ class LiveBatchProcessor:
             and (succeeded_paths or self._raw_retention_backlog_paths(exclude=set()))
         ):
             compaction_started = time.perf_counter()
-            await self._run_sync(
+            await self._run_source_writer(
                 "watcher.live_ingest.raw_compaction",
                 self._compact_superseded_raw_snapshots,
                 sorted(succeeded_paths),
@@ -3140,7 +3145,7 @@ class LiveBatchProcessor:
         paths = _enrichment_evidence_first(
             paths, Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
         )
-        result = await self._run_sync(
+        result = await self._run_source_writer(
             "watcher.live_ingest.full",
             self._ingest_full_paths_sync_in_ops_scope,
             paths,
@@ -3214,6 +3219,25 @@ class LiveBatchProcessor:
                 ):
                     settled[path] = REFUSED_NO_SESSIONS
         return settled
+
+    async def _run_source_writer(
+        self,
+        actor: str,
+        function: Callable[P, T],
+        /,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> T:
+        """Run a body that writes the Source tier on the daemon's writer.
+
+        Source SQL refuses any write without a held writer lease, so a body
+        run on a bare worker thread would fail at its first durable statement
+        (a blob reservation, a raw row) after staging bytes. Without the
+        writer runner the route is refused before any work.
+        """
+        if self._sync_runner is None:
+            raise UnleasedWriteError(f"{actor} writes the Source tier and requires the daemon writer runner")
+        return cast(T, await self._sync_runner(actor, function, *args, **kwargs))
 
     async def _run_sync(
         self,
