@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Final, Literal, Protocol, cast
 import ijson
 
 from polylogue import logging as _polylogue_logging
-from polylogue.archive.artifact_taxonomy import ArtifactStreamClassification, classify_artifact_stream
+from polylogue.archive.artifact_taxonomy import ArtifactKind, ArtifactStreamClassification, classify_artifact_stream
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -3261,7 +3261,13 @@ def prepare_revision_source_census(
         # A grouped acquisition retains native_id=NULL even when its parser
         # currently yields one session; its original membership governs that
         # session. A native singleton learns its own key through the census.
-        grouped = evidence_reader.raw_native_id(raw_id) is None
+        # A complete session record stream (a Codex rollout, a Claude Code
+        # transcript) is one session's own byte stream by its declared shape,
+        # whatever native_id the acquisition recorded: live intake acquires it
+        # before parsing, and its appends need that byte-revision chain.
+        stream = artifact.stream_classification() if artifact is not None else None
+        native_stream = stream is not None and stream.classification.kind is ArtifactKind.SESSION_RECORD_STREAM
+        grouped = evidence_reader.raw_native_id(raw_id) is None and not native_stream
         if (
             len(sessions) == 1
             and not grouped
