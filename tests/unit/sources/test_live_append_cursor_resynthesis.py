@@ -295,8 +295,8 @@ def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) 
     first_result = ingest_append_with_owner(processor, [first_plan])
     assert first_result.succeeded == [first_plan]
 
-    # Simulate the continuity lapse's full recovery capture. Live full intake
-    # classifies it on acquisition: the baseline is its byte prefix, so it is
+    # Simulate the continuity lapse's full recovery capture. Byte
+    # classification of its cohort: the baseline is its byte prefix, so it is
     # a byte-proven full chain member and the newest full baseline, and
     # replay moves the accepted head to its frontier.
     recovery_snapshot = baseline + first_delta + recovery_delta
@@ -316,7 +316,7 @@ def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) 
                 authority=RawRevisionAuthority.QUARANTINED,
             ),
         )
-        archive.classify_raw_revision_cohort_for_live_watch(f"codex-session:{session_id}")
+        archive.classify_raw_revision_cohort_for_rebuild_repair(f"codex-session:{session_id}")
     replay_retained_raws(tmp_path)
 
     # The disposable ops cursor is gone. Durable resynthesis uses the accepted

@@ -25,7 +25,7 @@ from polylogue.schemas.synthetic.conservation import (
 
 if TYPE_CHECKING:
     from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticGenerationBatch
-    from polylogue.sources.parsers.base_models import ParsedSession
+    from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedSession
 
 WireEncoding: TypeAlias = Literal["json", "jsonl"]
 WireCapabilityStatus: TypeAlias = Literal["supported", "unsupported"]
@@ -1496,14 +1496,18 @@ def _parser_artifact_node_message_type(
             return MessageType.PROTOCOL
         return MessageType.MESSAGE
     if provider == "codex":
-        # Protocol text takes precedence over the system/developer envelope,
-        # exactly as it does on the production Codex message route.
+        # Protocol text takes precedence over the system/developer envelope and
+        # over structure, exactly as on the production Codex message route; a
+        # record whose text names no type is typed by its content blocks (a
+        # tool-result-only record is a tool result).
         from polylogue.archive.message.artifacts import classify_message_type
 
-        return classify_message_type(
+        text = "\n".join(_parser_artifact_node_content_texts(provider, node))
+        return classify_text_message_type(text) or classify_message_type(
             role=_parser_artifact_node_role(provider, node),
             message_type=MessageType.MESSAGE,
-            text="\n".join(_parser_artifact_node_content_texts(provider, node)),
+            text=_codex_node_block_text(node, text),
+            block_types=_codex_node_block_types(node, text),
         )
     if provider == "chatgpt":
         role = _parser_artifact_node_role(provider, node)
@@ -1527,6 +1531,27 @@ def _parser_artifact_node_message_type(
     return classify_text_message_type(text) or MessageType.MESSAGE
 
 
+def _codex_node_content_blocks(node: Mapping[str, JSONValue], text: str) -> list[ParsedContentBlock]:
+    """The content blocks the Codex parser builds for one message record."""
+    from polylogue.sources.parsers.base_models import ParsedContentBlock
+    from polylogue.sources.parsers.base_support import content_blocks_from_segments
+
+    blocks = content_blocks_from_segments(node.get("content"), lower_transport_text=True)
+    if not blocks and text:
+        blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
+    return blocks
+
+
+def _codex_node_block_types(node: Mapping[str, JSONValue], text: str) -> tuple[BlockType, ...]:
+    return tuple(block.type for block in _codex_node_content_blocks(node, text))
+
+
+def _codex_node_block_text(node: Mapping[str, JSONValue], text: str) -> str | None:
+    """The TEXT-block projection the parsed message model classifies."""
+    blocks = _codex_node_content_blocks(node, text)
+    return "\n".join(block.text for block in blocks if block.type is BlockType.TEXT and block.text) or None
+
+
 def _parser_artifact_node_material_origin(
     provider: str,
     node: Mapping[str, JSONValue],
@@ -1537,15 +1562,24 @@ def _parser_artifact_node_material_origin(
     from polylogue.sources.parsers.base_support import human_authored_override
 
     message_type = _parser_artifact_node_message_type(provider, node)
-    # Codex message records retain their message type from their role/text;
-    # inline content segments do not reclassify the whole record into a tool
-    # turn.  Its parser makes the same deliberately narrow distinction.
-    block_types = (
-        ()
-        if provider == "codex"
-        else tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
-    )
     text = "\n".join(_parser_artifact_node_content_texts(provider, node))
+    if provider == "codex":
+        # The Codex parser classifies authoredness from role and text; only a
+        # record that leaves it unknown is classified by its final type and
+        # content blocks, as the parsed message model does.
+        from polylogue.archive.message.artifacts import classify_text_message_type
+        from polylogue.sources.parsers.codex import _codex_material_origin
+
+        origin = _codex_material_origin(role, classify_text_message_type(text) or MessageType.MESSAGE, text)
+        if origin is not MaterialOrigin.UNKNOWN:
+            return origin
+        return classify_material_origin(
+            role=role,
+            message_type=message_type,
+            text=_codex_node_block_text(node, text),
+            block_types=_codex_node_block_types(node, text),
+        )
+    block_types = tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
     material_origin = classify_material_origin(
         role=role,
         message_type=message_type,

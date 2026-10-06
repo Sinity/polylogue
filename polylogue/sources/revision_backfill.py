@@ -3378,9 +3378,12 @@ def prepare_revision_source_census(
             resolved_provider = artifact.resolved_provider
             if provider is Provider.UNKNOWN and resolved_provider is not Provider.UNKNOWN:
                 prepare_raw_state_update(seal, raw_id, state=RawSessionStateUpdate(payload_provider=resolved_provider))
-            # A non-session member resolves its origin as a parsed one does:
-            # the placeholder converges to the resolved provider's origin.
-            refine_prepared_raw_origin(seal, raw_id, origin_from_provider(resolved_provider))
+            if evidence_reader.raw_captured_zip_coordinate(raw_id) is not None:
+                # A ZIP member's provider is its export's, which acquisition of
+                # the decoded container would have stamped as its origin; the
+                # placeholder converges to it. A loose non-session input keeps
+                # the placeholder and records only its detected provider.
+                refine_prepared_raw_origin(seal, raw_id, origin_from_provider(resolved_provider))
             stream_classification = artifact.stream_classification()
             terminalized = _persist_terminal_non_session_artifact(
                 producer,
