@@ -1202,7 +1202,8 @@ class IndexGenerationStore:
         # The generation was built in rollback-journal mode; promotion is its
         # exclusive commit point and the one place it takes the live tiers'
         # WAL mode, before any reader can reach it through the pointer.
-        _checkpoint_truncate(target, label="new index", archive_root=self.archive_root, enter_wal=True)
+        _enter_wal_mode(target, label="new index", archive_root=self.archive_root)
+        _checkpoint_truncate(target, label="new index", archive_root=self.archive_root)
         pointer = self.active_pointer
         predecessor_generation_id = self._generation_id_for_active_target(pointer)
         retired = self.generations_root / f"retired-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
@@ -2122,7 +2123,30 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
     return digest.hexdigest()
 
 
-def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path, enter_wal: bool = False) -> None:
+def _enter_wal_mode(path: Path, *, label: str, archive_root: Path) -> None:
+    """Switch a rollback-mode inactive generation to WAL at its promotion.
+
+    Promotion is the generation's exclusive commit point: its build writer is
+    closed and no reader can reach it before the pointer swap, so this is the
+    one place its header may change. An already-WAL file is left as is.
+    """
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, execute_pragma_statement
+    from polylogue.storage.sqlite.write_lease import require_write_lease
+
+    require_write_lease(f"index generation {label} WAL entry({path})", archive_root=archive_root)
+    open_path = path.resolve(strict=True)
+    owner = NativeSQLCustodyOwner(connect_measured(f"{open_path.as_uri()}?mode=rw", uri=True))
+    try:
+        conn = owner.require_connection()
+        execute_pragma_statement(conn, "PRAGMA journal_mode=WAL")
+        mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        if mode != "wal":
+            raise RuntimeError(f"{label} could not enter WAL mode: {mode!r}")
+    finally:
+        owner.close()
+
+
+def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
     """Checkpoint one inode without a path check-then-reopen race.
 
     An exclusive ``TRUNCATE`` checkpoint is a durable mutation of an archive
@@ -2165,10 +2189,6 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path, enter_wa
         owned_fd, fd = fd, -1
         owner = NativeSQLCustodyOwner(conn, anchored_descriptors=(owned_fd,))
         try:
-            if enter_wal:
-                mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
-                if str(mode).lower() != "wal":
-                    raise RuntimeError(f"{label} could not enter WAL mode: {mode!r}")
             checkpoint = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
         except BaseException as primary:
             _close_failed_native_construction(owner, primary)
