@@ -440,14 +440,54 @@ def _runtime_coverage_path(path: str) -> str:
     return path
 
 
+def _route_excluded_root_properties(provider: str, schema: Mapping[str, object] | None) -> dict[str, str]:
+    """Root properties the schema declares never co-occur with the route's message container.
+
+    The route renders its messages into one root container (a linear
+    ``messages_path`` or a tree ``container_path``), and the generator keeps
+    each document to the one coherent shape holding that container. A root
+    property the schema's own ``x-polylogue-mutually-exclusive`` evidence
+    separates from the container belongs to another observed shape (a
+    capture envelope, another product's export) and never appears in a
+    document this route renders.
+    """
+    wire_format = PROVIDER_WIRE_FORMATS.get(provider)
+    if wire_format is None or not isinstance(schema, Mapping):
+        return {}
+    container = (
+        wire_format.messages_path.split(".", 1)[0]
+        if wire_format.messages_path
+        else (wire_format.tree.container_path if wire_format.tree is not None else None)
+    )
+    groups = schema.get("x-polylogue-mutually-exclusive")
+    if container is None or not isinstance(groups, list):
+        return {}
+    excluded: dict[str, str] = {}
+    for group in groups:
+        if not isinstance(group, Mapping) or group.get("parent") != "$":
+            continue
+        fields = group.get("fields")
+        if not isinstance(fields, list) or container not in fields:
+            continue
+        for name in fields:
+            if isinstance(name, str) and name != container:
+                excluded[f"$.properties.{name}"] = (
+                    f"declared mutually exclusive with the route's message container {container!r}; "
+                    "the route renders only the shape that container belongs to"
+                )
+    return excluded
+
+
 def _route_nonrepresentable_reasons(
     provider: str,
     missing_keywords: Collection[str],
     *,
     package_version: str,
+    schema: Mapping[str, object] | None = None,
 ) -> dict[str, str]:
     """Prove nodes discarded by a provider's wire normalizer are unreachable."""
     reasons: dict[str, str] = {}
+    excluded_roots = _route_excluded_root_properties(provider, schema)
     prefixes: tuple[tuple[str, str], ...]
     if provider == "codex":
         prefixes = (("$.properties.payload", "Codex flat-record shaping removes the payload envelope"),)
@@ -504,6 +544,13 @@ def _route_nonrepresentable_reasons(
     )
     for keyword in missing_keywords:
         path = keyword.split("@", 1)[1] if "@" in keyword else "$"
+        excluded_root = next(
+            (root for root in excluded_roots if path == root or path.startswith((f"{root}.", f"{root}["))),
+            None,
+        )
+        if excluded_root is not None:
+            reasons[keyword] = excluded_roots[excluded_root]
+            continue
         if provider == "codex" and keyword == "type:null@$.properties.content":
             reasons[keyword] = "Codex flat message shaping requires nonempty content for conversational evidence"
             continue
@@ -838,7 +885,7 @@ def generate_coverage_witnesses(
         if (keyword := obligation.split("@", 1)[0]).startswith("type:") or keyword in {"anyOf", "oneOf"}
     }
     nonrepresentable = _route_nonrepresentable_reasons(
-        corpus.provider, obligations, package_version=corpus.package_version
+        corpus.provider, obligations, package_version=corpus.package_version, schema=original_schema
     )
     exercised: set[str] = set()
 
@@ -2102,6 +2149,7 @@ def build_wire_support_receipt(
                     provider,
                     witnessed.missing_keywords,
                     package_version=package.version,
+                    schema=selection.schema,
                 )
                 coverage = construct_coverage(
                     selection.schema,
