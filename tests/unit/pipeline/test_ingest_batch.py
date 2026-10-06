@@ -2863,7 +2863,7 @@ def test_write_session_refuses_a_raw_recorded_ambiguous_membership(tmp_path: Pat
     used for most non-drive origins -- must refuse a session whose OWN
     ``raw_session_memberships.decision`` is recorded ``'ambiguous'``.
 
-    This mirrors ``ArchiveStore._write_parsed_precedence_result``'s guard
+    This mirrors ``_write_parsed_precedence_result``'s guard
     (#3397/#3398, polylogue-c737). Before this fix, this path had zero
     ``raw_session_memberships`` awareness: its only revision-authority check
     was against ``raw_revision_heads``, populated ONLY when a cohort has an

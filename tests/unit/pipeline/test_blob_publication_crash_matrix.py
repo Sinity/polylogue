@@ -12,8 +12,8 @@ inline-attachment capture, not a replica.
 
 Boundaries covered:
 1. reservation -> blob write        (BlobStore.publish_many fails)
-2. blob write -> Index reference    (the Index attachment write fails)
-3. Index reference -> Source commit (the durable-reference consumption fails)
+2. Source reference -> Index write (the Index attachment write fails)
+3. Source durable-reference commit (the receipt consumption fails)
 Atomic multi-receipt finalization is owned by
 tests/unit/storage/test_archive_tiers_source_write.py::
 test_source_reference_commit_atomically_consumes_publication_reservation.
@@ -130,16 +130,21 @@ def _assert_crash_consistent(root: Path, expected: dict[bytes, int]) -> None:
     attachment blob is either referenced or still reserved (never an
     unreserved orphan); unexcluded reconciliation classifies without deleting.
     """
+    from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness
+
     store = BlobStore(root / "blob")
     referenced = _attachment_hashes(root / "index.db")
     reserved = {blob_hash for _publication, blob_hash in _all_reservations(root / "source.db")}
     for blob_hash in referenced:
         assert store.exists(blob_hash.hex()), "an Index attachment references missing bytes"
-    for blob_hash in expected:
-        if store.exists(blob_hash.hex()):
-            assert blob_hash in referenced or blob_hash in reserved, (
-                "published bytes are neither referenced nor reserved"
-            )
+    with sqlite3.connect(root / "source.db") as source, sqlite3.connect(root / "index.db") as index:
+        for blob_hash in expected:
+            if store.exists(blob_hash.hex()):
+                live = (
+                    inspect_blob_liveness(source, blob_hash.hex(), index_conn=index, require_index=True).state
+                    is LivenessState.LIVE
+                )
+                assert live or blob_hash in reserved, "published bytes are neither referenced nor reserved"
     before = _all_reservations(root / "source.db")
     retained = reconcile_blob_publication_reservations(root / "source.db", root / "blob")
     assert retained.cleared_missing == 0
@@ -255,15 +260,21 @@ async def test_crash_after_reservation_before_blob_write_leaves_missing_classifi
 
 
 @pytest.mark.asyncio
-async def test_crash_after_blob_write_before_index_write_lands_in_unresolved_bucket(
+async def test_crash_after_blob_write_before_index_write_keeps_the_source_reference(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Boundary 2: blob durably published, the Index attachment write crashes.
+    """Boundary 2: blob published and Source reference committed, the Index write crashes.
 
-    The reservation and bytes survive with nothing referencing them; that
-    bucket stays retained even under full writer exclusion. A retry converges.
+    The Source phase precedes Index publication: its transaction writes the
+    retained ``blob_refs`` attachment row and consumes the exact receipt
+    together. An Index crash therefore leaves no receipt, and the bytes stay
+    live through that durable Source reference (never an unreserved,
+    unreferenced orphan). A retry converges the Index from the same Source
+    evidence.
     """
+    from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness
+
     root, raw_id, expected = await _acquire_inline_attachment_capture(tmp_path)
 
     def boom_attachments(*_args: object, **_kwargs: object) -> None:
@@ -275,17 +286,15 @@ async def test_crash_after_blob_write_before_index_write_lands_in_unresolved_buc
 
     assert failure is not None
     store = BlobStore(root / "blob")
-    for blob_hash in expected:
-        assert store.exists(blob_hash.hex())
-        assert len(_reservation_rows(root / "source.db", blob_hash)) == 1
     assert not (_attachment_hashes(root / "index.db") & set(expected))
+    assert _all_reservations(root / "source.db") == []
+    with sqlite3.connect(root / "source.db") as source, sqlite3.connect(root / "index.db") as index:
+        for blob_hash in expected:
+            assert store.exists(blob_hash.hex())
+            liveness = inspect_blob_liveness(source, blob_hash.hex(), index_conn=index, require_index=True)
+            assert liveness.state is LivenessState.LIVE
+            assert liveness.surfaces == ("source.db.blob_refs",)
     _assert_crash_consistent(root, expected)
-
-    outcome = _reconcile_excluded(root)
-    assert outcome.unresolved == len(expected)
-    assert outcome.cleared_missing == 0
-    assert outcome.cleared_referenced == 0
-    assert len(_all_reservations(root / "source.db")) == len(expected)
 
     await _assert_retry_converges(root, raw_id, expected)
 

@@ -1329,17 +1329,32 @@ def write_connection_local_pragma_statements(profile: SQLiteConnectionProfile) -
     )
 
 
-def initialize_tier_database_mode(conn: sqlite3.Connection) -> None:
-    """Set a tier's shared writer journal mode while its bootstrap owns the file.
+#: The journal mode a tier file is created in when it is not an ordinary
+#: writer-profile (WAL) tier. A rollback-journal header is the SQLite default,
+#: so creating the file in it is a no-op; it is named for the two contracts
+#: that require it:
+#: - the embeddings tier is published as sealed generation files that the
+#:   lifecycle copies and validates immutably, refusing any -wal/-shm sidecar,
+#:   and a WAL-mode file grows those on any read-only open;
+#: - an inactive Index generation is built under the bulk-build profile
+#:   (journal_mode=MEMORY, a per-connection mode that needs no header change
+#:   from rollback, but an exclusive lock to leave WAL), and switches to WAL
+#:   at promotion, its exclusive commit point.
+ROLLBACK_TIER_JOURNAL_MODE = "DELETE"
+
+
+def initialize_tier_database_mode(conn: sqlite3.Connection, *, rollback: bool = False) -> None:
+    """Set a tier's declared journal mode while its bootstrap owns the file.
 
     This is deliberately separate from every writer open: a later open may
     run while a publication or GC transaction owns the tier's mode-transition
-    lock, and a mode pragma rewrites the header under a prepared seal. Every
-    tier is created in the writer profile's mode (WAL/NORMAL; source.db's
-    power-loss guarantee remains the durable publication/cursor boundary), so
-    an ordinary open never has a mode to change.
+    lock, and a mode pragma rewrites the header under a prepared seal. A tier
+    is created in the writer profile's mode (WAL/NORMAL; source.db's
+    power-loss guarantee remains the durable publication/cursor boundary)
+    unless its contract declares ``ROLLBACK_TIER_JOURNAL_MODE``. An ordinary
+    open therefore never has a mode to change.
     """
-    journal_mode = WRITE_CONNECTION_PROFILE.journal_mode
+    journal_mode = ROLLBACK_TIER_JOURNAL_MODE if rollback else WRITE_CONNECTION_PROFILE.journal_mode
     if journal_mode is None:
         raise RuntimeError("the tier writer profile must declare a journal mode")
     execute_pragma_statement(conn, f"PRAGMA journal_mode={journal_mode}")

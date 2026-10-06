@@ -274,7 +274,9 @@ class TestBranchPointWitness:
 
 def test_initial_child_semantic_difference_is_never_discarded_as_a_parent_prefix(tmp_path: Path) -> None:
     """A complete witness must authorize alignment before any child row is dropped."""
+    from polylogue.core.enums import Origin
     from polylogue.pipeline.ids import message_semantic_content_address
+    from polylogue.sources.tool_outcomes import derive_tool_outcomes
 
     for kind in ("metadata", "file_edit", "web_constructs"):
         root = tmp_path / kind
@@ -293,8 +295,13 @@ def test_initial_child_semantic_difference_is_never_discarded_as_a_parent_prefix
             row = connection.execute(
                 "SELECT content_address FROM messages WHERE session_id = ? AND native_id = 'm1'", (child_id,)
             ).fetchone()
-            assert bytes(row[0]) == message_semantic_content_address(child.messages[1])
-            assert bytes(row[0]) != message_semantic_content_address(parent.messages[1])
+            # The writer stores the witness of the canonically normalized
+            # message (derived tool outcomes included), the same operand the
+            # parent's rows and the child's alignment use.
+            stored_child = derive_tool_outcomes(child.messages, child.session_events, origin=Origin.CODEX_SESSION)
+            stored_parent = derive_tool_outcomes(parent.messages, parent.session_events, origin=Origin.CODEX_SESSION)
+            assert bytes(row[0]) == message_semantic_content_address(stored_child[1])
+            assert bytes(row[0]) != message_semantic_content_address(stored_parent[1])
             assert _composed(connection, child_id) == (["m0", "m1", "x"], True, None)
         finally:
             connection.close()

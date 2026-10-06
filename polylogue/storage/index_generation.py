@@ -1059,7 +1059,7 @@ class IndexGenerationStore:
                 f"IndexGenerationStore.create(index={index_path})",
                 archive_root=self.archive_root,
             )
-            initialize_archive_database(index_path, ArchiveTier.INDEX, page_size=page_size)
+            initialize_archive_database(index_path, ArchiveTier.INDEX, page_size=page_size, inactive_generation=True)
             generation = IndexGeneration(
                 generation_id=generation_id,
                 owner_id=owner,
@@ -1199,6 +1199,10 @@ class IndexGenerationStore:
         if stat.S_ISLNK(target_metadata.st_mode) or not stat.S_ISREG(target_metadata.st_mode):
             raise RuntimeError("generation index is not a regular, non-symlink file")
         target = target_path.absolute()
+        # The generation was built in rollback-journal mode; promotion is its
+        # exclusive commit point and the one place it takes the live tiers'
+        # WAL mode, before any reader can reach it through the pointer.
+        _enter_wal_mode(target, label="new index", archive_root=self.archive_root)
         _checkpoint_truncate(target, label="new index", archive_root=self.archive_root)
         pointer = self.active_pointer
         predecessor_generation_id = self._generation_id_for_active_target(pointer)
@@ -2117,6 +2121,29 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
                 digest.update(len(encoded).to_bytes(8, "big"))
                 digest.update(encoded)
     return digest.hexdigest()
+
+
+def _enter_wal_mode(path: Path, *, label: str, archive_root: Path) -> None:
+    """Switch a rollback-mode inactive generation to WAL at its promotion.
+
+    Promotion is the generation's exclusive commit point: its build writer is
+    closed and no reader can reach it before the pointer swap, so this is the
+    one place its header may change. An already-WAL file is left as is.
+    """
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, execute_pragma_statement
+    from polylogue.storage.sqlite.write_lease import require_write_lease
+
+    require_write_lease(f"index generation {label} WAL entry({path})", archive_root=archive_root)
+    open_path = path.resolve(strict=True)
+    owner = NativeSQLCustodyOwner(connect_measured(f"{open_path.as_uri()}?mode=rw", uri=True))
+    try:
+        conn = owner.require_connection()
+        execute_pragma_statement(conn, "PRAGMA journal_mode=WAL")
+        mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        if mode != "wal":
+            raise RuntimeError(f"{label} could not enter WAL mode: {mode!r}")
+    finally:
+        owner.close()
 
 
 def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:

@@ -69,7 +69,7 @@ def _session(
     pending_drafts: list[dict[str, object]] | None = None,
 ) -> ParsedSession:
     blocks = []
-    if tool_input is not None or metadata is not None:
+    if tool_input is not None or metadata is not None or file_edit is not None:
         blocks.append(
             ParsedContentBlock(
                 type=BlockType.TOOL_USE,

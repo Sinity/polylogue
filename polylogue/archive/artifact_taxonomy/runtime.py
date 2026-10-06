@@ -123,6 +123,23 @@ def strong_path_classification(
     return _classify_artifact_path_strong(source_path, provider=provider)
 
 
+def fact_path_admits_session_content(source_path: str | Path | None, *, provider: str | Provider) -> bool:
+    """Whether decoded session records may outrank this path's refusal.
+
+    An OriginSpec ``fact`` rule names where a family's evidence usually sits,
+    not what its bytes are, so records carrying a provider's session envelope
+    there still reach the parser. A ``raw-only`` rule and the content-blind
+    sidecar markers stay terminal.
+    """
+    normalized = normalize_source_path(source_path)
+    if not normalized:
+        return False
+    from polylogue.sources.origin_specs import artifact_rule_for_path
+
+    rule = artifact_rule_for_path(Provider.from_string(provider), normalized)
+    return rule is not None and rule.parse_policy == "fact"
+
+
 def _classify_artifact_path_strong(
     source_path: str | Path | None,
     *,
@@ -295,6 +312,14 @@ def classify_artifact(
     # with one deliberate exception checked immediately below.
     explicit = _classify_artifact_path_strong(source_path, provider=provider_token)
     if explicit is not None and not explicit.parse_as_session:
+        if (
+            isinstance(payload, Sequence)
+            and not isinstance(payload, str | bytes | bytearray)
+            and fact_path_admits_session_content(source_path, provider=provider_token)
+        ):
+            # A record sequence at a fact path takes the complete record fold,
+            # where decoded session evidence outranks the location.
+            return classify_artifact_records(payload, provider=provider_token, source_path=source_path).classification
         return explicit
 
     # A path rule that admits a session (``coordinator_session_stream`` and
@@ -485,12 +510,12 @@ def _record_candidacy_from_evidence(
     *,
     provider: Provider,
     source_path: str | Path | None,
-    retained_session_recovery: bool = False,
+    fact_path_recovery: bool,
 ) -> ArtifactClassification | None:
     if not evidence.document_count or (evidence.extracted and not evidence.provider_envelope):
         return None
     explicit = strong_path_classification(source_path, provider=provider)
-    if explicit is not None and not retained_session_recovery:
+    if explicit is not None and not fact_path_recovery:
         if not explicit.parse_as_session:
             return None
         if provider is Provider.CLAUDE_CODE and evidence.all_checkpoints:
@@ -502,7 +527,7 @@ def _record_candidacy_from_evidence(
         positive_record = evidence.all_atof
     else:
         positive_record = evidence.record_count * 2 >= evidence.document_count
-    if retained_session_recovery:
+    if fact_path_recovery:
         positive_record = evidence.record_count > 0 and evidence.provider_envelope
     if not positive_record and not (evidence.any_session or specific_document):
         return None
@@ -532,7 +557,6 @@ def classify_artifact_stream(
     source_path: str | Path | None = None,
     wire_format: Literal["json", "jsonl"],
     check_stop: Callable[[], None] | None = None,
-    retained_session_recovery: bool = False,
 ) -> ArtifactStreamClassification:
     """Classify complete caller-owned input, privately replaying non-seekable streams."""
     from polylogue.archive.raw_payload.streams import rewindable_byte_stream
@@ -546,7 +570,6 @@ def classify_artifact_stream(
             source_path=source_path,
             wire_format=wire_format,
             check_stop=check_stop,
-            retained_session_recovery=retained_session_recovery,
         )
 
 
@@ -587,7 +610,6 @@ def _classify_seekable_artifact_stream(
     source_path: str | Path | None,
     wire_format: Literal["json", "jsonl"],
     check_stop: Callable[[], None] | None,
-    retained_session_recovery: bool = False,
 ) -> ArtifactStreamClassification:
     """Fold the whole accepted input; the canonical parser owns session validation.
 
@@ -637,7 +659,6 @@ def _classify_seekable_artifact_stream(
                 sequence=sequence,
                 empty_jsonl=wire_format == "jsonl",
                 check_stop=checkpoint,
-                retained_session_recovery=retained_session_recovery,
             )
 
     # A physical JSONL file can contain one complete document/array. Preserve
@@ -683,17 +704,17 @@ def _classify_artifact_records(
     sequence: bool,
     empty_jsonl: bool,
     check_stop: Callable[[], None] | None,
-    retained_session_recovery: bool = False,
 ) -> ArtifactStreamClassification:
-    retained_path = strong_path_classification(source_path, provider=provider)
-    retained_session_recovery = (
-        retained_session_recovery and retained_path is not None and not retained_path.parse_as_session
-    )
+    # At a ``fact`` path, decoded session evidence outranks the location: the
+    # rule's refusal stands only when the records carry none.
+    fact_path_recovery = fact_path_admits_session_content(source_path, provider=provider)
     evidence = _RecordArtifactEvidence()
     count = 0
     all_metadata = True
     specific_document = False
     first_classification: ArtifactClassification | None = None
+    codex_unsupported_record = False
+    from polylogue.sources.parsers.codex import is_supported_outer_record
 
     def result(classification: ArtifactClassification, proved: bool) -> ArtifactStreamClassification:
         return ArtifactStreamClassification(classification, proved, count)
@@ -705,6 +726,8 @@ def _classify_artifact_records(
         count += 1
         item = json_document(value)
         evidence.observe(item)
+        if provider is Provider.CODEX:
+            codex_unsupported_record |= not is_supported_outer_record(value)
         all_metadata &= isinstance(value, str | int | float | bool | type(None)) or (
             isinstance(value, dict) and looks_metadataish_dict(item)
         )
@@ -717,7 +740,7 @@ def _classify_artifact_records(
             provider, ArtifactKind.UNKNOWN, False, False, 0, "no complete JSONL artifact records"
         )
         return result(classification, False)
-    if not sequence and first_classification is not None and not retained_session_recovery:
+    if not sequence and first_classification is not None and not fact_path_recovery:
         classification = replace(first_classification, schema_eligible=False)
         return result(
             classification,
@@ -727,7 +750,7 @@ def _classify_artifact_records(
             ),
         )
     explicit = strong_path_classification(source_path, provider=provider)
-    if explicit is not None and not explicit.parse_as_session and not retained_session_recovery:
+    if explicit is not None and not explicit.parse_as_session and not fact_path_recovery:
         return result(explicit, True)
     if (
         provider is Provider.CODEX
@@ -747,6 +770,20 @@ def _classify_artifact_records(
             "Codex session-meta-only stream without conversation records",
         )
         return result(classification, True)
+    if provider is Provider.CODEX and sequence and codex_unsupported_record:
+        # The parser would drop such a record and report the rest as the
+        # whole session. The same contract ``classify_artifact`` applies to a
+        # complete payload refuses the stream instead, ahead of any path rule,
+        # so the drop surfaces as a typed unsupported shape.
+        classification = ArtifactClassification(
+            provider,
+            ArtifactKind.UNKNOWN,
+            False,
+            False,
+            0,
+            "Codex record stream contains unsupported session records",
+        )
+        return result(classification, False)
     if evidence.extracted and not evidence.provider_envelope:
         classification = ArtifactClassification(
             provider, ArtifactKind.EXTRACTED_TRANSCRIPT_CORPUS, False, False, 0, "extracted transcript corpus"
@@ -768,7 +805,7 @@ def _classify_artifact_records(
             "Claude Code file-history-snapshot-only stream",
         )
         return result(classification, True)
-    if explicit is not None and not retained_session_recovery:
+    if explicit is not None and not fact_path_recovery:
         return result(replace(explicit, schema_eligible=False), False)
     if evidence.document_count and evidence.all_hooks:
         classification = ArtifactClassification(
@@ -795,7 +832,7 @@ def _classify_artifact_records(
         specific_document,
         provider=provider,
         source_path=source_path,
-        retained_session_recovery=retained_session_recovery,
+        fact_path_recovery=fact_path_recovery,
     )
     if candidacy is not None:
         return result(candidacy, False)

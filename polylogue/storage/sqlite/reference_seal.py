@@ -1705,7 +1705,6 @@ def _relevant_ref(value: str) -> ObjectRef | EvidenceRef | BlockAnchor | None:
 @dataclass(frozen=True, slots=True)
 class _ReferenceAnchor:
     wire: str
-    permits_absence: bool
     assertion_id: str = ""
     field: str = ""
     position: int = -1
@@ -1720,14 +1719,8 @@ def _references_from_user(conn: sqlite3.Connection) -> Generator[_ReferenceAncho
             for column in ("scope_ref", "target_ref", "author_ref"):
                 value = row[column]
                 if value is not None:
-                    lifecycle = column == "target_ref" and str(row["kind"]) in {
-                        "suppression",
-                        "excision_record",
-                        "excision_request",
-                    }
                     yield _ReferenceAnchor(
                         str(value),
-                        lifecycle and str(value).startswith("session:"),
                         str(row["assertion_id"]),
                         column,
                         -1,
@@ -1737,10 +1730,10 @@ def _references_from_user(conn: sqlite3.Connection) -> Generator[_ReferenceAncho
                 _json_strings(conn, "assertions", "evidence_refs_json", row["physical_rowid"])
             ):
                 yield _ReferenceAnchor(
-                    value, False, str(row["assertion_id"]), "evidence_refs_json", position, str(row["target_ref"])
+                    value, str(row["assertion_id"]), "evidence_refs_json", position, str(row["target_ref"])
                 )
     for value in _other_user_references(conn):
-        yield _ReferenceAnchor(value, False)
+        yield _ReferenceAnchor(value)
 
 
 def _other_user_references(conn: sqlite3.Connection) -> Generator[str, None, None]:
@@ -1807,7 +1800,7 @@ def _references_from_audit(conn: sqlite3.Connection) -> Generator[_ReferenceAnch
         with closing(_reference_rows(conn, "audit", table, ("target_ref",))) as cursor:
             for row in cursor:
                 _check_reference_cancellation()
-                yield _ReferenceAnchor(str(row["target_ref"]), True)
+                yield _ReferenceAnchor(str(row["target_ref"]))
 
 
 def _index_input_hook(
@@ -2294,7 +2287,7 @@ class PreparedIndexMutation:
                 "CREATE TEMP TABLE destructive_message_ids(message_id TEXT PRIMARY KEY) WITHOUT ROWID;"
                 "CREATE TEMP TABLE reference_anchors("
                 "wire_ref TEXT NOT NULL, tier TEXT NOT NULL, assertion_id TEXT NOT NULL, field TEXT NOT NULL, "
-                "position INTEGER NOT NULL, assertion_target TEXT NOT NULL, permits_absence INTEGER NOT NULL, "
+                "position INTEGER NOT NULL, assertion_target TEXT NOT NULL, "
                 "retired INTEGER NOT NULL DEFAULT 0, projected_retired INTEGER NOT NULL DEFAULT 0, "
                 "PRIMARY KEY(wire_ref, tier, assertion_id, field, position)) WITHOUT ROWID;"
                 "CREATE TEMP TABLE authorized_removals(session_id TEXT PRIMARY KEY) WITHOUT ROWID;"
@@ -2542,8 +2535,8 @@ class PreparedIndexMutation:
                             with self._owned_cursor(
                                 self._scratch,
                                 "INSERT OR IGNORE INTO reference_anchors "
-                                "(wire_ref,tier,assertion_id,field,position,assertion_target,permits_absence) "
-                                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                "(wire_ref,tier,assertion_id,field,position,assertion_target) "
+                                "VALUES (?, ?, ?, ?, ?, ?)",
                                 (
                                     target.wire_ref,
                                     name,
@@ -2551,7 +2544,6 @@ class PreparedIndexMutation:
                                     anchor.field,
                                     anchor.position,
                                     anchor.assertion_target,
-                                    int(anchor.permits_absence),
                                 ),
                             ):
                                 pass
@@ -2639,28 +2631,17 @@ class PreparedIndexMutation:
         ):
             pass
 
-    def _intentional_absence(
-        self, conn: sqlite3.Connection, ref: _ResolvedReference, *, projected_user_effects: bool = False
-    ) -> bool:
+    def _intentional_absence(self, conn: sqlite3.Connection, ref: _ResolvedReference) -> bool:
         from polylogue.storage.sqlite.write_lease import permitted_session_removals
 
+        # An authorized removal is the operator's explicit deletion of exact
+        # sessions. Durable User and Audit anchors survive it unchanged and
+        # resolve again when the same source identity is imported, so a
+        # reference may dangle only when every session that owns or scopes
+        # it is an authorized, now-absent target. A reference owned or scoped
+        # by a surviving session (one composing a removed parent's prefix, or
+        # pointing into its content) still refuses: nothing re-creates it.
         permitted = permitted_session_removals(archive_root=self.archive_root)
-        with self._owned_cursor(
-            self._scratch,
-            "SELECT 1 FROM reference_anchors WHERE wire_ref = ? AND retired = 0 AND permits_absence = 0 "
-            "AND (?=0 OR projected_retired=0)",
-            (ref.wire_ref, int(projected_user_effects)),
-        ) as cursor:
-            if cursor.fetchone():
-                return False
-        with self._owned_cursor(
-            self._scratch,
-            "SELECT 1 FROM reference_anchors WHERE wire_ref = ? AND retired = 0 AND permits_absence = 1 "
-            "AND (?=0 OR projected_retired=0)",
-            (ref.wire_ref, int(projected_user_effects)),
-        ) as cursor:
-            if not cursor.fetchone():
-                return False
         for session_id in (ref.owner_session_id, ref.scope_session_id):
             if session_id is None:
                 continue
@@ -9333,9 +9314,7 @@ class PreparedIndexMutation:
                     ) as cursor:
                         if not cursor.fetchone():
                             continue
-                    if not _still_resolves(conn, ref) and not self._intentional_absence(
-                        conn, ref, projected_user_effects=projected_user_effects
-                    ):
+                    if not _still_resolves(conn, ref) and not self._intentional_absence(conn, ref):
                         lost_count += 1
                         if first is None:
                             first = ref

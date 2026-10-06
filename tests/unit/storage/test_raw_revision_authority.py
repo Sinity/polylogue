@@ -6,7 +6,7 @@ from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, BinaryIO
+from typing import BinaryIO
 
 import pytest
 
@@ -875,18 +875,12 @@ def test_live_append_retains_cursor_identity_until_baseline_arrives(
     )
     events: list[str] = []
     original_bind = ArchiveStore.bind_raw_revision
-    original_index = ArchiveStore.write_parsed_for_retained_raw
 
     def recording_bind(self: ArchiveStore, raw_id: str, revision: RawRevisionEnvelope) -> None:
         events.append("bind")
         original_bind(self, raw_id, revision)
 
-    def recording_index(self: ArchiveStore, *args: Any, **kwargs: Any) -> tuple[str, str]:
-        events.append("index")
-        return original_index(self, *args, **kwargs)
-
     monkeypatch.setattr(ArchiveStore, "bind_raw_revision", recording_bind)
-    monkeypatch.setattr(ArchiveStore, "write_parsed_for_retained_raw", recording_index)
 
     result = ingest_append_plans_on_owner(tmp_path, owner, [plan])
 
