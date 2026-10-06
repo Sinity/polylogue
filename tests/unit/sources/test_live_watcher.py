@@ -2671,7 +2671,7 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
         assert summary.journal_result_count == 1
         # Source selection reads the completed frontier inspection.
         await _inspect_accepted_frontier(workspace_env["archive_root"])
-        assert processor.require_cursor_authority() is None
+        processor.require_cursor_authority()
     finally:
         await archive.close()
 
@@ -2795,7 +2795,7 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
         replayed = _atof_event_uuids_by_session(workspace_env["archive_root"])
         assert replayed == event_uuids_by_session
         await _inspect_accepted_frontier(workspace_env["archive_root"])
-        assert processor.require_cursor_authority() is None
+        processor.require_cursor_authority()
     finally:
         await archive.close()
 
@@ -2956,7 +2956,7 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
         assert second.succeeded_file_count == 1, "ambiguous membership debt is not retried as a file failure (#3282)"
         assert second.failed_file_count == 0
         await _inspect_accepted_frontier(workspace_env["archive_root"])
-        assert processor.require_cursor_authority() is None
+        processor.require_cursor_authority()
 
         record = cursor.get_record(source_path)
         assert record is not None
@@ -3417,11 +3417,9 @@ async def test_live_full_ingest_excludes_known_provider_invalid_jsonl_sidecars_b
         metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         record = cursor.get_record(source_path)
 
-        with sqlite3.connect(db_path) as conn:
-            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            raw_count = (
-                conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] if "raw_sessions" in tables else 0
-            )
+        # Raw rows live in the Source tier; reading Index here could never fail.
+        with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
+            raw_count = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
 
         assert metrics.succeeded_file_count == 0
         assert metrics.failed_file_count == 0

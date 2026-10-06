@@ -4878,6 +4878,20 @@ class PreparedIndexMutation:
         self._amend_cas_input(blob_hash, byte_length)
         return blob_hash, byte_length
 
+    def retain_original_container_input(self, blob_hash: bytes, byte_length: int) -> None:
+        """Charge one accepted physical container before reading its members.
+
+        The caller names the container through a member coordinate receipt it
+        read on this seal's pinned Source snapshot; this charges its exact
+        bytes as an original input, like a raw's own acquisition.
+        """
+        self._require_new_work()
+        if self._source_statement_active:
+            raise ReferenceSealError("original CAS demand cannot enter a staged statement savepoint")
+        if type(blob_hash) is not bytes or len(blob_hash) != 32 or type(byte_length) is not int or byte_length < 0:
+            raise ReferenceSealError("original container input has no canonical hash and exact byte size")
+        self._amend_cas_input(blob_hash, byte_length)
+
     def publication_source_path(self) -> Path:
         """Name this original read window's actual Source observer."""
         with self.original_rows("source", "PRAGMA database_list") as rows:

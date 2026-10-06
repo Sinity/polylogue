@@ -3031,20 +3031,22 @@ async def test_process_ingest_batch_off_mode_supports_repository_without_source_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("payload", "diagnostic"),
-    [
-        (b"", "decode: Input is a zero-length, empty document"),
-        (b"{", "decode: Input data was truncated"),
-    ],
-    ids=["zero-length-public-route", "decode-failure-public-route"],
+    "payload",
+    [b"{\n", b'{"type":"session_meta"}\n{nope}\n'],
+    ids=["undecodable-sole-record", "undecodable-later-record"],
 )
 async def test_process_ingest_batch_public_route_persists_corrupt_input_readiness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     payload: bytes,
-    diagnostic: str,
 ) -> None:
-    """The canonical route makes corrupt input terminal and status-readable."""
+    """A complete record that does not decode is terminal corrupt input.
+
+    The canonical route settles a non-empty undecodable record stream as
+    ``terminal_corrupt_input`` and makes it status-readable. Removing the
+    census's decode-refusal settlement (``_persist_terminal_raw_refusal``)
+    turns this red.
+    """
     run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     raw_id = _seed_retained_raw(
         tmp_path, origin=Origin.CODEX_SESSION, source_path="public-corrupt.jsonl", payload=payload
@@ -3058,7 +3060,7 @@ async def test_process_ingest_batch_public_route_persists_corrupt_input_readines
         artifact = conn.execute(
             "SELECT artifact_kind, support_status FROM raw_artifacts WHERE raw_id = ?", (raw_id,)
         ).fetchone()
-    assert artifact == (RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value, "decode_failed"), diagnostic
+    assert artifact == (RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value, "decode_failed")
     lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
     assert lifecycle.terminal == 1
     assert lifecycle.unexplained == 0
@@ -3066,3 +3068,44 @@ async def test_process_ingest_batch_public_route_persists_corrupt_input_readines
     status = raw_failure_info_for_root(tmp_path)
     assert status["terminal_rejections"] == 1
     assert status["unexplained_failures"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [b"", b'{"type":"session_meta"'],
+    ids=["zero-length", "unterminated-sole-record"],
+)
+async def test_process_ingest_batch_public_route_settles_recordless_input_as_no_sessions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+) -> None:
+    """Input with no complete record settles as a no-session census, not corruption.
+
+    Zero bytes hold no record. An unterminated tail is left out by the shared
+    JSONL parse-prefix rule (``jsonl_parse_prefix_size``); whether it is an
+    append in progress or truncated is intake's decision (live intake records
+    ``terminal_corrupt_input`` once its file is gone), never the retained
+    census's, which reads only immutable bytes. Census-recorded terminal
+    evidence for either input turns this red.
+    """
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
+    raw_id = _seed_retained_raw(
+        tmp_path, origin=Origin.CODEX_SESSION, source_path="public-recordless.jsonl", payload=payload
+    )
+    _publication_mode(monkeypatch)
+    parse_result = ParseResult()
+    async with _canonical_parsing_service(tmp_path) as service:
+        await ingest_batch_core.process_ingest_batch(service, service.repository.backend, [raw_id], parse_result, None)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
+        assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchall() == [
+            ("non_session",)
+        ]
+        assert conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (None,)
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.terminal == 0
+    assert lifecycle.unexplained == 0
+    assert parse_result.parse_failures == 0

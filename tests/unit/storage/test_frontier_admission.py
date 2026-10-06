@@ -599,7 +599,7 @@ def test_all_deferred_page_still_refuses_unrelated_missing_raw(tmp_path: Path) -
         cursor=CursorStore(tmp_path / "ops.db"),
         parser_fingerprint="frontier-test",
     )
-    assert processor.require_cursor_authority([selected]) is None
+    processor.require_cursor_authority([selected])
     with sqlite3.connect(tmp_path / "source.db") as external:
         external.execute("DELETE FROM raw_sessions WHERE raw_id = 'unrelated'")
     with pytest.raises(CursorAuthorityBlockedError, match="missing"):
@@ -620,7 +620,7 @@ def test_external_delete_during_selected_read_refuses_before_admission_returns(
         cursor=CursorStore(tmp_path / "ops.db"),
         parser_fingerprint="frontier-test",
     )
-    assert processor.require_cursor_authority([selected]) is None
+    processor.require_cursor_authority([selected])
     original = processor._blocked_source_paths
 
     def interleave(paths: list[Path]) -> Any:
@@ -660,7 +660,7 @@ def test_selected_authority_change_during_read_refuses_same_page(
         cursor=CursorStore(tmp_path / "ops.db"),
         parser_fingerprint="frontier-test",
     )
-    assert processor.require_cursor_authority([selected]) is None
+    processor.require_cursor_authority([selected])
     original = processor._blocked_source_paths
 
     def interleave(paths: list[Path]) -> Any:

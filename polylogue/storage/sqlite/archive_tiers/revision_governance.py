@@ -1353,7 +1353,7 @@ def raw_append_revision_parent(
         store._ensure_source_conn()
         .execute(
             """
-        SELECT raw_id, COALESCE(baseline_raw_id, raw_id), acquisition_generation
+        SELECT raw_id, CASE WHEN revision_kind = 'full' THEN raw_id ELSE baseline_raw_id END, acquisition_generation
         FROM raw_sessions
         WHERE logical_source_key = ? AND source_revision = ?
           AND revision_authority != 'quarantined'
@@ -1840,7 +1840,7 @@ def _contiguous_append_authority_candidates(
 ) -> tuple[sqlite3.Row | tuple[object, ...], ...]:
     candidates = conn.execute(
         """
-            SELECT child.raw_id, parent.raw_id, COALESCE(parent.baseline_raw_id, parent.raw_id),
+            SELECT child.raw_id, parent.raw_id, CASE WHEN parent.revision_kind = 'full' THEN parent.raw_id ELSE parent.baseline_raw_id END,
                    parent.acquisition_generation + 1
             FROM raw_sessions AS child
             JOIN raw_sessions AS parent
@@ -1857,7 +1857,7 @@ def _contiguous_append_authority_candidates(
               AND (
                   child.revision_authority = 'quarantined'
                   OR child.predecessor_raw_id != parent.raw_id
-                  OR child.baseline_raw_id != COALESCE(parent.baseline_raw_id, parent.raw_id)
+                  OR child.baseline_raw_id != CASE WHEN parent.revision_kind = 'full' THEN parent.raw_id ELSE parent.baseline_raw_id END
                   OR child.acquisition_generation != parent.acquisition_generation + 1
               )
             """,
@@ -2106,6 +2106,19 @@ def open_raw_revision_material(
     payload_store = _retained_blob_store(store)
     with payload_store.open(blob_hash) as payload:
         yield provider, payload, source_path, kind
+
+
+@contextmanager
+def open_raw_container_material(
+    store: RawRevisionGovernanceHost, captured_zip_coordinate: CapturedZipMemberCoordinate
+) -> Iterator[BinaryIO | None]:
+    """Open the accepted physical container of one ZIP member raw, if retained."""
+    payload_store = _retained_blob_store(store)
+    if not payload_store.exists(captured_zip_coordinate.container_blob_hash):
+        yield None
+        return
+    with payload_store.open(captured_zip_coordinate.container_blob_hash) as container:
+        yield container
 
 
 def raw_revision_material(
@@ -4123,7 +4136,7 @@ def prepare_raw_revision_byte_classification(
 
 
 _CONTIGUOUS_APPEND_CANDIDATES_SQL = """
-            SELECT child.raw_id, parent.raw_id, COALESCE(parent.baseline_raw_id, parent.raw_id),
+            SELECT child.raw_id, parent.raw_id, CASE WHEN parent.revision_kind = 'full' THEN parent.raw_id ELSE parent.baseline_raw_id END,
                    parent.acquisition_generation + 1
             FROM raw_sessions AS child
             JOIN raw_sessions AS parent
@@ -4140,7 +4153,7 @@ _CONTIGUOUS_APPEND_CANDIDATES_SQL = """
               AND (
                   child.revision_authority = 'quarantined'
                   OR child.predecessor_raw_id != parent.raw_id
-                  OR child.baseline_raw_id != COALESCE(parent.baseline_raw_id, parent.raw_id)
+                  OR child.baseline_raw_id != CASE WHEN parent.revision_kind = 'full' THEN parent.raw_id ELSE parent.baseline_raw_id END
                   OR child.acquisition_generation != parent.acquisition_generation + 1
               )
             """

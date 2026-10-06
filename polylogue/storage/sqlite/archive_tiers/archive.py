@@ -233,6 +233,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     finalize_raw_parse_state,
     mark_raw_parse_failed,
     mark_raw_parse_succeeded,
+    open_raw_container_material,
     open_raw_revision_material,
     pending_raw_revision_logical_keys,
     promote_reconstructed_legacy_append_revisions,
@@ -2942,6 +2943,14 @@ class ArchiveStore:
 
     def raw_revision_material(self, raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
         return raw_revision_material(self, raw_id)
+
+    @contextmanager
+    def open_raw_container_material(self, raw_id: str) -> Iterator[BinaryIO | None]:
+        coordinate = self.raw_captured_zip_coordinate(raw_id)
+        if coordinate is None:
+            raise ValueError(f"raw has no captured ZIP container: {raw_id}")
+        with open_raw_container_material(self, coordinate) as container:
+            yield container
 
     def blob_path_for_hash(self, blob_hash: str) -> Path | None:
         return blob_path_for_hash(self, blob_hash)

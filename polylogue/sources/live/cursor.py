@@ -698,11 +698,17 @@ class CursorStore:
         (polylogue-5pv1p).
         """
         origin = _origin_value_for_source_name(record.source_name)
+        from polylogue.core.enums import Provider
+        from polylogue.sources.parsers.hermes_identity import declares_profile_identity
+
+        # A cursor records a profile key only where acquisition declares one,
+        # the rule its archived-raw reconciliation reads through.
+        provider = None if record.source_name is None else Provider.from_string(record.source_name)
         upsert_archive_ingest_cursor(
             conn,
             source_path=record.source_path,
             canonical_source_path=record.canonical_source_path,
-            captured_profile_key=record.captured_profile_key,
+            captured_profile_key=record.captured_profile_key if declares_profile_identity(provider) else None,
             updated_at_ms=_required_epoch_ms(record.updated_at),
             origin=origin,
             stat_size=record.byte_size,
