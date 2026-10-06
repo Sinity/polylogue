@@ -181,7 +181,7 @@ def test_append_authority_promotion_invalidates_the_cache(tmp_path: Path) -> Non
         )
 
         initial = get_or_compute_raw_authority_verdicts(archive, "codex:s1", now_ms=1000)
-        archive.classify_raw_revision_cohort_for_live_watch("codex:s1")
+        archive.classify_raw_revision_cohort_for_rebuild_repair("codex:s1")
 
         stale = read_cached_raw_authority_verdicts(archive, "codex:s1")
         promoted = get_or_compute_raw_authority_verdicts(archive, "codex:s1", now_ms=2000)
