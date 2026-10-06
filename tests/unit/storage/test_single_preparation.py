@@ -55,6 +55,7 @@ def test_fresh_singleton_raw_is_prepared_and_parsed_once(tmp_path: Path, monkeyp
             provider=Provider.CODEX,
             payload=_rollout("single"),
             source_path="single.jsonl",
+            canonical_source_path="single.jsonl",
             acquired_at_ms=1,
             native_id="single",
         )
