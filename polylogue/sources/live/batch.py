@@ -207,6 +207,7 @@ from polylogue.sources.source_staging import bind_source_input
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
     hermes_profile_raw_id,
+    is_sqlite_path,
     snapshot_sqlite_to_blob,
     sqlite_snapshot_failure_as_oserror,
     sqlite_source_revision,
@@ -3664,10 +3665,11 @@ class LiveBatchProcessor:
                 hermes_member = (
                     hermes_database_capability.member(path.name) if hermes_database_capability is not None else None
                 )
-                hermes_owned_sqlite_name = (
-                    fallback_provider is Provider.HERMES
-                    and hermes_member is not None
-                    and (hermes_member.disposition != "out-of-scope")
+                hermes_owned_sqlite_name = fallback_provider is Provider.HERMES and (
+                    (hermes_member is not None and hermes_member.disposition != "out-of-scope")
+                    # Admitted by the Hermes schema signature under an
+                    # undeclared filename (see classify_pre_acquisition).
+                    or (is_sqlite_path(path) and admission.detected_provider is Provider.HERMES)
                 )
                 if heartbeat is not None:
                     heartbeat("full_file_scan", current_path=path, source_payload_read_bytes=source_payload_read_bytes)

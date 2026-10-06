@@ -24,13 +24,13 @@ from uuid import uuid4
 import pytest
 
 from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.daemon.http import _recover_startup_with_compute
 from polylogue.daemon.operation_runtime import DaemonOperationRuntime
 from polylogue.daemon.socket_path import ensure_private_socket_dir
 from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.daemon_client import DaemonClient
 from polylogue.operations.daemon_reads import DaemonReadDependencies
-from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.operation_context import prepare_operation_journals
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -176,10 +176,19 @@ def running_daemon_operations(
     # host routinely takes longer than 5 s to admit the startup journal write.
     bridge = DaemonWriteThreadBridge(coordinator, coordinator_loop.loop)
     bridge.run_sync("daemon.operation_journals.startup", prepare_operation_journals, archive_root)
-    bridge.run_sync("daemon.operation_recovery.startup", recover_interrupted_operations, archive_root)
     kernel = BoundedComputeAdapter(
         max_workers=compute_workers, queue_units=compute_queue_units, thread_name_prefix="test-daemon-operation"
     )
+    # Startup recovery runs on the daemon's own compute creator with its
+    # original input admission, exactly as the standalone HTTP server does.
+    recovery = asyncio.run_coroutine_threadsafe(
+        _recover_startup_with_compute(bridge, kernel, archive_root), coordinator_loop.loop
+    )
+    try:
+        bridge._await_owner_settlement("daemon.operation_recovery.startup", recovery)
+    except BaseException:
+        kernel.shutdown(wait=True)
+        raise
     session_maintenance = None
     if session_derivation:
         from time import time

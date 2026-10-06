@@ -310,7 +310,7 @@ async def test_parent_native_close_retains_worker_until_all_parent_obligations_s
         monkeypatch.setattr(ArchiveStore, "_attach_user_tier_if_present", fail_attachment)
 
     def operation() -> None:
-        from polylogue.storage.sqlite.archive_tiers.write_shard import SessionShardBuilder
+        from polylogue.storage.sqlite.session_shard import SessionShardBuilder
 
         try:
             parent = (

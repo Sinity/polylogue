@@ -323,11 +323,14 @@ def test_source_census_preserves_acquired_grouped_identity(
         assert archive.count_sessions() == session_count
 
 
-def test_owned_inactive_generation_replays_through_sealed_session_shards(tmp_path: Path) -> None:
-    """The owned candidate copies the prepared shard rows, never source rows.
+def test_owned_inactive_generation_binds_the_prepared_session_rows(tmp_path: Path) -> None:
+    """The owned candidate writes the rows prepared off the writer, never lowers inline.
 
-    Anti-vacuity: replacing the writer's shard copy with inline row binding
-    leaves the logical projection green but makes ``copies`` zero.
+    Canonical retained preparation seals each session's message and block
+    rows (``PreparedSessionWrite.rows``) before writer admission; the writer
+    validates and binds that carrier. Anti-vacuity: dropping the carrier so
+    the writer lowers inline leaves the logical projection green but hands
+    the full replace no ``PreparedSessionRows``.
     """
     import polylogue.storage.sqlite.archive_tiers.write as archive_tier_write
 
@@ -358,18 +361,17 @@ def test_owned_inactive_generation_replays_through_sealed_session_shards(tmp_pat
             root, reason="test-owned-shard", sources=(WatchSource("fixture", root / "absent"),)
         )
     register_cold_build_generation(cold_build)
-    copies = 0
-    original_copy = archive_tier_write.copy_shard_session_rows
+    carriers: list[object] = []
+    original_replace = archive_tier_write._replace_full_session_messages_and_blocks
 
-    def counting_copy(*args: Any, **kwargs: Any) -> Any:
-        nonlocal copies
-        copies += 1
-        return original_copy(*args, **kwargs)
+    def recording_replace(*args: Any, **kwargs: Any) -> Any:
+        carriers.append(kwargs.get("prepared"))
+        return original_replace(*args, **kwargs)
 
     try:
         generation = cold_build.generation
         with pytest.MonkeyPatch.context() as patch:
-            patch.setattr(archive_tier_write, "copy_shard_session_rows", counting_copy)
+            patch.setattr(archive_tier_write, "_replace_full_session_messages_and_blocks", recording_replace)
             receipts = replay_retained_raws(root)
 
         assert sum(receipt.replayed_logical_sources for receipt in receipts) == 1
@@ -377,7 +379,8 @@ def test_owned_inactive_generation_replays_through_sealed_session_shards(tmp_pat
         with sqlite3.connect(generation.index_path) as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
             assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
-        assert copies == 1
+        assert len(carriers) == 1
+        assert isinstance(carriers[0], archive_tier_write.PreparedSessionRows)
     finally:
         clear_cold_build_generation()
         with write_lease("test.owned-shard.discard", archive_root=root):

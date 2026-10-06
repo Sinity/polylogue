@@ -19,14 +19,11 @@ from polylogue.storage.index_generation import ActiveWriterLease
 from polylogue.storage.sqlite.archive_tiers.write import (
     ConnectionSessionSourceRead,
     PreparedSessionRows,
-    PreparedSessionShardRows,
     PreparedSessionSourceRead,
     PreparedSessionWrite,
     prepare_session_write,
-    prepared_session_rows_from_shard,
     write_parsed_session_to_archive,
 )
-from polylogue.storage.sqlite.archive_tiers.write_shard import ShardIdentitySequence
 from polylogue.storage.sqlite.connection_profile import native_sql_owner_for_connection
 from polylogue.storage.sqlite.reference_seal import (
     IndexMutationDestination,
@@ -366,12 +363,7 @@ def write_fixture_index_session(
 
 
 def _canonical_prepared_rows(rows: object) -> PreparedSessionRows | None:
-    """Resolve a fixture's supplied rows (or sealed shard binding) to the canonical carrier."""
-    if isinstance(rows, PreparedSessionShardRows):
-        identities = rows.entry.content_identities
-        if not isinstance(identities, ShardIdentitySequence):
-            raise TypeError("fixture shard must carry its sealed identity sequence")
-        rows = prepared_session_rows_from_shard(identities.path, rows.session_id)
+    """Require a fixture's supplied rows to be the canonical prepared carrier."""
     if rows is not None and not isinstance(rows, PreparedSessionRows):
         raise TypeError("fixture rows must be the canonical prepared carrier")
     return rows
@@ -398,12 +390,12 @@ def prepared_fixture_index_batch(
     sessions: Sequence[ParsedSession],
     *,
     archive_root: Path,
-    prepared_rows: Sequence[object] | None = None,
+    prepared_rows: Sequence[PreparedSessionRows] | None = None,
 ) -> Iterator[tuple[PreparedIndexMutation, tuple[PreparedSessionWrite, ...]]]:
     """Prepare all neutral session inputs before one original Index publication.
 
-    ``prepared_rows`` optionally supplies each session's already prepared rows
-    (or sealed shard binding), in session order.
+    ``prepared_rows`` optionally supplies each session's already prepared
+    ``PreparedSessionRows``, in session order.
     """
     if prepared_rows is not None and len(prepared_rows) != len(sessions):
         raise ValueError("fixture batch prepared rows must name every session")
@@ -503,7 +495,7 @@ def published_fixture_index_batch(
     *,
     archive_root: Path,
     before_publish: Callable[[], object] | None = None,
-    prepared_rows: Sequence[object] | None = None,
+    prepared_rows: Sequence[PreparedSessionRows] | None = None,
     **write_options: Any,
 ) -> Iterator[list[str]]:
     """Prepare every session first, then publish them all in one Index write scope.

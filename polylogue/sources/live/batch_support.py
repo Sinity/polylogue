@@ -1453,12 +1453,15 @@ def _classify_pre_acquisition(
         except ForeignOriginContentError as exc:
             return PreAcquisitionDecision(foreign_origin_exclusion(exc), refused=True)
         return PreAcquisitionDecision("unsupported source class")
-    if hermes_owned_sqlite_name or (
-        not source_only
-        and sqlite_classification is not None
-        and (sqlite_classification.hermes_state or sqlite_classification.hermes_verification)
-    ):
+    hermes_signature = sqlite_classification is not None and (
+        sqlite_classification.hermes_state or sqlite_classification.hermes_verification
+    )
+    if hermes_owned_sqlite_name or (not source_only and hermes_signature):
         return PreAcquisitionDecision(None)
+    if source_only and fallback_provider is Provider.HERMES and hermes_signature:
+        # An undeclared name (a copied ``backup.db``) is a Hermes database by
+        # its schema signature; acquisition retains its logical export.
+        return PreAcquisitionDecision(None, Provider.HERMES)
     codex_capability = database_capability_for_provider(Provider.CODEX)
     codex_member = codex_capability.member(path.name) if codex_capability is not None else None
     if (

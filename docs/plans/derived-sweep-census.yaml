@@ -653,13 +653,6 @@ sites:
     scope: "state_predicate"
     classification: producer_scoped_transaction
     reason: "derived_refresh_guard is the writer's own trigger-suppression flag: the same function inserts the named guard row before its session writes and deletes that exact guard_name afterwards (in the borrowed Index scope, from a finally block). The subject is the one row this call created, not archive state"
-  - file: "polylogue/storage/sqlite/archive_tiers/write_shard.py"
-    function: "copy_shard_session_rows"
-    subject: "blocks"
-    kind: "unbound_rewrite"
-    scope: "state_predicate"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
   - file: "polylogue/storage/sqlite/delegation_facts.py"
     function: "rebuild_all_delegation_facts_sync"
     subject: "delegation_facts"

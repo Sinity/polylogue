@@ -807,7 +807,11 @@ def recognize_source_class(
                 return SourceClassRecognition("session", f"declared Codex {declaration.kind} database")
             if provider is Provider.HERMES and path.name in {"state.db", "verification_evidence.db"}:
                 return SourceClassRecognition("session", "declared Hermes SQLite source class")
-            return SourceClassRecognition("unsupported", f"{provider.value} SQLite has no declared source class")
+            if provider is not Provider.HERMES:
+                return SourceClassRecognition("unsupported", f"{provider.value} SQLite has no declared source class")
+            # A Hermes database under an undeclared name (a ``backup.db``) is
+            # admitted by its schema signature on both routes, the same
+            # evidence the retained replay reads, never by its name alone.
         if provider is Provider.HERMES:
             if sqlite_classification is not None and (
                 sqlite_classification.hermes_state or sqlite_classification.hermes_verification

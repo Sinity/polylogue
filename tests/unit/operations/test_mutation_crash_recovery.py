@@ -37,6 +37,7 @@ from polylogue.operations.specs import build_runtime_operation_catalog
 from polylogue.security.lifecycle import _request_assertion_id
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.audit_leaf import open_verified_sqlite_read_connection
+from tests.infra.operation_recovery import recover_on_admitted_owner
 from tests.unit.operations.test_mutation_actuators import _seed_archive_session, _seed_raw_authority_blocker
 
 Crash = Literal["before-apply", "after-apply"]
@@ -393,7 +394,7 @@ def test_restart_leaves_an_interrupted_mutation_complete_and_unblocked(
     else:
         _seed_archive_session(root, native_id="bootstrap")
         operation_id = _crash_mid_mutation(root, scenario, crash)
-        recover_interrupted_operations(root)
+        recover_on_admitted_owner(root)
 
     with open_verified_sqlite_read_connection(root / "audit.db") as conn:
         status, reason = conn.execute(
@@ -461,7 +462,7 @@ def test_excision_is_not_reported_complete_from_a_missing_index_row(tmp_path: Pa
     with sqlite3.connect(root / "index.db") as conn:
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (_SID,))
 
-    recover_interrupted_operations(root)
+    recover_on_admitted_owner(root)
 
     with sqlite3.connect(root / "audit.db") as conn:
         assert conn.execute(
@@ -492,7 +493,7 @@ def test_replayed_setting_keeps_its_original_timestamp(tmp_path: Path) -> None:
         )
         conn.commit()
 
-    recover_interrupted_operations(root)
+    recover_on_admitted_owner(root)
 
     with sqlite3.connect(root / "user.db") as conn:
         assert conn.execute(
@@ -516,7 +517,7 @@ def test_filesystem_reset_recovery_leaves_a_recreated_path_alone(tmp_path: Path)
     operation_id = _crash_mid_mutation(root, scenario, "after-apply")
     (root / "scratch.bin").write_bytes(b"recreated after the reset")
 
-    recover_interrupted_operations(root)
+    recover_on_admitted_owner(root)
 
     assert (root / "scratch.bin").read_bytes() == b"recreated after the reset"
     with sqlite3.connect(root / "audit.db") as conn:
@@ -539,7 +540,7 @@ def test_saved_view_recovery_refuses_a_collision_the_plan_did_not_name(tmp_path:
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         archive.save_view("view-later", "Crash", '{"query": "y"}')
 
-    recover_interrupted_operations(root)
+    recover_on_admitted_owner(root)
 
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         assert archive.get_view("view-later") is not None
@@ -564,7 +565,7 @@ def test_corrections_clear_recovery_keeps_a_kind_recorded_after_authorization(tm
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         archive.record_correction(_SID, "tag_accept", {"tag": "keep"})
 
-    recover_interrupted_operations(root)
+    recover_on_admitted_owner(root)
 
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         assert [item.kind.value for item in archive.list_corrections(session_id=_SID)] == ["tag_accept"]
@@ -585,7 +586,7 @@ def test_replayed_annotation_keeps_its_original_timestamp(tmp_path: Path) -> Non
         conn.execute("UPDATE assertions SET created_at_ms = 7, updated_at_ms = 7 WHERE key = 'note-crash'")
         conn.commit()
 
-    recover_interrupted_operations(root)
+    recover_on_admitted_owner(root)
 
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         stored = archive.get_annotation("note-crash")
@@ -608,7 +609,7 @@ def test_committed_view_delete_is_not_replayed_over_a_new_watched_view(tmp_path:
             "view-later", "Crash", '{"query": "sessions where origin:codex-session AND repo:polylogue"}', watch=True
         )
 
-    recover_interrupted_operations(root)
+    recover_on_admitted_owner(root)
 
     with sqlite3.connect(root / "user.db") as conn:
         assert conn.execute("SELECT watch FROM query_names WHERE name = 'Crash'").fetchone() == (1,)
@@ -646,7 +647,7 @@ def test_watched_save_interrupted_before_its_baseline_is_measured_on_recovery(tm
     with sqlite3.connect(root / "user.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM watched_query_baselines").fetchone() == (0,)
 
-    recover_interrupted_operations(root)
+    recover_on_admitted_owner(root)
 
     with sqlite3.connect(root / "user.db") as conn:
         baselined = conn.execute(
@@ -719,7 +720,7 @@ def test_user_write_recovery_waits_while_its_session_does_not_resolve(tmp_path: 
     with sqlite3.connect(root / "index.db") as conn:
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (_SID,))
 
-    recover_interrupted_operations(root)
+    recover_on_admitted_owner(root)
 
     with sqlite3.connect(root / "audit.db") as conn:
         (status,) = conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone()
@@ -773,7 +774,7 @@ def test_corrections_clear_recovery_waits_while_its_session_does_not_resolve(tmp
     with sqlite3.connect(root / "index.db") as conn:
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (_SID,))
 
-    recover_interrupted_operations(root)
+    recover_on_admitted_owner(root)
 
     with sqlite3.connect(root / "audit.db") as conn:
         (status,) = conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone()
@@ -799,7 +800,7 @@ def test_replayed_identity_reset_keeps_its_suppression_timestamp(tmp_path: Path)
         conn.execute("UPDATE assertions SET updated_at_ms = 7 WHERE assertion_id = ?", (suppression,))
         conn.commit()
 
-    recover_interrupted_operations(root)
+    recover_on_admitted_owner(root)
 
     with sqlite3.connect(root / "user.db") as conn:
         assert conn.execute(

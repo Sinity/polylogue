@@ -57,6 +57,12 @@ right parser is shape-based, checked in this tightness order
 | ATOF stream (`*.jsonl`) | Each line an `atof_version`/`kind`(scope\|mark)/`category` event (`hermes_spans.looks_like_atof_payload`) | `polylogue/sources/parsers/hermes_spans.py:parse_atof_stream` | `jsonl_stream` |
 | Legacy JSON snapshot fallback | Loose dict shape, no `state.db`/ATIF/ATOF match | `polylogue/sources/parsers/local_agent.py` | `json_fallback` — much lower fidelity, see below |
 
+A SQLite file under another name (a copied `backup.db`) is admitted by the same
+schema signature as `state.db` or `verification_evidence.db`, on live intake and
+on retained replay alike; it carries no member binding, and a database with
+neither signature is an unsupported source class (`recognize_source_class` in
+`polylogue/sources/origin_specs.py`).
+
 `Origin.HERMES_SESSION = "hermes-session"` (`polylogue/core/enums.py:48`) is
 the one public origin token all five of these normalize to; the underlying
 `OriginSpec` (`polylogue/sources/origin_specs.py:448-469`) declares detection

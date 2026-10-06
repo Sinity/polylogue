@@ -63,6 +63,9 @@ _FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 
 
 def _connect(path: Path) -> sqlite3.Connection:
+    # Each Index gets its own archive root: the fixture writer owns exactly
+    # one active Index per root.
+    path.parent.mkdir(parents=True, exist_ok=True)
     conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -934,8 +937,8 @@ def test_clean_and_incremental_ingestion_produce_identical_triples(tmp_path: Pat
     independently pairs the fresh outcome with a stale ``is_error`` and the
     second read stops matching the first.
     """
-    clean = _connect(tmp_path / "clean.db")
-    incremental = _connect(tmp_path / "incremental.db")
+    clean = _connect(tmp_path / "clean" / "index.db")
+    incremental = _connect(tmp_path / "incremental" / "index.db")
     try:
         clean_id = _write(clean, _codex_session("plain output"))
         _write(incremental, _codex_session("plain output"))

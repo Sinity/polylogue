@@ -61,7 +61,6 @@ from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel_requested
 from polylogue.core.enums import PolylogueStrEnum, Provider
-from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.core.raw_failure_evidence import (
@@ -146,18 +145,17 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     ConnectionSessionSourceRead,
-    PreparedRows,
     PreparedSessionSourceRead,
     PreparedSessionWrite,
     PreparedSessionWriteRefusedError,
     prepare_session_shard,
 )
-from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, discard_session_shard
 from polylogue.storage.sqlite.connection_profile import (
     StaleContinuationError,
     read_frame,
 )
 from polylogue.storage.sqlite.reference_seal import ReferenceSealError
+from polylogue.storage.sqlite.session_shard import discard_session_shard
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
 
@@ -1464,19 +1462,6 @@ def _lineage_aware_replay_schedule(
     return ReplaySchedule(order=tuple(order), topology=topology, parent_of=edge)
 
 
-def _required_shard_prepared_rows(
-    raw_id: str,
-    session: ParsedSession,
-    bindings: Mapping[str, PreparedRows],
-) -> dict[str, PreparedRows]:
-    """Bind exactly the session the frozen replay is about to full-replace."""
-    session_id = archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
-    try:
-        return {raw_id: bindings[session_id]}
-    except KeyError as exc:
-        raise ShardRefusedError(f"sealed shard has no rows for replay session {session_id}") from exc
-
-
 def _validated_prepared_aggregate(
     logical_key: str,
     accepted_raw_ids: tuple[str, ...],
@@ -2764,14 +2749,6 @@ class _PreparedReplayInputs:
         if isinstance(sessions, Exception):
             raise RetainedPreparationRetryableError(f"parser-refused raw {raw_id} reached replay") from sessions
         return sessions, prepared.payload_bytes
-
-
-def _prepared_shard_path(prepared_inputs: Mapping[str, PreparedRetainedInput], raw_id: str) -> Path:
-    prepared = prepared_inputs.get(raw_id)
-    artifact = prepared.prepared_artifact if prepared is not None else None
-    if artifact is None or artifact.shard_path is None:
-        raise ShardRefusedError(f"retained replay has no sealed shard for raw {raw_id}")
-    return artifact.shard_path
 
 
 LEGACY_PAGE_IMAGE_CENSUS_DETAIL = (

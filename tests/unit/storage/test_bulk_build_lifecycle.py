@@ -50,14 +50,14 @@ from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.revision_application import assert_session_fts_exact_sync
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import bind_session_shard, prepare_session_shard
-from polylogue.storage.sqlite.archive_tiers.write_shard import SessionShard, attached_session_shard, open_session_shard
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard, prepared_session_rows_from_shard
 from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 from polylogue.storage.sqlite.runtime_indexes import (
     DEFERRED_SECONDARY_INDEX_NAMES,
     defer_secondary_indexes_sync,
     restore_deferred_secondary_indexes_sync,
 )
+from polylogue.storage.sqlite.session_shard import SessionShard
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import published_fixture_index_batch, write_fixture_index_session
 from tests.infra.revision_backfill_benchmark import (
@@ -253,18 +253,16 @@ def _write_fresh_shard_arm(conn: sqlite3.Connection, directory: Path, sessions: 
     assert set(dropped) == set(DEFERRED_SECONDARY_INDEX_NAMES)
     shard = prepare_session_shard(directory, sessions)
     seen: set[str] = set()
-    with attached_session_shard(conn, open_session_shard(shard.path)) as schema:
-        bindings = bind_session_shard(schema, shard)
-        for session in sessions:
-            write_fixture_index_session(
-                conn,
-                session,
-                content_hash=str(session_content_hash(session)),
-                prepared_rows=bindings[_archive_session_id(session)],
-                fresh_build=True,
-                fresh_build_batch=seen,
-                bulk_build=True,
-            )
+    for session in sessions:
+        write_fixture_index_session(
+            conn,
+            session,
+            content_hash=str(session_content_hash(session)),
+            prepared_rows=prepared_session_rows_from_shard(shard.path, _archive_session_id(session)),
+            fresh_build=True,
+            fresh_build_batch=seen,
+            bulk_build=True,
+        )
 
 
 def _lineage_scenario(conn: sqlite3.Connection, *, bulk_fts: bool, bulk_build: bool) -> tuple[str, str]:
@@ -705,35 +703,33 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
         seen: set[str] = set()
         boundaries = record_boundaries(conn)
         try:
-            # Attach outside the transaction and commit before detach. A
-            # caller-owned batch cannot leave an attachment with live reads.
-            with attached_session_shard(conn, open_session_shard(shard.path)) as schema:
-                bindings = bind_session_shard(schema, shard)
 
-                def defer() -> None:
-                    dropped = defer_secondary_indexes_sync(conn)
-                    assert set(dropped) == set(DEFERRED_SECONDARY_INDEX_NAMES)
+            def defer() -> None:
+                dropped = defer_secondary_indexes_sync(conn)
+                assert set(dropped) == set(DEFERRED_SECONDARY_INDEX_NAMES)
 
-                restoration: list[float] = []
+            restoration: list[float] = []
 
-                def restore_then_finish() -> None:
-                    _, restored = _measure(lambda: restore_deferred_secondary_indexes_sync(conn))
-                    restoration.append(restored)
-                    _finish_bulk_build(conn, checkpoint=False)
+            def restore_then_finish() -> None:
+                _, restored = _measure(lambda: restore_deferred_secondary_indexes_sync(conn))
+                restoration.append(restored)
+                _finish_bulk_build(conn, checkpoint=False)
 
-                batch = published_fixture_index_batch(
-                    conn,
-                    sessions,
-                    archive_root=tmp_path / "shard",
-                    before_publish=defer,
-                    prepared_rows=[bindings[_archive_session_id(session)] for session in sessions],
-                    fresh_build=True,
-                    fresh_build_batch=seen,
-                    bulk_build=True,
-                )
-                import_seconds, finish_seconds, checkpoint_seconds = _measure_batch(batch, restore_then_finish)
-                (index_restoration_seconds,) = restoration
-                derived_fts_finalization_seconds = finish_seconds - index_restoration_seconds
+            batch = published_fixture_index_batch(
+                conn,
+                sessions,
+                archive_root=tmp_path / "shard",
+                before_publish=defer,
+                prepared_rows=[
+                    prepared_session_rows_from_shard(shard.path, _archive_session_id(session)) for session in sessions
+                ],
+                fresh_build=True,
+                fresh_build_batch=seen,
+                bulk_build=True,
+            )
+            import_seconds, finish_seconds, checkpoint_seconds = _measure_batch(batch, restore_then_finish)
+            (index_restoration_seconds,) = restoration
+            derived_fts_finalization_seconds = finish_seconds - index_restoration_seconds
             assert boundaries == ["BEGIN", "COMMIT"]
         finally:
             conn.close()

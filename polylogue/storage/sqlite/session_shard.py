@@ -1,31 +1,19 @@
-"""Session rows as a SQLite file the writer bulk-copies (polylogue-bp12n.6).
+"""Session rows as a sealed SQLite file prepared off the writer (polylogue-bp12n.6).
 
-Writer module: index.
-
-``PreparedSessionRows`` moves row *construction* off the writer thread but
-still hands back Python tuples, so the writer pays one parameter-binding
-round trip per row inside its hold. A shard moves the binding off too: the
-stage-A worker inserts its tuples into a private, index-free SQLite file and
-the writer runs ``INSERT INTO main.t SELECT ... FROM shard.t`` -- a C-level
-copy whose only Python cost is the statement itself.
+Stage-A preparation inserts one session's message and block row tuples into a
+private, index-free SQLite file and seals it. The writer never attaches or
+copies the file: ``prepared_session_rows_from_shard`` exposes a sealed range
+as ``PreparedSessionRows`` whose row sequences stream from the file, and the
+writer validates and binds that carrier like any other prepared write. The
+module writes only these private files, never an archive tier.
 
 The shard is a transport, never authority. It holds exactly the rows
 ``prepare_session_rows`` would have produced, its tables carry no affinity so
 every value round-trips with the type the builder bound, and the writer
-re-derives nothing from it. Two consequences follow and both are load-bearing:
-
-* **Acceptance is unchanged.** A shard is admitted under exactly the gates
-  ``PreparedSessionRows`` is admitted under -- matching session content hash,
-  full replace, no lineage slicing -- plus one more: the copy replaces the
-  row-*building* loops only, so it needs a session with no prior rows to
-  reconcile (``session_row_existed=False``). Any other case falls back to
-  building rows inline, which is what ``prepared=None`` already does.
-* **A partial shard is not a shard.** Every row and the seal are written in
-  one transaction and the seal goes in last. A builder that dies mid-write
-  leaves a file whose commit never happened; the rollback restores it to the
-  state before the transaction, where no seal exists, and
-  :func:`open_session_shard` refuses it. There is no shard state between
-  "absent" and "complete".
+re-derives nothing from it. A partial shard is not a shard: every row and the
+seal are written in one transaction and the seal goes in last, so a builder
+that dies mid-write leaves a file :func:`open_session_shard` refuses. There is
+no shard state between "absent" and "complete".
 """
 
 from __future__ import annotations
@@ -66,8 +54,6 @@ _OWNER_DDL = (
     "CREATE TABLE shard_owner_lookup (session_ordinal INTEGER NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(session_ordinal, kind, key)) WITHOUT ROWID",
     "CREATE TABLE shard_owner_ambiguity (session_ordinal INTEGER NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY(session_ordinal, kind, key)) WITHOUT ROWID",
 )
-
-_ATTACH_SCHEMA_PREFIX = "polylogue_shard"
 
 
 class ShardRefusedError(Exception):
@@ -111,20 +97,6 @@ def shard_column_signature() -> str:
     """
     payload = "\n".join((*[f"{table}:{shard_table_ddl(table)}" for table in SHARD_TABLES], *_OWNER_DDL))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _copy_projection(spec: TableColumnSpec, alias: str) -> str:
-    """The SELECT list that feeds ``spec``'s INSERT column list from a shard.
-
-    Positional correspondence with ``insert_column_names`` is the whole
-    contract: a column the shard carries is read from it, and a column whose
-    placeholder is a literal keeps that literal, exactly as the row-tuple
-    path does.
-    """
-    parts: list[str] = []
-    for col in spec.writable_columns:
-        parts.append(f"{alias}.{col.name}" if col.extract_placeholder == "?" else col.extract_placeholder)
-    return ", ".join(parts)
 
 
 _SEAL_DDL = """
@@ -716,55 +688,6 @@ def _read_only_uri(path: Path) -> str:
     return f"file:{quote(str(path))}?mode=ro"
 
 
-@contextmanager
-def attached_session_shard(conn: sqlite3.Connection, shard: SessionShard) -> Iterator[str]:
-    """ATTACH ``shard`` read-only for the body and DETACH afterwards.
-
-    Read-only is enforced by SQLite, not by discipline: the shard is a
-    transport, and a writer that could mutate it could make it disagree with
-    the source it was parsed from.
-
-    The attachment brackets whole transactions and never sits inside one:
-    SQLite refuses to detach a database a live transaction has read from, so
-    a caller that opens the attachment mid-transaction could not close it.
-    Entering inside one is therefore refused outright rather than left to
-    fail at the exit.
-    """
-    if conn.in_transaction:
-        raise ShardRefusedError("a shard attaches around a transaction, never inside one")
-    schema = f"{_ATTACH_SCHEMA_PREFIX}_{uuid.uuid4().hex[:8]}"
-    conn.execute(f"ATTACH DATABASE ? AS {schema}", (_read_only_uri(shard.path),))
-    try:
-        yield schema
-    finally:
-        conn.execute(f"DETACH DATABASE {schema}")
-
-
-def copy_shard_session_rows(
-    conn: sqlite3.Connection,
-    schema: str,
-    entry: ShardSessionRows,
-) -> None:
-    """Bulk-copy one session's message and block rows out of an attached shard.
-
-    Messages first: ``blocks.message_id`` references them.
-    """
-    messages_spec = _spec("messages")
-    blocks_spec = _spec("blocks")
-    conn.execute(
-        f"INSERT INTO messages ({messages_spec.insert_column_names}) "
-        f"SELECT {_copy_projection(messages_spec, 's')} FROM {schema}.messages AS s "
-        "WHERE s.rowid BETWEEN ? AND ?",
-        (entry.message_lo, entry.message_hi),
-    )
-    conn.execute(
-        f"INSERT OR REPLACE INTO blocks ({blocks_spec.insert_column_names}) "
-        f"SELECT {_copy_projection(blocks_spec, 's')} FROM {schema}.blocks AS s "
-        "WHERE s.rowid BETWEEN ? AND ?",
-        (entry.block_lo, entry.block_hi),
-    )
-
-
 __all__ = [
     "SHARD_LAYOUT_VERSION",
     "SHARD_TABLES",
@@ -772,9 +695,7 @@ __all__ = [
     "SessionShardBuilder",
     "ShardRefusedError",
     "ShardSessionRows",
-    "attached_session_shard",
     "build_session_shard",
-    "copy_shard_session_rows",
     "discard_session_shard",
     "open_session_shard",
     "shard_column_signature",

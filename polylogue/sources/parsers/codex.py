@@ -3316,7 +3316,7 @@ class _CodexLookaheadObserver:
             envelope = _CodexExecEnvelope(
                 transport_tool_name=tool_name,
                 transport_tool_id=tool_id,
-                transport_provider_message_id=str(payload.get("id") or raw_tool_id or ""),
+                transport_provider_message_id=_codex_tool_record_message_id(payload, side="call"),
                 children=children,
             )
             occurrence = index_store.occurrence("call", tool_id) if tool_id else None
@@ -3756,6 +3756,28 @@ def _codex_material_origin(role: Role, message_type: MessageType, text: str | No
     return material_origin
 
 
+def _codex_tool_record_message_id(payload: Mapping[str, object], *, side: str) -> str:
+    """Return the native message identity of one Codex tool call or output record.
+
+    A tool record's own ``id`` is its native message id when the producer
+    wrote one. Rollouts normally carry only ``call_id``, and that value names
+    the *call*, which both the request record and its output record repeat:
+    using it bare would give two distinct messages one provider id. The
+    declared record side (``call`` or ``output``) qualifies it, so each record
+    keeps a distinct identity derived from source fields, never from position.
+    The MCP pair uses the same scheme (``::mcp-call`` / ``::mcp-output``).
+    """
+    native_id = payload.get("id")
+    if native_id:
+        return str(native_id)
+    call_id = payload.get("call_id")
+    if call_id:
+        return f"{call_id}::{side}"
+    # polylogue-slshy: no positional fallback; an empty id lets the
+    # content-anchor identity run instead.
+    return ""
+
+
 def _codex_tool_message(
     record: dict[str, object],
     *,
@@ -3790,8 +3812,7 @@ def _codex_tool_message(
         if exec_envelope is not None:
             blocks.extend(_code_mode_child_use_blocks(exec_envelope))
         return ParsedMessage(
-            # polylogue-slshy: see the sibling comment above; no positional fallback.
-            provider_message_id=str(payload.get("id") or tool_id or ""),
+            provider_message_id=_codex_tool_record_message_id(payload, side="call"),
             role=Role.ASSISTANT,
             text=tool_name,
             timestamp=timestamp,
@@ -3828,8 +3849,7 @@ def _codex_tool_message(
         if exec_envelope is not None:
             blocks.extend(_code_mode_child_result_blocks(exec_envelope))
         return ParsedMessage(
-            # polylogue-slshy: no positional fallback (see above).
-            provider_message_id=str(payload.get("id") or tool_id or ""),
+            provider_message_id=_codex_tool_record_message_id(payload, side="output"),
             role=Role.TOOL,
             text=output_text,
             timestamp=timestamp,
@@ -4771,12 +4791,24 @@ def _parse_records(
                 event_type = _codex_response_item_event_type(_record_type(inner), _record_type(record))
                 if event_type == _CODEX_UNCLASSIFIED_RESPONSE_ITEM_TYPE:
                     event_payload["wire_type"] = _record_type(inner) or _record_type(record)
+                timestamp_fallback = _record_timestamp(record)
+                tool_message = _codex_tool_message(
+                    inner,
+                    index=idx,
+                    position=message_position,
+                    timestamp_fallback=timestamp_fallback,
+                    exec_envelope=code_mode_envelopes.get(idx),
+                )
+                # The event names the message parsed from the same record, so
+                # a call and its output never share one event owner.
                 response_event = ParsedSessionEvent(
                     event_type=event_type,
                     timestamp=_iso_or_none(_record_timestamp(inner) or _record_timestamp(record)),
                     payload=event_payload,
-                    source_message_provider_id=_string_value(
-                        inner.get("client_id") or inner.get("id") or inner.get("call_id")
+                    source_message_provider_id=(
+                        tool_message.provider_message_id or None
+                        if tool_message is not None
+                        else _string_value(inner.get("client_id") or inner.get("id") or inner.get("call_id"))
                     ),
                 )
                 session_events.append(response_event)
@@ -4801,14 +4833,6 @@ def _parse_records(
                     last_agent_message = inner.get("last_agent_message")
                     if isinstance(last_agent_message, str) and last_agent_message:
                         conservation.add_task_completion(last_agent_message, len(session_events) - 1)
-                timestamp_fallback = _record_timestamp(record)
-                tool_message = _codex_tool_message(
-                    inner,
-                    index=idx,
-                    position=message_position,
-                    timestamp_fallback=timestamp_fallback,
-                    exec_envelope=code_mode_envelopes.get(idx),
-                )
                 if tool_message is not None:
                     append_message(tool_message)
                     message_position += 1

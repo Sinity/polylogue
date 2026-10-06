@@ -931,7 +931,14 @@ class ZipMemberAdmission:
         declared = declared_artifact_provider(info.filename)
         if not provider_detection_path(info.filename):
             return declared or self.provider_hint
-        return _zip_entry_detected_provider(zf, info) or declared or self.provider_hint
+        if info.filename.lower().endswith(ZIP_JSON_SUFFIXES):
+            # A JSON member's provider is its decoded shape. A session path
+            # rule is only a location claim (OpenTelemetry's covers every
+            # ``*.json``), so it never names the provider of a member whose
+            # records no detector claims; the member keeps the container's
+            # hint, exactly as the same file outside a ZIP would.
+            return _zip_entry_detected_provider(zf, info) or self.provider_hint
+        return declared or self.provider_hint
 
 
 def zip_member_admission(

@@ -230,7 +230,7 @@ def test_artifact_constructor_ddl_failure_settles_or_exposes_its_actual_owner(
     from polylogue.core.sql_settlement import retain_native_sql_lifetimes
     from polylogue.pipeline.ids import _DiskRevisionStore
     from polylogue.sources.prepared_message_sink import SqliteMessageStore
-    from polylogue.storage.sqlite.archive_tiers.write_shard import SessionShardBuilder
+    from polylogue.storage.sqlite.session_shard import SessionShardBuilder
 
     class DDLHandle(SettlementConnection):
         def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
@@ -293,7 +293,7 @@ def test_artifact_constructor_ddl_failure_settles_or_exposes_its_actual_owner(
 def test_population_and_sealing_failure_settles_or_exposes_the_actual_scratch_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, failed_close: bool
 ) -> None:
-    from polylogue.storage.sqlite.archive_tiers.write_shard import build_session_shard
+    from polylogue.storage.sqlite.session_shard import build_session_shard
 
     class SealHandle(SettlementConnection):
         def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:

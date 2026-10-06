@@ -390,7 +390,7 @@ async def test_interrupted_import_is_resolved_complete_or_absent_at_restart(
     """
     import sqlite3
 
-    from polylogue.operations.mutation_replay import recover_interrupted_operations
+    from tests.infra.operation_recovery import recover_on_admitted_owner
 
     started: list[str] = []
 
@@ -442,7 +442,7 @@ async def test_interrupted_import_is_resolved_complete_or_absent_at_restart(
         )
         conn.commit()
 
-    recover_interrupted_operations(archive_root)
+    recover_on_admitted_owner(archive_root)
 
     with sqlite3.connect(archive_root / "audit.db") as conn:
         status, reason = conn.execute(
@@ -468,7 +468,7 @@ async def test_interrupted_import_reusing_a_batch_id_is_not_mistaken_for_its_pre
     """
     import sqlite3
 
-    from polylogue.operations.mutation_replay import recover_interrupted_operations
+    from tests.infra.operation_recovery import recover_on_admitted_owner
 
     archive_root = workspace_env["archive_root"]
 
@@ -522,7 +522,7 @@ async def test_interrupted_import_reusing_a_batch_id_is_not_mistaken_for_its_pre
         )
         conn.commit()
 
-    recover_interrupted_operations(archive_root)
+    recover_on_admitted_owner(archive_root)
 
     with sqlite3.connect(archive_root / "audit.db") as conn:
         assert conn.execute(
