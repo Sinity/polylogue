@@ -1083,3 +1083,55 @@ def test_late_session_document_prevents_all_hook_stream_refusal() -> None:
     artifact = classify_artifact(payload, provider=Provider.UNKNOWN)
     assert artifact.parse_as_session
     assert artifact.kind is not ArtifactKind.HOOK_EVENT
+
+
+_CODEX_RECORD_FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "codex"
+
+
+@pytest.mark.parametrize("fixture", ["legacy-response-records.jsonl", "retained-context-and-realtime.jsonl"])
+def test_codex_legacy_and_retained_record_streams_classify_as_sessions(fixture: str) -> None:
+    """Both the complete-payload and the streamed fold admit the new Codex record shapes.
+
+    The legacy fixture holds more unwrapped response records than messages,
+    so the streamed fold is red if those records stop counting as Codex
+    record evidence (the record majority fails and the stream is unknown).
+    """
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    raw = (_CODEX_RECORD_FIXTURES / fixture).read_bytes()
+    records = [json.loads(line) for line in raw.splitlines() if line.strip()]
+    source_path = "/exports/rollout-sample.jsonl"
+
+    complete = classify_artifact(records, provider=Provider.CODEX, source_path=source_path)
+    assert complete.parse_as_session
+    assert complete.kind is ArtifactKind.SESSION_RECORD_STREAM
+
+    streamed = classify_artifact_stream(
+        io.BytesIO(raw), provider=Provider.CODEX, wire_format="jsonl", source_path=source_path
+    )
+    assert streamed.classification.parse_as_session
+    assert streamed.classification.kind is ArtifactKind.SESSION_RECORD_STREAM
+    assert streamed.record_count == len(records)
+
+
+@pytest.mark.parametrize("fixture", ["legacy-response-records.jsonl", "retained-context-and-realtime.jsonl"])
+def test_codex_stream_with_an_unknown_outer_record_is_still_refused(fixture: str) -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    lines = (_CODEX_RECORD_FIXTURES / fixture).read_bytes().splitlines()
+    lines.insert(2, b'{"type":"future_outer_kind","payload":{"type":"anything"}}')
+    raw = b"\n".join(lines) + b"\n"
+    records = [json.loads(line) for line in lines]
+    source_path = "/exports/rollout-sample.jsonl"
+
+    assert not classify_artifact(records, provider=Provider.CODEX, source_path=source_path).parse_as_session
+    streamed = classify_artifact_stream(
+        io.BytesIO(raw), provider=Provider.CODEX, wire_format="jsonl", source_path=source_path
+    )
+    assert not streamed.classification.parse_as_session
+    assert streamed.classification.kind is ArtifactKind.UNKNOWN
+    assert not streamed.proved_non_session

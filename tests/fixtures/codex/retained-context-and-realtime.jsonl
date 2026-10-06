@@ -1,0 +1,8 @@
+{"ordinal":0,"timestamp":"2026-09-01T10:00:00.000Z","type":"session_meta","payload":{"id":"retained-context-session","timestamp":"2026-09-01T10:00:00.000Z","cwd":"/workspace/sample"}}
+{"ordinal":1,"timestamp":"2026-09-01T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Pick a colour for the sample banner."}]}}
+{"ordinal":2,"timestamp":"2026-09-01T10:00:02.000Z","type":"response_item","payload":{"type":"function_call","name":"request_user_input","arguments":"{\"questions\":[{\"question\":\"Which colour should the banner use?\"}]}","call_id":"call_sample_question"}}
+{"ordinal":3,"timestamp":"2026-09-01T10:00:05.000Z","type":"retained_context","payload":{"type":"verified_answer","call_id":"call_sample_question","turn_id":"turn-sample-1","acceptance_order":1,"questions":[{"question":"Which colour should the banner use?","answer":"Green"}]}}
+{"ordinal":4,"timestamp":"2026-09-01T10:00:05.100Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_sample_question","output":"{\"answers\":{\"q1\":{\"answers\":[\"Green\"]}}}"}}
+{"ordinal":5,"timestamp":"2026-09-01T10:00:06.000Z","type":"realtime_item","payload":{"type":"realtime_session_started","id":"realtime-marker-1","realtime_session_id":"realtime-session-sample"}}
+{"ordinal":6,"timestamp":"2026-09-01T10:00:09.000Z","type":"realtime_item","payload":{"type":"realtime_session_closed","id":"realtime-marker-2","realtime_session_id":"realtime-session-sample","outcome":"ended"}}
+{"ordinal":7,"timestamp":"2026-09-01T10:00:10.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The banner will be green."}]}}

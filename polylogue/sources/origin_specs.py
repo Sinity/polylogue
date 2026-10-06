@@ -2454,6 +2454,20 @@ def _codex_spec() -> OriginSpec:
             "token_usage_record are classified at their top-level dispatch and "
             "retain only named delegation/counter fields; opaque siblings are "
             "excluded rather than copied as a wire-payload dump.",
+            "Top-level function_call/function_call_output/reasoning records "
+            "(acquired): the 2025 direct-message rollouts write these "
+            "unwrapped, beside top-level messages. They lower through the "
+            "same route as their response_item-wrapped form, so tool-call "
+            "pairing, reasoning blocks, ids and tool outcomes are identical "
+            "in both generations.",
+            "retained_context.verified_answer (acquired): the user's accepted "
+            "question/answer pairs for a request_user_input call, kept whole "
+            "on a verified_answer session_event anchored to the call_id. "
+            "realtime_item.realtime_session_started/_closed are lifecycle "
+            "markers without conversation content; their realtime session "
+            "id, marker id and outcome are kept on session_events of the "
+            "same names. Any other payload type under these envelopes is a "
+            "typed unknown with a codex_unknown_outer_record event.",
             "event_msg.memory_citation (measured negative, polylogue-cgfy "
             "codex lane): observed null on every sampled record across "
             "~3,200 real session files -- a constant, not an unread signal; "
