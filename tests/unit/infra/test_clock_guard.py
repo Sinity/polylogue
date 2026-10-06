@@ -213,7 +213,17 @@ def _collect_guarded_module(source: str, root: Path) -> subprocess.CompletedProc
     module.write_text(source, encoding="utf-8")
     try:
         return subprocess.run(
-            [sys.executable, "-m", "devtools", "test", "--collect-only", "--rootdir", str(root), str(module)],
+            # The checkout's own interpreter: devtools refuses another checkout's.
+            [
+                str(root / ".venv" / "bin" / "python"),
+                "-m",
+                "devtools",
+                "test",
+                "--collect-only",
+                "--rootdir",
+                str(root),
+                str(module),
+            ],
             cwd=root,
             capture_output=True,
             text=True,
