@@ -1086,7 +1086,19 @@ def _legacy_json_key(key: object) -> str:
 
 def _has_typed_lowering_collision(value: object) -> bool:
     """Whether a declared value loses type/association under legacy JSON lowering."""
-    if isinstance(value, str) or value is None:
+    # Exact builtin types first: parser payloads are almost entirely plain
+    # JSON trees, and these cases decide exactly as the general walk below.
+    cls = type(value)
+    if value is None or cls is str or cls is int or cls is float or cls is bool:
+        return False
+    if cls is dict:
+        return any(
+            not isinstance(key, str) or _has_typed_lowering_collision(item)
+            for key, item in cast(dict[object, object], value).items()
+        )
+    if cls is list:
+        return any(_has_typed_lowering_collision(item) for item in cast(list[object], value))
+    if isinstance(value, str):
         return False
     if hasattr(value, "model_dump"):
         value = value.model_dump(mode="python")
