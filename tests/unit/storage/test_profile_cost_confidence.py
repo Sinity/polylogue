@@ -46,6 +46,7 @@ async def test_public_profile_record_keeps_canonical_estimated_evidence(
     from polylogue.api import Polylogue
     from polylogue.mcp.server import build_server
     from polylogue.services import RuntimeServices
+    from tests.infra.archive_templates import run_off_event_loop
     from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
     from tests.infra.storage_records import SessionBuilder, db_setup, materialize_session_insights
 
@@ -57,7 +58,7 @@ async def test_public_profile_record_keeps_canonical_estimated_evidence(
     )
     builder.save()
     session_id = builder.native_session_id()
-    materialize_session_insights(path)
+    run_off_event_loop(lambda: materialize_session_insights(path))
     with sqlite3.connect(path) as conn:
         conn.row_factory = sqlite3.Row
         write_session_profile(

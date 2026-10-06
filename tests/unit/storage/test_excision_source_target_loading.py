@@ -44,7 +44,7 @@ from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.excision_execution import begin_excision_control
 from tests.infra.storage_records import SessionBuilder
-from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
+from tests.infra.sync_as_async import AsyncConnectionView
 
 
 @dataclass(frozen=True)
@@ -235,7 +235,7 @@ def source_fixture(tmp_path: Path, request: pytest.FixtureRequest) -> SourceFixt
                 index.commit()
             persist_pending_marker_input_sync(source, pending, expected_incarnation_id=incarnation)
             asyncio.run(
-                append_accepted_marker_input(_AsyncConnection(source), accepted, index_incarnation_id=incarnation)
+                append_accepted_marker_input(AsyncConnectionView(source), accepted, index_incarnation_id=incarnation)
             )
             settle_connection_cursors(source)
             source.commit()

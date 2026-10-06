@@ -52,15 +52,15 @@ def _capture_aiosqlite_sql() -> Iterator[list[str]]:
     statements: list[str] = []
     original = aiosqlite.Connection.execute
 
-    async def _spy(self: aiosqlite.Connection, sql: str, *args: Any, **kwargs: Any) -> Any:
+    # Return aiosqlite's own result object: it is both awaitable and an async
+    # context manager, and readers use either form.
+    def _spy(self: aiosqlite.Connection, sql: str, *args: Any, **kwargs: Any) -> Any:
         statements.append(sql)
-        return await original(self, sql, *args, **kwargs)
+        return original(self, sql, *args, **kwargs)
 
-    aiosqlite.Connection.execute = _spy  # type: ignore[method-assign,assignment]
-    try:
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(aiosqlite.Connection, "execute", _spy)
         yield statements
-    finally:
-        aiosqlite.Connection.execute = original  # type: ignore[method-assign]
 
 
 # ---------------------------------------------------------------------------

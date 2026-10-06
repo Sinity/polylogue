@@ -12,7 +12,12 @@ from typing import Any, Literal, TypeAlias
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+from polylogue.archive.revision_authority import (
+    RawRevisionAuthority,
+    RawRevisionEnvelope,
+    RawRevisionKind,
+    raw_authority_parser_fingerprint,
+)
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.raw_failure_evidence import CohortMembershipRefusalError
 from polylogue.pipeline.ids import bound_session_content_hash, session_content_hash
@@ -169,8 +174,10 @@ async def test_canonical_preparation_rejects_changed_source_binding(
                     original = source.execute(
                         "SELECT revision_authority FROM raw_sessions WHERE raw_id=?", (raw_id,)
                     ).fetchone()
-                    assert original == (RawRevisionAuthority.BYTE_PROVEN.value,)
-                    changed = RawRevisionAuthority.QUARANTINED.value
+                    # An unbound admitted Raw starts quarantined; any authority
+                    # move is a changed Source binding.
+                    assert original == (RawRevisionAuthority.QUARANTINED.value,)
+                    changed = RawRevisionAuthority.BYTE_PROVEN.value
                     source.execute("UPDATE raw_sessions SET revision_authority=? WHERE raw_id=?", (changed, raw_id))
                     assert (
                         source.execute(
@@ -886,7 +893,7 @@ def _membership_census(raw_id: str, sessions: list[ParsedSession], **census: Any
             seal,
             raw_id,
             sessions,
-            parser_fingerprint=census.pop("parser_fingerprint", "prepared-test-parser"),
+            parser_fingerprint=census.pop("parser_fingerprint", raw_authority_parser_fingerprint()),
             censused_at_ms=census.pop("censused_at_ms", 1),
             revision_authority=census.pop("revision_authority", None),
             **census,
@@ -1013,6 +1020,17 @@ def test_only_explicit_census_retirement_selects_an_unaccepted_sibling(tmp_path:
     bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         accepted, sibling = _write_raws(archive, 2)
+        archive.bind_raw_revision(
+            sibling,
+            RawRevisionEnvelope(
+                logical_source_key="codex-session:prepared-membership",
+                kind=RawRevisionKind.FULL,
+                source_revision="prepared-sibling-v1",
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+        archive.commit()
     publish_prepared_source(tmp_path, "test.retirement.accepted", _membership_census(accepted, [_session("one")]))
     publish_prepared_source(
         tmp_path,

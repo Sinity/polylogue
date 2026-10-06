@@ -64,7 +64,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.excision_embeddings import seed_excision_session as _seed_session
 from tests.infra.excision_execution import execute_excision, recover_excision
-from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
+from tests.infra.sync_as_async import AsyncConnectionView
 
 
 def _seed_marker_carriers(
@@ -83,7 +83,7 @@ def _seed_marker_carriers(
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute("BEGIN IMMEDIATE")
         persist_pending_marker_input_sync(conn, pending, expected_incarnation_id=str(uuid.uuid4()))
-        asyncio.run(append_accepted_marker_input(_AsyncConnection(conn), accepted))
+        asyncio.run(append_accepted_marker_input(AsyncConnectionView(conn), accepted))
     from tests.infra.excision_embeddings import seed_excision_marker_witnesses
 
     seed_excision_marker_witnesses(archive_root, (pending, accepted))
@@ -195,6 +195,15 @@ class TestApplySessionExcision:
 
     def test_apply_removes_rows_from_every_tier(self, tmp_path: Path) -> None:
         session_id = _seed_session(tmp_path, native_id="apply-1", with_embedding=True)
+        # The frontier journal records one existence change per acquisition
+        # effect on the raw (raw row, parser census, blob ref); excision removes
+        # every row naming the excised raw, however many the journal holds.
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            raw_ids = [str(row[0]) for row in source.execute("SELECT raw_id FROM raw_sessions")]
+            journal_rows = source.execute(
+                "SELECT COUNT(*) FROM raw_existence_changes WHERE raw_id IN (SELECT raw_id FROM raw_sessions)"
+            ).fetchone()[0]
+        assert journal_rows >= 1
 
         receipt = execute_excision(tmp_path, session_id, reason="contained a secret", actor="user:local")
         assert receipt["found"] is True
@@ -202,7 +211,15 @@ class TestApplySessionExcision:
         assert receipt["counts"]["index_messages"] == 1
         assert receipt["counts"]["index_blocks"] == 1
         assert receipt["counts"]["source_raw_rows"] == 1
-        assert receipt["counts"]["source_raw_existence_changes"] == 1
+        # Excision's own raw and blob-ref deletes append journal rows that it
+        # also removes, so the receipt counts at least the prior rows and none
+        # naming the raw survive.
+        assert receipt["counts"]["source_raw_existence_changes"] >= journal_rows
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            assert source.execute(
+                f"SELECT COUNT(*) FROM raw_existence_changes WHERE raw_id IN ({','.join('?' * len(raw_ids))})",
+                raw_ids,
+            ).fetchone() == (0,)
         assert receipt["counts"]["source_blob_refs"] == 1
         assert receipt["counts"]["embeddings_vectors"] == 1
         assert len(receipt["removed_blob_hashes"]) == 1

@@ -21,6 +21,7 @@ import pytest
 from polylogue.archive.semantic.pricing import estimate_cost
 from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.usage import session_usage_costs_for_connection
 from tests.infra.index_writer import write_fixture_index_session
@@ -29,7 +30,7 @@ from tests.infra.index_writer import write_fixture_index_session
 def _make_archive(tmp_path: Path) -> sqlite3.Connection:
     """Initialize a fresh archive root and return an open connection to index.db."""
     initialize_active_archive_root(tmp_path)
-    conn = sqlite3.connect(tmp_path / "index.db")
+    conn = connect_measured(tmp_path / "index.db")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

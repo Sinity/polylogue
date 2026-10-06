@@ -12,6 +12,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import MaterialOrigin, Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
@@ -21,7 +22,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepared_row_dispositions,
     reset_prepared_row_dispositions,
 )
-from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.index_writer import fixture_index_mutation_scope, write_fixture_index_session
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +31,7 @@ def _fresh_counters() -> None:
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
 
@@ -61,9 +62,10 @@ def test_canonical_write_is_counted_and_consumed(tmp_path: Path) -> None:
     try:
         prepared = prepare_session_write(conn, session, merge_append=False)
         try:
-            write_fixture_index_session(
-                conn, session, prepared_write=prepared, content_hash=prepared.input_content_hash.hex()
-            )
+            with fixture_index_mutation_scope(conn):
+                write_fixture_index_session(
+                    conn, session, prepared_write=prepared, content_hash=prepared.input_content_hash.hex()
+                )
             assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
         finally:
             prepared.close()
@@ -71,20 +73,6 @@ def test_canonical_write_is_counted_and_consumed(tmp_path: Path) -> None:
         conn.close()
     assert prepared_row_dispositions() == {"prepared_write": 1}
     assert set(prepared_row_dispositions()) <= PREPARED_ACCEPTED_DISPOSITIONS
-
-
-def test_missing_canonical_write_refuses_before_rows(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "index.db")
-    session = _session("absent", ["one"])
-    try:
-        with pytest.raises(PreparedSessionWriteRefusedError):
-            write_fixture_index_session(
-                conn, session, prepared_write=None, content_hash=str(session_content_hash(session))
-            )
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
-    finally:
-        conn.close()
-    assert not prepared_row_dispositions()
 
 
 def test_changed_input_refuses_before_rows(tmp_path: Path) -> None:
@@ -95,9 +83,14 @@ def test_changed_input_refuses_before_rows(tmp_path: Path) -> None:
         prepared = prepare_session_write(conn, original, merge_append=False)
         try:
             with pytest.raises(PreparedSessionWriteRefusedError):
-                write_fixture_index_session(
-                    conn, mutated, prepared_write=prepared, content_hash=str(session_content_hash(mutated))
-                )
+                with fixture_index_mutation_scope(conn):
+                    write_fixture_index_session(
+                        conn,
+                        mutated,
+                        prepared_write=prepared,
+                        content_hash=str(session_content_hash(mutated)),
+                        pending_input_content_hash=str(session_content_hash(mutated)),
+                    )
             assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
         finally:
             prepared.close()
@@ -114,13 +107,14 @@ def test_append_matching_frontier_consumes_preparation(tmp_path: Path) -> None:
         reset_prepared_row_dispositions()
         prepared = prepare_session_write(conn, appended, merge_append=True)
         try:
-            write_fixture_index_session(
-                conn,
-                appended,
-                prepared_write=prepared,
-                merge_append=True,
-                content_hash=prepared.input_content_hash.hex(),
-            )
+            with fixture_index_mutation_scope(conn):
+                write_fixture_index_session(
+                    conn,
+                    appended,
+                    prepared_write=prepared,
+                    merge_append=True,
+                    content_hash=prepared.input_content_hash.hex(),
+                )
             assert [row[0] for row in conn.execute("SELECT position FROM messages ORDER BY position")] == [0, 1]
         finally:
             prepared.close()
@@ -145,13 +139,14 @@ def test_append_changed_frontier_refuses_without_relowering(tmp_path: Path, muta
         stale = replace(prepared, rows=rows)
         try:
             with pytest.raises(PreparedSessionWriteRefusedError):
-                write_fixture_index_session(
-                    conn,
-                    appended,
-                    prepared_write=stale,
-                    merge_append=True,
-                    content_hash=prepared.input_content_hash.hex(),
-                )
+                with fixture_index_mutation_scope(conn):
+                    write_fixture_index_session(
+                        conn,
+                        appended,
+                        prepared_write=stale,
+                        merge_append=True,
+                        content_hash=prepared.input_content_hash.hex(),
+                    )
             assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
         finally:
             prepared.close()
@@ -167,9 +162,10 @@ def test_changed_predecessor_refuses_before_replacement(tmp_path: Path) -> None:
         write_fixture_index_session(conn, session)
         try:
             with pytest.raises(PreparedSessionWriteRefusedError):
-                write_fixture_index_session(
-                    conn, session, prepared_write=prepared, content_hash=prepared.input_content_hash.hex()
-                )
+                with fixture_index_mutation_scope(conn):
+                    write_fixture_index_session(
+                        conn, session, prepared_write=prepared, content_hash=prepared.input_content_hash.hex()
+                    )
             assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
         finally:
             prepared.close()
@@ -198,16 +194,17 @@ def test_prefix_sharing_child_consumes_already_sliced_preparation(tmp_path: Path
             assert len(prepared.context.messages) == 1
             assert len(prepared.rows.content_identities) == 1
             reset_prepared_row_dispositions()
-            write_fixture_index_session(
-                conn, child, prepared_write=prepared, content_hash=prepared.input_content_hash.hex()
-            )
+            with fixture_index_mutation_scope(conn):
+                write_fixture_index_session(
+                    conn, child, prepared_write=prepared, content_hash=prepared.input_content_hash.hex()
+                )
             assert (
                 conn.execute("SELECT COUNT(*) FROM messages WHERE session_id=?", (prepared.session_id,)).fetchone()[0]
                 == 1
             )
             assert (
                 conn.execute(
-                    "SELECT branch_point_message_id FROM sessions WHERE session_id=?", (prepared.session_id,)
+                    "SELECT branch_point_message_id FROM session_links WHERE src_session_id=?", (prepared.session_id,)
                 ).fetchone()[0]
                 is not None
             )

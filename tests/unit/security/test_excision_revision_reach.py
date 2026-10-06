@@ -271,16 +271,17 @@ def test_excision_removes_hook_evidence_and_its_blobs(tmp_path: Path) -> None:
 
 
 def test_excision_names_hook_evidence_it_could_not_remove(tmp_path: Path) -> None:
-    """What survives is named, not silently dropped.
+    """An obstructed hook deletion never reports success while the payload survives.
 
-    ``ExcisionReceipt.retained_hook_events`` is a post-condition read back
-    after the commit, so a hook row that resists deletion (here an ``AFTER
-    DELETE`` trigger reinstates it, standing in for any durable obstruction)
-    is reported instead of being assumed gone.
+    A durable obstruction (here an ``AFTER DELETE`` trigger that reinstates the
+    row) is an undeclared Source write. The excision writer's authorizer
+    admits only declared targets, so the whole excision fails closed: no
+    receipt claims completion, the hook payload stays, and the session is not
+    partially excised.
 
-    Anti-vacuity: replacing the post-commit read-back with
-    ``retained_hook_events = ()`` reports unqualified success while the
-    payload below is still readable.
+    Anti-vacuity: an authorizer that admitted the trigger's undeclared insert
+    would commit an excision whose receipt reports success while this payload
+    is still readable.
     """
     session_id, _baseline, _head, _bp, _hp = _seed_two_revisions(tmp_path)
     hook_payload = b'{"tool_input": "stubborn"}'
@@ -308,10 +309,12 @@ def test_excision_names_hook_evidence_it_could_not_remove(tmp_path: Path) -> Non
     finally:
         source_conn.close()
 
-    receipt = execute_excision(tmp_path, session_id, reason="test", actor="user:local")
-    assert receipt["retained_hook_events"] == ["hook-2"]
-    assert receipt["complete"] is False, "an excision that leaves hook payloads must not report completeness"
+    with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
+        execute_excision(tmp_path, session_id, reason="test", actor="user:local")
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         rows = conn.execute("SELECT payload_json FROM raw_hook_events WHERE hook_event_id = 'hook-2'").fetchall()
-    assert len(rows) == 1, "the residual this receipt names must be real"
+    assert len(rows) == 1, "the obstructed hook payload must survive the refused excision"
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        remaining = conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    assert remaining == (1,), "a refused excision must not partially excise the session"

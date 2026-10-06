@@ -461,7 +461,6 @@ def test_populated_baseline_train_cancellation_rolls_back_and_restarts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.core.errors import SchemaSkew
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     bootstrap_baseline_archive(tmp_path, monkeypatch)
@@ -496,8 +495,9 @@ def test_populated_baseline_train_cancellation_rolls_back_and_restarts(
         assert migration_runner._durable_literal_rows_digest(conn) == before
         assert conn.execute("SELECT 1 FROM sqlite_schema WHERE name='idx_raw_artifacts_source_identity'").fetchone()
     monkeypatch.setattr(migration_runner, "_execute_migration_sql", execute)
-    with pytest.raises(SchemaSkew):
-        initialize_active_archive_root(tmp_path)
+    # The restarted train resumes from the rolled-back baseline and completes
+    # every source step with the original rows intact.
+    initialize_active_archive_root(tmp_path)
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
         assert tuple(tuple(row) for row in conn.execute("SELECT * FROM raw_sessions ORDER BY raw_id")) == raw_rows
