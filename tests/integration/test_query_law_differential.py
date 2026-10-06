@@ -312,8 +312,14 @@ def test_query_law_census_receipt_carries_exact_resource_evidence(
         assert result.observed is None
 
 
-def test_query_law_census_records_response_bytes_for_every_surface(query_law_corpus: QueryCorpus) -> None:
-    """Response size is measured per surface, not assumed equal across them."""
+def test_query_law_census_records_response_bytes_for_every_surface(
+    query_law_corpus: QueryCorpus, query_law_daemon: None
+) -> None:
+    """Response size is measured per surface, not assumed equal across them.
+
+    The CLI surface reads through the resident daemon, as every other law
+    that walks all surfaces does.
+    """
 
     async def _run() -> dict[str, int]:
         async with surface_bench(query_law_corpus.archive_root) as bench:

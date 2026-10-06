@@ -165,6 +165,14 @@ def _run(
     return result
 
 
+def _assert_daemon_required_refusal(result: subprocess.CompletedProcess[str]) -> None:
+    """A daemon-served read without a daemon refuses by name, not by traceback."""
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined
+    assert "Traceback" not in combined, combined
+    assert "polylogued run" in combined, combined
+
+
 def _assert_no_home_leak(home: Path, before: set[Path], after: set[Path]) -> None:
     """Files newly written under ``home`` outside the XDG sub-roots fail the test."""
     new_files = after - before
@@ -210,9 +218,12 @@ def test_installed_polylogue_entrypoints_under_fresh_xdg(
     _run((str(bin_dir / "polylogued"), "--help"), env=env, cwd=home, timeout=30)
     _run((str(bin_dir / "polylogue-mcp"), "--help"), env=env, cwd=home, timeout=30)
 
-    # polylogue --plain analyze --count: forces an archive open (or first-run bootstrap)
-    # under fresh XDG paths; must not traceback.
-    _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, cwd=home, timeout=60)
+    # polylogue --plain analyze --count: archive reads are served by the
+    # resident daemon, so with none running the installed CLI must refuse by
+    # name (the daemon-required remedy), never traceback.
+    _assert_daemon_required_refusal(
+        _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, cwd=home, timeout=60, check=False)
+    )
 
     # polylogue --plain status: the actionable first-run surface (#1263) — must
     # exit cleanly and emit human text against a fresh archive.
@@ -291,7 +302,9 @@ def test_installed_polylogue_writes_only_under_xdg_roots(
     )
 
     before = _snapshot(home)
-    _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, cwd=home, timeout=60)
+    _assert_daemon_required_refusal(
+        _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, cwd=home, timeout=60, check=False)
+    )
     _run((str(bin_dir / "polylogue"), "--plain", "status"), env=env, cwd=home, timeout=60)
     after = _snapshot(home)
 
