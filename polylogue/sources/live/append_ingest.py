@@ -21,6 +21,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
+from polylogue.core.raw_failure_evidence import CohortMembershipRefusalError
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.stage_admission import admit_stage_write
 from polylogue.core.storage_faults import (
@@ -328,7 +329,9 @@ def ingest_append_plans(
                     if transient or _append_storage_fault(error):
                         reset_transient_raw_parse_state(archive, raw_id, provider=provider)
                     else:
-                        archive.mark_raw_parse_failed(raw_id, provider=provider, error=error)
+                        archive.mark_raw_parse_failed(
+                            raw_id, provider=provider, error=_append_refusal_cause(error, raw_id)
+                        )
 
             if raw_id is not None:
                 try:
@@ -350,6 +353,19 @@ def ingest_append_plans(
         stage_timings_s=timings,
         session_ids_by_path=session_ids_by_path,
     )
+
+
+def _append_refusal_cause(error: Exception, raw_id: str) -> BaseException:
+    """The append raw's own parse failure behind a refusal of its chain member.
+
+    A refusal naming this raw wraps the failure of its own bytes; recording
+    that failure lets a decode refusal carry the same terminal evidence the
+    full route records. A refusal of another member stays the chain's
+    refusal.
+    """
+    if isinstance(error, CohortMembershipRefusalError) and error.raw_id == raw_id and error.__cause__ is not None:
+        return error.__cause__
+    return error
 
 
 __all__ = ["ingest_append_plans", "reset_transient_raw_parse_state"]

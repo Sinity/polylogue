@@ -4203,7 +4203,10 @@ def mark_raw_parse_failed(
                     ),
                     manage_transaction=False,
                 )
-        elif isinstance(error, RawCASFrontierError):
+        elif isinstance(error, RawCASFrontierError) or _terminal_decode_kind(error, provider) is not None:
+            # A CAS refusal is retryable authority evidence; a decode failure of
+            # retained bytes is terminal (``terminal_decode_evidence``), the
+            # same evidence the full route's census records.
             row = conn.execute(
                 "SELECT source_path, source_index, acquired_at_ms FROM raw_sessions WHERE raw_id = ?",
                 (raw_id,),
@@ -4217,7 +4220,7 @@ def mark_raw_parse_failed(
                     source_path=str(row[0] or raw_id),
                     source_index=int(row[1] or 0),
                     acquired_at_ms=int(row[2] or int(time.time() * 1000)),
-                    kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
+                    kind=_terminal_decode_kind(error, provider) or RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
                     manage_transaction=False,
                 )
         else:
@@ -4230,6 +4233,12 @@ def mark_raw_parse_failed(
             state=_raw_parse_failure_state(provider, error),
             manage_transaction=False,
         )
+
+
+def _terminal_decode_kind(error: BaseException, provider: Provider) -> RawFailureEvidenceKind | None:
+    from polylogue.sources.prepared_jsonl import terminal_decode_evidence
+
+    return None if isinstance(error, RawCASFrontierError) else terminal_decode_evidence(error, provider=provider)
 
 
 def record_raw_failure_evidence(

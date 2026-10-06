@@ -9499,6 +9499,12 @@ def test_append_refuses_a_malformed_middle_record(tmp_path: Path) -> None:
         ).fetchall()
     assert retained_hash.lower() == sha256(malformed).hexdigest()
     assert error
+    # The append's own bytes fail to decode: the same terminal evidence the
+    # full route's census records for corrupt input.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (_raw_id,)).fetchall() == [
+            (RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value,)
+        ]
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (1,)
 
