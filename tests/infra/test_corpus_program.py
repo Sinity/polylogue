@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from hypothesis import HealthCheck, find, given, settings
+from hypothesis import HealthCheck, example, find, given, settings
 
 from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.storage.blob_store import BlobStore
@@ -618,8 +618,42 @@ def test_emit_hook_refuses_non_object_payload_with_typed_error(tmp_path: Path) -
         )
 
 
+#: A fork of a fork whose whole lineage arrives in one convergence unit. Each
+#: generation's parent publishes in the same unit, so the chain converges one
+#: generation per phase; spending a child's single lineage deferral while its
+#: own parent was still waiting refused it as "lineage evidence changed".
+_FORK_CHAIN_IN_ONE_UNIT = CorpusProgram(
+    operations=(
+        Fork(
+            operation_id="op-0",
+            source_artifact_id="artifact-1",
+            new_artifact_id="artifact-2",
+            new_session_id="session-2",
+        ),
+        Fork(
+            operation_id="op-1",
+            source_artifact_id="artifact-0",
+            new_artifact_id="artifact-1",
+            new_session_id="session-1",
+        ),
+        Acquire(
+            operation_id="op-2",
+            artifact=RawArtifact(
+                artifact_id="artifact-0",
+                payload=_codex_transcript("session-0", "first", "authored"),
+                source_name="codex",
+                source_path="sources/artifact-0.jsonl",
+                metadata={"session_id": "session-0"},
+            ),
+        ),
+    ),
+    schedule=("op-2", "op-1", "op-0"),
+)
+
+
 @settings(max_examples=4, suppress_health_check=[HealthCheck.function_scoped_fixture], deadline=None)
 @given(corpus_program_strategy(max_operations=5))
+@example(program=_FORK_CHAIN_IN_ONE_UNIT)
 def test_generated_programs_acquire_and_parse_on_production_route(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,

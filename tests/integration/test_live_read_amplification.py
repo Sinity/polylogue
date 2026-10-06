@@ -40,7 +40,7 @@ import polylogue.sources.live.watcher as live_watcher
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import _AppendResult, _DeferredAppend, _FullIngestResult
-from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.cursor import CursorPathAuthority, CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -121,19 +121,24 @@ def _seed_source_raw_prefix(archive_root: Path, *, path: Path, raw_bytes: bytes)
     source_db = archive_root / "source.db"
     initialize_runtime_source_fixture(source_db)
     raw_id = sha256(raw_bytes).hexdigest()
+    # Acquisition freezes the canonical path and the captured profile identity
+    # on every file-backed raw; reconciliation refuses a raw captured under
+    # another (or no) profile namespace.
+    profile_key = CursorPathAuthority.observe(path).captured_profile_key
     with sqlite3.connect(source_db) as conn:
         conn.execute(
             """
             INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, source_index,
+                raw_id, origin, native_id, source_path, canonical_source_path, source_index,
                 blob_hash, blob_size, acquired_at_ms, parsed_at_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 raw_id,
                 "claude-code-session",
                 path.stem,
+                str(path),
                 str(path),
                 0,
                 bytes.fromhex(raw_id),
@@ -144,6 +149,11 @@ def _seed_source_raw_prefix(archive_root: Path, *, path: Path, raw_bytes: bytes)
                 1_770_000_000_000,
             ),
         )
+        if profile_key is not None:
+            conn.execute(
+                "INSERT INTO raw_profile_identity_receipts (raw_id, profile_key) VALUES (?, ?)",
+                (raw_id, profile_key),
+            )
 
     index_db = archive_root / "index.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)

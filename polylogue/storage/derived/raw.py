@@ -946,8 +946,9 @@ class RawObservationDerivation(RawObservationInspection):
         so a child whose parent is absent there expects no parent. Only a
         child whose parent another write of this unit produces is deferred.
         """
-        produced = {session_id for _raw_id, session_id in write_keys.values()}
-        deferred: list[str] = []
+        produced = {session_id: logical_key for logical_key, (_raw_id, session_id) in write_keys.items()}
+        # Logical key -> the in-unit logical key producing its claimed parent.
+        waiting_on: dict[str, str] = {}
         for logical_key, write_key in write_keys.items():
             write = prepared_writes.get(write_key)
             selected = selected_writes.get(write_key)
@@ -962,10 +963,35 @@ class RawObservationDerivation(RawObservationInspection):
             parent_session_id = f"{origin_from_provider(session.source_name).value}:{claimed.strip()}"
             if parent_session_id == write_key[1] or parent_session_id not in produced:
                 continue
-            if logical_key in self._lineage_deferred:
-                continue
-            deferred.append(logical_key)
-        self._lineage_deferred.update(deferred)
+            waiting_on[logical_key] = produced[parent_session_id]
+
+        # A child whose in-unit parent is itself deferred waits with it: that
+        # parent publishes nothing in this phase, so the wait spends none of
+        # the child's single deferral. Only a deferral against a parent that
+        # publishes now is spent, which keeps the "at most once" progress
+        # guarantee while a lineage chain (a fork of a fork) arriving in one
+        # unit publishes one generation per phase instead of being refused.
+        decided: dict[str, bool] = {}
+        spent: list[str] = []
+
+        def defers(logical_key: str, visiting: frozenset[str]) -> bool:
+            if logical_key in decided:
+                return decided[logical_key]
+            parent_key = waiting_on.get(logical_key)
+            if parent_key is None or logical_key in visiting:
+                decided[logical_key] = False
+                return False
+            if parent_key in waiting_on and defers(parent_key, visiting | {logical_key}):
+                decided[logical_key] = True
+                return True
+            result = logical_key not in self._lineage_deferred
+            if result:
+                spent.append(logical_key)
+            decided[logical_key] = result
+            return result
+
+        deferred = [logical_key for logical_key in waiting_on if defers(logical_key, frozenset())]
+        self._lineage_deferred.update(spent)
         return tuple(sorted(deferred))
 
     @staticmethod
