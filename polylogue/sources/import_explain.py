@@ -647,7 +647,6 @@ def _explain_zip(
                         source_path=f"{path}:{info.filename}",
                         provider_hint=entry_provider,
                         profile_identity=profile_identity,
-                        path_rule_overridden=decoded_session_artifact is not None,
                     )
                 except zipfile.BadZipFile as exc:
                     skipped.append(
@@ -698,7 +697,6 @@ def _explain_zip_entry(
     source_path: str,
     provider_hint: Provider,
     profile_identity: str | None = None,
-    path_rule_overridden: bool = False,
 ) -> ImportExplainEntryPayload:
     """Aggregate the existing sealed parser artifact without a session list."""
     import ijson
@@ -729,7 +727,6 @@ def _explain_zip_entry(
         provider=provider,
         source_path=source_path,
         profile_identity=profile_identity,
-        path_rule_recovery=path_rule_overridden,
     ) as prepared:
         if prepared.error is not None or prepared.deferred or prepared.blob_hash is None:
             return _skipped_entry(
