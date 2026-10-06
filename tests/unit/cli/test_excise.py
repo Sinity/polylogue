@@ -106,6 +106,7 @@ def _seed_session(archive_root: Path, *, native_id: str) -> str:
             source_conn,
             origin="codex-session",
             source_path=f"/fake/{native_id}.jsonl",
+            canonical_source_path=f"/fake/{native_id}.jsonl",
             source_index=0,
             payload=f"payload-{native_id}".encode(),
             acquired_at_ms=1_000,

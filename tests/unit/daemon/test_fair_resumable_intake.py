@@ -1477,6 +1477,7 @@ def test_raw_discovery_uses_canonical_adapter_and_returns_payload_costs(
                 provider=Provider.CHATGPT,
                 payload=payload,
                 source_path=path,
+                canonical_source_path=path,
                 acquired_at_ms=1,
             )
 
@@ -1502,12 +1503,14 @@ def test_raw_discovery_bounds_valid_prefix_and_resumes_after_it(
             provider=Provider.CHATGPT,
             payload=b"v",
             source_path="valid.json",
+            canonical_source_path="valid.json",
             acquired_at_ms=1,
         )
         pending = archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=b"pending",
             source_path="pending.json",
+            canonical_source_path="pending.json",
             acquired_at_ms=1,
         )
     calls: list[tuple[str | None, int]] = []
@@ -1552,6 +1555,7 @@ async def test_raw_discovery_moves_past_a_cooled_down_poison_in_the_fair_dispatc
                     provider=Provider.CHATGPT,
                     payload=payload,
                     source_path=source_path,
+                    canonical_source_path=source_path,
                     acquired_at_ms=1,
                 )
                 for payload, source_path in ((b"v", "valid.json"), (b"p", "poison.json"), (b"h", "healthy.json"))
@@ -1618,12 +1622,14 @@ def test_raw_discovery_resets_only_for_a_new_generation_binding(
             provider=Provider.CHATGPT,
             payload=b"first",
             source_path="first.json",
+            canonical_source_path="first.json",
             acquired_at_ms=1,
         )
         second = archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=b"second",
             source_path="second.json",
+            canonical_source_path="second.json",
             acquired_at_ms=1,
         )
     frames = iter(
@@ -1743,6 +1749,7 @@ def test_raw_discovery_restarts_for_a_new_raw_before_its_cursor(tmp_path: Path) 
                 provider=Provider.CHATGPT,
                 payload=first_payload,
                 source_path="high.json",
+                canonical_source_path="high.json",
                 acquired_at_ms=1,
                 raw_id=first,
             )
@@ -1760,6 +1767,7 @@ def test_raw_discovery_restarts_for_a_new_raw_before_its_cursor(tmp_path: Path) 
                 provider=Provider.CHATGPT,
                 payload=earlier_payload,
                 source_path="earlier.json",
+                canonical_source_path="earlier.json",
                 acquired_at_ms=2,
                 raw_id=earlier,
             )
@@ -2385,6 +2393,7 @@ def test_raw_discovery_sweep_advances_under_a_sustained_arrival_rate(
                 provider=Provider.CHATGPT,
                 payload=f"arrival-{index}".encode(),
                 source_path=f"arrival-{index}.json",
+                canonical_source_path=f"arrival-{index}.json",
                 acquired_at_ms=index + 1,
             )
         discovery.discover_pending_raw_ids(4)
@@ -2426,6 +2435,7 @@ def test_raw_discovery_admits_work_once_the_tier_appears_without_a_restart(tmp_p
             provider=Provider.CHATGPT,
             payload=b"raw-after-bootstrap",
             source_path="late.json",
+            canonical_source_path="late.json",
             acquired_at_ms=1,
         )
 

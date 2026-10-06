@@ -56,6 +56,7 @@ def _make_raw_record(content: bytes, provider: str, path: str) -> RawSessionReco
         raw_id=raw_id,
         source_name="quarantine-fixture",
         source_path=path,
+        canonical_source_path=path,
         source_index=None,
         blob_size=size,
         acquired_at=now,

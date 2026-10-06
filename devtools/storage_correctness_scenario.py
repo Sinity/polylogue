@@ -333,6 +333,7 @@ def _storage_blob_gc_invariant_check() -> dict[str, object]:
                 blob_hash_hex=referenced_hash,
                 blob_size=referenced_size,
                 source_path="/scenario/storage-gc-referenced.json",
+                canonical_source_path="/scenario/storage-gc-referenced.json",
                 acquired_at_ms=1_767_000_000_000,
                 raw_id="storage-gc-referenced",
                 blob_publication_receipt_id=referenced_receipt,

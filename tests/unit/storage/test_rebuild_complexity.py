@@ -113,6 +113,7 @@ def _seed_raw_archive(root: Path, count: int, *, prefix: str = "session") -> lis
                     provider=Provider.CODEX,
                     payload=_tool_call_payload(native_id),
                     source_path=f"{native_id}.jsonl",
+                    canonical_source_path=f"{native_id}.jsonl",
                     acquired_at_ms=index + 1,
                 )
             )
@@ -146,6 +147,7 @@ def _run_component_measurement(
                     provider=Provider.CODEX,
                     payload=_tool_call_payload(native_id),
                     source_path=f"{native_id}.jsonl",
+                    canonical_source_path=f"{native_id}.jsonl",
                     acquired_at_ms=archive_size + index + 1,
                 )
             )

@@ -74,6 +74,7 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
                 provider=Provider.CODEX,
                 payload=_codex_session("raw-profile-handoff", (("user", "question"), ("assistant", "answer"))),
                 source_path="raw-profile-handoff.jsonl",
+                canonical_source_path="raw-profile-handoff.jsonl",
                 acquired_at_ms=1,
             )
 
@@ -143,6 +144,7 @@ async def test_two_accepted_revisions_survive_one_periodic_profile_pass(
                         "coalesced-profile", (("user", "question"), ("assistant", f"::note: {note}"))
                     ),
                     source_path=f"coalesced-{revision}.jsonl",
+                    canonical_source_path=f"coalesced-{revision}.jsonl",
                     acquired_at_ms=revision,
                 )
 
@@ -238,6 +240,7 @@ def test_raw_materialized_session_ids_exclude_stale_component_sessions_without_c
             provider=Provider.CHATGPT,
             payload=json.dumps(payload).encode(),
             source_path="split.json",
+            canonical_source_path="split.json",
             acquired_at_ms=1,
         )
     result = converge_raw_observations(archive_root, source_roots=(), limit=1, compute_adapter=bounded_compute_adapter)

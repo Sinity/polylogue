@@ -52,6 +52,7 @@ def test_live_batch_converges_known_paths_by_source_path(tmp_path: Path) -> None
             conn,
             origin="codex-session",
             source_path=str(source),
+            canonical_source_path=str(source),
             source_index=0,
             payload=b'{"a": 1}\n',
             acquired_at_ms=1_767_225_600_000,

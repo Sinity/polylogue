@@ -1276,6 +1276,7 @@ def raw_synthetic_samples() -> list[RawSessionRecord]:
                     raw_id=raw_id,
                     source_name=spec.provider,
                     source_path=f"<synthetic:{spec.provider}:{idx}>",
+                    canonical_source_path=f"<synthetic:{spec.provider}:{idx}>",
                     blob_size=len(raw_bytes),
                     acquired_at=datetime.now(UTC).isoformat(),
                 )

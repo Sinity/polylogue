@@ -61,6 +61,7 @@ async def test_original_prepared_writer_distinguishes_unchanged_content_from_ref
                     provider=Provider.CHATGPT,
                     payload=json.dumps({"neutral_input": ordinal}).encode(),
                     source_path=f"neutral-{ordinal}.json",
+                    canonical_source_path=f"neutral-{ordinal}.json",
                     acquired_at_ms=ordinal + 1,
                 )
                 for ordinal in range(2)

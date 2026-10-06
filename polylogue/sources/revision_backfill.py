@@ -29,7 +29,12 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Final, Literal, Protocol, cast
 import ijson
 
 from polylogue import logging as _polylogue_logging
-from polylogue.archive.artifact_taxonomy import ArtifactKind, ArtifactStreamClassification, classify_artifact_stream
+from polylogue.archive.artifact_taxonomy import (
+    ArtifactKind,
+    ArtifactStreamClassification,
+    classify_artifact_stream,
+    declared_evidence_classification,
+)
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -837,6 +842,7 @@ def prepare_retained_non_json_artifact(
         _prepare_codex_state_blob,
         _prepare_sidecar_publications,
         _write_artifact,
+        record_prepared_classification,
     )
     from polylogue.sources.prepared_message_sink import SqliteMessageStore
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
@@ -873,12 +879,19 @@ def prepare_retained_non_json_artifact(
             )
             sealed = True
             return artifact
-        sessions = enrich_sessions_from_retained_read(
-            evidence_reader,
-            provider=provider,
-            source_path=source_path,
-            sessions=parse_retained_raw_sessions(evidence_reader, raw_id),
-            captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
+        # A declared raw-only evidence path is terminal by its declaration:
+        # its bytes are retained, never decoded as a session grammar.
+        declared = declared_evidence_classification(source_path, provider=provider)
+        sessions = (
+            []
+            if declared is not None
+            else enrich_sessions_from_retained_read(
+                evidence_reader,
+                provider=provider,
+                source_path=source_path,
+                sessions=parse_retained_raw_sessions(evidence_reader, raw_id),
+                captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
+            )
         )
         resolved_provider = Provider.from_string(sessions[0].source_name) if sessions else provider
         if not sessions and resolved_provider is Provider.UNKNOWN:
@@ -896,6 +909,8 @@ def prepare_retained_non_json_artifact(
             enrichment_digest=None,
             enrichment_index_path=None,
         )
+        if declared is not None:
+            record_prepared_classification(store.conn, ArtifactStreamClassification(declared, True, 0))
         _prepare_attachment_publications(store, publisher, Path(directory))
         _prepare_sidecar_publications(store, publisher, Path(directory))
         store.close()
@@ -1586,6 +1601,9 @@ def prepare_membership_replay(
                     projections[raw_id],
                     session.updated_at,
                     browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
+                    # Declared capture order: the latest retained observation
+                    # of these bytes, never their evidence volume.
+                    capture_order=archive.raw_revision_observation_order(raw_id),
                     # Only declared provider IDs are identity evidence; an
                     # id-less message must not stand in as a shared ``None``
                     # member that makes unrelated snapshots look preserved.
@@ -3196,8 +3214,43 @@ def prepare_revision_source_census(
             state.quarantined += 1
             return
         outcome = _prepared_retained_outcome(evidence_reader, raw_id, prepared_inputs)
-        provider, _hash, source_path, revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
+        provider, _hash, source_path, revision_kind, raw_size = evidence_reader.raw_revision_descriptor(raw_id)
         observed_at_ms = evidence_reader.raw_revision_observation_order(raw_id)[0]
+        if isinstance(outcome, UnsupportedRetainedJsonShapeError) and raw_size == 0:
+            # A zero-byte capture holds no record at all: a settled no-session
+            # observation with typed terminal evidence, never a retry. A
+            # non-empty unrecognized shape stays a visible failed census.
+            _record_raw_failure_evidence(
+                producer,
+                raw_id,
+                provider=provider,
+                source_path=source_path,
+                source_index=source_index,
+                acquired_at_ms=observed_at_ms,
+                kind=(
+                    RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION
+                    if provider is Provider.UNKNOWN
+                    else RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE
+                ),
+                manage_transaction=False,
+            )
+            _apply_source_raw_state_update(
+                producer,
+                raw_id,
+                state=_raw_parse_failure_state(provider, outcome),
+                manage_transaction=False,
+            )
+            replace_raw_membership_census(
+                seal,
+                raw_id,
+                [],
+                parser_fingerprint=raw_authority_parser_fingerprint(),
+                censused_at_ms=0,
+                detail=str(outcome),
+                retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
+                revision_authority=None,
+            )
+            return
         if isinstance(outcome, Exception):
             if _persist_terminal_raw_refusal(
                 producer,
@@ -3259,6 +3312,7 @@ def prepare_revision_source_census(
             resolved_provider = artifact.resolved_provider
             if provider is Provider.UNKNOWN and resolved_provider is not Provider.UNKNOWN:
                 prepare_raw_state_update(seal, raw_id, state=RawSessionStateUpdate(payload_provider=resolved_provider))
+            stream_classification = artifact.stream_classification()
             terminalized = _persist_terminal_non_session_artifact(
                 producer,
                 raw_id,
@@ -3266,14 +3320,20 @@ def prepare_revision_source_census(
                 observed_at_ms=observed_at_ms,
                 source_path=source_path,
                 source_index=source_index,
-                stream_classification=artifact.stream_classification(),
+                stream_classification=stream_classification,
                 manage_transaction=False,
             )
+            # A hook-event carrier is a physical append chain: its full
+            # baseline keeps that binding for the tails grown onto it, so its
+            # census never retires it to membership governance.
+            carrier = (
+                terminalized
+                and stream_classification is not None
+                and stream_classification.classification.kind is ArtifactKind.HOOK_EVENT_CARRIER
+            )
             if resolved_provider is not Provider.UNKNOWN:
-                if (
-                    revision_kind in {RawRevisionKind.FULL, RawRevisionKind.APPEND}
-                    and evidence_reader.raw_revision_authority(raw_id) == RawRevisionAuthority.BYTE_PROVEN.value
-                ):
+                byte_proven = evidence_reader.raw_revision_authority(raw_id) == RawRevisionAuthority.BYTE_PROVEN.value
+                if revision_kind in {RawRevisionKind.FULL, RawRevisionKind.APPEND} and (byte_proven or carrier):
                     if terminalized:
                         record_prepared_membership_census_receipt(
                             seal,
@@ -3283,7 +3343,7 @@ def prepare_revision_source_census(
                             member_count=0,
                             censused_at_ms=0,
                             detail="",
-                            revision_authority=RawRevisionAuthority.BYTE_PROVEN,
+                            revision_authority=RawRevisionAuthority.BYTE_PROVEN if byte_proven else None,
                         )
                     record_current_parser_source_census(seal, raw_id, parser_sessions=sessions)
                     if not terminalized:
@@ -3439,6 +3499,12 @@ def prepare_revision_source_membership_conversion(
                     f"non-prefix membership input refused for {raw_id}"
                 ) from outcome
             sessions, _payload_bytes, _kind = outcome
+            prepared_artifact = prepared_inputs[raw_id].prepared_artifact if raw_id in prepared_inputs else None
+            stream = prepared_artifact.stream_classification() if prepared_artifact is not None else None
+            if not sessions and stream is not None and stream.proved_non_session:
+                # Proven non-session evidence (a hook-event carrier) has no
+                # membership to convert; its byte revision chain governs it.
+                continue
             if len(sessions) != 1:
                 raise RetainedPreparationRetryableError(f"full revision {raw_id} no longer parses to one session")
             replace_raw_membership_census(
@@ -3892,6 +3958,8 @@ class RetainedMembershipRead(RetainedRawRead, Protocol):
     def raw_revision_head_raw_id(self, logical_source_key: str) -> str | None: ...
 
     def raw_revision_authority(self, raw_id: str) -> str | None: ...
+
+    def raw_revision_observation_order(self, raw_id: str) -> tuple[int, int]: ...
 
 
 class RetainedSessionRead(RetainedRawRead, RetainedEnrichmentRead, BlobPublicationSourceRead, Protocol):

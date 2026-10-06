@@ -45,6 +45,7 @@ def test_retained_replay_and_promotion_preserve_or_refuse_prior_annotated_identi
                 provider=Provider.CLAUDE_AI,
                 payload=identity_export_bytes(current_arguments),
                 source_path="retained-identity.json",
+                canonical_source_path="retained-identity.json",
                 acquired_at_ms=1,
                 revision=RawRevisionEnvelope(
                     logical_source_key="claude-ai-export:retained-identity",

@@ -34,6 +34,7 @@ async def test_typed_artifact_acquisition_leaves_parser_receipt_to_original_reta
                     provider=Provider.CLAUDE_CODE,
                     payload=payload,
                     source_path=source_path,
+                    canonical_source_path=source_path,
                     acquired_at_ms=1,
                     classification=classification,
                 )
@@ -48,6 +49,7 @@ async def test_typed_artifact_acquisition_leaves_parser_receipt_to_original_reta
                     blob_hash_hex=digest,
                     blob_size=size,
                     source_path=source_path,
+                    canonical_source_path=source_path,
                     acquired_at_ms=1,
                     classification=classification,
                     blob_publication_receipt_id=receipt_id,

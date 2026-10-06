@@ -1069,12 +1069,14 @@ def test_write_session_binds_drive_revision_lineage(tmp_path: Path) -> None:
             provider=Provider.GEMINI,
             payload=first_payload,
             source_path="drive://file-1",
+            canonical_source_path="drive://file-1",
             acquired_at_ms=1_767_000_000_000,
         )
         second_raw_id = archive.write_raw_payload(
             provider=Provider.GEMINI,
             payload=second_payload,
             source_path="drive://file-1",
+            canonical_source_path="drive://file-1",
             acquired_at_ms=1_767_000_000_500,
         )
     assert first_raw_id != second_raw_id
@@ -1178,12 +1180,14 @@ def test_write_session_drive_lineage_proven_winner_bypasses_freshness_tie(tmp_pa
             provider=Provider.GEMINI,
             payload=first_payload,
             source_path="drive://file-tie",
+            canonical_source_path="drive://file-tie",
             acquired_at_ms=1_767_000_000_000,
         )
         second_raw_id = archive.write_raw_payload(
             provider=Provider.GEMINI,
             payload=second_payload,
             source_path="drive://file-tie",
+            canonical_source_path="drive://file-tie",
             acquired_at_ms=1_767_000_000_500,
         )
     assert first_raw_id != second_raw_id
@@ -2651,6 +2655,7 @@ def _seed_source_raw(archive_root: Path, payload: bytes) -> str:
             provider=Provider.CODEX,
             payload=payload,
             source_path=f"/synthetic/{sha256(payload).hexdigest()[:12]}.jsonl",
+            canonical_source_path=f"/synthetic/{sha256(payload).hexdigest()[:12]}.jsonl",
             acquired_at_ms=1_767_000_000_000,
         )
 
@@ -3037,6 +3042,7 @@ def _seed_retained_raw(root: Path, *, origin: Origin, source_path: str, payload:
             conn,
             origin=origin,
             source_path=source_path,
+            canonical_source_path=source_path,
             source_index=0,
             payload=payload,
             acquired_at_ms=1,
@@ -3116,7 +3122,9 @@ async def test_process_ingest_batch_refuses_sinex_publication_before_the_retaine
     _publication_mode(monkeypatch, mode)
     calls: list[tuple[str, ...]] = []
 
-    async def owner_must_not_run(raw_ids: Sequence[str]) -> tuple[PreparedRevisionReplayResult, ...]:
+    async def owner_must_not_run(
+        raw_ids: Sequence[str], **_refusal_handlers: object
+    ) -> tuple[PreparedRevisionReplayResult, ...]:
         calls.append(tuple(raw_ids))
         return ()
 

@@ -31,7 +31,12 @@ from polylogue.sources.hooks import (
 )
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, PER_TURN_END
-from tests.infra.hook_carriers import acquire_hook_carriers, hook_event_count, materialize_hook_carriers
+from tests.infra.hook_carriers import (
+    acquire_hook_carriers,
+    hook_event_count,
+    materialize_acquired_hook_carriers,
+    materialize_hook_carriers,
+)
 from tests.infra.raw_owner_routes import live_owner_set
 
 _TIMESTAMP = "2026-09-16T00:00:00Z"
@@ -762,14 +767,15 @@ def test_compact_bounds_one_carrier_and_stays_idempotent(tmp_path: Path, monkeyp
 def test_compact_and_materialize_ten_thousand_events(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, events: int
 ) -> None:
-    """k3ahm AC3: 10,000 folded events materialize at well over 2,000/s.
+    """k3ahm AC3: 10,000 events compact and materialize at well over 2,000/s.
 
-    The threshold is deliberately far below the measured rate (about 6,000/s
-    on the development workstation for the whole acquire+materialize route)
-    so this fails on a regression of the route's shape -- a return to
-    per-event blob publication or per-event commits -- rather than on a busy
-    machine. Anti-vacuity: restore the per-event write and this is red by two
-    orders of magnitude.
+    The timed window is exactly compaction and materialization. Archive
+    bootstrap and carrier acquisition are fixed per-test costs, not per-event
+    throughput, so they run outside it. The floor fails on a regression of
+    the route's shape -- a return to per-event blob publication, per-event
+    commits or per-event statements -- rather than on a busy machine.
+    Anti-vacuity: restore the per-event write and this is red by two orders
+    of magnitude.
     """
 
     archive_root, spool_root = _scratch(tmp_path, monkeypatch)
@@ -790,10 +796,16 @@ def test_compact_and_materialize_ten_thousand_events(
             encoding="utf-8",
         )
 
-    assert compact_legacy_spool(spool_root)["folded"] == events
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(archive_root)
     started = time.perf_counter()
-    assert materialize_hook_carriers(archive_root) == events
-    elapsed = time.perf_counter() - started
+    assert compact_legacy_spool(spool_root)["folded"] == events
+    compact_elapsed = time.perf_counter() - started
+    assert acquire_hook_carriers(archive_root) >= 1
+    started = time.perf_counter()
+    assert materialize_acquired_hook_carriers(archive_root) == events
+    elapsed = compact_elapsed + (time.perf_counter() - started)
     assert events / elapsed > 2_000, f"{events / elapsed:.0f} events/s"
 
 

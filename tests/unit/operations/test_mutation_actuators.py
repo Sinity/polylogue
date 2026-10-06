@@ -1273,6 +1273,7 @@ def _seed_raw_authority_blocker(
             provider=Provider.CODEX,
             payload=payload,
             source_path=f"{blocker_id}.jsonl",
+            canonical_source_path=f"{blocker_id}.jsonl",
             acquired_at_ms=1000,
             raw_id=raw_id,
         )

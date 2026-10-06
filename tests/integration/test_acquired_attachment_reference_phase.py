@@ -42,6 +42,7 @@ async def test_one_original_attachment_claim_retains_two_acquired_raw_references
                     provider=Provider.GROK,
                     payload=payload,
                     source_path=f"capture-{index}.json",
+                    canonical_source_path=f"capture-{index}.json",
                     acquired_at_ms=index + 1,
                 )
                 for index in range(2)
@@ -133,7 +134,11 @@ async def test_incomplete_attachment_document_never_consumes_unpublished_claims(
         bootstrap_archive_root(root)
         with ArchiveStore.open_existing(root, read_only=False) as archive:
             return archive.write_raw_payload(
-                provider=Provider.GROK, payload=payload, source_path="incomplete-capture.jsonl", acquired_at_ms=1
+                provider=Provider.GROK,
+                payload=payload,
+                source_path="incomplete-capture.jsonl",
+                canonical_source_path="incomplete-capture.jsonl",
+                acquired_at_ms=1,
             )
 
     raw_id = await run_archive_fixture_write(root, acquire)

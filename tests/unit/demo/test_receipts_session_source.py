@@ -40,7 +40,11 @@ def test_receipts_source_lookup_covers_revision_and_membership_bindings(tmp_path
     bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         native = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=_codex("native"), source_path="native.jsonl", acquired_at_ms=1
+            provider=Provider.CODEX,
+            payload=_codex("native"),
+            source_path="native.jsonl",
+            canonical_source_path="native.jsonl",
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             native,
@@ -53,7 +57,11 @@ def test_receipts_source_lookup_covers_revision_and_membership_bindings(tmp_path
             ),
         )
         grouped = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=_codex("grouped"), source_path="bundle.jsonl", acquired_at_ms=2
+            provider=Provider.CODEX,
+            payload=_codex("grouped"),
+            source_path="bundle.jsonl",
+            canonical_source_path="bundle.jsonl",
+            acquired_at_ms=2,
         )
         archive.commit()
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn, conn:

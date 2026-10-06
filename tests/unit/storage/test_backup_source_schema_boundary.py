@@ -206,6 +206,7 @@ def test_recovery_reader_uses_declared_coordinate_schema_across_additive_trains(
             origin=Origin.CHATGPT_EXPORT,
             capture_mode=Provider.CHATGPT,
             source_path=str(original),
+            canonical_source_path=str(original),
             source_index=0,
             payload=payload,
             acquired_at_ms=1,

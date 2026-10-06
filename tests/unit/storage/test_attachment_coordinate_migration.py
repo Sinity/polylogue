@@ -42,6 +42,7 @@ def test_populated_attachment_migration_requires_real_backup_and_preserves_rowid
             origin=Origin.CODEX_SESSION,
             capture_mode=Provider.CODEX,
             source_path="/synthetic/windowless.jsonl",
+            canonical_source_path="/synthetic/windowless.jsonl",
             source_index=-1,
             payload=f'{{"synthetic_record":{ordinal}}}\n'.encode(),
             acquired_at_ms=1,
