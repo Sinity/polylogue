@@ -93,3 +93,58 @@ async def test_parent_and_fork_retained_together_publish_parent_then_tail(tmp_pa
     assert link[1] == "prefix-sharing" and link[2] is not None
     # Only the divergent tail is stored; the prefix is the parent's.
     assert child_messages == 1
+
+
+def _deferrals(edges: dict[str, str | None], *, refused: frozenset[str] = frozenset()) -> set[str]:
+    """The deferral decision for one unit whose keys claim ``edges`` parents."""
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from polylogue.storage.derived.raw import RawObservationDerivation
+
+    write_keys = {key: (f"raw-{key}", f"codex-session:{key}") for key in edges}
+    prepared = {
+        write_key: SimpleNamespace(context=SimpleNamespace(parent_session_id=None, hook_parent_native_id=None))
+        for write_key in write_keys.values()
+    }
+    selected = {
+        write_key: (SimpleNamespace(source_name="codex", parent_session_provider_id=edges[key]), None)
+        for key, write_key in write_keys.items()
+    }
+    return set(
+        RawObservationDerivation._lineage_deferrals(
+            cast(Any, prepared), cast(Any, selected), write_keys=write_keys, refused_keys=refused
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("edges", "refused", "expected"),
+    [
+        # A three-level chain publishes its head, defers the middle (its
+        # parent publishes) and publishes the leaf beside its absent parent.
+        ({"a": None, "b": "a", "c": "b"}, frozenset(), {"b"}),
+        # A parent cycle has no head: its least key publishes first and the
+        # cycle member that is its parent never publishes beside it.
+        ({"a": "c", "b": "a", "c": "b"}, frozenset(), {"b", "c"}),
+        ({"a": "d", "b": "a", "c": "b", "d": "c"}, frozenset(), {"b", "d"}),
+        # A refused parent publishes nothing, so its child does not wait.
+        ({"a": None, "b": "a"}, frozenset({"a"}), set()),
+    ],
+)
+def test_in_unit_deferral_never_publishes_a_child_beside_its_parent(
+    edges: dict[str, str | None], refused: frozenset[str], expected: set[str]
+) -> None:
+    """Every pass publishes a head and no child beside its in-unit parent.
+
+    Anti-vacuity: restore the once-per-adapter guard (defer every child once,
+    then force it) and a parent cycle publishes every member beside its
+    parent on the second pass, refusing as moved lineage on every pass.
+    """
+    deferred = _deferrals(edges, refused=refused)
+    assert deferred == expected
+    publishing = set(edges) - deferred - refused
+    assert publishing
+    for key in publishing:
+        parent = edges[key]
+        assert parent is None or parent not in publishing

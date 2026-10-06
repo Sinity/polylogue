@@ -32,6 +32,7 @@ from polylogue.storage.sqlite.agent_thread_state import (
     thread_id_from_context_ref,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.live_ingest import prepared_live_convergence_owner
 
@@ -263,32 +264,19 @@ def test_unknown_export_codex_raw_publishes_under_its_resolved_provider(tmp_path
                             return state_raw
 
                     state_raw = admit_stage_write("fixture.title.changed-state.acquire", acquire_state)
-                    previous: tuple[object, ...] | None = None
+
+                    def select_original(reader: PreparedSessionSourceRead) -> tuple[str, ...]:
+                        # The selection hook runs once per continued phase of
+                        # one compute; it always selects exactly the state raw.
+                        expanded, _keys = reader.expand_raw_membership_selection((state_raw,))
+                        assert state_raw in expanded
+                        return (state_raw,)
+
                     while True:
-                        original: list[tuple[object, ...]] = []
-
-                        def select_original(
-                            reader: PreparedSessionSourceRead, captured: list[tuple[object, ...]] = original
-                        ) -> tuple[str, ...]:
-                            expanded, _keys = reader.expand_raw_membership_selection((state_raw,))
-                            captured.append(
-                                (
-                                    tuple((key, reader.raw_revision_descriptor(key)) for key in expanded),
-                                    tuple((key, reader.raw_parser_census_is_current(key)) for key in expanded),
-                                    reader.raw_membership_census_rows(expanded),
-                                )
-                            )
-                            return (state_raw,)
-
                         prepared = adapter.compute(
                             frame, state_raw, replay_current=True, select_retained_raw_ids=select_original
                         )
                         retained.append(prepared)
-                        assert len(original) == 1
-                        if previous == original[0]:
-                            retire(prepared)
-                            raise RetainedPreparationRetryableError("changed state refused without actual progress")
-                        previous = original[0]
 
                         def publish_state(current: RawObservationReplacement = prepared) -> bool:
                             return adapter.publish(frame, current)
@@ -299,9 +287,16 @@ def test_unknown_export_codex_raw_publishes_under_its_resolved_provider(tmp_path
                             retire(prepared)
                         if published:
                             break
-                    assert (
-                        admit_stage_write("fixture.title.stale.publish", lambda: adapter.publish(frame, stale)) is False
-                    )
+                        # A committed prerequisite phase is progress the next
+                        # preparation continues from, exactly as the derivation
+                        # kernel decides; anything else is a refusal.
+                        if not adapter.publication_advanced(prepared):
+                            raise RetainedPreparationRetryableError("changed state refused without actual progress")
+                    # The stale preparation's original observers moved: its
+                    # publication refuses with the typed stale-seal error,
+                    # exactly as a moved active Index does.
+                    with pytest.raises(ReferenceSealStaleError):
+                        admit_stage_write("fixture.title.stale.publish", lambda: adapter.publish(frame, stale))
                 finally:
                     retire(stale)
                 fresh = adapter.compute(frame, raw_id, replay_current=True)

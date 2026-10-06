@@ -107,10 +107,11 @@ def _replay_on_creator(
                 # A lineage-deferral pass published its unit except the
                 # deferred children, which this seed's next pass re-prepares.
                 visited.update(set(replacement.raw_ids).difference(replacement.lineage_deferred_raw_ids))
-            # A preparatory Source phase (census or classification) commits its
-            # own receipt and changes the durable input binding; the next pass
-            # prepares against it. A refusal that published no phase is surfaced.
-            if not phases:
+            # A committed census, classification, byte restoration or deferred
+            # parent publication is this key's own progress, which the adapter
+            # reports exactly as it does to the derivation kernel; the next pass
+            # prepares against it. A refusal that advanced nothing is surfaced.
+            if not adapter.publication_advanced(replacement):
                 raise RetainedPreparationRetryableError("canonical retained publication refused without progress")
     return RetainedReplayRun(tuple(receipts), tuple(components))
 

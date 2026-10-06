@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -251,11 +251,13 @@ def test_current_parser_source_census_refuses_reused_rowid_frontier(
         with real_measurement(**kwargs) as measured:
             if not replaced:
                 replaced = True
+                # An out-of-band delete: the archive's custody authorizer
+                # refuses raw deletion from an ordinary writer connection.
+                with closing(sqlite3.connect(root / "source.db")) as external:
+                    external.execute("PRAGMA foreign_keys=ON")
+                    external.execute("DELETE FROM raw_sessions WHERE raw_id = ?", (original_raw_id,))
+                    external.commit()
                 with ArchiveStore.open_existing(root, read_only=False) as archive:
-                    with archive._ensure_source_conn():
-                        archive._ensure_source_conn().execute(
-                            "DELETE FROM raw_sessions WHERE raw_id = ?", (original_raw_id,)
-                        )
                     replacement_raw_id = write_terminal_non_session(archive, 1)
                 seed_parser_census(root, [replacement_raw_id])
                 with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -773,7 +775,10 @@ def test_incremental_target_expands_new_logical_key_across_source_paths(tmp_path
 
     result = replay_retained_components(tmp_path, selected_raw_ids=[new_raw_id])
 
-    assert result.scanned == 2
+    # The selected raw's component expands across both source paths. The
+    # single retained preparation carries each member's own parse, so the
+    # published component, not a per-member scan receipt, shows the expansion.
+    assert [set(component) for component in result.components] == [{old_raw_id, new_raw_id}]
     assert result.replayed_logical_sources == 1
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id, message_count, raw_id FROM sessions").fetchall() == [
@@ -806,39 +811,38 @@ def test_backfill_resumes_after_only_some_source_markers_commit(
             for index, payload in enumerate((baseline, newest), start=1)
         }
 
-    # polylogue-1r9c: see the sibling test above -- patch the
-    # revision_governance module attribute, the actual internal call target.
-    original_mark = archive_revision_governance.mark_raw_parse_succeeded
+    # The retained replay stages every parse acknowledgement into the same
+    # prepared Source mutation as its Index outcome, so a crash between two
+    # staged markers commits neither marker nor outcome. Patch the staging
+    # call target the replay imports from revision_governance.
+    original_stage = archive_revision_governance.prepare_raw_parse_success
     calls = 0
 
-    def crash_after_one_marker(
-        store: archive_revision_governance.RawRevisionGovernanceHost, raw_id: str, *, provider: Provider
-    ) -> None:
+    def crash_after_one_marker(seal: Any, raw_id: str, *, provider: Provider) -> None:
         nonlocal calls
         calls += 1
         if calls == 1:
-            original_mark(store, raw_id, provider=provider)
+            original_stage(seal, raw_id, provider=provider)
             return
         raise RuntimeError("crash between source markers")
 
-    monkeypatch.setattr(archive_revision_governance, "mark_raw_parse_succeeded", crash_after_one_marker)
+    monkeypatch.setattr(archive_revision_governance, "prepare_raw_parse_success", crash_after_one_marker)
     with pytest.raises(RuntimeError, match="between source markers"):
         replay_retained_components(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL").fetchone()[0] == 0
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        accepted_before = conn.execute("SELECT raw_id, content_hash FROM sessions").fetchone()
-        assert conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0] == 0
 
-    monkeypatch.setattr(archive_revision_governance, "mark_raw_parse_succeeded", original_mark)
+    monkeypatch.setattr(archive_revision_governance, "prepare_raw_parse_success", original_stage)
     replay_retained_components(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL").fetchone()[0] == 2
         assert {
             str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions WHERE parsed_at_ms IS NOT NULL")
         } == raw_ids
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT raw_id, content_hash FROM sessions").fetchone() == accepted_before
+        assert conn.execute("SELECT native_id, message_count FROM sessions").fetchall() == [("session-1", 2)]
         assert conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0] == 2
 
 
@@ -915,13 +919,14 @@ def test_divergent_bundle_member_does_not_block_safe_members(tmp_path: Path) -> 
     result = replay_retained_components(tmp_path)
     # s1's own two revisions (base+left vs base+right) are a genuine,
     # irreducible fork with no prior head for this fresh archive -- the
-    # presence-guarantee fallback (polylogue-lb39z item 5) now materializes
-    # a deterministic winner instead of leaving s1 permanently headless, so
-    # only the LOSING side of that fork stays quarantined (1, not 2). s2/s3
-    # are each single-member "safe" cohorts and were never at risk.
+    # conflict between two direct captures accepts the latest declared
+    # capture (raw_b, acquired second) instead of leaving s1 permanently
+    # headless, so only the earlier side of that fork stays quarantined
+    # (1, not 2). s2/s3 are each single-member "safe" cohorts and were never
+    # at risk.
     assert result.quarantined == 1
-    winner_raw_id = max(raw_a, raw_b)
-    loser_raw_id = raw_a if winner_raw_id == raw_b else raw_b
+    winner_raw_id = raw_b
+    loser_raw_id = raw_a
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert set(conn.execute("SELECT native_id FROM sessions")) == {("s1",), ("s2",), ("s3",)}
         s1_raw_id = conn.execute("SELECT raw_id FROM sessions WHERE native_id = 's1'").fetchone()[0]
@@ -1075,7 +1080,7 @@ def test_targeted_rebuild_expands_same_session_across_source_paths_only(
             canonical_source_path="first.json",
             acquired_at_ms=1,
         )
-        archive.write_raw_payload(
+        sibling_raw = archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=_bundle(_chatgpt_session("shared", "old", "new")),
             source_path="second.json",
@@ -1114,7 +1119,9 @@ def test_targeted_rebuild_expands_same_session_across_source_paths_only(
     monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", observed_parse)
     result = replay_retained_components(tmp_path, selected_raw_ids=[selected_raw])
     assert result.replayed_logical_sources == 1
-    assert result.scanned == 2
+    # The selected raw expands to its same-session sibling on another path
+    # and to nothing else.
+    assert [set(component) for component in result.components] == [{selected_raw, sibling_raw}]
     assert unrelated_raw not in opened
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id, message_count FROM sessions").fetchall() == [("shared", 2)]

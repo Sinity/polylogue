@@ -441,7 +441,11 @@ def test_prepared_session_spill_uses_its_actual_owned_index_directory(tmp_path: 
                     assert artifact is not None and artifact.error is None
                     assert artifact.sessions_path is not None and artifact.sessions_path.exists()
                     assert artifact.shard_path is not None and artifact.shard_path.exists()
-                    assert artifact.sessions_path.parent == scratch and artifact.shard_path.parent == scratch
+                    # Each prepared artifact owns one directory inside the
+                    # preparation's scratch, so a stale one is discarded alone.
+                    artifact_directory = artifact.sessions_path.parent
+                    assert artifact_directory.parent == scratch
+                    assert artifact.shard_path.parent == artifact_directory
                 finally:
                     primary = sys.exception()
                     try:
@@ -1074,15 +1078,23 @@ def _assert_complete_original_parser_receipt(root: Path, raw_id: str) -> None:
 def test_retained_fact_recovery_requires_accepted_session_evidence(tmp_path: Path, payload: bytes) -> None:
     from io import BytesIO
 
-    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream, strong_path_classification
 
     root = tmp_path / "archive"
     bootstrap_archive_root(root)
     source_path = tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl"
+    fact = strong_path_classification(source_path, provider=Provider.CLAUDE_CODE)
+    assert fact is not None and not fact.parse_as_session
+    # At a ``fact`` path, enveloped records reach the parser as candidacy;
+    # the parser's finding of no accepted session decides the refusal, and
+    # the input keeps the path's fact classification.
     ordinary = classify_artifact_stream(
         BytesIO(payload), provider=Provider.CLAUDE_CODE, source_path=source_path, wire_format="jsonl"
     )
-    assert ordinary.proved_non_session and not ordinary.classification.parse_as_session
+    if ordinary.proved_non_session:
+        assert ordinary.classification == fact
+    else:
+        assert ordinary.classification.parse_as_session
     blob_hash, _size = BlobStore(root / "blob").write_from_bytes(payload)
     with retained_parser_fixture(
         root=root,
@@ -1094,7 +1106,7 @@ def test_retained_fact_recovery_requires_accepted_session_evidence(tmp_path: Pat
         assert artifact.error is None and list(artifact.iter_sessions()) == []
         selected = artifact.stream_classification()
         assert selected is not None and selected.proved_non_session
-        assert selected.classification == ordinary.classification
+        assert selected.classification == fact
 
 
 def test_retained_fact_recovery_refuses_an_incomplete_provider_record(tmp_path: Path) -> None:

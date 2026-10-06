@@ -1967,10 +1967,10 @@ def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monk
         directory=Path(str(tmp_path / "sidecar-prepared")),
         file_mtime=fallback_timestamp,
     ) as (sidecar, _reader):
+        # ``agent-*.meta.json`` is a content-blind sidecar marker, not an
+        # OriginSpec ``fact`` path: session-shaped content there stays refused.
         assert sidecar.error is None
-        assert [(session.provider_session_id, session.content_hash) for session in sidecar.iter_sessions()] == [
-            (session.provider_session_id, session.content_hash) for session in expected
-        ]
+        assert list(sidecar.iter_sessions()) == []
 
     fact_hash, _ = BlobStore(Path(str(source_db)).parent / "blob").write_from_bytes(
         b'{"agent":"neutral","facts":[{"key":"status","value":"ready"}]}'
