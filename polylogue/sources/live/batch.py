@@ -5566,6 +5566,13 @@ class LiveBatchProcessor:
                 return None
         else:
             identity = None
+        if identity is None:
+            # Append acquisition binds the delta to its declared session and
+            # refuses a plan without one (hook carriers excepted above). With
+            # no identity to bind -- a provider without a stable session
+            # identity, or a session that lives only in an unpromoted cold
+            # build -- the full route re-reads the file instead.
+            return None
         if provider is Provider.CODEX:
             # A Codex append-mode delta is the file's tail bytes only -- the
             # real `session_meta` header that carries native-session identity

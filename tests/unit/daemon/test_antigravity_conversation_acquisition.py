@@ -23,7 +23,28 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers import antigravity
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions, parse_one_source_path
 from polylogue.sources.source_walk import _walk_source_paths
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.live_batch import prepared_live_batch_processor
+
+
+def _publish_retained(root: Path, raw_ids: tuple[str, ...]) -> None:
+    """Publish retained raws through the supplied owner, as the batch's retained runner does."""
+    import asyncio
+
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async def publish() -> None:
+        async with prepared_live_convergence_owner(root) as owner:
+            await owner.ingest_retained_raw_ids(raw_ids)
+
+    asyncio.run(publish())
+
+
+def _ingest_on_writer(root: Path, processor: LiveBatchProcessor, paths: list[Path], **kwargs: Any) -> Any:
+    """The full-ingest body as the daemon's writer runs it: under the archive lease."""
+    with write_lease("test.live_ingest.full", archive_root=root):
+        return processor._ingest_full_paths_sync(paths, **kwargs)
 
 
 def test_source_role_contract_partitions_current_antigravity_items(tmp_path: Path) -> None:
@@ -184,7 +205,9 @@ def test_common_live_batch_admits_conversation_through_vendor_route(
         parser_fingerprint="test-parser",
     )
 
-    result = processor._ingest_full_paths_sync([conversation], source_name="antigravity", captured_sqlite_by_path={})
+    result = _ingest_on_writer(
+        tmp_path, processor, [conversation], source_name="antigravity", captured_sqlite_by_path={}
+    )
 
     assert result.succeeded == [conversation], (result, caplog.text)
     assert result.failed == []
@@ -224,7 +247,9 @@ def test_failed_conversion_still_records_the_attempted_observation(
         parser_fingerprint="test-parser",
     )
 
-    result = processor._ingest_full_paths_sync([conversation], source_name="antigravity", captured_sqlite_by_path={})
+    result = _ingest_on_writer(
+        tmp_path, processor, [conversation], source_name="antigravity", captured_sqlite_by_path={}
+    )
 
     assert result.failed == [conversation]
     assert conversation in result.captured_file_observations
@@ -236,8 +261,6 @@ async def test_common_live_batch_retries_a_failed_vendor_conversion(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    from polylogue import Polylogue
-
     tmp_path = workspace_env["archive_root"]
 
     root = tmp_path / "antigravity"
@@ -267,16 +290,10 @@ async def test_common_live_batch_retries_a_failed_vendor_conversion(
 
     client = Client()
     monkeypatch.setattr(antigravity, "AntigravityLanguageServerClient", lambda _root: client)
-    archive = Polylogue(archive_root=tmp_path, db_path=workspace_env["data_root"] / "index.db")
-    index_db = tmp_path / "cursor.db"
-    processor = LiveBatchProcessor(
-        archive,
-        (WatchSource(name="antigravity", root=root),),
-        cursor=CursorStore(index_db),
-        parser_fingerprint="test-parser",
-    )
-
-    try:
+    # The supplied live owners: writer, retained publication and convergence.
+    async with prepared_live_batch_processor(
+        tmp_path, (WatchSource(name="antigravity", root=root),), parser_fingerprint="test-parser"
+    ) as processor:
         first = await processor.ingest_files([conversation], emit_event=False)
         failed_cursor = processor._cursor.get_record(conversation)
 
@@ -295,9 +312,6 @@ async def test_common_live_batch_retries_a_failed_vendor_conversion(
         assert recovered_cursor is not None
         assert recovered_cursor.failure_count == 0
         assert recovered_cursor.next_retry_at is None
-
-    finally:
-        await archive.close()
 
 
 def _live_vendor_cohort(
@@ -365,7 +379,7 @@ def test_vendor_conversion_cannot_publish_a_later_protobuf_revision(
         return original_capture(store, path, provider)
 
     monkeypatch.setattr(source_parsing, "capture_bound_path", replace_between_conversion_and_capture)
-    result = processor._ingest_full_paths_sync(paths, source_name="antigravity", captured_sqlite_by_path={})
+    result = _ingest_on_writer(tmp_path, processor, paths, source_name="antigravity", captured_sqlite_by_path={})
     assert set(exported) == {path.stem for path in paths}, (exported, result, caplog.text)
     assert result.failed == [paths[0]]
     assert result.succeeded == paths[1:]
@@ -374,6 +388,7 @@ def test_vendor_conversion_cannot_publish_a_later_protobuf_revision(
         retained = conn.execute("SELECT source_path, hex(blob_hash) FROM raw_sessions ORDER BY source_path").fetchall()
     assert retained == [(str(path), sha256(path.read_bytes()).hexdigest().upper()) for path in paths[1:]]
     assert converted_digest != sha256(paths[0].read_bytes()).hexdigest()
+    _publish_retained(tmp_path, result.acquired_raw_ids)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall() == [
             (path.stem,) for path in paths[1:]
@@ -392,7 +407,9 @@ def test_vendor_cohort_checks_the_pass_budget_between_conversations(
         monkeypatch,
         on_export=lambda: frozen_clock.advance(2),
     )
-    result = processor._ingest_full_paths_sync(
+    result = _ingest_on_writer(
+        tmp_path,
+        processor,
         paths,
         source_name="antigravity",
         max_pass_seconds=1,
@@ -422,7 +439,7 @@ def test_vendor_cohort_finishes_the_acquired_conversation_when_the_writer_budget
     )
     token = enter_write_hold("watcher.live_ingest.full", 30)
     try:
-        result = processor._ingest_full_paths_sync(paths, source_name="antigravity", captured_sqlite_by_path={})
+        result = _ingest_on_writer(tmp_path, processor, paths, source_name="antigravity", captured_sqlite_by_path={})
     finally:
         exit_write_hold(token)
     assert exported == [path.stem for path in paths]

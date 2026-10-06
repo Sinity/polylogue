@@ -13,6 +13,7 @@ from pathlib import Path
 from polylogue import Polylogue
 from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
+from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
@@ -30,7 +31,7 @@ async def prepared_live_batch_processor(
     *,
     parser_fingerprint: str,
     failure_details: list[str] | None = None,
-    converger: object | None = None,
+    converger: DaemonConverger | None = None,
     compute_adapter: BoundedComputeAdapter | None = None,
 ) -> AsyncIterator[LiveBatchProcessor]:
     """Keep one real kernel, coordinator, capture stage and Raw owner for the pass.
