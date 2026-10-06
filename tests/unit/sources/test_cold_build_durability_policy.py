@@ -36,7 +36,9 @@ _SYNCHRONOUS_LEVELS = {"OFF": 0, "NORMAL": 1, "FULL": 2, "EXTRA": 3}
 def cold_build(tmp_path: Path) -> Iterator[ColdBuildGeneration]:
     assert active_index_generation_is_empty(tmp_path) is True
     generation = ColdBuildGeneration.begin(
-        tmp_path, reason="durability policy", sources=(WatchSource("fixture", tmp_path / "absent-source"),)
+        tmp_path,
+        reason="durability policy",
+        observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", tmp_path / "absent-source"),)),
     )
     register_cold_build_generation(generation)
     try:

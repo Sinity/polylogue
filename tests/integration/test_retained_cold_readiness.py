@@ -52,7 +52,9 @@ async def test_owned_empty_generation_uses_cold_build_policy_and_finishes_ready(
 
     def begin() -> ColdBuildGeneration:
         return ColdBuildGeneration.begin(
-            root, reason="test-retained-cold-readiness", sources=(WatchSource("fixture", root / "absent"),)
+            root,
+            reason="test-retained-cold-readiness",
+            observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", root / "absent"),)),
         )
 
     generation = await run_archive_fixture_write(root, begin)

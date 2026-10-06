@@ -548,6 +548,32 @@ def detect_provider_from_stream_evidence(
     return provider, evidence
 
 
+def _detect_record_stream_evidence(
+    handle: IO[bytes],
+    *,
+    check_stop: Callable[[], None],
+) -> tuple[Provider | None, str | None]:
+    """Classify every decoded record; ``(None, None)`` names an empty stream.
+
+    A malformed record anywhere raises after the records before it were
+    seen, so a late bad line still denies provider proof.
+    """
+    from .detection_projection import iter_decoded_jsonl_records
+
+    seen = False
+
+    def records() -> Iterator[object]:
+        nonlocal seen
+        for record in iter_decoded_jsonl_records(handle, check_stop=check_stop):
+            seen = True
+            yield record
+
+    detected, evidence = detector_registry().detect_record_stream(records(), check_stop=check_stop)
+    if not seen:
+        return None, None
+    return detected, evidence or "no detector matched (complete record stream)"
+
+
 def detect_provider_from_raw_stream_evidence(
     handle: IO[bytes],
     stream_name: str,
@@ -577,20 +603,19 @@ def detect_provider_from_raw_stream_evidence(
     if signature is not None:
         return fallback_provider, f"{signature.name}-shaped payload; refused as session content, used fallback_provider"
     try:
-        if truncated_tail_ok and is_jsonl_source_path(stream_name):
-            from .live.batch_support import jsonl_parse_input_of_handle
+        if is_jsonl_source_path(stream_name):
+            # A record stream is classified record by record through the
+            # parser's own JSONL decoder: one pass, one record held at a time,
+            # never projected as a single JSON document.
+            if truncated_tail_ok:
+                from .live.batch_support import jsonl_parse_input_of_handle
 
-            with jsonl_parse_input_of_handle(handle, check_stop=checkpoint) as accepted:
-                has_record = False
-                while chunk := accepted.read(1 << 20):
-                    checkpoint()
-                    if chunk.strip():
-                        has_record = True
-                        break
-                if not has_record:
-                    return fallback_provider, "empty accepted record stream; used fallback_provider"
-                accepted.seek(0)
-                detected, evidence = detect_provider_from_stream_evidence(accepted, check_stop=checkpoint)
+                with jsonl_parse_input_of_handle(handle, check_stop=checkpoint) as accepted:
+                    detected, evidence = _detect_record_stream_evidence(accepted, check_stop=checkpoint)
+            else:
+                detected, evidence = _detect_record_stream_evidence(handle, check_stop=checkpoint)
+            if evidence is None:
+                return fallback_provider, "empty accepted record stream; used fallback_provider"
         else:
             detected, evidence = detect_provider_from_stream_evidence(handle, check_stop=checkpoint)
     except (ijson.JSONError, UnicodeError, json.JSONDecodeError) as exc:

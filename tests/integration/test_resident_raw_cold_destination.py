@@ -48,7 +48,9 @@ async def test_resident_raw_writes_registered_candidate_without_active_index_eff
 
     def begin() -> ColdBuildGeneration:
         return ColdBuildGeneration.begin(
-            root, reason="test-resident-destination", sources=(WatchSource("fixture", root / "absent-source"),)
+            root,
+            reason="test-resident-destination",
+            observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", root / "absent-source"),)),
         )
 
     generation = await run_archive_fixture_write(root, begin)
@@ -87,7 +89,9 @@ async def test_owned_cold_read_admits_only_deferred_indexes_and_restores_reader_
     def begin() -> ColdBuildGeneration:
         bootstrap_archive_root(root)
         generation = ColdBuildGeneration.begin(
-            root, reason="test-cold-reader", sources=(WatchSource("fixture", root / "absent"),)
+            root,
+            reason="test-cold-reader",
+            observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", root / "absent"),)),
         )
         with generation.open_writer():
             pass

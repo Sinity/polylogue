@@ -2083,33 +2083,9 @@ async def _observe_faulted_baseline_cancellable(
     generation: ColdBuildGeneration, sources: tuple[WatchSource, ...]
 ) -> Any:
     """Keep a source scan off the writer without joining it at loop shutdown."""
-    loop = asyncio.get_running_loop()
-    completed: asyncio.Future[Any] = loop.create_future()
-    cancel = threading.Event()
+    from polylogue.daemon.discovery_progress import run_source_observation
 
-    def deliver(result: Any = None, error: BaseException | None = None) -> None:
-        if completed.done():
-            return
-        if error is not None:
-            completed.set_exception(error)
-        else:
-            completed.set_result(result)
-
-    def observe() -> None:
-        try:
-            result = generation.observe_faulted_baseline(sources, cancel=cancel)
-        except BaseException as exc:
-            with contextlib.suppress(RuntimeError):
-                loop.call_soon_threadsafe(deliver, None, exc)
-        else:
-            with contextlib.suppress(RuntimeError):
-                loop.call_soon_threadsafe(deliver, result)
-
-    threading.Thread(target=observe, name="cold-source-observation", daemon=True).start()
-    try:
-        return await completed
-    finally:
-        cancel.set()
+    return await run_source_observation(lambda cancel: generation.observe_faulted_baseline(sources, cancel=cancel))
 
 
 async def _run_daemon_services_under_active_writer_lease(
@@ -3282,16 +3258,17 @@ async def _run_daemon_services_under_active_writer_lease(
                     if cold_build_requested:
                         from polylogue.daemon.discovery_progress import run_cold_build_preparation
 
-                        # Baseline enumeration and hashing happen inside this
-                        # one writer call, before any intake page exists;
-                        # status reports its phase and counts meanwhile.
+                        # Baseline enumeration, classification and hashing
+                        # read sources off the writer; only binding the
+                        # observation into a generation is a writer call.
+                        # Status reports the phase and counts meanwhile.
                         cold_build = await run_cold_build_preparation(
                             write_coordinator,
                             "daemon.cold_build.begin",
+                            partial(ColdBuildGeneration.observe_source_baseline, sources),
                             ColdBuildGeneration.begin,
                             archive_root_path,
                             reason="explicit cold build" if cold_build_index else "empty active index generation",
-                            sources=sources,
                         )
                         register_cold_build_generation(cold_build)
                         from polylogue.daemon.catchup_status import set_cold_build_progress_provider

@@ -358,7 +358,9 @@ def test_owned_inactive_generation_binds_the_prepared_session_rows(tmp_path: Pat
     # replay refuses any other generation.
     with write_lease("test.owned-shard.generation", archive_root=root):
         cold_build = ColdBuildGeneration.begin(
-            root, reason="test-owned-shard", sources=(WatchSource("fixture", root / "absent"),)
+            root,
+            reason="test-owned-shard",
+            observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", root / "absent"),)),
         )
     register_cold_build_generation(cold_build)
     carriers: list[object] = []
