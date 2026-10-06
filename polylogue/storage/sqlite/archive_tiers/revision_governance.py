@@ -2601,6 +2601,41 @@ def replace_raw_membership_census(
     record_current_parser_source_census(seal, raw_id, parser_sessions=sessions)
 
 
+def refine_prepared_raw_origin(seal: PreparedIndexMutation, raw_id: str, origin: Origin) -> None:
+    """Stage the parsed origin over acquisition's ``unknown-export`` placeholder.
+
+    A file acquired before detection (a browser capture) carries the
+    placeholder until its census parses it. The parsed session names the
+    origin; the row converges to it, as ``refine_raw_origin`` does for a
+    better-informed re-acquisition. Guarded on the placeholder, so a
+    confident origin is never overwritten.
+    """
+    if origin is Origin.UNKNOWN_EXPORT:
+        return
+    check_compute_cancelled()
+    _load_parser_census_source_inputs(seal, raw_id)
+    with seal.source_rows("SELECT origin FROM raw_sessions WHERE raw_id = ?", (raw_id,)) as rows:
+        row = rows.fetchone()
+    if row is None:
+        raise RuntimeError(f"origin refinement names an absent raw: {raw_id}")
+    if str(row[0]) != Origin.UNKNOWN_EXPORT.value:
+        return
+    raw_key = seal.retain_literal_scalar(raw_id)
+    raw_expression, raw_parameters = seal.source_literal_expression(raw_key)
+    origin_expression, origin_parameters = seal.source_literal_expression(seal.retain_literal_scalar(origin.value))
+    placeholder_expression, placeholder_parameters = seal.source_literal_expression(
+        seal.retain_literal_scalar(Origin.UNKNOWN_EXPORT.value)
+    )
+    with seal.source_statement(
+        f"UPDATE raw_sessions SET origin = {origin_expression} "
+        f"WHERE raw_id = {raw_expression} AND origin = {placeholder_expression}",
+        (*origin_parameters, *raw_parameters, *placeholder_parameters),
+        table="raw_sessions",
+        writable_targets=(("raw_sessions", (raw_key,)),),
+    ):
+        pass
+
+
 def _retire_prepared_full_revision_binding(seal: PreparedIndexMutation, raw_key: KnownTierCell) -> None:
     """Stage the one shape of a full revision leaving byte governance."""
     raw_expression, raw_parameters = seal.source_literal_expression(raw_key)

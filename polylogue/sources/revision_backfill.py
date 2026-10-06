@@ -3194,6 +3194,7 @@ def prepare_revision_source_census(
         _PreparedSourceProducer,
         prepare_raw_state_update,
         prepared_parser_census_is_current,
+        refine_prepared_raw_origin,
         replace_raw_membership_census,
     )
 
@@ -3305,6 +3306,7 @@ def prepare_revision_source_census(
             )
             if provider is Provider.UNKNOWN:
                 prepare_raw_state_update(seal, raw_id, state=RawSessionStateUpdate(payload_provider=parsed_provider))
+            refine_prepared_raw_origin(seal, raw_id, origin_from_provider(parsed_provider))
         else:
             if artifact is None or artifact.resolved_provider is None:
                 raise RetainedPreparationRetryableError(f"empty retained outcome has no captured provider: {raw_id}")

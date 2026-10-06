@@ -2923,6 +2923,8 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
                 "ORDER BY raw_id"
             ).fetchall()
             assert decisions == [("ambiguous",), ("ambiguous",)]
+            # Acquisition's placeholder converges to the origin the census parsed.
+            assert conn.execute("SELECT DISTINCT origin FROM raw_sessions").fetchall() == [("chatgpt-export",)]
 
         # The first accepted snapshot's content remains queryable; the
         # ambiguous second observation has no deletion authority over it.
