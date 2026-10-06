@@ -6084,16 +6084,17 @@ def prepare_membership_classification_source(
     decisions: Mapping[str, MembershipDecision],
     decided_at_ms: int,
     projections: Mapping[str, SessionRevisionProjection] | None = None,
-    conflict: MembershipReplayConflictError | None = None,
-    conflict_fails_observation: bool = True,
+    head_plan: MembershipHeadPlan | None = None,
 ) -> None:
     """Stage the canonical Source outcome after the parent resolves its head.
 
     The parent owns the original read and Source producer windows. Supplied
     decisions include the actual yield-to-existing-head outcome; this function
     neither chooses a winner nor authorizes Index publication. A head-plan
-    ``conflict`` stages its retryable evidence on every deferred member.
+    ``conflict`` stages its retryable evidence on every deferred member and
+    leaves the reaffirmed head's byte binding in place.
     """
+    conflict = head_plan.conflict if head_plan is not None else None
     producer = _PreparedSourceProducer(seal)
     for raw_id, complete in _record_membership_decisions(
         producer,
@@ -6105,16 +6106,16 @@ def prepare_membership_classification_source(
         projections=projections,
     ):
         check_compute_cancelled()
-        if conflict is not None:
+        if conflict is not None and head_plan is not None and raw_id in head_plan.deferred_raw_ids:
             _prepare_raw_parse_failure(
                 producer,
                 raw_id,
                 error=conflict,
                 kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
-                fails_observation=conflict_fails_observation,
+                fails_observation=head_plan.conflict_fails_observation,
             )
             continue
-        if decisions[raw_id] in _MEMBERSHIP_TERMINAL_DECISIONS:
+        if conflict is None and decisions[raw_id] in _MEMBERSHIP_TERMINAL_DECISIONS:
             _release_membership_decided_byte_binding(seal, raw_id, logical_source_key)
         if complete:
             provider, _, _, _, _ = _raw_revision_descriptor_from_row(
@@ -6143,7 +6144,10 @@ class MembershipHeadPlan:
     that carry the typed retry evidence instead of a decision. A refused
     replacement fails its observation (``conflict_fails_observation``); a
     member that forks from a byte-governed head completes its observation and
-    waits, deferred, for a later one that can order the revisions.
+    waits, deferred, for a later one that can order the revisions. A head the
+    cohort compared keeps its accepted content and byte binding; when it
+    carries a membership row (a converted full), that row is decided
+    ``applied`` (``reaffirmed_head_raw_id``).
     """
 
     existing_head: tuple[object, ...] | None
@@ -6152,6 +6156,7 @@ class MembershipHeadPlan:
     conflict: MembershipReplayConflictError | None = None
     deferred_raw_ids: tuple[str, ...] = ()
     conflict_fails_observation: bool = True
+    reaffirmed_head_raw_id: str | None = None
 
 
 def membership_decisions_for_head_plan(
@@ -6162,7 +6167,10 @@ def membership_decisions_for_head_plan(
 ) -> dict[str, MembershipDecision]:
     """Use the actual winner, head yield, or no-write outcome on both tiers."""
     if head_plan.conflict is not None:
-        return dict.fromkeys(head_plan.deferred_raw_ids, MembershipDecision.DEFERRED)
+        conflict_decisions = dict.fromkeys(head_plan.deferred_raw_ids, MembershipDecision.DEFERRED)
+        if head_plan.reaffirmed_head_raw_id is not None:
+            conflict_decisions[head_plan.reaffirmed_head_raw_id] = MembershipDecision.APPLIED
+        return conflict_decisions
     decisions = membership_decisions_for_classification(classification)
     if head_plan.yield_to_head_raw_id is not None:
         for raw_id in (
@@ -6290,6 +6298,7 @@ def prepare_membership_head_plan_from_inputs(
                 ),
                 deferred_raw_ids=tuple(raw_id for raw_id in classification.ambiguous_raw_ids if raw_id != head_raw_id),
                 conflict_fails_observation=False,
+                reaffirmed_head_raw_id=head_raw_id,
             )
         return MembershipHeadPlan(None, None, None)
     accepted_raw_id = classification.accepted_raw_ids[-1]
@@ -6367,6 +6376,7 @@ def prepare_membership_head_plan_from_inputs(
                 f"evidence: logical_source_key={logical_source_key!r} existing_head(raw_id={existing_raw_id!r})"
             ),
             deferred_raw_ids=deferred_raw_ids,
+            reaffirmed_head_raw_id=existing_raw_id,
         )
     return MembershipHeadPlan(existing_head, None, None)
 

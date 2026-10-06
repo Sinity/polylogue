@@ -5675,6 +5675,17 @@ def test_rewrite_plus_growth_before_planning_fails_closed_to_full_route(tmp_path
     assert retained is not None
     assert retained[1] == len(rewritten + appended)
     assert BlobStore(tmp_path / "blob").read_all(bytes(retained[0]).hex()) == rewritten + appended
+    # The fork leaves the byte head accepted and parsed; its converted
+    # membership row is decided, never left pending.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            """
+            SELECT m.decision, r.revision_authority, r.parsed_at_ms IS NOT NULL
+            FROM raw_session_memberships AS m
+            JOIN raw_sessions AS r USING (raw_id)
+            ORDER BY m.decision
+            """
+        ).fetchall() == [("applied", "byte_proven", 1), ("deferred", "quarantined", 0)]
 
 
 def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
