@@ -1549,9 +1549,8 @@ def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionSourceHos
     exact-fingerprint quiescence gate). Neither raw's own key surfaces
     the other in ``raw_membership_retired_full_revision_siblings``, so
     both would otherwise be accepted as independent one-member byte
-    chains. ``source_path`` is the correct join key here (as elsewhere
-    in this module, e.g. ``classify_untyped_full_revision_groups``): a
-    real re-acquisition of the same document always keeps the same path.
+    chains. ``source_path`` is the correct join key here: a real
+    re-acquisition of the same document always keeps the same path.
     """
     row = (
         store._ensure_source_conn()
@@ -1926,79 +1925,6 @@ def _classify_raw_revision_cohort(
                 "complete source remediation before candidate construction"
             )
     return raw_revision_replay_plan(store, logical_source_key)
-
-
-def classify_untyped_full_revision_groups(
-    store: RawRevisionGovernanceHost, raw_ids: Sequence[str]
-) -> dict[str, tuple[str, ...]]:
-    """Group never-typed retained raws into proven byte-growth chains, no parse.
-
-    A restore/backfill census over legacy raws otherwise has to fully parse
-    every retained revision just to learn its ``logical_source_key`` --
-    including revisions that a byte-only comparison already proves are a
-    strict prefix of a later capture of the *same* file (polylogue-nh44:
-    45GB/46% of a real restore's parse work was exactly this waste).
-    ``source_path`` is an established cohort-equivalence edge elsewhere in
-    this codebase (see ``raw_membership_selection_components_sync``), so
-    grouping candidates by it before parsing is sound: two raws at the same
-    path are always the same logical file at different capture times.
-
-    Returns ``{head_raw_id: (older_raw_id, ...)}`` for every source_path
-    cohort of >=2 raws whose bytes form a unique linear growth chain per
-    ``classify_historical_full_revision_streams``. The caller still owns
-    parsing the head (the only member whose content is ever actually
-    indexed) and binding the proven-older members to its learned identity;
-    this method performs no writes. Ambiguous, branching, or singleton
-    groups are omitted so callers fall back to parsing every member.
-    """
-    if store._blob_publisher is None:
-        raise RuntimeError("raw revision classification requires a writable blob publisher")
-    if not raw_ids:
-        return {}
-    placeholders = ",".join("?" for _ in raw_ids)
-    rows = (
-        store._ensure_source_conn()
-        .execute(
-            f"""
-        SELECT raw_id, source_path, lower(hex(blob_hash)), blob_size
-        FROM raw_sessions
-        WHERE raw_id IN ({placeholders}) AND revision_kind = 'unknown'
-        """,
-            tuple(raw_ids),
-        )
-        .fetchall()
-    )
-    by_path: dict[str, list[tuple[str, str, int]]] = {}
-    for raw_id, source_path, blob_hash, blob_size in rows:
-        by_path.setdefault(str(source_path), []).append((str(raw_id), str(blob_hash), int(blob_size)))
-    groups: dict[str, tuple[str, ...]] = {}
-    for members in by_path.values():
-        if len(members) < 2:
-            continue
-
-        streams = []
-        for raw_id, blob_hash, blob_size in members:
-
-            def open_payload(blob_hash: str = blob_hash) -> BinaryIO:
-                assert store._blob_publisher is not None
-                return store._blob_publisher.open(blob_hash)
-
-            streams.append(
-                HistoricalRawRevisionStream(raw_id=raw_id, payload_size=blob_size, open_payload=open_payload)
-            )
-        decisions = classify_historical_full_revision_streams(streams)
-        # A duplicate/predecessor/baseline decision is always BYTE_PROVEN; any
-        # QUARANTINED entry means the fork-localization in
-        # classify_historical_full_revision_streams (I4/I5, polylogue-lb39z)
-        # found a genuine divergence or an unrelated sibling somewhere in this
-        # cohort. This caller's contract requires the WHOLE cohort to be one
-        # provable chain (it uses the result to skip *parsing* older members
-        # outright), so any partial verdict here still falls back to parsing
-        # every member, exactly as an all-ambiguous verdict always did.
-        if not decisions or any(decision.authority is not RawRevisionAuthority.BYTE_PROVEN for decision in decisions):
-            continue
-        groups[decisions[-1].raw_id] = tuple(decision.raw_id for decision in decisions[:-1])
-    return groups
 
 
 def _contiguous_append_authority_candidates(

@@ -698,9 +698,7 @@ def classify_historical_full_revisions(
     ``raw_id``) before the chain proof runs, and every non-representative
     duplicate mirrors its representative's verdict with ``relation=
     "duplicate"``. Output order matches input size order (ascending, ties
-    broken by ``raw_id``), preserving the existing "first is oldest, last is
-    head" contract relied on by callers such as
-    ``classify_untyped_full_revision_groups``.
+    broken by ``raw_id``): the first is oldest and the last is the head.
     """
     if not revisions:
         return []
