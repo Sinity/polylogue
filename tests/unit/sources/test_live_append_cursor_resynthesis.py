@@ -43,7 +43,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import MigrationError, migrate_archive_tier
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.cursor_authority import fixture_cursor_authority
-from tests.infra.raw_owner_routes import ingest_append_with_owner
+from tests.infra.raw_owner_routes import ingest_append_with_owner, replay_retained_raws
 
 
 def _session_meta(session_id: str) -> bytes:
@@ -264,7 +264,6 @@ def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) 
     recovery_delta = _codex_message("recovery snapshot")
     next_delta = _codex_message("next append")
     source.write_bytes(baseline)
-    _seed_native_session(tmp_path, session_id=session_id)
 
     # Seed the accepted baseline, then plan and ingest one append through the
     # same production helpers used by the watcher.
@@ -284,6 +283,10 @@ def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) 
             ),
         )
         archive.classify_raw_revision_cohort_for_live_watch(f"codex-session:{session_id}")
+    # Publish the baseline through replay so the append extends a governed
+    # head: an ungoverned seeded session is incomparable Index state that
+    # replay refuses to adopt.
+    replay_retained_raws(tmp_path)
     cursor = CursorStore(tmp_path / "ops.db")
     processor = _processor(tmp_path, cursor)
     source.write_bytes(baseline + first_delta)

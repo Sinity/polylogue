@@ -897,9 +897,13 @@ async def test_sqlite_acquisition_failure_does_not_fail_its_healthy_siblings(
         result = await ingest_files_with_owners(processor, [broken, healthy], emit_event=False)
 
         assert result.failed_file_count == 1
-        assert result.succeeded_file_count == 1
         assert [Path(path).name for path in result.failed_paths] == ["state.db"]
-        assert [Path(path).name for path in result.succeeded_paths] == ["verification_evidence.db"]
+        # The sibling completes its own observation. Its bytes are a state
+        # schema under the verification-ledger name, so the ledger parser
+        # settles it as a typed no-session observation rather than a session.
+        assert {Path(path).name for path in result.succeeded_paths} | {
+            Path(path).name for path in result.settled_exclusion_paths
+        } == {"verification_evidence.db"}
     finally:
         await archive.close()
 

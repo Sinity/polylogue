@@ -315,18 +315,25 @@ def ingest_append_plans(
         except DaemonOperationCancelled:
             raise
         except Exception as exc:
+            from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+
             transient = isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc)
+            # A retryable preparation refusal (a lost worker, a moved input) is
+            # not a verdict on the appended bytes: they stay pending for the
+            # retry instead of carrying a parse failure.
+            preparation_retry = isinstance(exc, RetainedPreparationRetryableError)
 
             def record_failure(
                 raw_id: str | None = raw_id,
                 provider: Provider = provider,
                 transient: bool = transient,
+                preparation_retry: bool = preparation_retry,
                 error: Exception = exc,
             ) -> None:
                 if raw_id is None:
                     return
                 with _open_archive_for_live_write(archive_root, cold_build=True) as archive:
-                    if transient or _append_storage_fault(error):
+                    if transient or preparation_retry or _append_storage_fault(error):
                         reset_transient_raw_parse_state(archive, raw_id, provider=provider)
                     else:
                         archive.mark_raw_parse_failed(

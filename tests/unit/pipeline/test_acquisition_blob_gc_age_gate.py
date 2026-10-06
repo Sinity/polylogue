@@ -103,7 +103,7 @@ async def test_slow_following_source_cannot_age_uncommitted_blob_into_gc(
     assert gc_report.skipped_reserved == 1
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
-    final_gc = run_blob_gc_report(archive_root / "source.db", archive_root / "blob")
+    final_gc = await asyncio.to_thread(run_blob_gc_report, archive_root / "source.db", archive_root / "blob")
     assert final_gc.deleted_count == 0
     assert final_gc.skipped_reserved == 0
     assert final_gc.skipped_referenced >= 1

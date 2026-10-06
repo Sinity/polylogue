@@ -112,7 +112,8 @@ def test_declared_subtree_alias_retains_provider_namespace_and_explicit_file_pri
     physical = external / "session_shared.json"
     physical.write_text("{}")
     offered = declared / "sessions" / physical.name
-    hermes = WatchSource(name="hermes", root=declared, suffixes=())
+    # The production Hermes source watches its JSON session snapshots.
+    hermes = WatchSource(name="hermes", root=declared, suffixes=(".json",))
     external_source = WatchSource(name="inbox", root=external)
     assert hermes.accepts(offered)
     assert deepest_source_for_path(offered, (external_source, hermes)) is hermes
@@ -314,7 +315,14 @@ def test_blocked_source_paths_match_through_a_symlinked_watch_root(tmp_path: Pat
             (bytes(32),),
         )
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(linked_root / "session.jsonl"), updated_at_ms=1, byte_offset=2)
+        # Acquisition freezes the resolved canonical path beside the spelling.
+        upsert_ingest_cursor(
+            conn,
+            source_path=str(linked_root / "session.jsonl"),
+            canonical_source_path=str(violating),
+            updated_at_ms=1,
+            byte_offset=2,
+        )
 
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),

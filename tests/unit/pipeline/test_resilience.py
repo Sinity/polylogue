@@ -481,6 +481,8 @@ async def test_acquisition_law_preserves_coordinates_deduplicates_blobs_and_norm
             RawSessionData(
                 raw_bytes=build_acquisition_raw_bytes(spec),
                 source_path=f"/tmp/{index}.json",
+                # Every file-backed raw carries the canonical path acquisition froze.
+                canonical_source_path=f"/tmp/{index}.json",
                 source_index=index,
                 provider_hint=_provider_hint(spec.provider_hint),
             )

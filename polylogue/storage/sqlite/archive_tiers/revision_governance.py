@@ -3635,6 +3635,14 @@ def _index_parsed_for_retained_raw(
         # never parser-failure evidence for retained durable bytes.
         raise
     except Exception as exc:
+        from polylogue.core.sqlite_locking import is_transient_sqlite_lock
+        from polylogue.core.storage_faults import storage_fault_kind
+
+        if is_transient_sqlite_lock(exc) or storage_fault_kind(exc) is not None:
+            # Writer contention or a storage fault says nothing about the
+            # retained bytes: the raw stays pending for its retry instead of
+            # carrying a parse failure for input that never failed to parse.
+            raise
         if not _is_frozen_candidate(store):
             if isinstance(exc, RawCASFrontierError):
                 # A retained-raw CAS refusal is retryable authority evidence.

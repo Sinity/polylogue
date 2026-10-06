@@ -37,6 +37,7 @@ from polylogue.sources.live.cold_build import (
 from polylogue.storage.archive_identity import GENERATIONS_DIRNAME, MAINTENANCE_STATE_DIRNAME
 from polylogue.storage.index_generation import UnpublishedPromotionRecoveryError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_archive_fixture_write
 from tests.infra.live_batch import prepared_live_batch_processor
 
 
@@ -247,11 +248,11 @@ def test_restart_completes_pointer_swapped_cold_promotion(tmp_path: Path, monkey
         clear_cold_build_generation()
         generation._release_ops_checkpoint_holder()
 
-    ColdBuildGeneration.reconcile_interrupted_promotions(archive)
+    _reconcile_on_daemon_writer(archive)
     assert generation._store.load(generation.generation_id).state == "active"
     assert load_pending_production_baseline(archive) is None
     assert _active_session_count(archive) == 1
-    ColdBuildGeneration.reconcile_interrupted_promotions(archive)
+    _reconcile_on_daemon_writer(archive)
 
 
 def test_restart_clears_matching_receipt_after_active_metadata(
@@ -273,7 +274,7 @@ def test_restart_clears_matching_receipt_after_active_metadata(
     assert cold_build._store.load(cold_build.generation_id).state == "active"
     assert production_baseline.load_pending_production_baseline(tmp_path) is not None
     clear_cold_build_generation()
-    ColdBuildGeneration.reconcile_interrupted_promotions(tmp_path)
+    _reconcile_on_daemon_writer(tmp_path)
     assert production_baseline.load_pending_production_baseline(tmp_path) is None
 
 
@@ -1048,6 +1049,13 @@ def _fresh_archive_root(tmp_path: Path) -> Path:
     archive = tmp_path / "archive"
     archive.mkdir()
     return archive
+
+
+def _reconcile_on_daemon_writer(archive: Path) -> None:
+    """Reconcile interrupted promotions on the daemon writer, as daemon startup does."""
+    asyncio.run(
+        run_archive_fixture_write(archive, lambda: ColdBuildGeneration.reconcile_interrupted_promotions(archive))
+    )
 
 
 def test_cold_build_captures_effective_source_baseline(tmp_path: Path) -> None:
