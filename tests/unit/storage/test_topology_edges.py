@@ -671,15 +671,21 @@ class TestTopologyLateParentRepair:
                 messages=[ParsedMessage(provider_message_id="pm1", role=Role.USER, text="p")],
             )
 
-            child_task = ingest_session(
-                child_parsed,
-                backend=repo.backend,
-            )
-            parent_task = ingest_session(
-                parent_parsed,
-                backend=repo.backend,
-            )
-            await asyncio.gather(child_task, parent_task)
+            from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+            async def ingest_until_current(parsed: ParsedSession) -> str:
+                # A writer that committed after this one's off-writer
+                # preparation makes its seal stale; the daemon treats that
+                # typed refusal as transient and prepares again. Each refusal
+                # proves the other writer committed, so the loop is bounded
+                # by the other writer's progress.
+                while True:
+                    try:
+                        return await ingest_session(parsed, backend=repo.backend)
+                    except ReferenceSealStaleError:
+                        continue
+
+            await asyncio.gather(ingest_until_current(child_parsed), ingest_until_current(parent_parsed))
             child_session_id = _archive_session_id(Provider.CODEX, "race-child")
             parent_session_id = _archive_session_id(Provider.CODEX, "race-parent")
 
