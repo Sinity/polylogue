@@ -324,6 +324,43 @@ def test_revalidation_leaves_an_unowned_archive_writable(
     assert (root / "index.db").exists()
 
 
+def test_a_separate_archive_answers_to_its_own_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    resident_daemon: Callable[[Path], int],
+) -> None:
+    """A tier of a separately leased archive is bounded by that archive.
+
+    ``polylogue demo receipts`` seeds a throwaway archive under the working
+    directory while ``POLYLOGUE_ARCHIVE_ROOT`` names another. Its own write
+    lease then names the throwaway root, which the boundary used to compare
+    with the configured root and refuse as "a different archive".
+
+    Anti-vacuity: key the boundary on the configured root again and the
+    leased open is refused while the daemon-owned one is let through.
+    """
+    import sqlite3
+
+    from polylogue.core.write_lease import write_lease
+
+    _archive_root(monkeypatch, tmp_path)
+    separate = tmp_path / "separate"
+    separate.mkdir()
+    owned = tmp_path / "owned"
+    owned.mkdir()
+
+    with cli_archive_writer_ownership():
+        with write_lease("test.separate-archive", archive_root=separate):
+            sqlite3.connect(str(separate / "index.db")).close()
+        resident_daemon(owned / "daemon.pid")
+        with write_lease("test.owned-archive", archive_root=owned):
+            with pytest.raises(ArchiveWriterOwnershipError):
+                sqlite3.connect(str(owned / "index.db"))
+
+    assert (separate / "index.db").exists()
+    assert not (owned / "index.db").exists()
+
+
 def test_offline_writer_holds_daemon_exclusion_after_first_writable_open(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
