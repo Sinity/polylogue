@@ -54,6 +54,9 @@ def _is_scratch_database(database: object) -> bool:
     value = str(database)
     if value in {"", ":memory:"} or (value.startswith("file:") and "mode=memory" in value):
         return True
+    if value.startswith("file:"):
+        # A read-only reopen of the same scratch file names it as a URI.
+        value = value.removeprefix("file:").split("?", 1)[0]
     path = Path(value)
     return (
         path.name not in _ARCHIVE_TIER_FILES
