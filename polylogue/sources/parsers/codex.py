@@ -2852,6 +2852,11 @@ def _structural_byte_count(value: object) -> int | None:
     return None
 
 
+#: Newer unified-exec builds put one ``Command: <rendered command>`` line in
+#: front of the envelope. It is stripped only when the very next line starts
+#: the envelope, so a command rendered over several lines leaves the result
+#: unknown rather than letting a line inside the command pose as the envelope.
+_CODEX_COMMAND_LINE_PREFIX_RE = re.compile(r"\ACommand: [^\n]*\n(?=(?:Chunk ID: [0-9a-f]+\n)?Wall time: )")
 _CODEX_CHUNK_ID_PREFIX_RE = re.compile(r"\AChunk ID: [0-9a-f]+\n")
 _CODEX_EXEC_ENVELOPE_OUTCOME_RE = re.compile(
     r"\AWall time: [0-9.]+ seconds\n"
@@ -2879,7 +2884,8 @@ def _codex_exec_envelope_outcome(output: object) -> tuple[bool | None, int | Non
     """
     if not isinstance(output, str):
         return None, None
-    text = _CODEX_CHUNK_ID_PREFIX_RE.sub("", output, count=1)
+    text = _CODEX_COMMAND_LINE_PREFIX_RE.sub("", output, count=1)
+    text = _CODEX_CHUNK_ID_PREFIX_RE.sub("", text, count=1)
     match = _CODEX_EXEC_ENVELOPE_OUTCOME_RE.match(text)
     if match is None:
         return None, None
@@ -2890,14 +2896,36 @@ def _codex_exec_envelope_outcome(output: object) -> tuple[bool | None, int | Non
     return exit_code != 0, exit_code
 
 
+_CODEX_FREEFORM_OUTCOME_RE = re.compile(
+    r"\AExit code: (?P<exit_code>-?\d+)\nWall time: [0-9.]+ seconds\n(?:Output:\n|Total output lines: \d+\n)"
+)
+
+
+def _codex_freeform_outcome(output: object) -> tuple[bool | None, int | None]:
+    """Read the exit code Codex stamps on a freeform tool result.
+
+    ``apply_patch`` and ``shell_command`` results begin with a header the CLI
+    writes, never the model: ``Exit code: <N>\\nWall time: <float>
+    seconds\\n`` followed by ``Output:`` or ``Total output lines: <N>``. The
+    match is anchored at the start of the field and requires the whole header,
+    so the same words inside captured output never count.
+    """
+    if not isinstance(output, str):
+        return None, None
+    match = _CODEX_FREEFORM_OUTCOME_RE.match(output)
+    if match is None:
+        return None, None
+    exit_code = int(match.group("exit_code"))
+    return exit_code != 0, exit_code
+
+
 def _codex_tool_result_outcome(raw: object) -> tuple[bool | None, int | None, str | None]:
     """Resolve (is_error, exit_code, unknown reason) for a Codex tool-result payload.
 
     Tries the JSON-structural outcome first (``exit_code``/``is_error``
-    fields nested in a decoded JSON object), then falls back to the
-    unified-exec text envelope (see ``_codex_exec_envelope_outcome``) when the
-    raw payload is a string that JSON-decoding did not resolve to a mapping
-    carrying either field.
+    fields nested in a decoded JSON object). When that resolves nothing, a
+    string payload falls back to the CLI-written headers that state an exit
+    code: the unified-exec envelope, then the freeform ``Exit code:`` header.
 
     A payload that announces itself as a JSON structure and does not decode is
     a declared outcome carrier the source did not retain intact; a decoded
@@ -2908,6 +2936,8 @@ def _codex_tool_result_outcome(raw: object) -> tuple[bool | None, int | None, st
     is_error, exit_code = _structural_outcome(decoded)
     if is_error is None and exit_code is None and isinstance(raw, str):
         is_error, exit_code = _codex_exec_envelope_outcome(raw)
+        if is_error is None and exit_code is None:
+            is_error, exit_code = _codex_freeform_outcome(raw)
     return (
         is_error,
         exit_code,
