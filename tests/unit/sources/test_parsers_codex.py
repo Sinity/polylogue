@@ -4240,3 +4240,62 @@ def test_unknown_outer_records_still_refuse_the_stream(record: dict[str, object]
         records = _codex_fixture(fixture)
         records.insert(2, record)
         assert not is_supported_session_stream(records)
+
+
+_TOOL_RESULT_HEADER_EXPECTATIONS: dict[str, tuple[bool | None, int | None]] = {
+    # Unified-exec envelope behind a one-line ``Command:`` preamble.
+    "call_command_ok": (False, 0),
+    "call_command_fail": (True, 2),
+    # A command rendered over several lines: the line after ``Command:`` is
+    # not the envelope, so nothing is read.
+    "call_command_multiline": (None, None),
+    # A still-attached session has no outcome yet.
+    "call_stdin_running": (None, None),
+    # Freeform ``Exit code:`` header (apply_patch, shell_command).
+    "call_patch_fail": (True, 1),
+    "call_shell_ok": (False, 0),
+    # The code-mode exec status item states no exit code; the script's
+    # commands carry their own outcomes, so the transport stays unknown.
+    "call_script_ok": (None, None),
+    "call_script_fail": (None, None),
+    # The same words not at the anchored position carry no outcome.
+    "call_prose_decoy": (None, None),
+    "call_script_decoy": (None, None),
+}
+
+
+def test_cli_written_result_headers_resolve_tool_outcomes() -> None:
+    """Each CLI-written header resolves exactly its declared verdict and nothing else.
+
+    Red if the ``Command:`` preamble or the freeform ``Exit code:`` header stops
+    being read, or if either starts matching a decoy that is not the anchored,
+    complete header.
+    """
+    session = parse(_codex_fixture("tool-result-headers.jsonl"), "headers-fallback")
+    results = {
+        block.tool_id: (block.is_error, block.exit_code)
+        for message in session.messages
+        for block in message.blocks
+        if block.type is BlockType.TOOL_RESULT
+    }
+    assert results == _TOOL_RESULT_HEADER_EXPECTATIONS
+
+
+def test_cli_written_result_headers_reach_the_written_tool_outcome() -> None:
+    from polylogue.core.enums import Origin, ToolOutcome
+    from polylogue.sources.tool_outcomes import derive_tool_outcomes
+
+    session = parse(_codex_fixture("tool-result-headers.jsonl"), "headers-fallback")
+    derived = derive_tool_outcomes(session.messages, session.session_events, origin=Origin.CODEX_SESSION)
+    assert isinstance(derived, list)
+    outcomes = {
+        block.tool_id: block.tool_outcome
+        for message in derived
+        for block in message.blocks
+        if block.type is BlockType.TOOL_RESULT
+    }
+    expected = {
+        tool_id: ToolOutcome.UNKNOWN if is_error is None else ToolOutcome.ERROR if is_error else ToolOutcome.OK
+        for tool_id, (is_error, _exit_code) in _TOOL_RESULT_HEADER_EXPECTATIONS.items()
+    }
+    assert outcomes == expected
