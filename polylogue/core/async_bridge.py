@@ -29,6 +29,24 @@ async def _await(awaitable: Awaitable[T]) -> T:
     return await awaitable
 
 
+def complete_without_suspension(coroutine: Coroutine[object, object, T]) -> T:
+    """Drive a coroutine whose awaits all resolve synchronously, on this thread.
+
+    Shared builders are coroutines because their facade readers are
+    asynchronous; over a pinned synchronous snapshot reader they never
+    suspend. Admitted archive reads may run that work nested on a compute
+    worker that is already driving an event loop, where ``asyncio.run`` and a
+    hop to another thread (which would lose the snapshot's thread-bound
+    connections) are both wrong. A coroutine that does suspend is refused.
+    """
+    try:
+        coroutine.send(None)
+    except StopIteration as finished:
+        return finished.value  # type: ignore[no-any-return]
+    coroutine.close()
+    raise RuntimeError("a pinned-snapshot coroutine suspended; its reader must not await")
+
+
 def run_coroutine_sync(coro: Awaitable[T]) -> T:
     """Run a coroutine from sync code, even when already inside an event loop.
 

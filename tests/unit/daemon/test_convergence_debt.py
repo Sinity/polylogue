@@ -98,6 +98,31 @@ def _write(root: Path, session: ParsedSession) -> None:
         conn.close()
 
 
+def _drain_on_admitted_owner(root: Path) -> int:
+    """Run one debt page as the daemon does: on its compute creator, admitted.
+
+    ``_run_convergence_debt_pass`` submits the drain to the daemon's compute
+    adapter with the stage write admission bound; the recompose stage's
+    retained-raw replay prepares only on that admitted creator.
+    """
+    import asyncio
+
+    from polylogue.daemon import cli as daemon_cli
+    from tests.infra.archive_templates import run_off_event_loop
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async def run() -> int:
+        async with prepared_live_convergence_owner(root) as owner:
+            return await owner.run_convergence_sync(
+                "test.convergence-debt.drain",
+                lambda: daemon_cli._drain_convergence_debt_once(
+                    root / "index.db", compute_adapter=owner._compute_adapter
+                ),
+            )
+
+    return run_off_event_loop(lambda: asyncio.run(run()))
+
+
 @pytest.fixture
 def truncated_child(tmp_path: Path) -> Path:
     """An archive whose child lost its recomposed prefix to an alias collision."""
@@ -121,9 +146,7 @@ def truncated_child(tmp_path: Path) -> Path:
     return root
 
 
-def test_lineage_prefix_debt_is_drained_by_its_stage(
-    truncated_child: Path, bounded_compute_adapter: BoundedComputeAdapter
-) -> None:
+def test_lineage_prefix_debt_is_drained_by_its_stage(truncated_child: Path) -> None:
     """One drain pass re-derives the child's prefix and clears the row.
 
     Anti-vacuity: drop ``make_lineage_prefix_recompose_stage`` from
@@ -131,8 +154,6 @@ def test_lineage_prefix_debt_is_drained_by_its_stage(
     unimplemented stage, leaving the edge unresolved and the row in place --
     both assertions below go red.
     """
-    from polylogue.daemon import cli as daemon_cli
-
     root = truncated_child
     # The contender re-parses without the contested alias: the parent's claim
     # is unambiguous again, so retained evidence can settle the edge.
@@ -140,7 +161,7 @@ def test_lineage_prefix_debt_is_drained_by_its_stage(
     assert _child_edge(root)[0] is None, "no ordinary write re-resolves the child"
 
     _make_retry_due(root)
-    assert daemon_cli._drain_convergence_debt_once(root / "index.db", compute_adapter=bounded_compute_adapter) == 1
+    assert _drain_on_admitted_owner(root) == 1
 
     parent, anchor = _child_edge(root)
     assert parent == PARENT
@@ -148,9 +169,7 @@ def test_lineage_prefix_debt_is_drained_by_its_stage(
     assert _debt(root) == []
 
 
-def test_lineage_prefix_debt_survives_live_contradiction(
-    truncated_child: Path, bounded_compute_adapter: BoundedComputeAdapter
-) -> None:
+def test_lineage_prefix_debt_survives_live_contradiction(truncated_child: Path) -> None:
     """A row is never cleared while the contradiction still blocks recompose.
 
     Anti-vacuity: make the stage report convergence without proving the prefix
@@ -161,11 +180,9 @@ def test_lineage_prefix_debt_survives_live_contradiction(
     returning ``False`` would overwrite the writer's diagnostic with the
     engine's generic "returned False".
     """
-    from polylogue.daemon import cli as daemon_cli
-
     root = truncated_child
     _make_retry_due(root)
-    assert daemon_cli._drain_convergence_debt_once(root / "index.db", compute_adapter=bounded_compute_adapter) == 1
+    assert _drain_on_admitted_owner(root) == 1
 
     assert _child_edge(root)[0] is None
     rows = _debt(root)

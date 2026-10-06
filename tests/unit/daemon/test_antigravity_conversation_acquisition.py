@@ -305,7 +305,11 @@ async def test_common_live_batch_retries_a_failed_vendor_conversion(
         second = await processor.ingest_files([conversation], emit_event=False)
         recovered_cursor = processor._cursor.get_record(conversation)
 
-        assert client.attempts == 2
+        # The retried batch converts twice: once to acquire the conversation,
+        # and once when the raw owner derives the session from the retained
+        # protobuf (``prepare_retained_non_json_artifact``), which is the
+        # canonical derivation route for every retained raw.
+        assert client.attempts == 3
         assert second.succeeded_file_count == 1
         assert second.ingested_session_count == 1
         assert second.failed_file_count == 0

@@ -624,3 +624,31 @@ def test_ordered_map_retains_unknown_input_exclusivity_until_each_worker_settles
         assert adapter.submit(lambda: "settled", estimated_bytes=1).future.result(timeout=5) == "settled"
     finally:
         adapter.shutdown(wait=True)
+
+
+async def test_complete_without_suspension_runs_on_a_thread_driving_a_loop() -> None:
+    """A never-suspending coroutine completes where ``asyncio.run`` cannot.
+
+    Admitted reads may run nested on a compute worker that is already driving
+    an event loop. Anti-vacuity: implement the helper with ``asyncio.run`` and
+    this call raises "cannot be called from a running event loop"; drop the
+    suspension refusal and the suspending coroutine is reported as a
+    completed ``None`` instead of being refused.
+    """
+    import asyncio
+
+    from polylogue.core.async_bridge import complete_without_suspension
+
+    async def synchronous_reader() -> str:
+        return "pinned"
+
+    async def answer() -> str:
+        return await synchronous_reader()
+
+    assert complete_without_suspension(answer()) == "pinned"
+
+    async def suspends() -> None:
+        await asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="suspended"):
+        complete_without_suspension(suspends())

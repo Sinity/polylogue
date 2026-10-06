@@ -21,20 +21,27 @@ from polylogue.operations.attachment_convergence import make_attachment_converge
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.index_writer import write_fixture_index_session
 from tests.unit.daemon.test_attachment_convergence import _retain_raws, _session
 
 
 class _SerializingWriter:
-    """Stands in for the daemon's sole writer: one holder, and observable."""
+    """Stands in for the daemon's sole writer: one holder, and observable.
 
-    def __init__(self) -> None:
+    The daemon's admission adopts its root-bound write lease around the
+    admitted work; Source SQL outside such a lease is denied, so this writer
+    takes the same lease rather than only serializing.
+    """
+
+    def __init__(self, archive_root: Path) -> None:
+        self._archive_root = archive_root
         self._lock = threading.Lock()
         self.admitted_actors: list[str] = []
 
     def admission(self, actor: str, work: object) -> object:
         assert callable(work)
-        with self._lock:
+        with self._lock, write_lease(actor, archive_root=self._archive_root):
             self.admitted_actors.append(actor)
             return work()
 
@@ -73,7 +80,7 @@ def test_drive_download_runs_with_the_writer_free(tmp_path: Path) -> None:
     publication.
     """
     index, source, payloads = _seed_drive_attachments(tmp_path)
-    writer = _SerializingWriter()
+    writer = _SerializingWriter(tmp_path)
     writer_free_during_download: list[bool] = []
 
     class _SlowDriveClient:
@@ -128,7 +135,7 @@ def test_unsplit_stage_is_bracketed_by_the_engine(tmp_path: Path) -> None:
     """
     from polylogue.daemon.convergence import ConvergenceStage
 
-    writer = _SerializingWriter()
+    writer = _SerializingWriter(tmp_path)
     held_during_execute: list[bool] = []
 
     def execute(_path: Path) -> bool:

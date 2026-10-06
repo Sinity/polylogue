@@ -30,6 +30,17 @@ def _root_entries(root: Path) -> set[str]:
     return {entry.name for entry in root.iterdir()}
 
 
+def _non_wal_root_entries(root: Path) -> set[str]:
+    """Root entries other than SQLite's own WAL sidecars.
+
+    Every tier is created in WAL mode (e6b81fcadc). A WAL reader must map the
+    ``-shm`` wal-index and leaves ``-wal``/``-shm`` behind, because a
+    read-only connection never checkpoints or deletes them. Those files are
+    SQLite's locking protocol for the tier, not bookkeeping a reader writes.
+    """
+    return {name for name in _root_entries(root) if not name.endswith(("-wal", "-shm"))}
+
+
 def test_unguarded_operation_read_never_acquires_the_writer_lease(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -64,10 +75,10 @@ def test_unguarded_operation_read_writes_nothing_into_the_archive_root(tmp_path:
     # ``ftruncate`` + ``write`` on it, so the sentinel is what goes red.
     lock_path = tmp_path / OWNERSHIP_LOCK
     lock_path.write_bytes(b"pid=previous-writer")
-    before = _root_entries(tmp_path)
+    before = _non_wal_root_entries(tmp_path)
     with open_operation_read(tmp_path) as pinned:
         assert pinned.archive.source_connection is not None
-    assert _root_entries(tmp_path) == before
+    assert _non_wal_root_entries(tmp_path) == before
     assert lock_path.read_bytes() == b"pid=previous-writer"
 
 
@@ -94,32 +105,32 @@ def test_operation_read_succeeds_while_another_process_owns_the_archive(tmp_path
         os.close(owner_fd)
 
 
-def test_operation_read_succeeds_against_a_read_only_archive_root(tmp_path: Path) -> None:
-    """Red if any part of the read needs write access to the root or its tiers.
+def test_operation_read_succeeds_against_read_only_tier_files(tmp_path: Path) -> None:
+    """Red if any part of the read needs write access to a tier file or the lease.
 
-    Mode 0500 on the root and 0400 on the tier files is the shape the harness
-    seals ``.bootstrap-archive-template`` directories with, and the shape a
-    preserved rollback archive has.
+    Mode 0400 on every tier file is what a reader without writer authority
+    sees. The root stays writable only for SQLite's own wal-index: every tier
+    is WAL since e6b81fcadc, and a WAL reader cannot open without mapping a
+    ``-shm`` beside the database, so a 0500 root is no longer a readable shape
+    for any SQLite reader -- that sealed-root variant of this test went stale
+    with the WAL bootstrap, not with the read path.
     """
     root = tmp_path / "sealed"
     root.mkdir()
     bootstrap_archive_root(root)
-    # A preserved rollback archive carries no live lease record; drop the one
-    # the bootstrap writer left so the assertion below is about this read.
+    # A reader's archive carries no live lease record of its own; drop the
+    # one the bootstrap writer left so the assertion below is about this read.
     (root / OWNERSHIP_LOCK).unlink(missing_ok=True)
-    for entry in root.iterdir():
-        if entry.is_file():
-            entry.chmod(0o400)
-    root.chmod(0o500)
+    tiers = [entry for entry in root.iterdir() if entry.is_file() and entry.suffix == ".db"]
+    for entry in tiers:
+        entry.chmod(0o400)
     try:
         with open_operation_read(root) as pinned:
             assert pinned.archive.source_connection is not None
         assert OWNERSHIP_LOCK not in _root_entries(root)
     finally:
-        root.chmod(0o700)
-        for entry in root.iterdir():
-            if entry.is_file():
-                entry.chmod(0o600)
+        for entry in tiers:
+            entry.chmod(0o600)
 
 
 def test_cli_read_verb_mints_no_api_token_when_no_daemon_is_listening(

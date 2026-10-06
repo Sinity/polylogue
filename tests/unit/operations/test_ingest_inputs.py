@@ -29,7 +29,12 @@ def test_spool_failed_close_retains_exact_artifact_until_creator_settles(
     actual_connect = sqlite3.connect
     fail_close = [True]
 
-    class FailingClose(sqlite3.Connection):
+    # Spool connections are measured connections (``connect_measured``): their
+    # owner settles cursors through the measured class before closing, so the
+    # fault is injected into that same class rather than replacing it.
+    from polylogue.storage.io_phase_metrics import _MeasuredConnection
+
+    class FailingClose(_MeasuredConnection):
         def close(self) -> None:
             if fail_close[0]:
                 raise sqlite3.OperationalError("synthetic private spool close failure")

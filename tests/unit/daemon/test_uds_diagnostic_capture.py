@@ -47,8 +47,11 @@ def test_machine_operation_await_reports_unavailable_audit_without_dropping_tran
         raise AuditContinuityPendingError("audit reader unavailable")
         yield {}
 
-    monkeypatch.setattr(AuditRepository, "settled_machine_read", unavailable_settled_read)
     with running_daemon_operations(tmp_path / "archive", server_error_sink=sink) as stack:
+        # Startup recovery reads the same settled audit frame (777ab745c9) and
+        # refuses startup when it is unavailable; the subject here is the
+        # served await, so the reader goes away only once the daemon is up.
+        monkeypatch.setattr(AuditRepository, "settled_machine_read", unavailable_settled_read)
         envelope = stack.client.operation(
             "operation.await",
             {"request_id": "unavailable-audit", "after_sequence": 0, "timeout_ms": 1},
