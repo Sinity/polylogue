@@ -40,16 +40,21 @@ async def test_empty_frontier_is_measured_once_under_original_owner(tmp_path: Pa
         assert await owner.run_convergence_sync("fixture.frontier.stage", stage.execute, root)
     from polylogue.operations.daemon_status import _frontier_status
     from polylogue.storage.raw_retention import raw_frontier_integrity_projection
-    from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+    from polylogue.storage.sqlite.connection_profile import attach_readonly_database, readonly_connection_context
 
     materialization = {"available": True, "lost_source_evidence_count": 0, "lost_source_evidence_samples": []}
     projected = raw_frontier_integrity_projection(root, materialization).to_dict()
     with (
         readonly_connection_context(root / "source.db") as source,
         readonly_connection_context(root / "index.db") as index,
-        readonly_connection_context(root / "ops.db") as ops,
+        readonly_connection_context(root / "index.db") as index_with_ops,
     ):
-        assert _frontier_status(source, index, ops, materialization, ops_db_path=root / "ops.db") == projected
+        # The daemon's pinned Ops handle is the Index handle with Ops attached
+        # as ``ops_tier`` (611e1d0e52).
+        attach_readonly_database(index_with_ops, root / "ops.db", alias="ops_tier")
+        assert (
+            _frontier_status(source, index, index_with_ops, materialization, ops_db_path=root / "ops.db") == projected
+        )
     assert projected["overall_status"] == "healthy"
     coverage = frontier_coverage_for_archive(root)
     assert coverage["current"] and coverage["healthy"]
