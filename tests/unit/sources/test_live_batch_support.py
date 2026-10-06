@@ -564,7 +564,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
-from tests.infra.prepared_replay import apply_prepared_membership_classification
+from tests.infra.prepared_membership import publish_prepared_membership_classification
 
 _ARCHIVE_STORAGE_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
 
@@ -7440,13 +7440,13 @@ def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_p
         # Arbitration now runs and concludes ambiguous (a decided conflict,
         # e.g. the conveyor found no unique growth chain). This is no longer
         # pending -- it must surface as a failure, not defer forever.
-        apply_prepared_membership_classification(
+        publish_prepared_membership_classification(
             archive,
             "codex-session:pending-vs-ambiguous",
             MembershipClassification((), (), (raw_id,)),
             {raw_id: session},
             {raw_id: projection},
-            acquired_at_ms=2,
+            decided_at_ms=2,
         )
         assert archive.raw_membership_authority_complete(raw_id) is False
         assert archive.raw_membership_decision_pending(raw_id) is False
@@ -7509,13 +7509,13 @@ def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_hea
         archive.commit()
     seed_membership_census(tmp_path, [(legacy_raw_id, [legacy_session])], parser_fingerprint="legacy-parser")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        apply_prepared_membership_classification(
+        publish_prepared_membership_classification(
             archive,
             "chatgpt-export:parser-drift",
             MembershipClassification((legacy_raw_id,), (), ()),
             {legacy_raw_id: legacy_session},
             {legacy_raw_id: legacy_projection},
-            acquired_at_ms=1,
+            decided_at_ms=1,
         )
 
     # Byte-level formatting changes create a new retained raw while preserving

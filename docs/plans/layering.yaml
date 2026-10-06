@@ -59,7 +59,7 @@ writer_modules:
           durability: durable
           interruption: atomic
       entrypoints:
-        [apply_prepared_membership_index, apply_raw_membership_classification, apply_raw_revision_replay,
+        [apply_prepared_membership_index, apply_raw_revision_replay,
         classify_raw_revision_cohort_for_frozen_candidate, classify_raw_revision_cohort_for_live_watch,
         classify_raw_revision_cohort_for_live_watch_in_transaction,
         classify_raw_revision_cohort_for_rebuild_repair,
@@ -189,11 +189,11 @@ writer_modules:
           interruption: replayable
       entrypoints: [record_capture_gap_event, record_source_outage_events]
   twin_write_contracts:
-    - name: raw-membership-classification
+    - name: raw-revision-replay
       module: polylogue/storage/sqlite/archive_tiers/revision_governance.py
       surfaces: [index, source]
-      entrypoints: [apply_raw_membership_classification]
-      reason: "Applying a semantic member-head decision persists the derived session row (index) and the per-raw membership/authority decision (source) together so a partial write can never leave one raw id's authority state inconsistent with the session it was or was not accepted into."
+      entrypoints: [apply_raw_revision_replay, write_parsed_for_retained_raw]
+      reason: "Byte-revision replay and the guarded retained write persist the accepted session (index) and that raw's terminal parse state or failure evidence (source) in one admitted batch, so a crash cannot leave a raw acknowledged in source for a session the index never received. Membership publication runs on the prepared route: its index outcome and source acknowledgements are separate staged mutations of one original seal."
     - name: session-tag-assertion-mirror
       module: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
       surfaces: [index, user]

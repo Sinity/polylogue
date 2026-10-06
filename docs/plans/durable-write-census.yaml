@@ -790,27 +790,6 @@ writes:
     classification: lifecycle_transition
     reason: "raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
   - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "apply_raw_membership_classification"
-    table: "raw_session_memberships"
-    kind: "update"
-    tier: "source"
-    classification: lifecycle_transition
-    reason: "raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "apply_raw_membership_classification"
-    table: "raw_sessions"
-    kind: "update"
-    tier: "source"
-    classification: lifecycle_transition
-    reason: "raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "apply_raw_membership_classification"
-    table: "raw_sessions"
-    kind: "update"
-    tier: "source"
-    classification: lifecycle_transition
-    reason: "Separate statement 2 of this function on raw_sessions (). raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
     function: "promote_reconstructed_legacy_append_revisions"
     table: "raw_authority_parser_census"
     kind: "delete"

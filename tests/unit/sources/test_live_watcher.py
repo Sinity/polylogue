@@ -63,7 +63,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.frozen_clock import FrozenClock
-from tests.infra.prepared_replay import apply_prepared_membership_classification
+from tests.infra.prepared_membership import publish_prepared_membership_classification
 from tests.infra.raw_owner_routes import (
     ingest_files_with_owners,
     replay_retained_raws_async,
@@ -4387,13 +4387,13 @@ def test_decided_unresolved_membership_reconciles_the_cursor_instead_of_re_readi
         )
     seed_membership_census(tmp_path, [(raw_id, [session])], parser_fingerprint="test-parser")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        apply_prepared_membership_classification(
+        publish_prepared_membership_classification(
             archive,
             "codex-session:decided-unresolved",
             MembershipClassification((), (), (raw_id,)),
             {raw_id: session},
             {raw_id: session_revision_projection(session)},
-            acquired_at_ms=2,
+            decided_at_ms=2,
         )
 
     watcher, _full_ingest = _make_watcher(
@@ -4480,13 +4480,13 @@ def test_cursor_reconciliation_restores_the_newest_archived_outcome(
         parser_fingerprint="test-parser",
     )
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        apply_prepared_membership_classification(
+        publish_prepared_membership_classification(
             archive,
             "codex-session:newest-outcome",
             MembershipClassification((materialized,), (), (decided,)),
             parsed,
             {raw_id: session_revision_projection(parsed_session) for raw_id, parsed_session in parsed.items()},
-            acquired_at_ms=4,
+            decided_at_ms=4,
         )
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert [

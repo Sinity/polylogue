@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, ConnectionBlobPublicationRead
@@ -554,12 +553,13 @@ def test_retained_replay_writes_hold_the_publisher_slot_through_their_commit(tmp
         assert seen == [False, False]
 
 
-def test_membership_and_single_retained_writes_hold_the_publisher_slot(tmp_path: Path) -> None:
-    """Every retained write route orders itself against excision by the slot.
+def test_single_retained_write_holds_the_publisher_slot(tmp_path: Path) -> None:
+    """The store's retained write route orders itself against excision by the slot.
 
-    Anti-vacuity (Codex P1, #5696): leave membership classification (or the
-    single retained write) outside the exclusion and an excision can remove the
-    session between its checks and its commit, which the replay recreates.
+    Anti-vacuity (Codex P1, #5696): leave the single retained write outside the
+    exclusion and an excision can remove the session between its checks and
+    its commit, which the replay recreates. Membership publication runs on
+    the prepared route under its original seal, not through a store method.
     """
     import fcntl
 
@@ -591,13 +591,9 @@ def test_membership_and_single_retained_writes_hold_the_publisher_slot(tmp_path:
             return ("session", "raw")
 
         monkeypatch = pytest.MonkeyPatch()
-        monkeypatch.setattr(archive_module, "apply_raw_membership_classification", observed)
         monkeypatch.setattr(archive_module, "write_parsed_for_retained_raw", observed)
         try:
             with ArchiveStore(root, read_only=False) as store:
-                store.apply_raw_membership_classification(
-                    "key", MembershipClassification((), (), ()), {}, {}, acquired_at_ms=1
-                )
                 store.write_parsed_for_retained_raw(
                     ParsedSession(source_name=Provider.CODEX, provider_session_id="custody-probe", messages=[]),
                     raw_id="raw",
@@ -607,4 +603,4 @@ def test_membership_and_single_retained_writes_hold_the_publisher_slot(tmp_path:
         finally:
             monkeypatch.undo()
 
-        assert seen == [False, False]
+        assert seen == [False]
