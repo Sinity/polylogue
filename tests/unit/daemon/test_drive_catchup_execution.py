@@ -568,8 +568,18 @@ async def test_drive_growth_binds_a_raw_owned_by_many_source_generations(
             failure.add_note(f"actual Raw publication flags and reached false sites: {observations}")
             raise
         if divergent:
+            # An edited earlier turn is not growth: membership governance
+            # quarantines both captures as an ambiguous cohort and keeps the
+            # accepted head. That is governance evidence, not a parse failure.
             assert not second.processed_ids
-            assert second.parse_failures > 0
+            assert second.parse_failures == 0
+            with contextlib.closing(sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True)) as decided:
+                assert sorted(
+                    decided.execute(
+                        "SELECT decision, revision_authority FROM raw_session_memberships WHERE logical_source_key=?",
+                        ("aistudio-drive:neutral",),
+                    ).fetchall()
+                ) == [("ambiguous", "quarantined"), ("ambiguous", "quarantined")]
         else:
             assert second.processed_ids
     await parser.repository.close()
