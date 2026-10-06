@@ -1251,6 +1251,65 @@ def test_bound_deletion_preserves_audit_identity_and_keeps_ordinary_user_anchors
                 assert audit.execute("SELECT target_ref FROM operation_targets").fetchall() == [(f"session:{target}",)]
 
 
+def test_refused_bound_deletion_is_recorded_as_a_no_effect_rejection(tmp_path: Path) -> None:
+    """A delete that would orphan a surviving session's reference is refused before effect.
+
+    The child composes the parent's prefix, and its evidence points into a
+    parent message. Deleting the parent would leave the surviving child's
+    reference unresolved, so the seal refuses inside the delete's own
+    transaction. The audit must record that as a typed rejection without
+    effect, never as an indeterminate outcome.
+
+    Anti-vacuity: finalize every actuator exception as indeterminate again and
+    the run reads interrupted/unknown_effect with an unknown target.
+    """
+    from polylogue.operations.bindings import runtime_operation_binding
+    from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
+    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
+    from polylogue.storage.sqlite.reference_seal import ReferenceOrphanRefusalError
+
+    with write_lease("test.refused-bound-removal", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            parent = write_index_session(archive, reference_session("parent", messages=(("prefix", "prefix"),)))
+            child = write_index_session(
+                archive, reference_session("child", parent="parent", messages=(("prefix", "prefix"), ("tail", "tail")))
+            )
+            archive.commit()
+            message_id = archive._conn.execute(
+                "SELECT message_id FROM messages WHERE session_id = ?", (parent,)
+            ).fetchone()[0]
+            with closing(open_connection(tmp_path / "user.db", archive_root=tmp_path)) as user, user:
+                upsert_assertion(
+                    user,
+                    assertion_id="surviving-child-evidence",
+                    target_ref=f"session:{child}",
+                    kind=AssertionKind.ANNOTATION,
+                    key="surviving-child-evidence",
+                    body_text="Evidence scoped to the surviving child",
+                    author_kind="user",
+                    evidence_refs=(EvidenceRef(child, message_id).format(),),
+                )
+            binding = runtime_operation_binding(SessionDeleteActuator())
+            principal = MutationPrincipal("test", frozenset({"archive.delete_session"}), "api", "write")
+            executor = OperationExecutor.for_archive_root(tmp_path)
+            args = SessionDeleteArgs(archive=archive, session_ids=(parent,))
+            preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=tmp_path)
+            authorization = executor.authorize_bound(binding, preview, principal)
+            with pytest.raises(ReferenceOrphanRefusalError):
+                executor.execute_bound(binding, preview, authorization, args)
+            assert archive.stored_session_ids((parent,)) == (parent,)
+            with closing(sqlite3.connect(tmp_path / "audit.db")) as audit:
+                run = audit.execute(
+                    "SELECT status, terminal_reason, unknown_count, affected_count FROM operation_runs"
+                ).fetchall()
+                targets = audit.execute("SELECT state FROM operation_targets").fetchall()
+                attempts = audit.execute("SELECT state FROM operation_attempts").fetchall()
+            assert run == [("failed", "target_rejected", 0, 0)]
+            assert targets == [("rejected",)]
+            assert attempts == [("failed",)]
+
+
 @pytest.mark.asyncio
 async def test_bound_removal_permission_stays_with_actual_apply_task_and_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
