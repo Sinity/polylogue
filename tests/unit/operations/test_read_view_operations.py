@@ -195,28 +195,29 @@ async def test_pinned_snapshot_reads_complete_on_a_thread_already_driving_a_loop
 
     root = tmp_path / "archive"
     first, second = await asyncio.to_thread(_seed, root)
+    requests: tuple[tuple[str, dict[str, object]], ...] = (
+        ("read.topology", {"session_id": first, "node_offset": 0, "node_limit": 1, "edge_limit": 1}),
+        ("read.orchestration", {"session_id": first}),
+        (
+            "read.neighbors",
+            {"session_id": first, "query": None, "origin": None, "limit": 10, "window_hours": 24},
+        ),
+        (
+            "read.context-image",
+            {
+                "seed_session_ids": [first, second],
+                "max_sessions": 2,
+                "max_tokens": 100,
+                "include_assertions": False,
+                "observed_at_ms": 1_700_000_000_000,
+            },
+        ),
+        ("continuation.context", {"session_id": first, "observed_at_ms": 1000}),
+    )
     with ArchiveStore.open_existing(root) as archive:
         results = {
             name: execute_read_operation(name, payload, archive=archive, serving_identity="test")
-            for name, payload in (
-                ("read.topology", {"session_id": first, "node_offset": 0, "node_limit": 1, "edge_limit": 1}),
-                ("read.orchestration", {"session_id": first}),
-                (
-                    "read.neighbors",
-                    {"session_id": first, "query": None, "origin": None, "limit": 10, "window_hours": 24},
-                ),
-                (
-                    "read.context-image",
-                    {
-                        "seed_session_ids": [first, second],
-                        "max_sessions": 2,
-                        "max_tokens": 100,
-                        "include_assertions": False,
-                        "observed_at_ms": 1_700_000_000_000,
-                    },
-                ),
-                ("continuation.context", {"session_id": first, "observed_at_ms": 1000}),
-            )
+            for name, payload in requests
         }
     for name, result in results.items():
         validate_operation_result(name, result)
