@@ -1042,6 +1042,30 @@ class OperationExecutor:
             receipt = self.execute(binding.actuator, started.plan, authorization, args)
         except BaseException as exc:
             error_summary = str(exc)[:512]
+            from polylogue.core.errors import RefusedBeforeEffectError
+
+            # Excision commits Source completion before its Index mutation,
+            # so an Index-side refusal cannot prove the whole operation
+            # without effect; it stays indeterminate below.
+            if isinstance(exc, RefusedBeforeEffectError) and started.plan.operation != "mutate-session-excision":
+                refused = MutationReceipt(
+                    operation=started.plan.operation,
+                    plan_hash=started.plan.plan_hash,
+                    status="blocked",
+                    target_refs=started.plan.target_refs,
+                    affected_count=0,
+                    detail=error_summary,
+                    receipt_ref=None,
+                    applied_at=_utcnow_iso(),
+                )
+                try:
+                    admit_stage_write(
+                        f"operation.{binding.spec.name}.refused",
+                        lambda: self.finalize_bound(started, receipt=refused, error_summary=error_summary),
+                    )
+                except BaseException as cleanup:
+                    raise BaseExceptionGroup("Mutation refusal and its finalization failed", [exc, cleanup]) from exc
+                raise
 
             def finalize_indeterminate() -> None:
                 # Source completion is already durable if an Excision fault
@@ -1201,7 +1225,9 @@ class OperationExecutor:
                     unknown_reason=unknown_reason,
                 )
                 return None
-            self._audit.finalize_attempt(started.operation_id, status=receipt.status, receipt=receipt)
+            self._audit.finalize_attempt(
+                started.operation_id, status=receipt.status, receipt=receipt, error_summary=error_summary
+            )
         except Exception as exc:
             if receipt is None:
                 raise

@@ -1232,6 +1232,15 @@ def test_bound_deletion_preserves_audit_identity_and_protects_ordinary_user_anch
                 with pytest.raises(ReferenceSealError):
                     executor.execute_bound(binding, current, authorization, args)
                 assert archive.stored_session_ids((target,)) == (target,)
+                # The refusal precedes commit, so the audit records a typed
+                # no-effect rejection, never an indeterminate outcome.
+                with closing(sqlite3.connect(tmp_path / "audit.db")) as audit:
+                    run = audit.execute(
+                        "SELECT status, terminal_reason, unknown_count, affected_count FROM operation_runs"
+                    ).fetchall()
+                    states = audit.execute("SELECT state FROM operation_targets").fetchall()
+                assert run == [("failed", "target_rejected", 0, 0)]
+                assert states == [("rejected",)]
             else:
                 receipt = executor.execute_bound(binding, current, authorization, args)
                 assert receipt.status == "applied" and receipt.affected_count == 1

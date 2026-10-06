@@ -93,6 +93,15 @@ class ArchiveTierUnavailableError(DatabaseError):
         return f"{self.tier} archive tier is unavailable. {self.guidance}"
 
 
+class RefusedBeforeEffectError(Exception):
+    """A write refused inside its own transaction and rolled it back: no effect.
+
+    Raised only where the refusal provably precedes every commit of the
+    mutation, so an operation owner records a typed no-effect refusal rather
+    than an indeterminate outcome.
+    """
+
+
 class SchemaRefusalError(DatabaseError):
     """Base class for schema refusals raised before a tier can be served.
 
@@ -248,6 +257,7 @@ class UnsupportedInsightFilterError(PolylogueError):
 
 __all__ = [
     "ArchiveTierUnavailableError",
+    "RefusedBeforeEffectError",
     "InsightMaintenanceRequiresDaemonError",
     "DatabaseError",
     "EmbeddingRetrievalNotReadyError",
