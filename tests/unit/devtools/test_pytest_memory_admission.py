@@ -179,7 +179,7 @@ def test_a_run_nested_inside_an_admitted_slot_runs_within_its_reservation(
     (job / "memory.current").write_text("0", encoding="ascii")
     proc = tmp_path / "proc"
     # pid 101 (the nested run) is a child of 102 (the test), a child of 100 (the slot run).
-    for pid, parent in ((101, 102), (102, 100), (100, 1)):
+    for pid, parent in ((101, 102), (102, 100), (100, 1), (200, 1)):
         (proc / str(pid)).mkdir(parents=True)
         (proc / str(pid) / "stat").write_text(f"{pid} (py thon) S {parent} 0 0\n", encoding="ascii")
     monkeypatch.setattr("devtools.pytest_memory_admission._process_start_ticks", lambda pid, *, proc: pid + 1000)
@@ -207,6 +207,10 @@ def test_a_run_nested_inside_an_admitted_slot_runs_within_its_reservation(
         ["pytest"], size=size, profile=profile, max_workers=1, ledger=enclosing, report=lambda _message: None
     )
     assert enclosing_basis is not None and enclosing_basis["workers"] == 1
+    # An unrelated job in the same pool holds the rest of its memory.
+    other = AdmissionLedger(ledger_dir, proc=proc, pid=200)
+    with other.locked():
+        other.record(cgroup=str(job), reserved_mib=1000.0, state="admitted", ticket=9)
 
     def no_wait(_delay: float) -> None:
         raise AssertionError("the nested run waited on its enclosing slot's reservation")
@@ -223,5 +227,7 @@ def test_a_run_nested_inside_an_admitted_slot_runs_within_its_reservation(
 
     assert nested_basis is not None and nested_basis["workers"] == 1
     assert nested_basis["admission_ledger"]["holders"] == 0
+    assert nested_basis["admission_ledger"]["within_enclosing_reservation"] is True
     nested.release()
+    other.release()
     enclosing.release()

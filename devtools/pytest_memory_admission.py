@@ -233,9 +233,25 @@ def admit_width(
     reported_at: float | None = None
     # A run nested inside an admitted slot (a test that runs ``devtools test``)
     # charges the enclosing run's cgroup, which that run's reservation already
-    # covers. Counting the enclosing reservation again would make the nested
-    # run wait for memory only its own completion can release.
+    # covers. It runs within that reservation: waiting on the pool -- the
+    # enclosing reservation included -- would wait for memory only the
+    # enclosing run's completion can release.
     enclosing = ledger.enclosing_pids()
+    with ledger.locked():
+        within_enclosing = any(
+            item.pid in enclosing and item.state == "admitted" for item in ledger.live_reservations()
+        )
+    if within_enclosing:
+        command, sizing = size(list(argv), profile=profile, max_workers=max_workers)
+        if sizing is not None:
+            sizing["admission_ledger"] = {
+                "waited_s": 0.0,
+                "holders": 0,
+                "waiting_ahead": 0,
+                "reserved_by_other_jobs_mib": 0.0,
+                "within_enclosing_reservation": True,
+            }
+        return command, sizing
     while True:
         with ledger.locked():
             others = [
