@@ -7,12 +7,14 @@ that a daemon process was recently making progress.
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import contextlib
 import faulthandler
 import os
 import signal
 import sqlite3
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -151,9 +153,25 @@ class DaemonLifecycle:
         note_process_heartbeat()
 
     def record_signal_best_effort(self, signum: int) -> None:
-        """Persist a terminating signal from a synchronous signal handler."""
+        """Persist a terminating signal from a synchronous signal handler.
+
+        The daemon's handler runs on the event-loop thread, where a
+        synchronous write lease must not block the loop. There the write runs
+        on its own thread; :meth:`stop` also carries the signal name, so the
+        row stays coherent if the process ends before that thread commits.
+        """
         signal_name = signal.Signals(signum).name
         self.received_signal_name = signal_name
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            self._persist_signal(signal_name)
+            return
+        threading.Thread(
+            target=self._persist_signal, args=(signal_name,), name="daemon-lifecycle-signal", daemon=True
+        ).start()
+
+    def _persist_signal(self, signal_name: str) -> None:
         try:
             _write_existing_lifecycle(
                 self.ops_db_path,
@@ -188,6 +206,7 @@ class DaemonLifecycle:
                 run_id=self.run_id,
                 stopped_at_ms=_now_ms(),
                 exit_kind=exit_kind,
+                signal_name=self.received_signal_name,
             )
         except Exception:
             # A signal row may already be durable. Do not let a contended

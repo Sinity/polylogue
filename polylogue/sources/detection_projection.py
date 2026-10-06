@@ -418,6 +418,11 @@ def project_detection_value(value: object, rule: DetectorProjection) -> object:
     array takes the same first-item wrapper a physical JSONL line receives.
     """
     root_rule = DetectorProjection(item=rule, array_fold="first") if isinstance(value, list) else rule
+    return project_detection_root(value, root_rule)
+
+
+def project_detection_root(value: object, root_rule: DetectorProjection) -> object:
+    """Project a decoded value under an already chosen root rule, as :func:`_project` does."""
     return _project_object(value, root_rule, scalarish_depth=-1 if root_rule.capture_metadata_values else None)[0]
 
 

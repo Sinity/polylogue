@@ -218,7 +218,9 @@ def test_live_retained_and_owned_cold_routes_publish_one_interpretation(tmp_path
     cold_root = tmp_path / "cold"
     bootstrap_archive_root(cold_root)
     generation = ColdBuildGeneration.begin(
-        cold_root, reason="synthetic route characterization", sources=(WatchSource("codex", source_root),)
+        cold_root,
+        reason="synthetic route characterization",
+        observed=ColdBuildGeneration.observe_source_baseline((WatchSource("codex", source_root),)),
     )
     register_cold_build_generation(generation)
     try:

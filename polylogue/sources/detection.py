@@ -7,6 +7,7 @@ predicate runs for an acquired JSON record or record stream.
 
 from __future__ import annotations
 
+import functools
 import inspect
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
@@ -172,6 +173,54 @@ class CompiledDetectorRegistry:
                     return cast(Provider | None, resolved_provider), binding.evidence_label
         return None, None
 
+    def detect_record_value(self, value: object, *, sequence: bool) -> tuple[Provider | None, str | None]:
+        """:meth:`detect_record_events` over one already decoded record.
+
+        Each binding's declared projection is applied to the decoded value,
+        so only declared fields are visited and no event stream is replayed.
+        """
+        from polylogue.sources.detection_projection import DetectorProjection, project_detection_root
+
+        array_input = sequence or isinstance(value, list)
+        modes = (
+            (DetectionMode.SEQUENCE_DOCUMENT, DetectionMode.SEQUENCE_RECORD_STREAM)
+            if array_input
+            else (DetectionMode.RECORD,)
+        )
+        root_value = [value] if sequence else value
+        for mode in modes:
+            for compiled in self.by_mode.get(mode, ()):
+                binding = compiled.binding
+                rule = _stream_projection(binding)
+
+                def array_predicate(item: object, predicate: Predicate = compiled.predicate) -> bool:
+                    return predicate([item])
+
+                root_rule = (
+                    DetectorProjection(item=rule, array_fold="any", array_predicate=array_predicate)
+                    if array_input
+                    else rule
+                )
+                payload = project_detection_root(root_value, root_rule)
+                if not compiled.predicate(payload):
+                    continue
+                resolved_provider: object = (
+                    binding.fixed_provider
+                    if compiled.provider_resolver is None
+                    else compiled.provider_resolver(payload)
+                )
+                if (
+                    compiled.provider_resolver is not None
+                    and resolved_provider is not None
+                    and (
+                        not isinstance(resolved_provider, Provider)
+                        or resolved_provider not in binding.dynamic_provider_allowlist
+                    )
+                ):
+                    raise DetectorBindingError(f"{binding.binding_id}: invalid projected dynamic provider")
+                return cast(Provider | None, resolved_provider), binding.evidence_label
+        return None, None
+
     def detect_record_stream(
         self, records: Iterable[object], *, check_stop: Callable[[], None] | None = None
     ) -> tuple[Provider | None, str | None]:
@@ -270,7 +319,9 @@ class CompiledDetectorRegistry:
             handle.seek(start)
 
 
+@functools.cache
 def _stream_projection(binding: DetectorBinding) -> DetectorProjection:
+    """The binding's declared projection; a declaration is resolved once per process."""
     from polylogue.sources.detection_projection import DetectorProjection
 
     if binding.stream_projection_path is None:
