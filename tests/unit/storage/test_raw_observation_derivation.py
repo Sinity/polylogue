@@ -10,7 +10,7 @@ import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from unittest.mock import Mock
 
 import pytest
@@ -1428,7 +1428,7 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
         publish = RawObservationDerivation.publish
 
         def counted_publish(
-            self: RawObservationDerivation, frame: RawFrame, replacement: RawObservationReplacement, **kwargs: object
+            self: RawObservationDerivation, frame: RawFrame, replacement: RawObservationReplacement, **kwargs: Any
         ) -> bool:
             committed = publish(self, frame, replacement, **kwargs)
             if committed:
