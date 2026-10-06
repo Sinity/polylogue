@@ -456,7 +456,7 @@ async def test_acquired_sidecar_bytes_outlive_their_source_tree_and_the_index_ti
         if blob_file.is_file():
             os.utime(blob_file, (aged, aged))
 
-    report = run_blob_gc_report(archive_root / "source.db", store.root)
+    report = await asyncio.to_thread(run_blob_gc_report, archive_root / "source.db", store.root)
     assert report.blocked_reason is None
     assert report.deleted_count == 0
     assert store.exists(sidecar_hash)

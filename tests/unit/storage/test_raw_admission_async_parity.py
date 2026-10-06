@@ -245,7 +245,11 @@ async def test_acquisition_persistence_enters_plan_executor_and_failure_leaves_n
 
     repository = SessionRepository(backend=backend)
     record = make_raw_record(
-        RawSessionData(raw_bytes=b'{"route":"entered"}', source_path="/captures/route.json"),
+        RawSessionData(
+            raw_bytes=b'{"route":"entered"}',
+            source_path="/captures/route.json",
+            canonical_source_path="/captures/route.json",
+        ),
         "chatgpt",
         blob_root=tmp_path / "blob",
     )

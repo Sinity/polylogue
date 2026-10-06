@@ -427,7 +427,6 @@ def test_source002_constructor_preserves_populated_baseline_on_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.core.errors import SchemaSkew
     from polylogue.storage.sqlite import durable_change_train
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -445,16 +444,23 @@ def test_source002_constructor_preserves_populated_baseline_on_restart(
     finally:
         conn.close()
     monkeypatch.setattr(durable_change_train, "execute_durable_change_train", execute)
-    with pytest.raises(SchemaSkew):
-        initialize_active_archive_root(tmp_path)
+    # The restarted bootstrap resumes the pending source train over the
+    # populated baseline and completes every step with its rows intact
+    # (50831b9048 made a restarted train complete instead of refusing).
+    initialize_active_archive_root(tmp_path)
 
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
         assert tuple(tuple(row) for row in conn.execute("SELECT * FROM raw_sessions ORDER BY raw_id")) == rows
         assert {row[0] for row in conn.execute("SELECT raw_id FROM raw_sessions")} == set(raw_ids)
         upsert_raw_artifact(conn, raw_ids[0], missing_coordinates_artifact(raw_ids[0]))
         upsert_raw_artifact(conn, raw_ids[1], missing_coordinates_artifact(raw_ids[1]))
-    with pytest.raises(SchemaSkew):
-        initialize_active_archive_root(tmp_path)
+    initialize_active_archive_root(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        assert tuple(tuple(row) for row in conn.execute("SELECT * FROM raw_sessions ORDER BY raw_id")) == rows
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_artifacts WHERE artifact_id LIKE 'missing-coordinates:%'"
+        ).fetchone() == (2,)
 
 
 def test_populated_baseline_train_cancellation_rolls_back_and_restarts(

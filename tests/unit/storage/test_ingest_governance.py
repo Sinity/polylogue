@@ -19,7 +19,7 @@ from polylogue.archive.revision_authority import (
     raw_authority_parser_fingerprint,
 )
 from polylogue.core.enums import BlockType, Provider
-from polylogue.core.raw_failure_evidence import CohortMembershipRefusalError
+from polylogue.core.raw_failure_evidence import CohortMembershipRefusalError, RawFailureEvidenceKind
 from polylogue.pipeline.ids import bound_session_content_hash, session_content_hash
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -327,10 +327,15 @@ async def test_missing_sealed_attachment_capture_refuses_before_index_publicatio
 
 
 @pytest.mark.asyncio
-async def test_canonical_raising_parser_publishes_only_failed_source_census(
+async def test_canonical_raising_parser_settles_terminal_source_census(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A genuine parser exception yields a publishable Source receipt, not Index work."""
+    """A genuine parser exception yields a settled Source receipt, not Index work.
+
+    A deterministic parser failure on unchanged bytes is the parser's settled
+    answer (bcaec252a4): a non-session census with typed terminal evidence and
+    a complete parser census, never a ``failed`` census re-run every pass.
+    """
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def raising_parser(*args: object, **kwargs: object) -> None:
@@ -350,12 +355,16 @@ async def test_canonical_raising_parser_publishes_only_failed_source_census(
             status, count, detail = source.execute(
                 "SELECT status, member_count, detail FROM raw_membership_census WHERE raw_id=?", (raw_id,)
             ).fetchone()
-            assert status == "failed"
+            assert status == "non_session"
             assert count == 0
             assert "synthetic retained parser failure" in detail
             assert source.execute(
                 "SELECT status FROM raw_authority_parser_census WHERE raw_id=?", (raw_id,)
-            ).fetchone() == ("failed",)
+            ).fetchone() == ("complete",)
+            assert source.execute(
+                "SELECT artifact_kind FROM raw_artifacts WHERE raw_id=? AND artifact_id LIKE 'raw-failure:%'",
+                (raw_id,),
+            ).fetchone() == (RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,)
         with closing(sqlite3.connect(tmp_path / "index.db")) as index:
             assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
@@ -530,7 +539,25 @@ async def _run_original_raw_carrier_case(
                 # the real committed census/classification in a fresh frame.
                 while not replacement.prepared_writes:
                     phase = (replacement.needs_source_census, replacement.needs_source_classification)
-                    assert any(phase), "Raw returned neither a preparatory receipt nor a destination write"
+                    if not any(phase):
+                        # Single-pass convergence: compute committed its Source
+                        # phases in place and publication only reports them.
+                        committed = list(replacement.committed_phase_receipts)
+                        assert committed, "Raw returned neither a preparatory receipt nor a destination write"
+                        assert source_receipt_assertion is not None, "an in-place Source receipt has a receipt check"
+                        reported: list[_PhaseReceipt] = []
+                        admit_stage_write(
+                            "fixture.raw.committed-receipt",
+                            partial(
+                                adapter.publish,
+                                frame,
+                                replacement,
+                                phase_receipt=lambda kind, receipt, reported=reported: reported.append((kind, receipt)),
+                            ),
+                        )
+                        assert reported == committed
+                        source_receipt_assertion(raw_id, reported)
+                        return
                     assert phase not in completed_preparatory_phases, "Raw preparatory receipt did not advance"
                     completed_preparatory_phases.add(phase)
                     from polylogue.core.stage_admission import admit_stage_write
@@ -1058,12 +1085,14 @@ def test_only_explicit_census_retirement_selects_an_unaccepted_sibling(tmp_path:
 async def test_read_only_compute_defers_attachment_publication_until_writer_revalidation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A stale prepared attachment publishes neither Index attachments nor Source refs.
+    """A stale prepared attachment publishes no Index attachments.
 
-    Compute prepares the attachment claim off-writer; a descriptor change
-    before writer admission refuses publication and leaves no attachment row
-    or attachment blob reference. Anti-vacuity: publish attachments during
-    compute and the stale refusal leaves them behind.
+    Compute prepares the attachment off-writer. Its acquired claim is Source
+    acquisition evidence, settled as an exact blob reference before derived
+    replay can fail or skip (the acquired attachment reference phase); a
+    descriptor change before writer admission refuses the Index publication
+    and leaves no attachment row. Anti-vacuity: publish Index attachments
+    during compute and the stale refusal leaves them behind.
     """
     from polylogue.core.stage_admission import admit_stage_write
     from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
@@ -1074,6 +1103,11 @@ async def test_read_only_compute_defers_attachment_publication_until_writer_reva
         replacement: RawObservationReplacement,
         publish: _Publish,
     ) -> None:
+        with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+            acquired_refs = source.execute(
+                "SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment' AND ref_id = ?", (replacement.key,)
+            ).fetchone()
+        assert acquired_refs == (1,)
         admit_stage_write(
             "fixture.raw.attachment-descriptor",
             _move_source(
@@ -1087,7 +1121,9 @@ async def test_read_only_compute_defers_attachment_publication_until_writer_reva
         with closing(sqlite3.connect(tmp_path / "index.db")) as index:
             assert index.execute("SELECT COUNT(*) FROM attachments").fetchone() == (0,)
         with closing(sqlite3.connect(tmp_path / "source.db")) as source:
-            assert source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'").fetchone() == (0,)
+            assert source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'").fetchone() == (
+                acquired_refs
+            )
 
     await _run_original_raw_carrier_case(
         tmp_path,

@@ -45,6 +45,7 @@ async def test_a_pending_async_acquisition_can_later_bind_its_parsed_identity(
         raw_id="raw-pending-1",
         source_name="chatgpt-export",
         source_path="/imports/conversations.json",
+        canonical_source_path="/imports/conversations.json",
         source_index=0,
         blob_size=16,
         acquired_at="2026-02-02T12:00:00+00:00",

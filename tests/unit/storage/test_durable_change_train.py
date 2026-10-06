@@ -1369,6 +1369,9 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path, m
         assert current.execute("SELECT count(*) FROM raw_profile_identity_receipts").fetchone()[0] == 0
         with closing(migration_runner._schema_only_replica(current)) as source4:
             reset_source_fixture_to_version(source4, 4)
+            # The live tier has applied later slots (005, 006); the slot-004
+            # post-apply candidate carries that slot's own version.
+            source4.execute("PRAGMA user_version = 4")
             for alteration in ("PRAGMA user_version = 3", "DROP INDEX idx_raw_artifacts_failure_identity"):
                 with closing(migration_runner._schema_only_replica(source4)) as mismatched:
                     mismatched.execute(alteration)
