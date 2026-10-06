@@ -2972,7 +2972,39 @@ def test_verified_source1_backup_restores_through_destination_owned_source002(
         # up to this runtime's Source version.
         restored_version = conn.execute("PRAGMA user_version").fetchone()[0]
         assert restored_version == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE], (restored_version, detail)
-        assert migration_runner._durable_literal_rows_digest(conn) == before
+        # Later Source steps add relations and columns the version-1 image
+        # never had (source-004 creates ``raw_profile_identity_receipts``), so
+        # a whole-schema literal digest cannot match across the chain. The
+        # retained version-1 rows are compared literally on the version-1
+        # relations and columns, and every added relation starts empty.
+        with closing(
+            sqlite3.connect(package.joinpath("source.db").as_uri() + "?mode=ro&immutable=1", uri=True)
+        ) as baseline:
+            baseline_tables = [
+                str(row[0])
+                for row in baseline.execute(
+                    "SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' "
+                    "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                )
+            ]
+            for table in baseline_tables:
+                columns = ",".join(
+                    f'"{row[1]}"' for row in baseline.execute("SELECT * FROM pragma_table_info(?)", (table,))
+                )
+                retained = sorted(map(repr, baseline.execute(f'SELECT {columns} FROM "{table}"')))
+                restored = sorted(map(repr, conn.execute(f'SELECT {columns} FROM "{table}"')))
+                assert restored == retained, table
+        added = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+            if str(row[0]) not in baseline_tables
+        ]
+        assert added, "this law follows the full Source chain, which adds relations"
+        for name in added:
+            assert conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone() == (0,), name
     # The ordinary startup owner validates the new physical receipt; no copied
     # baseline history is admitted as destination authority.
     initialize_active_archive_root(destination)

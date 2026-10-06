@@ -725,7 +725,12 @@ class IngestExecution:
 
         def load_started() -> StartedBoundMutation:
             assert self.binding is not None
-            with self.audit.settled_machine_read():
+            # This execution just accepted the request. Another audit
+            # continuity transition (a concurrent request's write) holding the
+            # lock at this instant is contention, not absence: wait for it on
+            # this compute phase, which stays cancellable, rather than refuse
+            # an accepted ingest as indeterminate.
+            with self.audit.settled_machine_read(wait_for_lock=True):
                 parts = self.audit.machine_parts(self.binding)
                 if len(parts) != 1 or not parts[0].get("operation_id") or not parts[0].get("authorization_ref"):
                     raise ValueError("legacy accepted source intent lacks an audited ingest execution")

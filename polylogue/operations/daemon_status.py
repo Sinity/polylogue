@@ -600,11 +600,15 @@ def _frontier_status(
 
     if source_conn is None or ops_conn is None or ops_db_path is None:
         return unknown_raw_frontier_integrity_projection("required frontier tier is unavailable").to_dict()
+    # ``ops_conn`` is the pinned Index handle with Ops attached as
+    # ``ops_tier`` (``_attached_connection``); naming ``main`` there points the
+    # journal ownership check at index.db and reports the frontier unknown.
     coverage = frontier_inspection_projection_from_connections(
         source_conn,
         index_conn,
         ops_conn,
         archive_root=ops_db_path.parent,
+        ops_schema="ops_tier",
     )
     return _raw_frontier_integrity_from_coverage(coverage, materialization).to_dict()
 

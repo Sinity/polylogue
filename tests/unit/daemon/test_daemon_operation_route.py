@@ -1908,6 +1908,9 @@ def test_expired_staged_ingest_releases_its_queued_compute_reservation(
         # The test exercises deadline propagation before ingest's later
         # session-maintenance phase, which is not part of this queue seam.
         monkeypatch.setattr(stack.runtime, "require_session_maintenance", lambda: None)
+        # Startup recovery already completed one control-class phase on this
+        # kernel (777ab745c9); only this request's dispatch is measured.
+        startup_control_completions = stack.execution_kernel.snapshot().by_class("control").completed
         blockers = [stack.execution_kernel.submit(block_worker) for _ in range(2)]
         assert all(entered.acquire(timeout=2) for _ in blockers)
 
@@ -1934,7 +1937,7 @@ def test_expired_staged_ingest_releases_its_queued_compute_reservation(
             # completed dispatch.
             control = stack.execution_kernel.snapshot().by_class("control")
             assert control.used_units == control.queued_units == 0
-            assert control.completed == 0
+            assert control.completed == startup_control_completions
         finally:
             release.set()
             for blocker in blockers:

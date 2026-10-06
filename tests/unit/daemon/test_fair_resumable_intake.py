@@ -63,6 +63,26 @@ from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_
 from tests.infra.cursor_authority import fixture_cursor_authority
 
 
+async def _inline_writer_sync(_actor: str, function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    """The fakes' declared write coordinator: the test's own loop is the writer."""
+    return function(*args, **kwargs)
+
+
+class _InlineWriterWatcher:
+    """A watcher fake that declares a write coordinator.
+
+    ``FileIntakeAdapter.admit_page`` runs cursor initialization and candidate
+    selection on the watcher's declared writer and refuses cursor writes
+    without one (55bdd84105), so every fake that carries a cursor or a
+    candidate classifier declares the coordinator the daemon would supply.
+    """
+
+    has_write_coordinator = True
+
+    async def _run_writer_sync(self, actor: str, function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+        return await _inline_writer_sync(actor, function, *args, **kwargs)
+
+
 class FakeAdapter:
     """A spool whose queue authority is its own pending list."""
 
@@ -314,7 +334,7 @@ async def test_file_discovery_keeps_its_page_under_repeated_watcher_hints(tmp_pa
     changed.write_text("{}")
     source = WatchSource(name="capture", root=root, suffixes=(".json",))
 
-    class HintingWatcher:
+    class HintingWatcher(_InlineWriterWatcher):
         revision = 0
 
         def intake_revision(self, _source: WatchSource) -> int:
@@ -356,7 +376,7 @@ async def test_file_discovery_retries_queued_rescan_after_walk_failure(tmp_path:
     (root / "z.json").write_text("{}")
     source = WatchSource(name="capture", root=root, suffixes=(".json",))
 
-    class HintingWatcher:
+    class HintingWatcher(_InlineWriterWatcher):
         revision = 0
 
         def intake_revision(self, _source: WatchSource) -> int:
@@ -398,7 +418,7 @@ async def test_vanished_pending_file_does_not_block_walk_or_queued_rescan(tmp_pa
         path.write_text("{}")
     source = WatchSource(name="capture", root=root, suffixes=(".json",))
 
-    class HintingWatcher:
+    class HintingWatcher(_InlineWriterWatcher):
         revision = 0
 
         def intake_revision(self, _source: WatchSource) -> int:
@@ -528,7 +548,7 @@ async def test_live_retryable_pending_file_yields_to_queued_rescan(tmp_path: Pat
     poison.write_text("{}")
     source = WatchSource(name="capture", root=root, suffixes=(".json",))
 
-    class RetryWatcher:
+    class RetryWatcher(_InlineWriterWatcher):
         revision = 0
 
         def intake_revision(self, _source: WatchSource) -> int:
@@ -587,6 +607,9 @@ async def test_retry_cooldown_does_not_restart_large_file_walk(
     class RetryCursor:
         due = False
 
+        def initialize(self) -> None:
+            """Admission initializes a watcher's cursor on its writer first (55bdd84105)."""
+
         def get_records(self, paths: Sequence[Path]) -> dict[Path, SimpleNamespace]:
             return {path: SimpleNamespace(failure_count=1, next_retry_at="later") for path in paths if path == poison}
 
@@ -596,7 +619,7 @@ async def test_retry_cooldown_does_not_restart_large_file_walk(
         def list_due_retry_paths(self, _root: Path, **_kwargs: object) -> tuple[Path, ...]:
             return (poison,) if self.due else ()
 
-    class RetryWatcher:
+    class RetryWatcher(_InlineWriterWatcher):
         revision = 0
         poison_attempts = 0
         admitted: list[Path] = []
@@ -699,7 +722,7 @@ async def test_retry_debt_overflow_revisits_evicted_file_after_cooldown(
 
     monkeypatch.setattr("polylogue.operations.intake_adapters._source_path_steps", counted_steps)
 
-    class BurstWatcher:
+    class BurstWatcher(_InlineWriterWatcher):
         admitted: list[Path] = []
 
         def intake_revision(self, _source: WatchSource) -> int:
@@ -762,7 +785,7 @@ async def test_mixed_fresh_page_keeps_failed_sibling_retryable(tmp_path: Path, v
     source = WatchSource(name="capture", root=root, suffixes=(".json",))
     now = [0.0]
 
-    class MixedWatcher:
+    class MixedWatcher(_InlineWriterWatcher):
         admitted: list[Path] = []
 
         def intake_revision(self, _source: WatchSource) -> int:
@@ -931,7 +954,7 @@ async def test_cursor_row_without_due_authority_does_not_replace_local_retry_deb
         def list_due_retry_paths(self, _root: Path, **_kwargs: object) -> tuple[Path, ...]:
             return ()
 
-    class RetryWatcher:
+    class RetryWatcher(_InlineWriterWatcher):
         _cursor = ExcludedCursor()
 
         def intake_revision(self, _source: WatchSource) -> int:
@@ -974,7 +997,12 @@ async def test_durable_retry_alias_is_retired_after_symlink_swap(tmp_path: Path,
     carrier.rename(parked)
     carrier.symlink_to(target)
     alias_stat = carrier.lstat()
-    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    watcher = SimpleNamespace(
+        has_write_coordinator=True,
+        _run_writer_sync=_inline_writer_sync,
+        _cursor=cursor,
+        intake_revision=lambda _source: 0,
+    )
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
         source,
@@ -1016,7 +1044,12 @@ async def test_escaping_retry_alias_has_bounded_cost_and_distinct_source_identit
     )
     cursor = CursorStore(tmp_path / "index.db")
     cursor.set(alias, 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(alias))
-    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    watcher = SimpleNamespace(
+        has_write_coordinator=True,
+        _run_writer_sync=_inline_writer_sync,
+        _cursor=cursor,
+        intake_revision=lambda _source: 0,
+    )
     context = DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=sources)  # type: ignore[arg-type]
     alias_adapter = FileIntakeAdapter(context, sources[0])
     target_adapter = FileIntakeAdapter(context, sources[1])
@@ -1050,6 +1083,8 @@ async def test_durable_alias_retirement_respects_cursor_authority(tmp_path: Path
             raise RuntimeError("cursor authority refused")
 
     watcher = SimpleNamespace(
+        has_write_coordinator=True,
+        _run_writer_sync=_inline_writer_sync,
         _cursor=cursor,
         _batch_processor=RefusingProcessor(),
         intake_revision=lambda _source: 0,
@@ -1090,6 +1125,8 @@ async def test_durable_alias_retirement_skips_path_scoped_refusal(tmp_path: Path
         return SimpleNamespace(succeeded_paths=(str(sibling),), source_payload_read_bytes=2)
 
     watcher = SimpleNamespace(
+        has_write_coordinator=True,
+        _run_writer_sync=_inline_writer_sync,
         _cursor=cursor,
         _batch_processor=PartialRefusalProcessor(),
         intake_revision=lambda _source: 0,
@@ -1138,6 +1175,8 @@ async def test_path_scoped_refusal_skips_regular_candidate_selection(tmp_path: P
         return SimpleNamespace(succeeded_paths=(str(allowed),), source_payload_read_bytes=2)
 
     watcher = SimpleNamespace(
+        has_write_coordinator=True,
+        _run_writer_sync=_inline_writer_sync,
         _cursor=cursor,
         _batch_processor=PartialRefusalProcessor(),
         intake_revision=lambda _source: 0,
@@ -1183,6 +1222,8 @@ async def test_a_scheduled_retry_is_deferred_not_acknowledged_as_a_duplicate(tmp
         return SimpleNamespace(succeeded_paths=(), source_payload_read_bytes=0)
 
     watcher = SimpleNamespace(
+        has_write_coordinator=True,
+        _run_writer_sync=_inline_writer_sync,
         _cursor=CursorStore(tmp_path / "index.db"),
         _batch_processor=RefusingNothing(),
         intake_revision=lambda _source: 0,
@@ -1212,7 +1253,7 @@ async def test_partially_planned_local_retry_rotates_past_poison(tmp_path: Path)
     source = WatchSource(name="capture", root=root, suffixes=(".json",))
     now = [5.0]
 
-    class RetryWatcher:
+    class RetryWatcher(_InlineWriterWatcher):
         admitted: list[Path] = []
 
         def intake_revision(self, _source: WatchSource) -> int:
@@ -1277,7 +1318,7 @@ async def test_pending_path_replaced_by_escaping_symlink_is_not_admitted(tmp_pat
     outside.write_text("outside")
     source = WatchSource(name="capture", root=root, suffixes=(".json",))
 
-    class GuardedWatcher:
+    class GuardedWatcher(_InlineWriterWatcher):
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 
@@ -1378,7 +1419,7 @@ async def test_cold_build_waits_for_local_retry_debt_without_cursor_row(
     path.write_text("{}")
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
 
-    class ColdBuildWatcher:
+    class ColdBuildWatcher(_InlineWriterWatcher):
         attempts = 0
         admitted = False
 
@@ -1938,7 +1979,7 @@ async def test_file_intake_retries_a_stale_cursor_write_before_acknowledging_suc
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
     convergence_paths: list[tuple[Path, ...]] = []
 
-    class StaleCursorWatcher:
+    class StaleCursorWatcher(_InlineWriterWatcher):
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 
@@ -2304,7 +2345,7 @@ async def test_a_durably_excluded_file_is_not_reported_as_a_duplicate(
     capture.write_text("{}")
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
 
-    class ExcludingWatcher:
+    class ExcludingWatcher(_InlineWriterWatcher):
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 
@@ -2609,7 +2650,7 @@ async def test_zero_success_file_intake_is_retryable_not_duplicate(tmp_path: Pat
     capture.write_text("{}")
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
 
-    class ZeroSuccessWatcher:
+    class ZeroSuccessWatcher(_InlineWriterWatcher):
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 
@@ -2649,7 +2690,7 @@ async def test_unattempted_file_refunds_estimate_so_next_pass_can_discover(tmp_p
         path.write_bytes(b"x" * 40)
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
 
-    class PartlyRefusedWatcher:
+    class PartlyRefusedWatcher(_InlineWriterWatcher):
         def __init__(self) -> None:
             self.batches: list[list[Path]] = []
 
@@ -2727,7 +2768,7 @@ async def test_deferred_file_is_reoffered_when_cursor_retry_is_due(tmp_path: Pat
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
     cursor = CursorStore(tmp_path / "index.db")
 
-    class DeferredWatcher:
+    class DeferredWatcher(_InlineWriterWatcher):
         def __init__(self) -> None:
             self._cursor = cursor
             self.batches: list[list[Path]] = []
@@ -2788,7 +2829,12 @@ async def test_archive_sidecars_do_not_restart_a_file_sweep_but_new_source_files
         path.write_text("{}")
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
     cursor = CursorStore(tmp_path / "index.db")
-    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    watcher = SimpleNamespace(
+        has_write_coordinator=True,
+        _run_writer_sync=_inline_writer_sync,
+        _cursor=cursor,
+        intake_revision=lambda _source: 0,
+    )
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
         source,
@@ -2822,7 +2868,7 @@ async def test_acquisition_budget_retains_unattempted_file_page_tail(tmp_path: P
         path.write_text("{}")
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
 
-    class BudgetWatcher:
+    class BudgetWatcher(_InlineWriterWatcher):
         def __init__(self) -> None:
             self.batches: list[list[Path]] = []
 
@@ -2878,7 +2924,7 @@ async def test_acquisition_budget_retains_unattempted_file_sorting_before_an_ack
         path.write_text("{}")
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
 
-    class BudgetWatcher:
+    class BudgetWatcher(_InlineWriterWatcher):
         def __init__(self) -> None:
             self.batches: list[list[Path]] = []
 
@@ -2926,7 +2972,7 @@ async def test_dispatcher_byte_budget_reoffers_unplanned_fresh_page_tail(tmp_pat
         path.write_text("data")
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
 
-    class BudgetWatcher:
+    class BudgetWatcher(_InlineWriterWatcher):
         def __init__(self) -> None:
             self.batches: list[list[Path]] = []
 
@@ -2962,7 +3008,12 @@ async def test_retry_page_does_not_skip_fresh_files_or_starve_discovery(tmp_path
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
     cursor = CursorStore(tmp_path / "index.db")
     cursor.set(paths[-1], 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(paths[-1]))
-    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    watcher = SimpleNamespace(
+        has_write_coordinator=True,
+        _run_writer_sync=_inline_writer_sync,
+        _cursor=cursor,
+        intake_revision=lambda _source: 0,
+    )
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
         source,
@@ -2987,7 +3038,12 @@ async def test_retry_cursor_keeps_unoffered_page_tail_under_a_byte_budget(tmp_pa
     cursor = CursorStore(tmp_path / "index.db")
     for path in paths[:3]:
         cursor.set(path, 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(path))
-    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    watcher = SimpleNamespace(
+        has_write_coordinator=True,
+        _run_writer_sync=_inline_writer_sync,
+        _cursor=cursor,
+        intake_revision=lambda _source: 0,
+    )
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
         source,
@@ -3017,7 +3073,12 @@ async def test_cooldown_only_retry_page_rotates_within_a_finite_sweep(tmp_path: 
     cursor = CursorStore(tmp_path / "index.db")
     for path in paths:
         cursor.set(path, 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(path))
-    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    watcher = SimpleNamespace(
+        has_write_coordinator=True,
+        _run_writer_sync=_inline_writer_sync,
+        _cursor=cursor,
+        intake_revision=lambda _source: 0,
+    )
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
         source,
@@ -3056,7 +3117,12 @@ async def test_parent_retry_query_filters_nested_source_before_limit(tmp_path: P
     cursor = CursorStore(tmp_path / "index.db")
     for path in (*child_paths, parent_path):
         cursor.set(path, 2, next_retry_at="1970-01-01T00:00:00+00:00", authority=fixture_cursor_authority(path))
-    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    watcher = SimpleNamespace(
+        has_write_coordinator=True,
+        _run_writer_sync=_inline_writer_sync,
+        _cursor=cursor,
+        intake_revision=lambda _source: 0,
+    )
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(parent, child)),  # type: ignore[arg-type]
         parent,
@@ -3075,7 +3141,12 @@ async def test_missing_ops_ledger_resets_the_ordinary_walk(tmp_path: Path) -> No
         path.write_text("{}")
     source = WatchSource(name="capture", root=source_root, suffixes=(".json",))
     cursor = CursorStore(tmp_path / "index.db")
-    watcher = SimpleNamespace(_cursor=cursor, intake_revision=lambda _source: 0)
+    watcher = SimpleNamespace(
+        has_write_coordinator=True,
+        _run_writer_sync=_inline_writer_sync,
+        _cursor=cursor,
+        intake_revision=lambda _source: 0,
+    )
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
         source,
@@ -3186,7 +3257,7 @@ async def test_a_dispatcher_pass_admits_its_whole_page_as_one_ingest_batch(tmp_p
     source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
     admitted, excluded_path, deferred_path = paths[:3], paths[3], paths[4]
 
-    class PageWatcher:
+    class PageWatcher(_InlineWriterWatcher):
         def __init__(self) -> None:
             self.ingest_batches: list[list[Path]] = []
             self.embedding_calls: list[tuple[Path, ...]] = []
@@ -3302,7 +3373,7 @@ async def test_a_symlinked_export_tree_is_discovered_and_admitted(tmp_path: Path
     source, linked_session = _linked_export_source(tmp_path)
     ingested: list[Path] = []
 
-    class RecordingWatcher:
+    class RecordingWatcher(_InlineWriterWatcher):
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 

@@ -1995,14 +1995,25 @@ def _combined_relation_sql(*fragments: str) -> str:
     CTE bodies under a single ``WITH``. The CTE names declared by the run,
     observed-event, and context-snapshot fragments are disjoint by
     construction, so concatenation is safe.
+
+    ``RECURSIVE`` belongs to the single ``WITH`` keyword, not to one CTE: the
+    observed-event fragment opens ``WITH RECURSIVE``, and keeping its
+    ``RECURSIVE`` behind a comma is a syntax error. The merged clause is
+    recursive when any fragment is.
     """
     bodies = []
+    recursive = False
     for fragment in fragments:
         stripped = fragment.strip()
-        if not stripped.upper().startswith("WITH "):
+        head = stripped[: len("WITH RECURSIVE ")].upper()
+        if head == "WITH RECURSIVE ":
+            recursive = True
+            bodies.append(stripped[len("WITH RECURSIVE ") :])
+        elif head.startswith("WITH "):
+            bodies.append(stripped[len("WITH ") :])
+        else:
             raise ValueError(f"expected a WITH-clause fragment, got: {stripped[:40]!r}")
-        bodies.append(stripped[len("WITH ") :])
-    return "WITH " + ",\n".join(bodies) + "\n"
+    return ("WITH RECURSIVE " if recursive else "WITH ") + ",\n".join(bodies) + "\n"
 
 
 def _resolve_coordination_session(
