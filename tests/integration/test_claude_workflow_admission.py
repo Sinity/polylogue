@@ -205,7 +205,8 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
     assert pending.retained_raw_revision_count == 225
     assert pending.artifact_counts.get("workflow_run_snapshot", 0) == 0
 
-    replay_retained_components(archive_root, selected_raw_ids=[revised_raw_id])
+    # The retained replay helper drives its own event loop; run it off this one.
+    run_off_event_loop(lambda: replay_retained_components(archive_root, selected_raw_ids=[revised_raw_id]))
     assert claude_workflow_materialization_needed(archive_root) is True
     revised = materialize_claude_workflow_archive(archive_root)
     assert revised.current_artifact_count == 224

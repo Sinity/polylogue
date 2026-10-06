@@ -225,16 +225,19 @@ def test_installed_polylogue_entrypoints_under_fresh_xdg(
         _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, cwd=home, timeout=60, check=False)
     )
 
-    # polylogue --plain status: the actionable first-run surface (#1263) — must
-    # exit cleanly and emit human text against a fresh archive.
+    # polylogue --plain status: the actionable first-run surface (#1263). Status
+    # is daemon-served, so with no daemon and no archive it exits non-zero with
+    # the first-run diagnostic naming the next step -- human text, no traceback.
     status = _run(
         (str(bin_dir / "polylogue"), "--plain", "status"),
         env=env,
         cwd=home,
         timeout=60,
+        check=False,
     )
     assert status.stdout.strip(), "polylogue ops status produced no output"
     assert "Traceback" not in status.stdout + status.stderr
+    assert "polylogued run" in status.stdout, status.stdout
 
     # polylogued status: daemon-side status against fresh XDG paths (#1265 AC).
     # `polylogued status` exits non-zero when no daemon is running ("absent
@@ -305,7 +308,7 @@ def test_installed_polylogue_writes_only_under_xdg_roots(
     _assert_daemon_required_refusal(
         _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, cwd=home, timeout=60, check=False)
     )
-    _run((str(bin_dir / "polylogue"), "--plain", "status"), env=env, cwd=home, timeout=60)
+    _run((str(bin_dir / "polylogue"), "--plain", "status"), env=env, cwd=home, timeout=60, check=False)
     after = _snapshot(home)
 
     new_under_home = sorted(p for p in (after - before) if home in p.parents)
