@@ -6762,7 +6762,9 @@ def test_append_multi_session_payload_is_rejected_before_index_write(
     assert result.failed == [plan]
     parsed_at_ms, parse_error = _append_raw_parse_state(tmp_path)
     assert parsed_at_ms is None
-    assert isinstance(parse_error, str) and "did not prove one session and cursor identity" in parse_error
+    # The chain's member yields no session for the append's logical key: a
+    # typed cohort refusal, recorded on the append raw it settles.
+    assert isinstance(parse_error, str) and parse_error.startswith("CohortMembershipRefusalError:")
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("append-multi",)]
 
@@ -6804,9 +6806,10 @@ def test_full_multi_session_failure_retries_without_success_mapping(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True, None),
     )
-    # Retained preparation is the only parser on the live route.
+    # Retained preparation is the only parser on the live route; it closes
+    # the parser's generator, which a bare list iterator cannot stand in for.
     monkeypatch.setattr(
-        "polylogue.sources.prepared_jsonl.iter_parsed_stream", lambda *_args, **_kwargs: iter(list(sessions))
+        "polylogue.sources.prepared_jsonl.iter_parsed_stream", _retained_parse_by_path(lambda _path: sessions)
     )
     # polylogue-1r9c: _write_parsed_precedence_result is called internally by
     # revision_governance.py (a direct module-internal function reference),
@@ -6827,9 +6830,11 @@ def test_full_multi_session_failure_retries_without_success_mapping(
 
     monkeypatch.setattr(archive_revision_governance, "_write_parsed_precedence_result", fail_second_index)
 
-    with pytest.raises(BaseException, match="full second-session index failure") as failed:
-        run_ingest_files(processor, [source], emit_event=False)
-    del failed
+    # An index write failure is this file's failure, not the batch's: the
+    # live batch reports it failed and retries it on the next observation.
+    failed = run_ingest_files(processor, [source], emit_event=False)
+    assert failed.failed_file_count == 1
+    assert failed.succeeded_file_count == 0
 
     # A partially written multi-session raw is not success: the component
     # transaction rolls back, so no session from it is visible.
@@ -7974,13 +7979,17 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
     # real content, so no further real ingest can ever promote it; the
     # accepted head itself must be retired, matching
     # ``release_provisional_full_revisions``'s existing "provisional
-    # evidence rejected" shape for full revisions).
+    # evidence rejected" shape for full revisions). The live identity had
+    # neither a head nor a session row: an ungoverned session left behind
+    # would be incomparable Index state that replay refuses to adopt.
     with sqlite3.connect(index_db) as conn:
         conn.execute(
             "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
             (f"codex-session:{native_id}",),
         )
         conn.commit()
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        assert archive.delete_sessions((session_id,)) == 1
 
     # This is the AC#2 assertion: once the accepted head no longer
     # interferes, a retry over the SAME durable incident-recovery raw

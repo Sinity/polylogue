@@ -64,6 +64,7 @@ writer_modules:
         classify_raw_revision_cohort_for_live_watch_in_transaction,
         classify_raw_revision_cohort_for_rebuild_repair,
         classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
+        prepare_membership_classification_source,
         promote_reconstructed_legacy_append_revisions, record_current_parser_source_census,
         record_prepared_membership_census_receipt, release_provisional_full_revisions,
         replace_raw_membership_census, write_parsed_for_retained_raw, write_parsed_for_retained_raw_result]

@@ -1575,7 +1575,12 @@ def prepare_membership_replay(
     candidate_raw_ids.update(
         raw_id for raw_id in archive.raw_membership_logical_raw_ids(logical_key) if raw_id in prepared_inputs
     )
-    if head_raw_id is not None and archive.raw_revision_authority(head_raw_id) == "quarantined":
+    # The accepted head is comparison evidence under any authority. Without
+    # it, a cohort cannot tell a member that adds content from one the head
+    # already contains, and yielding to a byte head would record both as
+    # superseded. Its own binding stays as it is: a head without a membership
+    # row receives no Source decision.
+    if head_raw_id is not None:
         candidate_raw_ids.add(head_raw_id)
     member_sessions: dict[str, ParsedSession] = {}
     revisions: list[MembershipRevision] = []
@@ -3188,6 +3193,7 @@ def prepare_revision_source_census(
     from polylogue.storage.sqlite.archive_tiers.revision_governance import (
         _PreparedSourceProducer,
         prepare_raw_state_update,
+        prepared_parser_census_is_current,
         replace_raw_membership_census,
     )
 
@@ -3432,6 +3438,13 @@ def prepare_revision_source_census(
             check_compute_cancelled()
             if raw_id in state.censused:
                 continue
+            if prepared_parser_census_is_current(seal, raw_id):
+                # A current receipt already decides this raw for this parser.
+                # Censusing it again can only restate that decision, or, when
+                # this parse differs, overwrite accepted authority with an
+                # outcome the receipt does not describe.
+                state.censused.add(raw_id)
+                continue
             prepared = prepared_inputs.get(raw_id)
             artifact = prepared.prepared_artifact if prepared is not None else None
             # A captured Codex state still needs its real Source material and
@@ -3666,7 +3679,12 @@ def prepare_retained_replay_source(
                 terminal_raw_ids.add(raw_id)
             produced_session_ids.add(adoption.session_id)
 
-        for logical_key, plan in membership_plans.items():
+        # A refused cohort's failure state goes last, so another key's
+        # incomplete-cohort correction of a shared raw cannot clear it.
+        for logical_key, plan in sorted(
+            membership_plans.items(),
+            key=lambda item: item[1].head_plan is not None and item[1].head_plan.conflict is not None,
+        ):
             if plan.head_plan is None:
                 raise RetainedPreparationRetryableError("membership acknowledgement has no original head decision")
             accepted = plan.classification.accepted_raw_ids
@@ -3687,6 +3705,8 @@ def prepare_retained_replay_source(
                 decisions=decisions,
                 decided_at_ms=decided_at_ms,
                 projections=plan.projections,
+                conflict=plan.head_plan.conflict,
+                conflict_fails_observation=plan.head_plan.conflict_fails_observation,
             )
             selected_membership[logical_key] = dataclasses.replace(
                 plan,
