@@ -2168,6 +2168,47 @@ def test_parse_failure_does_not_count_as_reduced_required_work() -> None:
     assert _useful_progress(pending, accepted)
 
 
+def test_advancing_work_progress_events_are_useful_progress_and_a_frozen_unit_is_not(tmp_path: Path) -> None:
+    """Long preparation that changes no archive row is judged by the work it reports.
+
+    Red if the observer ignores ``daemon.work.progress`` (a 13-minute
+    preparation reads as stalled), or if a repeated event with unchanged
+    counters still counts (a hung unit reads as progressing).
+    """
+    import json
+
+    from devtools.fresh_build_bench.run import WorkProgressTail, _useful_progress
+
+    events = tmp_path / "events.jsonl"
+
+    def append(*records: dict[str, object]) -> None:
+        with events.open("a", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record) + "\n")
+
+    def progress(messages: int) -> dict[str, object]:
+        return {"event": "daemon.work.progress", "phase": "source_preparation", "messages": messages, "bytes": 0}
+
+    tail = WorkProgressTail(events)
+    append({"event": "daemon.started"}, progress(10))
+    before = Observation(0.0, work_progress=0)
+    advanced = Observation(1.0, work_progress=tail.poll())
+    assert _useful_progress(before, advanced)
+
+    append(progress(10))
+    frozen = Observation(2.0, work_progress=tail.poll())
+    assert not _useful_progress(advanced, frozen)
+
+    # A record split across two writes is read once it is complete.
+    line = json.dumps(progress(25)) + "\n"
+    with events.open("a", encoding="utf-8") as handle:
+        handle.write(line[:10])
+    assert tail.poll() == frozen.work_progress
+    with events.open("a", encoding="utf-8") as handle:
+        handle.write(line[10:])
+    assert _useful_progress(frozen, Observation(3.0, work_progress=tail.poll()))
+
+
 @pytest.mark.parametrize("with_debt", [False, True])
 def test_observation_preserves_scheduled_retry_evidence_without_counting_activity_as_progress(
     tmp_path: Path, with_debt: bool, frozen_clock: FrozenClock

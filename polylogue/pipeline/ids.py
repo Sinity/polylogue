@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import tempfile
 import threading
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping, Sequence, Set
+from collections.abc import Callable, ItemsView, Iterator, Mapping, Sequence, Set
 from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -834,17 +835,38 @@ def _normalize_mapping_for_hash(
     value: Mapping[object, object], normalize_value: Callable[[object, object], object]
 ) -> dict[str, object]:
     """Lower nested Python mappings through QUERY's string-key contract deterministically."""
+    result: dict[str, object] = {}
+    for key, item in _hash_ordered_entries(value):
+        result[_legacy_json_key(key)] = normalize_value(key, item)
+    return result
+
+
+#: A key whose QUERY JSON token is ``"`` + key + ``"``: printable ASCII above
+#: ``"`` (0x22), without ``\``. Its code points are its UTF-8 bytes, and the
+#: closing quote sorts below every one of them, so ordering such keys as text
+#: orders their encoded tokens identically.
+_PLAIN_HASH_KEY = re.compile(r"[#-\[\]-~]*")
+
+
+def _hash_ordered_entries(value: Mapping[object, object]) -> list[tuple[object, object]]:
+    """Mapping entries in canonical hash order: by legacy key token, then typed key.
+
+    A mapping whose keys are all plain ``str`` tokens is ordered by text,
+    which is the same order as their encoded tokens; distinct ``str`` keys
+    never share a legacy token, so the typed tie-break is never reached.
+    Any other key falls back to encoding every token.
+    """
     entries = list(value.items())
+    if all(type(key) is str and _PLAIN_HASH_KEY.fullmatch(key) for key, _item in entries):
+        entries.sort(key=lambda pair: _legacy_json_key(pair[0]))
+        return entries
     entries.sort(
         key=lambda pair: (
             canonical_bytes(_legacy_json_key(pair[0]), QUERY),
             canonical_bytes(_typed_identity_value(pair[0]), QUERY),
         )
     )
-    result: dict[str, object] = {}
-    for key, item in entries:
-        result[_legacy_json_key(key)] = normalize_value(key, item)
-    return result
+    return entries
 
 
 def session_id(source_name: Provider | Origin | str, provider_session_id: str) -> SessionId:
@@ -1111,16 +1133,10 @@ def _identity_normalize_value(
     elif isinstance(value, list):
         value = [item.model_dump(mode="python") if hasattr(item, "model_dump") else item for item in value]
     if isinstance(value, Mapping):
-        entries = list(value.items())
         # JSON mappings have string keys. Nested ``object`` values can still
         # contain other Python key types, so tie-break equal legacy key tokens
         # with their typed identity instead of relying on insertion order.
-        entries.sort(
-            key=lambda pair: (
-                canonical_bytes(_legacy_json_key(pair[0]), QUERY),
-                canonical_bytes(_typed_identity_value(pair[0]), QUERY),
-            )
-        )
+        entries = _hash_ordered_entries(value)
         result: dict[str, object] = {}
         for key, item in entries:
             normalized_key = _legacy_json_key(key)
@@ -1549,6 +1565,21 @@ class _SqliteOwnerLookup(Mapping[_T, str]):
     def __len__(self) -> int:
         return int(self._conn.execute("SELECT COUNT(*) FROM owner_lookup WHERE kind = ?", (self._kind,)).fetchone()[0])
 
+    def items(self) -> ItemsView[_T, str]:
+        return _SqliteOwnerItems(self)
+
+
+class _SqliteOwnerItems(ItemsView[_T, str]):
+    """Stream lookup pairs in one query instead of one lookup per key."""
+
+    _mapping: _SqliteOwnerLookup[_T]
+
+    def __iter__(self) -> Iterator[tuple[_T, str]]:
+        lookup = self._mapping
+        for key, value in lookup._conn.execute("SELECT key, value FROM owner_lookup WHERE kind = ?", (lookup._kind,)):
+            decoded = json.loads(key)
+            yield cast(_T, tuple(decoded) if lookup._kind == "physical" else decoded), str(value)
+
 
 class _SqliteOwnerAmbiguities(Set[_T]):
     def __init__(self, conn: sqlite3.Connection, kind: str) -> None:
@@ -1589,7 +1620,9 @@ def disk_message_owner_resolution(messages: Sequence[ParsedMessage]) -> Iterator
         )
         conn.execute(
             "CREATE TABLE owner_message (ordinal INTEGER PRIMARY KEY, revision TEXT NOT NULL, "
-            "content TEXT NOT NULL, stable TEXT, physical TEXT, provider TEXT, owner_key TEXT)"
+            "content TEXT NOT NULL, stable TEXT, physical TEXT, provider TEXT, owner_key TEXT, "
+            "revision_code TEXT NOT NULL, content_code TEXT NOT NULL, stable_code TEXT, provider_code TEXT, "
+            "owner_code TEXT)"
         )
         conn.execute(
             "CREATE TABLE owner_lookup (kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, "
@@ -1599,66 +1632,92 @@ def disk_message_owner_resolution(messages: Sequence[ParsedMessage]) -> Iterator
         def encoded(value: object) -> str:
             return json.dumps(value, separators=(",", ":"))
 
-        def increment(kind: str, value: object) -> None:
+        total = 0
+
+        def owner_rows() -> Iterator[tuple[object, ...]]:
+            nonlocal total
+            with settled_iterator(messages) as _original_messages:
+                for ordinal, message in enumerate(_original_messages):
+                    total = ordinal + 1
+                    revision = _message_revision_match_id(message)
+                    content = f"{_CONTENT_ANCHOR_PREFIX}:{hash_item_payload(_message_comparison_payload(message))}"
+                    coordinate = _message_owner_coordinate(message, ordinal)
+                    stable = coordinate.stable_key
+                    physical = coordinate.physical_key
+                    provider = message.provider_message_id.strip() or None
+                    yield (
+                        ordinal,
+                        revision,
+                        content,
+                        stable,
+                        encoded(physical) if physical is not None else None,
+                        provider,
+                        encoded(revision),
+                        encoded(content),
+                        encoded(stable) if stable is not None else None,
+                        encoded(provider) if provider is not None else None,
+                    )
+
+        # One streamed insert per message, then set-based counts and keys:
+        # each count is the number of messages sharing a value, exactly what
+        # incrementing it once per message produced.
+        conn.executemany(
+            "INSERT INTO owner_message (ordinal, revision, content, stable, physical, provider, revision_code, "
+            "content_code, stable_code, provider_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            owner_rows(),
+        )
+        for kind, column in (
+            ("revision", "revision_code"),
+            ("content", "content_code"),
+            ("stable", "stable_code"),
+            ("physical", "physical"),
+            ("provider", "provider_code"),
+        ):
             conn.execute(
-                "INSERT INTO owner_count VALUES (?, ?, 1) ON CONFLICT(kind, key) DO UPDATE SET count = count + 1",
-                (kind, encoded(value)),
+                f"INSERT INTO owner_count SELECT ?, {column}, COUNT(*) FROM owner_message "
+                f"WHERE {column} IS NOT NULL GROUP BY {column}",
+                (kind,),
             )
 
-        def count(kind: str, value: object) -> int:
-            row = conn.execute(
-                "SELECT count FROM owner_count WHERE kind = ? AND key = ?", (kind, encoded(value))
-            ).fetchone()
-            return int(row[0]) if row is not None else 0
+        def unique(kind: str, column: str) -> str:
+            return f"(SELECT count FROM owner_count WHERE kind = '{kind}' AND key = owner_message.{column}) = 1"
 
-        total = 0
-        with settled_iterator(messages) as _original_messages:
-            for ordinal, message in enumerate(_original_messages):
-                total = ordinal + 1
-                revision = _message_revision_match_id(message)
-                content = f"{_CONTENT_ANCHOR_PREFIX}:{hash_item_payload(_message_comparison_payload(message))}"
-                coordinate = _message_owner_coordinate(message, ordinal)
-                stable = coordinate.stable_key
-                physical = coordinate.physical_key
-                provider = message.provider_message_id.strip() or None
-                conn.execute(
-                    "INSERT INTO owner_message VALUES (?, ?, ?, ?, ?, ?, NULL)",
-                    (ordinal, revision, content, stable, encoded(physical) if physical is not None else None, provider),
-                )
-                increment("revision", revision)
-                increment("content", content)
-                if stable is not None:
-                    increment("stable", stable)
-                if physical is not None:
-                    increment("physical", physical)
-                if provider is not None:
-                    increment("provider", provider)
-        for ordinal in range(total):
-            revision, content, stable = conn.execute(
-                "SELECT revision, content, stable FROM owner_message WHERE ordinal = ?", (ordinal,)
-            ).fetchone()
-            if stable is not None and count("stable", stable) == 1:
-                key = stable
-            elif count("revision", revision) == 1:
-                key = revision
-            elif count("content", content) == 1:
-                key = content
-            elif stable is not None:
-                key = stable
-            else:
-                key = revision
-            conn.execute("UPDATE owner_message SET owner_key = ? WHERE ordinal = ?", (key, ordinal))
-            increment("key", key)
-        for ordinal in range(total):
-            stable, physical, provider, key = conn.execute(
-                "SELECT stable, physical, provider, owner_key FROM owner_message WHERE ordinal = ?", (ordinal,)
-            ).fetchone()
-            if physical is not None and count("physical", json.loads(physical)) == 1:
-                conn.execute("INSERT INTO owner_lookup VALUES (?, ?, ?)", ("physical", physical, key))
-            if stable is not None and count("stable", stable) == 1 and count("key", key) == 1:
-                conn.execute("INSERT INTO owner_lookup VALUES (?, ?, ?)", ("stable", encoded(stable), key))
-            if provider is not None and count("provider", provider) == 1:
-                conn.execute("INSERT INTO owner_lookup VALUES (?, ?, ?)", ("provider", encoded(provider), key))
+        # The first unique anchor of stable, revision, content; otherwise the
+        # stable key when present, else the revision.
+        conn.execute(
+            f"""
+            UPDATE owner_message SET
+                owner_key = CASE
+                    WHEN stable IS NOT NULL AND {unique("stable", "stable_code")} THEN stable
+                    WHEN {unique("revision", "revision_code")} THEN revision
+                    WHEN {unique("content", "content_code")} THEN content
+                    WHEN stable IS NOT NULL THEN stable
+                    ELSE revision
+                END,
+                owner_code = CASE
+                    WHEN stable IS NOT NULL AND {unique("stable", "stable_code")} THEN stable_code
+                    WHEN {unique("revision", "revision_code")} THEN revision_code
+                    WHEN {unique("content", "content_code")} THEN content_code
+                    WHEN stable IS NOT NULL THEN stable_code
+                    ELSE revision_code
+                END
+            """
+        )
+        conn.execute(
+            "INSERT INTO owner_count SELECT 'key', owner_code, COUNT(*) FROM owner_message GROUP BY owner_code"
+        )
+        conn.execute(
+            f"INSERT INTO owner_lookup SELECT 'physical', physical, owner_key FROM owner_message "
+            f"WHERE physical IS NOT NULL AND {unique('physical', 'physical')}"
+        )
+        conn.execute(
+            f"INSERT INTO owner_lookup SELECT 'stable', stable_code, owner_key FROM owner_message "
+            f"WHERE stable IS NOT NULL AND {unique('stable', 'stable_code')} AND {unique('key', 'owner_code')}"
+        )
+        conn.execute(
+            f"INSERT INTO owner_lookup SELECT 'provider', provider_code, owner_key FROM owner_message "
+            f"WHERE provider IS NOT NULL AND {unique('provider', 'provider_code')}"
+        )
         yield MessageOwnerResolution(
             keys=_SqliteOwnerKeys(conn, total),
             by_physical_coordinate=_SqliteOwnerLookup[tuple[int, int]](conn, "physical"),

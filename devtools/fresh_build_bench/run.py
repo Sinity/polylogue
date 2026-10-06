@@ -232,6 +232,10 @@ class Observation:
     cursor_next_retry_at: str | None = None
     useful_progress_at_s: float | None = None
     activity_at_s: float | None = None
+    #: Advancing ``daemon.work.progress`` events seen so far: long work
+    #: (preparing a large source) that changes no archive row until it
+    #: publishes, but reports the messages and bytes it has processed.
+    work_progress: int = 0
     promoted_index: str | None = None
     readiness: dict[str, bool] = field(default_factory=dict)
     error: str | None = None
@@ -381,7 +385,10 @@ def _useful_progress(previous: Observation | None, current: Observation) -> bool
     if previous is None:
         return False
     return (
-        any(getattr(current, key) > getattr(previous, key) for key in ("cursor_rows", "cursor_complete", "raw_rows"))
+        any(
+            getattr(current, key) > getattr(previous, key)
+            for key in ("cursor_rows", "cursor_complete", "raw_rows", "work_progress")
+        )
         or current.raw_rows - current.raw_pending - current.raw_failed
         > previous.raw_rows - previous.raw_pending - previous.raw_failed
         or any(getattr(current, key) < getattr(previous, key) for key in ("memberships_pending", "open_debt"))
@@ -390,6 +397,48 @@ def _useful_progress(previous: Observation | None, current: Observation) -> bool
         and current.promoted_index != previous.promoted_index
         or any(ready and not previous.readiness.get(domain, False) for domain, ready in current.readiness.items())
     )
+
+
+class WorkProgressTail:
+    """Count advancing ``daemon.work.progress`` events appended to the event log.
+
+    Reads only the bytes appended since the previous call. An event counts
+    when its counters differ from the previous progress event of the same
+    phase, so a unit that stops advancing stops counting.
+    """
+
+    def __init__(self, events: Path) -> None:
+        self._events = events
+        self._offset = 0
+        self._pending = b""
+        self._last: dict[str, tuple[int, int]] = {}
+        self.advancing = 0
+
+    def poll(self) -> int:
+        try:
+            with self._events.open("rb") as handle:
+                handle.seek(self._offset)
+                chunk = handle.read()
+        except OSError:
+            return self.advancing
+        self._offset += len(chunk)
+        lines = (self._pending + chunk).split(b"\n")
+        self._pending = lines.pop()
+        for line in lines:
+            if b"daemon.work.progress" not in line:
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if event.get("event") != "daemon.work.progress":
+                continue
+            phase = str(event.get("phase"))
+            counters = (int(event.get("messages") or 0), int(event.get("bytes") or 0))
+            if counters != self._last.get(phase, (0, 0)):
+                self.advancing += 1
+            self._last[phase] = counters
+        return self.advancing
 
 
 def _retryable_observation_error(exc: BaseException) -> bool:
@@ -830,6 +879,7 @@ def _measure_and_write_receipt(
     last_progress_at = 0.0
     last_useful_progress_at: float | None = None
     last_activity_at: float | None = None
+    work_progress = WorkProgressTail(paths["events"])
     # Wall minus monotonic elapsed, sampled every poll: a step that is
     # restored before the end still displaced the milestones logged meanwhile.
     clock_steps: list[float] = [0.0]
@@ -847,6 +897,7 @@ def _measure_and_write_receipt(
             observation = observe(
                 paths["archive"], started, readiness_max_age_s=min(_READINESS_POLL_S, config.stall_timeout_s / 2)
             )
+            observation.work_progress = work_progress.poll()
             observations.append(observation)
             clock_steps.append((time.time() - started_wall) - (time.monotonic() - started))
             if observation.error is not None and not observation.error_retryable:
@@ -928,6 +979,7 @@ def _measure_and_write_receipt(
     finished = time.monotonic()
     finished_wall = time.time()
     final = observe(paths["archive"], started)
+    final.work_progress = work_progress.poll()
     final.useful_progress_at_s = last_useful_progress_at
     final.activity_at_s = last_activity_at
     # The watcher may have read a file edited after the launch-time check.

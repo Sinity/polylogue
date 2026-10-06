@@ -253,29 +253,33 @@ class SessionShardBuilder:
         """Seal the sole resolver's evidence beside this session's row tuples."""
         session = self._session_count + 1
         self._conn.execute("INSERT INTO shard_owner_manifest VALUES (?, ?)", (session, len(resolution.keys)))
-        for ordinal, owner_key in enumerate(resolution.keys):
-            self._conn.execute("INSERT INTO shard_owner_key VALUES (?, ?, ?)", (session, ordinal, owner_key))
+        # Streamed batches: one statement per table, one row per value.
+        self._conn.executemany(
+            "INSERT INTO shard_owner_key VALUES (?, ?, ?)",
+            ((session, ordinal, owner_key) for ordinal, owner_key in enumerate(resolution.keys)),
+        )
         for kind, lookup in (
             ("physical", resolution.by_physical_coordinate),
             ("stable", resolution.by_stable_key),
             ("provider", resolution.unique_provider_keys),
         ):
-            for lookup_key, owner_key in lookup.items():
-                self._conn.execute(
-                    "INSERT INTO shard_owner_lookup VALUES (?, ?, ?, ?)",
-                    (session, kind, json.dumps(lookup_key, separators=(",", ":")), owner_key),
-                )
+            self._conn.executemany(
+                "INSERT INTO shard_owner_lookup VALUES (?, ?, ?, ?)",
+                (
+                    (session, kind, json.dumps(lookup_key, separators=(",", ":")), owner_key)
+                    for lookup_key, owner_key in lookup.items()
+                ),
+            )
         for kind, ambiguous in (
             ("physical", resolution.ambiguous_physical_coordinates),
             ("stable", resolution.ambiguous_stable_keys),
             ("key", resolution.ambiguous_keys),
             ("provider", resolution.ambiguous_provider_ids),
         ):
-            for ambiguous_key in ambiguous:
-                self._conn.execute(
-                    "INSERT INTO shard_owner_ambiguity VALUES (?, ?, ?)",
-                    (session, kind, json.dumps(ambiguous_key, separators=(",", ":"))),
-                )
+            self._conn.executemany(
+                "INSERT INTO shard_owner_ambiguity VALUES (?, ?, ?)",
+                ((session, kind, json.dumps(ambiguous_key, separators=(",", ":"))) for ambiguous_key in ambiguous),
+            )
 
     def add(self, prepared: object) -> None:
         """Append one session's prepared rows.

@@ -35,6 +35,7 @@ from polylogue.core.enums import Origin
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.sql_settlement import current_native_sql_lifetimes
+from polylogue.core.work_progress import advance_work_progress
 from polylogue.sources import value_bounds
 from polylogue.sources.decoder_json import _json_subtree, normalize_ijson_stdlib_numbers
 from polylogue.sources.live.tool_result_sidecars import (
@@ -254,6 +255,23 @@ class _DecodedSpools:
 
 
 _DECODED_SPOOLS = _DecodedSpools(DECODED_SPOOL_SLOTS)
+
+
+class _HeldWalk:
+    """The decoded walk of one unsealed session held immutable by its producer."""
+
+    __slots__ = ("spool", "building", "depth")
+
+    def __init__(self) -> None:
+        self.spool: PickleSpool[ParsedMessage] | None = None
+        self.building = False
+        self.depth = 1
+
+
+#: Unsealed sessions whose producer declared them immutable for a window
+#: (:meth:`SqliteMessageSink.held_walks`), by (writer connection, ordinal).
+_HELD_WALKS: dict[tuple[int, int], _HeldWalk] = {}
+_HELD_WALKS_LOCK = threading.Lock()
 
 
 def discard_decoded_sessions(path: Path) -> None:
@@ -679,6 +697,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             raise TypeError("prepared message sink does not support slice replacement")
         if not isinstance(value, ParsedMessage):
             raise TypeError("prepared message replacement must be a ParsedMessage")
+        self._require_not_held()
         ordinal = self._ordinal(index)
         self._writer.execute(
             "UPDATE prepared_message SET message_json = ?, provider_id = ?, parent_id = ?, active_leaf = ? "
@@ -701,6 +720,8 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             raise TypeError("sealed prepared messages are immutable")
         if index != self._count:
             raise TypeError("prepared messages can only be appended")
+        self._require_not_held()
+        advance_work_progress(messages=1)
         _write_row(
             self._writer,
             "INSERT INTO prepared_message VALUES (?, ?, ?, ?, ?, ?)",
@@ -718,6 +739,84 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
 
     def __iter__(self) -> Iterator[ParsedMessage]:
         yield from self.iter_from(0)
+
+    def _held_key(self) -> tuple[int, int] | None:
+        return None if self._writer is None else (id(self._writer), self.session_ordinal)
+
+    def _require_not_held(self) -> None:
+        key = self._held_key()
+        if key is not None and key in _HELD_WALKS:
+            raise RuntimeError("prepared messages are held immutable while their walks are retained")
+
+    @contextmanager
+    def held_walks(self) -> Iterator[None]:
+        """Declare this unsealed session immutable and reuse its decoded walk meanwhile.
+
+        Preparing one session walks its messages several times (content
+        identities, owners, rows, blocks, tool outcomes), and each walk re-ran
+        pydantic validation of every stored message. Inside this window the
+        first complete walk is spooled and later walks replay the spool, with
+        memory still bounded by one message; each replay yields fresh
+        objects, as a decode does. Any edit of the session inside the window
+        raises instead of being silently missed by a replay. A sealed sink is
+        immutable already and keeps its own decoded cache.
+        """
+        key = self._held_key()
+        if key is None:
+            yield
+            return
+        with _HELD_WALKS_LOCK:
+            held = _HELD_WALKS.get(key)
+            if held is None:
+                _HELD_WALKS[key] = _HeldWalk()
+            else:
+                held.depth += 1
+        try:
+            yield
+        finally:
+            with _HELD_WALKS_LOCK:
+                held = _HELD_WALKS[key]
+                held.depth -= 1
+                if not held.depth:
+                    del _HELD_WALKS[key]
+                    if held.spool is not None:
+                        held.spool.close()
+
+    def _iter_writer_rows(self, start: int) -> Iterator[ParsedMessage]:
+        assert self._writer is not None
+        cursor = self._writer.execute(
+            "SELECT message_json FROM prepared_message WHERE session_ordinal = ? "
+            "AND message_ordinal >= ? ORDER BY message_ordinal",
+            (self.session_ordinal, start),
+        )
+        for row in cursor:
+            yield _from_text_json(ParsedMessage, row[0])
+
+    def _iter_held(self, held: _HeldWalk, start: int) -> Iterator[ParsedMessage]:
+        spool = held.spool
+        if spool is not None and len(spool) == self._count:
+            yield from spool.iter_from(start)
+            return
+        with _HELD_WALKS_LOCK:
+            build = start == 0 and spool is None and not held.building
+            if build:
+                held.building = True
+        if not build:
+            yield from self._iter_writer_rows(start)
+            return
+        building = PickleSpool[ParsedMessage](indexed=True)
+        kept = False
+        try:
+            for message in self._iter_writer_rows(0):
+                building.append(message)
+                yield message
+            if len(building) == self._count:
+                held.spool = building
+                kept = True
+        finally:
+            held.building = False
+            if not kept:
+                building.close()
 
     def provider_message_ids(self, *, include_none: bool) -> Set[str | None]:
         """A disk-backed set for membership comparison of large sessions."""
@@ -744,16 +843,16 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
 
     def iter_from(self, start: int) -> Iterator[ParsedMessage]:
         """Stream a suffix without decoding or scanning its inherited prefix."""
+        for message in self._iter_from(start):
+            advance_work_progress(messages=1)
+            yield message
+
+    def _iter_from(self, start: int) -> Iterator[ParsedMessage]:
         if start < 0 or start > self._count:
             raise IndexError(start)
         if self._writer is not None:
-            cursor = self._writer.execute(
-                "SELECT message_json FROM prepared_message WHERE session_ordinal = ? "
-                "AND message_ordinal >= ? ORDER BY message_ordinal",
-                (self.session_ordinal, start),
-            )
-            for row in cursor:
-                yield _from_text_json(ParsedMessage, row[0])
+            held = _HELD_WALKS.get((id(self._writer), self.session_ordinal))
+            yield from (self._iter_held(held, start) if held is not None else self._iter_writer_rows(start))
             return
         key = self._decoded_key()
         decoded = _DECODED_SESSIONS.get(key) if key is not None else None
@@ -928,8 +1027,11 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         from polylogue.sources.tool_outcomes import derive_tool_outcomes
 
         normalized = self._store.new_sink()
-        normalized.extend(self)
-        derive_tool_outcomes(normalized.normalize_active_path(), events, origin=origin)
+        # One pass: each original message is decoded once and appended in its
+        # normalized form. Active-path normalization only sets leaf flags,
+        # which tool-outcome normalization neither reads nor writes.
+        derive_tool_outcomes(self, events, origin=origin, into=normalized)
+        normalized.normalize_active_path()
         self._writer.executemany(
             "INSERT INTO prepared_message_normalization VALUES (?,?)",
             (
