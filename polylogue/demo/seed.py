@@ -1704,24 +1704,30 @@ async def _seed_demo_archive_owned(
                 archive_root, demo_source_specs(source_root), compute_adapter=adapter, parse_workers=1
             )
 
-    apply_demo_post_ingest_augmentation(archive_root)
-    overlay = seed_demo_user_overlays(archive_root) if with_overlays else None
-    # After every demo write, overlays included: the baseline names each
-    # durable row this seed is responsible for.
-    _refresh_demo_ownership_session_ids(archive_root)
+    def finish() -> DemoSeedResult:
+        # The post-ingest writes and their archive reads take synchronous
+        # archive custody, which refuses to block the event loop; they run on
+        # a worker thread like the bootstrap above.
+        apply_demo_post_ingest_augmentation(archive_root)
+        overlay = seed_demo_user_overlays(archive_root) if with_overlays else None
+        # After every demo write, overlays included: the baseline names each
+        # durable row this seed is responsible for.
+        _refresh_demo_ownership_session_ids(archive_root)
 
-    construct_coverage = evaluate_demo_constructs(archive_root)
-    return DemoSeedResult(
-        archive_root=archive_root,
-        source_root=source_root,
-        session_count=_demo_archive_count(archive_root, "sessions"),
-        message_count=_demo_archive_count(archive_root, "messages"),
-        session_ids=tuple(sorted(result.processed_ids)),
-        overlays_seeded=overlay is not None,
-        assertion_count=len(overlay.assertion_ids) if overlay else 0,
-        construct_coverage=construct_coverage,
-        healed_tiers=healed_tiers,
-    )
+        construct_coverage = evaluate_demo_constructs(archive_root)
+        return DemoSeedResult(
+            archive_root=archive_root,
+            source_root=source_root,
+            session_count=_demo_archive_count(archive_root, "sessions"),
+            message_count=_demo_archive_count(archive_root, "messages"),
+            session_ids=tuple(sorted(result.processed_ids)),
+            overlays_seeded=overlay is not None,
+            assertion_count=len(overlay.assertion_ids) if overlay else 0,
+            construct_coverage=construct_coverage,
+            healed_tiers=healed_tiers,
+        )
+
+    return await asyncio.to_thread(finish)
 
 
 async def seed_demo_archive(

@@ -38,6 +38,13 @@ def _unreachable_daemon_url() -> str:
 
 pytestmark = pytest.mark.contract
 
+
+def _degraded_exit() -> int:
+    from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
+
+    return OUTCOME_EXIT_CODES["degraded"]
+
+
 # ANSI CSI sequences (color, cursor movement, formatting).
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 # Other ANSI escapes (e.g. OSC sequences, single-char CSI introducers).
@@ -125,10 +132,15 @@ class TestPlainEmptyArchiveMessages:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """``analyze`` reports an empty archive through the resident daemon."""
+        """``analyze`` reports an empty archive through the resident daemon.
+
+        With no raw artifacts, raw materialization is undefined at a zero
+        denominator, so the counts arrive under a degraded outcome and its exit.
+        """
         with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
             exit_code, stdout, stderr = _invoke_plain(["--plain", "analyze"], monkeypatch)
-        assert exit_code == 0, f"unexpected exit {exit_code}: stdout={stdout!r} stderr={stderr!r}"
+        assert exit_code == _degraded_exit(), f"unexpected exit {exit_code}: stdout={stdout!r} stderr={stderr!r}"
+        assert stdout.startswith("outcome: DEGRADED (archive_not_converged)\n"), stdout
         assert "Sessions: 0" in stdout
         assert "Messages: 0" in stdout
 
@@ -158,7 +170,7 @@ class TestPlainEmptyArchiveMessages:
         """``polylogue --plain analyze`` reports empty archive in human prose."""
         with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
             exit_code, stdout, _stderr = _invoke_plain(["--plain", "analyze"], monkeypatch)
-        assert exit_code == 0, f"unexpected exit {exit_code}: {stdout!r}"
+        assert exit_code == _degraded_exit(), f"unexpected exit {exit_code}: {stdout!r}"
         assert not stdout.lstrip().startswith("{"), (
             f"plain analyze emitted JSON-shaped output instead of human text: {stdout!r}"
         )

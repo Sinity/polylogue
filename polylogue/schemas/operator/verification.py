@@ -14,7 +14,7 @@ from polylogue.schemas.validation.artifacts import (
     list_artifact_cohort_rows,
     list_artifact_observation_rows,
 )
-from polylogue.schemas.validation.corpus import verify_raw_corpus
+from polylogue.schemas.validation.corpus import QuarantineWriter, verify_raw_corpus
 from polylogue.schemas.validation.models import SchemaVerificationReport
 from polylogue.schemas.validation.requests import (
     ArtifactCoverageRequest,
@@ -29,8 +29,9 @@ def run_schema_verification(
     *,
     db_path: Path,
     archive_location: ArchiveLocation | None = None,
+    quarantine: QuarantineWriter | None = None,
 ) -> SchemaVerificationReport:
-    return verify_raw_corpus(db_path=db_path, request=request, archive_location=archive_location)
+    return verify_raw_corpus(db_path=db_path, request=request, archive_location=archive_location, quarantine=quarantine)
 
 
 def run_artifact_coverage(request: ArtifactCoverageRequest, *, db_path: Path) -> ArtifactCoverageResult:

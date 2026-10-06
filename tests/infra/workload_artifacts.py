@@ -3936,12 +3936,11 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
             retain_manifest=True,
             authenticate_copy=authenticate,
         )
+        # Pin the clone root's identity without locking it. The clone is a
+        # live archive root, and the directory flock on an archive root
+        # belongs to the audit writer (``audit_leaf``); a shared hold here
+        # refuses every daemon that serves the clone.
         integrity_fd = _open_pinned_dir(destination)
-        try:
-            fcntl.flock(integrity_fd, fcntl.LOCK_SH)
-        except BaseException:
-            os.close(integrity_fd)
-            raise
         return SeededArchiveClone(
             root=destination,
             source_manifest_id=result.source_manifest_id,
