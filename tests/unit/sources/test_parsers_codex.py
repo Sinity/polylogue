@@ -4036,3 +4036,191 @@ def test_codex_structured_output_representation_distinguishes_falsy_values_from_
     from polylogue.sources.parsers.codex import _codex_tool_output_text
 
     assert _codex_tool_output_text(value) == expected
+
+
+# =============================================================================
+# Legacy top-level response records, retained context and realtime markers
+# =============================================================================
+
+_CODEX_FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "codex"
+
+
+def _codex_fixture(name: str) -> list[object]:
+    return [json.loads(line) for line in (_CODEX_FIXTURES / name).read_text().splitlines() if line.strip()]
+
+
+def _wrap_legacy_response_records(records: list[object]) -> list[object]:
+    """The same stream with each unwrapped response record inside a response_item."""
+    wrapped: list[object] = []
+    for record in records:
+        if isinstance(record, dict) and record.get("type") in {"function_call", "function_call_output", "reasoning"}:
+            wrapped.append({"type": "response_item", "payload": record})
+        else:
+            wrapped.append(record)
+    return wrapped
+
+
+def test_legacy_top_level_response_records_lower_exactly_like_wrapped_ones() -> None:
+    """Unwrapping a 2025 function_call/output/reasoning record must not change the session.
+
+    Red if the parser stops routing an unwrapped record through the
+    response-item lowering (the records would surface as unknown outer
+    records and the tool, reasoning and outcome evidence would differ).
+    """
+    legacy = _codex_fixture("legacy-response-records.jsonl")
+    wrapped = _wrap_legacy_response_records(legacy)
+    assert wrapped != legacy
+
+    legacy_session = parse(legacy, "legacy-fallback")
+    wrapped_session = parse(wrapped, "legacy-fallback")
+
+    assert legacy_session.messages == wrapped_session.messages
+    assert legacy_session.session_events == wrapped_session.session_events
+    assert session_content_hash(legacy_session) == session_content_hash(wrapped_session)
+    assert legacy_session.unit_accounting is not None
+    assert not legacy_session.unit_accounting.outcomes
+    assert all(event.event_type != "codex_unknown_outer_record" for event in legacy_session.session_events)
+
+    blocks = [
+        (block.type, block.tool_id, block.is_error, block.exit_code)
+        for message in legacy_session.messages
+        for block in message.blocks
+    ]
+    assert (BlockType.TOOL_USE, "call_sample_ok", None, None) in blocks
+    assert (BlockType.TOOL_RESULT, "call_sample_ok", False, 0) in blocks
+    assert (BlockType.TOOL_USE, "call_sample_fail", None, None) in blocks
+    assert (BlockType.TOOL_RESULT, "call_sample_fail", True, 1) in blocks
+    thinking = [
+        block.text
+        for message in legacy_session.messages
+        for block in message.blocks
+        if block.type is BlockType.THINKING
+    ]
+    assert thinking == ["Listing the directory first."]
+    assert [message.role for message in legacy_session.messages] == [
+        Role.USER,
+        Role.ASSISTANT,
+        Role.ASSISTANT,
+        Role.TOOL,
+        Role.ASSISTANT,
+        Role.TOOL,
+        Role.ASSISTANT,
+    ]
+
+    streamed = parse_stream(iter(legacy), "legacy-fallback")
+    assert streamed.messages == legacy_session.messages
+    assert streamed.session_events == legacy_session.session_events
+
+
+def test_legacy_response_tool_outcomes_match_the_wrapped_form() -> None:
+    """The writer's outcome derivation gives the same verdicts to both generations.
+
+    Red if an unwrapped output stops carrying its exit-code evidence (the
+    failed call would no longer derive ``error``).
+    """
+    from polylogue.core.enums import Origin, ToolOutcome
+    from polylogue.sources.tool_outcomes import derive_tool_outcomes
+
+    legacy = _codex_fixture("legacy-response-records.jsonl")
+    verdicts = []
+    for records in (legacy, _wrap_legacy_response_records(legacy)):
+        session = parse(records, "legacy-fallback")
+        derived = derive_tool_outcomes(session.messages, session.session_events, origin=Origin.CODEX_SESSION)
+        assert isinstance(derived, list)
+        verdicts.append(
+            [
+                (block.type, block.tool_id, block.tool_outcome)
+                for message in derived
+                for block in message.blocks
+                if block.type in (BlockType.TOOL_USE, BlockType.TOOL_RESULT)
+            ]
+        )
+    assert verdicts[0] == verdicts[1]
+    results = {tool_id: outcome for kind, tool_id, outcome in verdicts[0] if kind is BlockType.TOOL_RESULT}
+    assert results == {"call_sample_ok": ToolOutcome.OK, "call_sample_fail": ToolOutcome.ERROR}
+
+
+def test_verified_answer_and_realtime_markers_become_session_events() -> None:
+    """retained_context/verified_answer keeps its question/answer pairs; realtime markers keep their ids.
+
+    Red if either envelope stops being lowered: the records would arrive as
+    ``codex_unknown_outer_record`` events and the ledger would not be clean.
+    """
+    session = parse(_codex_fixture("retained-context-and-realtime.jsonl"), "retained-fallback")
+
+    assert session.unit_accounting is not None
+    assert not session.unit_accounting.outcomes
+    by_type = {event.event_type: event for event in session.session_events}
+    assert "codex_unknown_outer_record" not in by_type
+
+    answer = by_type["verified_answer"]
+    assert answer.source_message_provider_id == "call_sample_question"
+    assert answer.timestamp is not None
+    assert answer.payload["call_id"] == "call_sample_question"
+    assert answer.payload["turn_id"] == "turn-sample-1"
+    assert answer.payload["acceptance_order"] == 1
+    assert answer.payload["questions"] == [{"question": "Which colour should the banner use?", "answer": "Green"}]
+
+    started = by_type["realtime_session_started"]
+    closed = by_type["realtime_session_closed"]
+    assert started.payload["realtime_session_id"] == closed.payload["realtime_session_id"] == "realtime-session-sample"
+    assert started.payload["id"] == "realtime-marker-1"
+    assert closed.payload["outcome"] == "ended"
+    assert "outcome" not in started.payload
+
+    # The surrounding tool call still pairs with its output.
+    tool_ids = {(block.type, block.tool_id) for message in session.messages for block in message.blocks}
+    assert (BlockType.TOOL_USE, "call_sample_question") in tool_ids
+    assert (BlockType.TOOL_RESULT, "call_sample_question") in tool_ids
+
+
+def test_undeclared_payload_type_under_a_declared_envelope_stays_visible() -> None:
+    from polylogue.sources.parsers.base_models import AdmissionDisposition, AdmissionUnit, AdmissionUnknownReason
+
+    records = _codex_fixture("retained-context-and-realtime.jsonl")
+    records.insert(3, {"type": "retained_context", "payload": {"type": "future_retained_kind", "value": 1}})
+    session = parse(records, "retained-fallback")
+
+    assert session.unit_accounting is not None
+    outcomes = session.unit_accounting.outcomes
+    assert [(o.unit, o.ordinal, o.key, o.disposition, o.reason) for o in outcomes] == [
+        (
+            AdmissionUnit.OUTER_RECORD,
+            3,
+            "retained_context:future_retained_kind",
+            AdmissionDisposition.TYPED_UNKNOWN,
+            AdmissionUnknownReason.UNRECOGNIZED_TYPE,
+        )
+    ]
+    unknown = [event for event in session.session_events if event.event_type == "codex_unknown_outer_record"]
+    assert len(unknown) == 1
+    assert unknown[0].payload["wire_type"] == "retained_context"
+
+
+@pytest.mark.parametrize("fixture", ["legacy-response-records.jsonl", "retained-context-and-realtime.jsonl"])
+def test_new_record_shapes_are_supported_session_streams(fixture: str) -> None:
+    from polylogue.sources.parsers.codex import is_supported_outer_record
+
+    records = _codex_fixture(fixture)
+    assert all(is_supported_outer_record(record) for record in records)
+    assert is_supported_session_stream(records)
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"type": "future_outer_kind", "payload": {"type": "anything"}},
+        {"type": "future_outer_kind"},
+        # A legacy response type is supported only unwrapped; an envelope of
+        # that name is not a shape the parser knows.
+        {"type": "function_call", "payload": {"type": "function_call", "call_id": "c"}},
+    ],
+)
+def test_unknown_outer_records_still_refuse_the_stream(record: dict[str, object]) -> None:
+    from polylogue.sources.parsers.codex import is_supported_outer_record
+
+    assert not is_supported_outer_record(record)
+    for fixture in ("legacy-response-records.jsonl", "retained-context-and-realtime.jsonl"):
+        records = _codex_fixture(fixture)
+        records.insert(2, record)
+        assert not is_supported_session_stream(records)

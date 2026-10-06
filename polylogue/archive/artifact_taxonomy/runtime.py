@@ -714,7 +714,7 @@ def _classify_artifact_records(
     specific_document = False
     first_classification: ArtifactClassification | None = None
     codex_unsupported_record = False
-    from polylogue.sources.parsers.codex import is_supported_outer_record
+    from polylogue.sources.parsers.codex import is_legacy_response_record, is_supported_outer_record
 
     def result(classification: ArtifactClassification, proved: bool) -> ArtifactStreamClassification:
         return ArtifactStreamClassification(classification, proved, count)
@@ -728,6 +728,11 @@ def _classify_artifact_records(
         evidence.observe(item)
         if provider is Provider.CODEX:
             codex_unsupported_record |= not is_supported_outer_record(value)
+            # An unwrapped 2025 response record (function_call, its output,
+            # reasoning) carries no generic envelope marker, yet the parser
+            # materializes it; count it as record evidence so a rollout made
+            # mostly of tool calls still clears the record majority.
+            evidence.record_count += int(is_legacy_response_record(value) and not looks_like_record_entry(item))
         all_metadata &= isinstance(value, str | int | float | bool | type(None)) or (
             isinstance(value, dict) and looks_metadataish_dict(item)
         )
@@ -944,7 +949,7 @@ def _classify_list(
             )
 
     if provider is Provider.CODEX:
-        from polylogue.sources.parsers.codex import is_schema_session_stream, is_supported_session_stream
+        from polylogue.sources.parsers.codex import is_supported_session_stream
 
         if is_supported_session_stream(payload):
             subagent = is_subagent_path(source_path)
@@ -956,16 +961,6 @@ def _classify_list(
                 schema_eligible=True,
                 default_priority=90 if subagent else 120,
                 reason="parser-supported Codex session record stream",
-            )
-        if is_schema_session_stream(payload):
-            subagent = is_subagent_path(source_path)
-            return ArtifactClassification(
-                provider=provider,
-                kind=ArtifactKind.AGENT_TRANSCRIPT if subagent else ArtifactKind.SESSION_RECORD_STREAM,
-                parse_as_session=False,
-                schema_eligible=True,
-                default_priority=90 if subagent else 120,
-                reason="Codex schema evidence with records lacking normalized semantics",
             )
 
     # A Codex rollout can be truncated to repeated bare session headers while
