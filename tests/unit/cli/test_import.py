@@ -957,7 +957,8 @@ def test_import_refuses_inadmissible_source_before_submitting(
     combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
     assert "unsupported_import_source" in combined
     assert "no parseable polylogue export shape" in combined
-    slots = list(import_staging_root(workspace_env["archive_root"]).glob("input-*"))
+    # Each slot directory has one outside receipt beside it; count the slots.
+    slots = [slot for slot in import_staging_root(workspace_env["archive_root"]).glob("input-*") if slot.is_dir()]
     assert len(slots) == 1
     assert str(slots[0]).lower() in combined
     assert (slots[0] / source.name).read_bytes() == source.read_bytes()
