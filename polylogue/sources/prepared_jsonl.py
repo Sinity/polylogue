@@ -2032,6 +2032,14 @@ def _create_artifact_tables(conn: sqlite3.Connection) -> None:
     )
 
 
+def _artifact_source_hash(store: SqliteMessageStore) -> str:
+    """The sealed retained input these publications belong to."""
+    row = store.conn.execute("SELECT source_hash FROM artifact_seal").fetchone()
+    if row is None or not row[0]:
+        raise ValueError("publication claims require the artifact's sealed source identity")
+    return str(row[0])
+
+
 def _prepare_attachment_publications(
     store: SqliteMessageStore,
     publisher: ArchiveBlobPublisher,
@@ -2043,6 +2051,7 @@ def _prepare_attachment_publications(
     from polylogue.sources.prepared_message_sink import _decode_attachment
     from polylogue.storage.blob_publication import AdoptedBlobEvictedError, _prepared_claim_record
 
+    source_hash = _artifact_source_hash(store)
     after = (-1, -1)
     while True:
         check_compute_cancelled()
@@ -2088,7 +2097,10 @@ def _prepare_attachment_publications(
             else:
                 continue
             try:
-                claim = publisher.prepare_claim(blob)
+                claim = publisher.prepare_claim(
+                    blob,
+                    coordinate=f"{source_hash}/attachment/{int(session_ordinal)}/{int(attachment_ordinal)}",
+                )
                 store.conn.execute(
                     "INSERT INTO prepared_attachment_publication VALUES (?, ?, ?)",
                     (session_ordinal, attachment_ordinal, _prepared_claim_record(claim)),
@@ -2110,6 +2122,7 @@ def _prepare_sidecar_publications(store: SqliteMessageStore, publisher: ArchiveB
     from polylogue.pipeline.ids import SIDECAR_BLOB_EVENT_TYPES
     from polylogue.storage.blob_publication import _prepared_claim_record
 
+    source_hash = _artifact_source_hash(store)
     event_marks = ",".join("?" for _ in SIDECAR_BLOB_EVENT_TYPES)
     store.conn.execute(
         "INSERT OR IGNORE INTO prepared_sidecar_publication(session_ordinal,tool_use_id) "
@@ -2171,7 +2184,7 @@ def _prepare_sidecar_publications(store: SqliteMessageStore, publisher: ArchiveB
                 unicodedata.normalize("NFC", str(text)).encode("utf-8"), staging_directory=directory
             )
             del text_row, text
-            claim = publisher.prepare_claim(blob)
+            claim = publisher.prepare_claim(blob, coordinate=f"{source_hash}/sidecar/{int(ordinal)}/{tool_use_id}")
             store.conn.execute(
                 "UPDATE prepared_sidecar_publication SET claim_json=?,already_present=?,captured_text=NULL "
                 "WHERE session_ordinal=? AND tool_use_id=?",

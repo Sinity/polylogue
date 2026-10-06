@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import sqlite3
@@ -53,6 +54,14 @@ class PreparedBlobPublicationClaim:
     seal: PreparedFileSeal
     prepared_path: Path
     publisher: ArchiveBlobPublisher
+
+
+def derived_publication_id(coordinate: str, blob_hash: str) -> str:
+    """The stable publication identity of one blob for one retained coordinate."""
+    digest = hashlib.sha256(
+        b"polylogue-publication-claim-v1\0" + coordinate.encode("utf-8") + b"\0" + blob_hash.encode("ascii")
+    ).hexdigest()
+    return f"claim-{digest}"
 
 
 def _prepared_publication_claim(
@@ -209,10 +218,12 @@ class BlobPublicationReservationStore:
                     assert image is not None
                     reference_seal.load_source_row(image)
                     existing = dict(zip(image.columns, image.cells, strict=True))
+                    # A derived claim identity re-adopts the reservation an
+                    # earlier attempt left: the same publication of the same
+                    # bytes, whichever publisher instance reserved it.
                     expected: dict[str, None | int | float | str | bytes] = {
                         "blob_hash": bytes.fromhex(receipt.blob_hash),
                         "size_bytes": receipt.size_bytes,
-                        "publisher_id": receipt.publisher_id,
                     }
                     if any(
                         not reference_seal._literal_scalar_equal(existing[column], value)
@@ -276,7 +287,7 @@ class BlobPublicationReservationStore:
                     existing = cursor.fetchone()
                 if existing is None:
                     new_receipts.append(receipt)
-                elif tuple(existing) != (bytes.fromhex(receipt.blob_hash), receipt.size_bytes, receipt.publisher_id):
+                elif tuple(existing)[:2] != (bytes.fromhex(receipt.blob_hash), receipt.size_bytes):
                     raise ValueError("publication claim collides with another reservation")
             with closing(
                 conn.executemany(
@@ -395,13 +406,21 @@ class ArchiveBlobPublisher(BlobStore):
                 return path
             cursor = cursor.parent
 
-    def prepare_claim(self, prepared: PreparedBlob) -> PreparedBlobPublicationClaim:
-        """Allocate an exact claim and seal its bytes during off-writer preparation."""
+    def prepare_claim(self, prepared: PreparedBlob, *, coordinate: str | None = None) -> PreparedBlobPublicationClaim:
+        """Allocate an exact claim and seal its bytes during off-writer preparation.
+
+        ``coordinate`` names what the bytes are for (the retained raw and its
+        position within it). Its claim identity is derived from that coordinate
+        and the blob, so a retry of a crashed attempt re-adopts the reservation
+        the attempt left and its reference transaction consumes it, instead of
+        reserving again beside a receipt nothing will ever consume.
+        """
         self._validate_claim_path(prepared.temporary_path)
         seal = PreparedFileSeal.capture(prepared.temporary_path)
         if seal.sha256 != prepared.hash_hex or seal.size != prepared.size_bytes:
             raise ValueError("prepared publication claim disagrees with its file")
-        receipt = BlobPublicationReceipt(str(uuid4()), prepared.hash_hex, prepared.size_bytes, self.publisher_id)
+        publication_id = str(uuid4()) if coordinate is None else derived_publication_id(coordinate, prepared.hash_hex)
+        receipt = BlobPublicationReceipt(publication_id, prepared.hash_hex, prepared.size_bytes, self.publisher_id)
         return _prepared_publication_claim(self, receipt, seal, prepared.temporary_path)
 
     def queue_prepared(
@@ -463,7 +482,7 @@ class ArchiveBlobPublisher(BlobStore):
         if source.publication_blob_is_excised(blob_hash):
             raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
         row = source.publication_reservation(receipt.publication_id)
-        if row is None or tuple(row) != (blob_hash, receipt.size_bytes, receipt.publisher_id):
+        if row is None or tuple(row)[:2] != (blob_hash, receipt.size_bytes):
             raise ArchiveStorageFaultError(
                 StorageFaultKind.EVICTED, FileNotFoundError("publication reservation is absent or changed")
             )
