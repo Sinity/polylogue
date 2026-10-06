@@ -1333,6 +1333,68 @@ def test_pre_acquisition_reports_a_retryable_read_as_its_typed_fault(tmp_path: P
     assert decision.excluded_reason is not None
 
 
+def test_jsonl_pre_acquisition_classifies_record_by_record_in_bounded_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A large rollout is classified from its records, never as one JSON document.
+
+    Routing a ``.jsonl`` stream through the whole-input projection (the
+    pure-Python event parser, once per detector binding) makes the guard
+    below raise; holding the stream rather than one record at a time makes
+    the traced peak follow the input size.
+    """
+    import tracemalloc
+
+    from polylogue.sources import detection_projection
+    from polylogue.sources.live.batch_support import classify_pre_acquisition
+
+    def session_lines(count: int) -> Iterable[str]:
+        yield json.dumps({"type": "session_meta", "payload": {"id": "bounded", "timestamp": "2026-06-02T00:00:00Z"}})
+        for index in range(count):
+            yield json.dumps(
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "id": f"message-{index}",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "synthetic " * 1600}],
+                    },
+                }
+            )
+
+    warm = tmp_path / "warm.jsonl"
+    warm.write_text("\n".join(session_lines(1)) + "\n", encoding="utf-8")
+    rollout = tmp_path / "rollout-bounded.jsonl"
+    with rollout.open("w", encoding="utf-8") as handle:
+        for line in session_lines(2600):
+            handle.write(line + "\n")
+    size = rollout.stat().st_size
+
+    def whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("a JSONL record stream was projected as one JSON document")
+
+    monkeypatch.setattr(detection_projection, "project_detection_input", whole_document)
+    monkeypatch.setattr(detection_projection, "_document_projection", whole_document)
+
+    # Lazy imports and compiled registries are not per-input memory.
+    classify_pre_acquisition(warm, fallback_provider=Provider.CODEX, source_only=False, size_bytes=0)
+    tracemalloc.start()
+    try:
+        decision = classify_pre_acquisition(
+            rollout, fallback_provider=Provider.CODEX, source_only=False, size_bytes=size
+        )
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert decision.excluded_reason is None
+    assert decision.detected_provider is Provider.CODEX
+    assert decision.detection_crash is None
+    assert size > 40 * 1024 * 1024
+    assert peak < size // 4
+
+
 def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -7308,7 +7370,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
 
         # Exactly the polylogue-52l2 guard-tripping sequence: no unique
         # byte-prefix chain across a and b.
-        plan = store.classify_raw_revision_cohort_for_live_watch("chatgpt-export:shared")
+        plan = store.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:shared")
         assert plan.accepted_raw_ids == ()
 
         convertible = list(store.convertible_full_revision_raw_ids("chatgpt-export:shared"))

@@ -84,7 +84,7 @@ async def test_cold_build_lifecycle_writable_opens_stay_under_one_coordinator(
                 ColdBuildGeneration.begin,
                 root,
                 reason="test",
-                sources=(WatchSource("fixture", root / "absent-source"),),
+                observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", root / "absent-source"),)),
             )
             assert (
                 await coordinator.run_sync(

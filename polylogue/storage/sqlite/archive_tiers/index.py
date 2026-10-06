@@ -2232,9 +2232,11 @@ WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session
     SELECT parent_session_id
     FROM delegation_facts
     WHERE child_session_id = NEW.session_id;
-    DELETE FROM delegation_facts
-    WHERE parent_session_id = NEW.session_id OR child_session_id = NEW.session_id;
     INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
+    -- The insert rebuilds every scoped parent cohort, so the delete clears
+    -- those whole cohorts: a sibling of this child keeps its delegation_id.
+    DELETE FROM delegation_facts
+    WHERE parent_session_id IN (SELECT parent_session_id FROM delegation_refresh_scope);
     {delegation_facts_insert_sql("NEW.session_id")};
     DELETE FROM delegation_refresh_scope;
 END;

@@ -222,8 +222,6 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     bind_raw_revision,
     blob_path_for_hash,
     classify_raw_revision_cohort_for_frozen_candidate,
-    classify_raw_revision_cohort_for_live_watch,
-    classify_raw_revision_cohort_for_live_watch_in_transaction,
     classify_raw_revision_cohort_for_rebuild_repair,
     classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
     convertible_full_revision_raw_ids,
@@ -2887,19 +2885,6 @@ class ArchiveStore:
 
     def classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key: str) -> RevisionReplayPlan:
         return classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key)
-
-    @_archive_mutator
-    def classify_raw_revision_cohort_for_live_watch(
-        self,
-        logical_source_key: str,
-    ) -> RevisionReplayPlan:
-        self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_live_watch(self, logical_source_key)
-
-    @_archive_mutator
-    def classify_raw_revision_cohort_for_live_watch_in_transaction(self, logical_source_key: str) -> RevisionReplayPlan:
-        self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_live_watch_in_transaction(self, logical_source_key)
 
     @staticmethod
     def _promote_contiguous_append_evidence(conn: sqlite3.Connection, logical_source_key: str) -> None:

@@ -93,7 +93,9 @@ async def test_cold_build_rebuilds_a_session_that_retains_an_agent_work_event(tm
 
     def begin() -> ColdBuildGeneration:
         return ColdBuildGeneration.begin(
-            root, reason="work-event-cold-build", sources=(WatchSource("fixture", root / "absent"),)
+            root,
+            reason="work-event-cold-build",
+            observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", root / "absent"),)),
         )
 
     generation = await run_archive_fixture_write(root, begin)

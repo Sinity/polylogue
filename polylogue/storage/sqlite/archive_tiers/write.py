@@ -171,6 +171,7 @@ from polylogue.storage.sqlite.session_shard import (
     SessionShardBuilder,
     build_session_shard,
     open_session_shard,
+    shard_owner_reader_window,
 )
 from polylogue.storage.usage import UsageProjectionModel, project_provider_usage_events, provider_usage_event_identity
 
@@ -2289,7 +2290,13 @@ def append_session_to_shard(builder: SessionShardBuilder, session: ParsedSession
     session_id = archive_session_id(origin.value, session.provider_session_id)
     duplicates = _duplicate_message_native_ids(messages)
     try:
-        with disk_message_content_identities(messages) as identities, disk_message_owner_resolution(messages) as owners:
+        with (
+            disk_message_content_identities(messages) as identities,
+            disk_message_owner_resolution(messages) as owners,
+            # Every message asks whether its native id is ambiguous; one
+            # reader serves the whole append instead of one per question.
+            duplicates.reader() if isinstance(duplicates, _DiskDuplicateNativeIds) else nullcontext(),
+        ):
             builder.add_streamed(
                 session_id=session_id,
                 session_content_hash=_prepared_session_content_hash(session),
@@ -2636,6 +2643,7 @@ def write_parsed_session_to_archive(
                     composed = context.inherited_prefix_message_ids._composed
                     if isinstance(composed, _DiskSignatureSequence):
                         mutation_stack.enter_context(composed.reader())
+                mutation_stack.enter_context(shard_owner_reader_window(prepared_write.rows.owner_resolution))
                 mutation_stack.enter_context(
                     _index_write_scope(
                         conn,

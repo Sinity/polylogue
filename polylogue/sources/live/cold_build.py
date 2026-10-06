@@ -39,6 +39,7 @@ import time
 import types
 import uuid
 import zlib
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -476,32 +477,58 @@ class ColdBuildGeneration:
                 error_detail=str(exc),
             )
 
+    @staticmethod
+    def observe_source_baseline(
+        sources: tuple[WatchSource, ...],
+        *,
+        progress: BaselineProgress | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> ProductionSourceBaseline:
+        """Capture the production discovery denominator a cold build will bind.
+
+        The walk, pre-acquisition classification and revision hashing read
+        source files only and write nothing, so they run before, and outside,
+        the writer call :meth:`begin` makes. A slow or large source then
+        never holds the archive's single writer.
+        """
+        from polylogue.sources.live.production_baseline import capture_production_source_baseline
+
+        if progress is not None:
+            progress("baseline_walk")
+        return capture_production_source_baseline(
+            sources,
+            operation_id=f"cold-build-{uuid.uuid4().hex}",
+            cancelled=cancelled,
+            progress=progress,
+        )
+
     @classmethod
     def begin(
         cls,
         archive_root: Path,
         *,
         reason: str,
-        sources: tuple[WatchSource, ...],
+        observed: ProductionSourceBaseline,
         owner_id: str | None = None,
         progress: BaselineProgress | None = None,
     ) -> ColdBuildGeneration:
         """Create the inactive generation this build will fill.
 
-        ``progress`` hears each preparation phase (baseline walk and hashing,
-        capacity projection, source snapshot, generation creation) as it
+        ``observed`` is the baseline :meth:`observe_source_baseline` captured
+        off the writer; this writer call merges it with a pending receipt,
+        publishes it, and binds it. ``progress`` hears each remaining phase
+        (capacity projection, source snapshot, generation creation) as it
         starts, so the caller can report the time before the first intake
         page instead of an idle status.
 
-        Captures the production discovery denominator and checks free space before the generation
-        directory exists. A cold build is the whole index again on disk beside the one
-        still serving reads, and it is engaged automatically whenever the
-        active generation is empty -- so this preflight cannot be conditioned
-        on the operator having asked for it, or the unattended 40 GB case
-        would be the one left unguarded. The refusal is fatal on purpose:
-        there is no smaller build to fall back to, and letting ingest fill
-        the active generation instead would allocate the same bytes with
-        readers attached.
+        Checks free space before the generation directory exists. A cold
+        build is the whole index again on disk beside the one still serving
+        reads, and it is engaged automatically whenever the active generation
+        is empty -- so this preflight cannot be conditioned on the operator
+        having asked for it, or the unattended 40 GB case would be the one
+        left unguarded. The refusal is fatal on purpose: there is no smaller
+        build to fall back to, and letting ingest fill the active generation
+        instead would allocate the same bytes with readers attached.
         """
         archive_root = Path(archive_root)
         # Every durable member must already exist: ``create`` links exactly
@@ -514,15 +541,9 @@ class ColdBuildGeneration:
         (archive_root / "blob").mkdir(mode=0o700, exist_ok=True)
         store = IndexGenerationStore.for_archive_root(archive_root)
         _reclaim_abandoned_cold_generations(store)
-        # The whole-tree walk this costs is measured in tens of seconds on a
-        # real archive (77s over ~790k inodes), against a build measured in
-        # hours -- and it runs once per build, not once per pass, because
-        # ``begin`` is only reached when a cold build is actually starting.
-        # That is the only cost gate this needs; intent is not a gate.
-        operation_id = f"cold-build-{uuid.uuid4().hex}"
+        operation_id = observed.operation_id
         from polylogue.sources.live.production_baseline import (
             MATERIAL_BYTE_DEFINITION,
-            capture_production_source_baseline,
             load_pending_production_baseline,
             merge_pending_production_baseline,
             publish_pending_production_baseline,
@@ -533,11 +554,7 @@ class ColdBuildGeneration:
             if progress is not None:
                 progress(name)
 
-        phase("baseline_walk")
-        baseline = merge_pending_production_baseline(
-            capture_production_source_baseline(sources, operation_id=operation_id, progress=progress),
-            load_pending_production_baseline(archive_root),
-        )
+        baseline = merge_pending_production_baseline(observed, load_pending_production_baseline(archive_root))
         publish_pending_production_baseline(archive_root, baseline)
         phase("capacity_projection")
         blob_block_bytes, source_db_block_bytes = evidence_allocation_block_bytes(archive_root)

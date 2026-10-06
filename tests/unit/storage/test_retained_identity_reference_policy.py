@@ -95,7 +95,9 @@ def test_retained_replay_and_promotion_preserve_or_refuse_prior_annotated_identi
     # destination, so the candidate is begun and registered as one.
     with write_lease("test.retained-identity-candidate", archive_root=tmp_path):
         cold_build = ColdBuildGeneration.begin(
-            tmp_path, reason="test-retained-identity", sources=(WatchSource("fixture", tmp_path / "absent"),)
+            tmp_path,
+            reason="test-retained-identity",
+            observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", tmp_path / "absent"),)),
         )
     candidate = cold_build.generation
     register_cold_build_generation(cold_build)

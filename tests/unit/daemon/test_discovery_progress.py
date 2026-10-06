@@ -242,7 +242,7 @@ async def test_cancelled_discovery_keeps_worker_progress_until_walk_finishes(
 def test_cold_build_preparation_is_visible_before_the_first_intake_page(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Dropping the progress callback from ``ColdBuildGeneration.begin`` makes this red.
+    """Dropping the progress callback from the cold build observation or ``begin`` makes this red.
 
     The real baseline walk and revision hashing report through the daemon's
     preparation state; status observed mid-preparation carries the phase and
@@ -288,7 +288,12 @@ def test_cold_build_preparation_is_visible_before_the_first_intake_page(
     sink = add_sink(make_stream_sink(stream, fmt="json"))
     begin_cold_build_preparation()
     try:
-        ColdBuildGeneration.begin(archive, reason="test", sources=(source,), progress=observing_progress)
+        ColdBuildGeneration.begin(
+            archive,
+            reason="test",
+            observed=ColdBuildGeneration.observe_source_baseline((source,), progress=observing_progress),
+            progress=observing_progress,
+        )
         during = cast(dict[str, Any], get_status_snapshot_payload()["catchup"])
     finally:
         end_cold_build_preparation()
@@ -414,14 +419,20 @@ async def test_cancelled_caller_keeps_preparation_until_admitted_writer_stops(tm
     started = threading.Event()
     release = threading.Event()
 
-    def preparing(*, progress: Any) -> str:
+    def observing(*, progress: Any, cancelled: Any) -> str:
         progress("baseline_hash", revisions=1, hashed_bytes=3)
+        return "observed"
+
+    def preparing(*, observed: str, progress: Any) -> str:
+        assert observed == "observed"
         started.set()
         assert release.wait(5), "writer was not released"
         progress("generation_create")
         return "generation"
 
-    caller = asyncio.create_task(run_cold_build_preparation(coordinator, "daemon.cold_build.begin", preparing))
+    caller = asyncio.create_task(
+        run_cold_build_preparation(coordinator, "daemon.cold_build.begin", observing, preparing)
+    )
     try:
         assert await asyncio.to_thread(started.wait, 5)
         caller.cancel()
@@ -441,6 +452,40 @@ async def test_cancelled_caller_keeps_preparation_until_admitted_writer_stops(tm
 
 
 @pytest.mark.asyncio
+async def test_cold_build_source_observation_runs_before_and_outside_the_writer_call(tmp_path: Path) -> None:
+    """Observing the sources inside the writer call makes this red.
+
+    Pre-acquisition classification and hashing only read source files; the
+    writer call receives their finished observation and binds it.
+    """
+    from polylogue.daemon.discovery_progress import run_cold_build_preparation
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    order: list[tuple[str, str]] = []
+
+    def observing(*, progress: Any, cancelled: Any) -> str:
+        order.append(("observe", threading.current_thread().name))
+        progress("baseline_walk", inspected=1)
+        assert not cancelled()
+        return "observed"
+
+    def preparing(*, observed: str, progress: Any) -> str:
+        order.append(("begin", threading.current_thread().name))
+        return f"bound:{observed}"
+
+    try:
+        result = await run_cold_build_preparation(coordinator, "daemon.cold_build.begin", observing, preparing)
+    finally:
+        assert await coordinator.shutdown(timeout=5)
+        reset_discovery_progress()
+    assert result == "bound:observed"
+    assert [step for step, _thread in order] == ["observe", "begin"]
+    assert order[0][1] == "cold-source-observation"
+    assert order[1][1] != order[0][1]
+
+
+@pytest.mark.asyncio
 async def test_unadmitted_cancelled_preparation_ends_at_the_caller(tmp_path: Path) -> None:
     from polylogue.daemon.discovery_progress import run_cold_build_preparation
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
@@ -457,7 +502,12 @@ async def test_unadmitted_cancelled_preparation_ends_at_the_caller(tmp_path: Pat
     try:
         await holder_started.wait()
         caller = asyncio.create_task(
-            run_cold_build_preparation(coordinator, "daemon.cold_build.begin", lambda *, progress: None)
+            run_cold_build_preparation(
+                coordinator,
+                "daemon.cold_build.begin",
+                lambda *, progress, cancelled: None,
+                lambda *, observed, progress: None,
+            )
         )
         await asyncio.sleep(0.01)
         assert active_discovery_payload() is not None

@@ -103,7 +103,7 @@ def test_empty_no_input_build_waits_for_future_files_then_discards_on_shutdown(t
     generation = ColdBuildGeneration.begin(
         tmp_path,
         reason="empty active index generation",
-        sources=(WatchSource("fixture", tmp_path / "absent-source"),),
+        observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", tmp_path / "absent-source"),)),
     )
     generation_root = generation.generation_root
 

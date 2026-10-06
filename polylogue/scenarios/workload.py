@@ -666,11 +666,14 @@ def watcher_append_cohort_canary_spec(
     archive_id: str,
     scale_tier: WorkloadScaleTier = WorkloadScaleTier.CI_ACTIVATION,
 ) -> WorkloadEnvelopeSpec:
-    """Declare the watcher append/cohort memory incident production route."""
+    """Declare the watcher append/cohort memory incident production route.
+
+    The route decides an append's authority from durable metadata and replays
+    the reused append payload inside one append batch, so its boundaries are
+    the batch and quiescence.
+    """
     route_phases = (
         "watcher_append:before",
-        "raw_revision_replay_plan:before",
-        "raw_revision_replay_plan:after",
         "watcher_append:after",
         "quiescent",
     )

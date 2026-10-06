@@ -24,6 +24,7 @@ import sqlite3
 import uuid
 from collections.abc import Iterator, Mapping, Sequence, Set
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
@@ -161,10 +162,41 @@ class SessionShard:
         return ShardSessionMapping(self.path, len(self.sessions))
 
 
+#: A read-only shard connection held open for one publication window, keyed
+#: by the shard path. Context-local, so it never crosses threads or tasks.
+_READER_WINDOW: ContextVar[tuple[Path, sqlite3.Connection] | None] = ContextVar(
+    "polylogue_shard_reader_window", default=None
+)
+
+
+@contextmanager
+def shard_owner_reader_window(resolution: object) -> Iterator[None]:
+    """Reuse one read-only connection for a sealed owner resolution's lookups.
+
+    A session write asks the shard-backed owner resolution once per message;
+    opening a connection per question dominated publication of large
+    sessions. Outside the window each lookup still opens its own reader.
+    """
+    keys = getattr(resolution, "keys", None)
+    if not isinstance(keys, _ShardOwnerKeys) or _READER_WINDOW.get() is not None:
+        yield
+        return
+    with _shard_connection(keys.path) as conn:
+        token = _READER_WINDOW.set((keys.path, conn))
+        try:
+            yield
+        finally:
+            _READER_WINDOW.reset(token)
+
+
 @contextmanager
 def _shard_connection(path: Path, *, readonly: bool = True) -> Iterator[sqlite3.Connection]:
     from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
+    window = _READER_WINDOW.get() if readonly else None
+    if window is not None and window[0] == path:
+        yield window[1]
+        return
     connection = connect_measured(_read_only_uri(path), uri=True) if readonly else connect_measured(path)
     owner = NativeSQLCustodyOwner(connection, lifetime_dependencies=current_native_sql_lifetimes())
     try:

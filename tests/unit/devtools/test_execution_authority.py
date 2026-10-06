@@ -387,29 +387,6 @@ def test_setup_failure_cannot_clear_prior_graph_taint(
     assert inspect_testmon_graph(root).usable
 
 
-def test_verify_rerun_uses_the_graph_writers_hypothesis_budget(
-    source_repository: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Dropping CLI semantics from verify's rerun clears a full-budget failure."""
-    from tests.infra.execution_authority import verify_graph
-
-    root = source_repository
-    (root / "tests/nested/test_one.py").write_text(
-        "from hypothesis import given, settings, strategies as st\n"
-        "@given(st.booleans())\ndef test_one(value):\n"
-        "    if settings.default.max_examples > 10:\n"
-        "        from helper import value\n        assert value()\n"
-    )
-    assert _record(root, profile="verify")[0] == 0
-    (root / "helper.py").write_text("def value():\n    return False\n")
-    monkeypatch.setenv("HYPOTHESIS_PROFILE", "verify")
-    exit_code, _elapsed, metadata = verify_graph(root, profile="default")
-    assert exit_code == 1
-    assert metadata["hypothesis_profile"] == "default"
-    assert metadata["rerun"]["still_failed"]
-    assert not metadata["rerun"]["flaky"]
-
-
 def test_managed_custody_leaves_an_actual_opaque_foreign_peer_alive(source_repository: Path) -> None:
     """A same-UID/cgroup scan refuses or signals this unrelated opaque birth."""
     import os
@@ -537,22 +514,6 @@ def test_managed_child_cannot_inherit_or_reopen_the_private_closure_descriptor(
     code, receipt = _record(root)
     assert code == 0, receipt
     assert receipt["execution_source"]["custody_settled"] is True
-
-
-def test_in_slot_rerun_requires_two_physical_closures_and_keeps_initial_exit(source_repository: Path) -> None:
-    root = source_repository
-    (root / "tests/nested/test_one.py").write_text(
-        "from pathlib import Path\ndef test_one():\n"
-        "    sentinel = Path('.cache/failure-once')\n"
-        "    prior = sentinel.exists()\n    sentinel.touch()\n    assert prior\n"
-    )
-    code, receipt = _record(root, in_slot_rerun=True)
-    assert code == 1, receipt
-    assert receipt["execution_source"]["status"] == "stable"
-    closures = receipt["execution_source"]["attempt_closures"]
-    assert [closure["main_exit"] for closure in closures] == [1, 0]
-    assert len({closure["supervisor_pid"] for closure in closures}) == 2
-    assert inspect_testmon_graph(root).usable
 
 
 @pytest.mark.parametrize("before_registration", [False, True])

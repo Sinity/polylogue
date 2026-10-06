@@ -1,9 +1,9 @@
 """Which arguments after a pytest option are its value, as pytest decides it.
 
-``devtools test`` reads the caller's pytest arguments twice: to count the
-modules a selection names (sizing it for xdist) and to carry execution options
-into a failure rerun. Both need to know whether the argument after an option
-is that option's value or a path. A hand-kept table of value-taking options
+``devtools test`` reads the caller's pytest arguments to count the modules a
+selection names (sizing it for xdist) and to expand short-option clusters.
+Both need to know whether the argument after an option is that option's value
+or a path. A hand-kept table of value-taking options
 misses options (``--show-capture no``, ``--assert plain``), and a missed option
 turns its value into a path operand. The table here is read from pytest's own
 argument parser for this checkout, with its installed plugins, the devtools
@@ -247,9 +247,41 @@ def short_options_with_value(plugins: tuple[str, ...] = ()) -> frozenset[str]:
     )
 
 
+def declared_testmon_environment(command: Sequence[str]) -> str | None:
+    """The testmon environment a pytest ``command`` traces into, or ``None``.
+
+    ``None`` means the command runs without testmon and writes no
+    fingerprints. The last ``--testmon``/``--no-testmon`` (or ``-p no:testmon``)
+    wins, and ``--testmon-env`` names the environment (``default`` otherwise).
+    """
+    arguments = list(command)
+    arguments = arguments[arguments.index("pytest") + 1 :] if "pytest" in arguments else arguments
+    enabled = False
+    environment = "default"
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            break
+        if argument == "--testmon":
+            enabled = True
+        elif argument in {"--no-testmon", "-pno:testmon", "-p=no:testmon"} or (
+            argument == "-p" and index + 1 < len(arguments) and arguments[index + 1] == "no:testmon"
+        ):
+            enabled = False
+        elif argument.startswith("--testmon-env="):
+            environment = argument.split("=", 1)[1]
+        elif argument == "--testmon-env" and index + 1 < len(arguments):
+            environment = arguments[index + 1]
+            index += 1
+        index += 1
+    return environment if enabled else None
+
+
 __all__ = [
     "PytestOptionTableError",
     "caller_plugins",
+    "declared_testmon_environment",
     "expand_short_clusters",
     "split_short_cluster",
     "operand_count",

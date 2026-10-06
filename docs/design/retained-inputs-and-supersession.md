@@ -412,7 +412,7 @@ measurement isolates the continuity proof, not the cursor write.
 
 A full capture is modeled at the archive write boundary
 (`write_raw_payload` with a FULL envelope plus
-`classify_raw_revision_cohort_for_live_watch`) rather than through
+the live-watch cohort classifier, since removed) rather than through
 `_process_ingest_batch_sync`; the append configurations drive the production
 route end to end.
 
