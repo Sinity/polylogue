@@ -1329,6 +1329,11 @@ class LiveWatcher:
             authority = CursorPathAuthority.observe(path)
         except FileNotFoundError:
             return _ArchivedCursorReconciliation.UNAVAILABLE
+        if source_provider not in {None, Provider.HERMES, Provider.UNKNOWN}:
+            # Acquisition captures a profile namespace only for Hermes (and
+            # not-yet-detected) inputs; every other origin's raw carries none,
+            # so its cursor carries none either.
+            authority = CursorPathAuthority(authority.canonical_source_path, None)
         if authority.captured_profile_key != captured_profile_key:
             # The archived raw was captured under another profile namespace.
             return _ArchivedCursorReconciliation.INCOMPATIBLE
@@ -1420,6 +1425,26 @@ class LiveWatcher:
             return source.name
         return path.parent.name
 
+    def _file_symlink_escapes_source(self, path: Path) -> bool:
+        """Whether ``path`` is a file symlink whose target leaves its source root.
+
+        Discovery refuses such a link as ``escaping_symlink``; a live event for
+        the same link must not admit material the source was never configured
+        to read. An explicitly declared file is its own containment.
+        """
+        if not path.is_symlink():
+            return False
+        source = deepest_source_for_path(path, self._sources)
+        if source is None:
+            return True
+        try:
+            target = path.resolve()
+            if source.exact_paths is not None and target in source.exact_paths:
+                return False
+            return not target.is_relative_to(source.root.resolve())
+        except OSError:
+            return True
+
     def _source_accepts(self, path: Path) -> bool:
         source = deepest_source_for_path(path, self._sources)
         return source.accepts(path) if source is not None else False
@@ -1483,7 +1508,7 @@ class LiveWatcher:
 
     def _canonical_watch_path(self, path: Path) -> Path | None:
         if self._source_accepts(path):
-            return path
+            return None if self._file_symlink_escapes_source(path) else path
         database = sqlite_database_for_sidecar(path)
         if database is not None and self._is_hermes_database(database):
             return database

@@ -401,11 +401,11 @@ def test_retained_bundle_streams_members_and_keeps_artifact_taxonomy(
         ]
         assert collected == []
 
+    # An ``agent-*.meta.json`` path is a content-blind sidecar marker: unlike
+    # an OriginSpec ``fact`` path, session-shaped content there stays refused.
     with _retained(tmp_path, payload, Provider.CLAUDE_AI, tmp_path / "agent-neutral.meta.json") as sidecar:
         assert sidecar.error is None
-        assert [(session.provider_session_id, session.created_at) for session in sidecar.iter_sessions()] == [
-            (session.provider_session_id, session.created_at) for session in expected
-        ]
+        assert list(sidecar.iter_sessions()) == []
 
     fact_payload = {"agent": "neutral", "facts": [{"key": "status", "value": "ready"}]}
     with _retained(tmp_path, fact_payload, Provider.CLAUDE_AI, tmp_path / "agent-fact.meta.json") as fact:

@@ -67,8 +67,13 @@ def test_backfill_persists_detected_provider_for_empty_ordinary_session_path(tmp
         assert repeated_raw_id == raw_id
 
 
-def test_backfill_leaves_undetected_empty_raw_replayable(tmp_path: Path) -> None:
-    """An unsupported empty shape does not acquire a terminal non-session receipt."""
+def test_backfill_settles_an_undetected_unknown_shape_as_typed_non_session(tmp_path: Path) -> None:
+    """An unsupported shape on unchanged bytes is a settled, typed refusal.
+
+    The same parser can only fail the same captured bytes the same way, so
+    the census settles it as non-session with typed terminal evidence rather
+    than a failed census every pass would repeat. It is not a decode refusal.
+    """
     bootstrap_archive_root(tmp_path)
     payload = b'{"future_provider_shape":true}\n'
     digest, _size = BlobStore(tmp_path / "blob").write_from_bytes(payload)
@@ -84,8 +89,11 @@ def test_backfill_leaves_undetected_empty_raw_replayable(tmp_path: Path) -> None
     assert isinstance(receipt, RevisionCensusResult) and receipt.scanned == 1 and receipt.quarantined == 1
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchone() == (
-            "failed",
+            "non_session",
         )
+        assert conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id=?", (raw_id,)).fetchall() == [
+            ("terminal_unknown_export_no_session",)
+        ]
     with prepared_source_fixture(tmp_path) as reader:
         assert reader.raw_terminal_decode_refusal(raw_id) is None
 

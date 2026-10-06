@@ -94,6 +94,8 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
                 stat = path.stat()
                 watcher._batch_processor._append_plan = lambda *args, **kwargs: _AppendPlan(
                     path=path,
+                    canonical_source_path=str(path),
+                    captured_profile_key=None,
                     source_name="codex",
                     start_offset=0,
                     last_complete_newline=stat.st_size,
@@ -105,6 +107,8 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
                     payload_hash="exit-proof",
                     cursor_fingerprint="base",
                     bytes_read=stat.st_size,
+                    native_id_hint="exit-proof",
+                    acquisition_native_id_hint="exit-proof",
                 )
                 watcher._batch_processor._append_runner = stuck_append
             else:
@@ -113,6 +117,10 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
 
             caller = asyncio.create_task(watcher._ingest_files([path]))
             while not started.is_set():
+                if caller.done():
+                    # Surface a route that failed before reaching the writer.
+                    caller.result()
+                    raise AssertionError("route finished without reaching the writer")
                 await asyncio.sleep(0.001)
             caller.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -270,7 +278,7 @@ async def test_default_cursor_initialization_waits_for_batch_writer_lease(
         if event.phase == "queued" and event.actor.startswith("watcher."):
             watcher_queued.set()
 
-    coordinator = DaemonWriteCoordinator(archive_root=root, observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path, observer=observe)
     polylogue = cast(
         Any,
         SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db")),
@@ -346,7 +354,7 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
         return original_set(*args, **kwargs)
 
     monkeypatch.setattr(cursor, "set", observed_set)
-    coordinator = DaemonWriteCoordinator(archive_root=root, observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path, observer=observe)
     watcher = _make_watcher(tmp_path, root)
     watcher._cursor = cursor
     watcher._batch_processor._cursor = cursor

@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from polylogue.sources.sqlite_inspection import SQLiteClassification
 
 from polylogue.archive.artifact_taxonomy import (
-    classify_artifact,
     classify_artifact_path,
     strong_path_classification,
 )
@@ -32,7 +31,6 @@ from polylogue.archive.raw_payload.decode import (
 )
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_failure_evidence import PartialAdmission, RetainedRawDecodeRefusalError
 from polylogue.core.sources import origin_from_provider
@@ -1511,39 +1509,6 @@ def _classify_pre_acquisition(
     if not _parse_path_as_session_artifact(path, provider=provider):
         return PreAcquisitionDecision("path rule refuses session parsing", provider, crash)
     return PreAcquisitionDecision(None, provider, crash)
-
-
-def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:
-    if provider is Provider.ANTIGRAVITY and path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
-        return antigravity.looks_like_trajectory_db_path(path)
-    if provider is Provider.HERMES and path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
-        # polylogue-hbtj2: this used to be a bare extension match, which
-        # would accept ANY ".db"/".sqlite"/".sqlite3" file under a
-        # Hermes-tagged source as session-parseable without ever checking
-        # its bytes -- exactly the "detection-boundary strictness" bug the
-        # audit found (miscaptured SQLite databases opportunistically
-        # treated as sessions). Detection must be by content: only a
-        # payload whose schema genuinely matches Hermes's state.db /
-        # verification_evidence.db shape (verified via a real, read-only
-        # ``sqlite3`` connection in ``looks_like_state_db_path`` /
-        # ``looks_like_verification_evidence_db_path``) is session-eligible;
-        # every other SQLite-shaped file under a Hermes source is refused.
-        return hermes_state.looks_like_state_db_path(
-            path
-        ) or hermes_verification.looks_like_verification_evidence_db_path(path)
-    if is_jsonl_source_path(str(path)):
-        if jsonl_session_artifact(payload, provider=provider) is not None:
-            return True
-        path_classification = classify_artifact_path(path, provider=provider)
-        return path_classification.parse_as_session if path_classification is not None else False
-    path_classification = strong_path_classification(path, provider=provider)
-    if path_classification is not None:
-        return path_classification.parse_as_session
-    try:
-        document = json_loads(payload)
-    except JSONDecodeError:
-        return False
-    return classify_artifact(document, provider=provider, source_path=path).parse_as_session
 
 
 def hook_carrier_logical_source_key(*, provider: Provider, source_path: str) -> str:

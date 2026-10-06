@@ -93,3 +93,76 @@ async def test_parent_and_fork_retained_together_publish_parent_then_tail(tmp_pa
     assert link[1] == "prefix-sharing" and link[2] is not None
     # Only the divergent tail is stored; the prefix is the parent's.
     assert child_messages == 1
+
+
+def _deferrals(edges: dict[str, str | None], *, refused: frozenset[str] = frozenset()) -> set[str]:
+    """The deferral decision for one unit whose keys claim ``edges`` parents."""
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from polylogue.storage.derived.raw import RawObservationDerivation
+
+    write_keys = {key: (f"raw-{key}", f"codex-session:{key}") for key in edges}
+    prepared = {
+        write_key: SimpleNamespace(context=SimpleNamespace(parent_session_id=None, hook_parent_native_id=None))
+        for write_key in write_keys.values()
+    }
+    selected = {
+        write_key: (SimpleNamespace(source_name="codex", parent_session_provider_id=edges[key]), None)
+        for key, write_key in write_keys.items()
+    }
+    return set(
+        RawObservationDerivation._lineage_deferrals(
+            cast(Any, prepared), cast(Any, selected), write_keys=write_keys, refused_keys=refused
+        )
+    )
+
+
+def _in_cycle(edges: dict[str, str | None], key: str) -> bool:
+    seen: set[str] = set()
+    node = edges.get(key)
+    while node is not None and node in edges and node not in seen:
+        if node == key:
+            return True
+        seen.add(node)
+        node = edges[node]
+    return False
+
+
+@pytest.mark.parametrize(
+    ("edges", "refused", "expected"),
+    [
+        # A fork of a fork converges one generation per phase: only the
+        # head publishes, and the grandchild waits for its parent's
+        # generation instead of publishing before it (test_corpus_program's
+        # in-unit fork chain).
+        ({"a": None, "b": "a", "c": "b"}, frozenset(), {"b", "c"}),
+        ({"b": "a", "c": "b"}, frozenset(), {"c"}),
+        # A parent cycle has no head: its least key publishes first and every
+        # other member waits for the generation before it.
+        ({"a": "c", "b": "a", "c": "b"}, frozenset(), {"b", "c"}),
+        ({"a": "d", "b": "a", "c": "b", "d": "c"}, frozenset(), {"b", "c", "d"}),
+        # A refused parent publishes nothing, so its child does not wait.
+        ({"a": None, "b": "a"}, frozenset({"a"}), set()),
+    ],
+)
+def test_in_unit_deferral_never_publishes_a_child_beside_its_parent(
+    edges: dict[str, str | None], refused: frozenset[str], expected: set[str]
+) -> None:
+    """Every pass publishes a head and nothing before its in-unit parent.
+
+    Anti-vacuity: restore the once-per-adapter guard (defer every child once,
+    then force it) and a parent cycle publishes every member beside its
+    parent on the second pass, refusing as moved lineage on every pass.
+    Alternate generations instead and a grandchild publishes before its
+    parent and is refused once that parent lands.
+    """
+    deferred = _deferrals(edges, refused=refused)
+    assert deferred == expected
+    publishing = set(edges) - deferred - refused
+    assert publishing
+    for key in publishing:
+        parent = edges[key]
+        # Only a cycle anchor publishes while its parent is another write of
+        # this unit.
+        assert parent is None or parent not in edges or parent in refused or _in_cycle(edges, key)

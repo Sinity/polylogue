@@ -107,8 +107,8 @@ def _fail_first_index_write(monkeypatch: pytest.MonkeyPatch, failure: BaseExcept
 
 
 def _fail_first_blob_copy(monkeypatch: pytest.MonkeyPatch, failure: OSError) -> None:
-    # Captures stream through the acquisition boundary into write_from_fileobj.
-    original = ArchiveBlobPublisher.write_from_fileobj
+    # Captures stream through the acquisition boundary into write_from_writer.
+    original = ArchiveBlobPublisher.write_from_writer
     calls = 0
 
     def fail_once(self: ArchiveBlobPublisher, *args: Any, **kwargs: Any) -> tuple[str, int]:
@@ -118,7 +118,7 @@ def _fail_first_blob_copy(monkeypatch: pytest.MonkeyPatch, failure: OSError) -> 
             raise failure
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_fileobj", fail_once)
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_writer", fail_once)
 
 
 @pytest.fixture
@@ -321,6 +321,12 @@ def test_zip_member_publication_on_a_full_archive_escapes_instead_of_excluding(t
         def write_from_fileobj(self, *args: Any, **kwargs: Any) -> Any:
             raise OSError(errno.ENOSPC, "No space left on device")
 
+        def prepare_from_writer(self, *args: Any, **kwargs: Any) -> Any:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def write_from_writer(self, *args: Any, **kwargs: Any) -> Any:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
     full = _FullBlobStore(tmp_path / "blob")
     # The eager member route is retired; source-only extraction is the single
     # remaining ZIP member route and must still type the full-disk refusal.
@@ -449,8 +455,8 @@ async def test_a_storage_fault_discards_blobs_staged_earlier_in_the_pass(
     discard the first file's temporary remains after every retry."""
     archive, watcher, source_path = storage_env
     _write_session(source_path.parent / "second.jsonl", "storage-fault-2")
-    # Captures stream through the acquisition boundary into write_from_fileobj.
-    original = ArchiveBlobPublisher.write_from_fileobj
+    # Captures stream through the acquisition boundary into write_from_writer.
+    original = ArchiveBlobPublisher.write_from_writer
     calls = 0
 
     def fail_second(self: ArchiveBlobPublisher, *args: Any, **kwargs: Any) -> tuple[str, int]:
@@ -460,7 +466,7 @@ async def test_a_storage_fault_discards_blobs_staged_earlier_in_the_pass(
             raise OSError(errno.ENOSPC, "No space left on device")
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_fileobj", fail_second)
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_writer", fail_second)
     try:
         outcomes = await _admit(watcher)
         assert calls == 2

@@ -2768,6 +2768,9 @@ LEGACY_PAGE_IMAGE_CENSUS_DETAIL = (
     "not a logical export, so it produces no session"
 )
 
+#: Declared shapes whose bytes are one session's own record stream.
+_NATIVE_SESSION_STREAM_KINDS = frozenset({ArtifactKind.SESSION_RECORD_STREAM, ArtifactKind.COORDINATOR_SESSION_STREAM})
+
 
 def _retained_page_image_raw(archive: RetainedRawRead, raw_id: str) -> bool:
     """Return whether this raw's retained bytes are a SQLite page image.
@@ -3395,9 +3398,11 @@ def prepare_revision_source_census(
         # A complete session record stream (a Codex rollout, a Claude Code
         # transcript) is one session's own byte stream by its declared shape,
         # whatever native_id the acquisition recorded: live intake acquires it
-        # before parsing, and its appends need that byte-revision chain.
+        # before parsing, and its appends need that byte-revision chain. A
+        # Claude Code transcript under ``projects/<proj>/<uuid>.jsonl`` is
+        # declared as the coordinator session stream.
         stream = artifact.stream_classification() if artifact is not None else None
-        native_stream = stream is not None and stream.classification.kind is ArtifactKind.SESSION_RECORD_STREAM
+        native_stream = stream is not None and stream.classification.kind in _NATIVE_SESSION_STREAM_KINDS
         grouped = evidence_reader.raw_native_id(raw_id) is None and not native_stream
         if (
             len(sessions) == 1

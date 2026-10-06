@@ -144,13 +144,15 @@ async def test_sidecar_cursor_advances_only_beside_its_own_source_row(
         await processor.ingest_files([sidecar, owner, *subagents], emit_event=False)
 
         # The owner-side subagent transcripts settle in the same batch as
-        # typed no-session observations: their census found no session.
-        no_session_owner_paths = _query_source_paths(
+        # typed no-session observations: their census found no session. The
+        # raw-only tool-result sidecar settles the same way: its retained
+        # bytes are evidence, never a session.
+        no_session_paths = _query_source_paths(
             workspace_env["archive_root"],
             "SELECT r.source_path FROM raw_sessions r JOIN raw_membership_census m ON m.raw_id = r.raw_id "
             "WHERE m.status = 'non_session'",
         )
-        assert no_session_owner_paths == {str(subagent) for subagent in subagents}
+        assert no_session_paths == {str(subagent) for subagent in subagents} | {str(sidecar)}
 
         # The sidecar kept its own source-tier row, so its cursor may advance.
         assert str(sidecar) in _query_source_paths(

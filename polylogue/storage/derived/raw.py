@@ -16,7 +16,7 @@ import tempfile
 import time
 import weakref
 from builtins import BaseExceptionGroup
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclasses_field
@@ -919,10 +919,6 @@ class RawObservationDerivation(RawObservationInspection):
         #: Replacements whose publication committed a prerequisite phase,
         #: consumed by :meth:`publication_advanced` on the same key.
         self._phase_committed: dict[int, str] = {}
-        #: Logical keys already deferred once for in-unit lineage. A key is
-        #: deferred at most once per adapter, so re-preparation always makes
-        #: progress even when its parent's publication is itself refused.
-        self._lineage_deferred: set[str] = set()
         if owned_generation is not None:
             from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
 
@@ -933,23 +929,36 @@ class RawObservationDerivation(RawObservationInspection):
                 raise ValueError("retained replay Index differs from its owned generation")
             self._index_db_path = destination.index_path
 
+    @staticmethod
     def _lineage_deferrals(
-        self,
         prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
         selected_writes: Mapping[tuple[str, str], tuple[ParsedSession, PreparedJsonl]],
         *,
         write_keys: Mapping[str, tuple[str, str]],
+        refused_keys: Collection[str],
     ) -> tuple[str, ...]:
-        """Logical keys whose claimed parent session publishes earlier in this unit.
+        """Logical keys that must not publish together with their claimed parent.
 
         Each write was prepared against the Index as it stood before the unit,
-        so a child whose parent is absent there expects no parent. Only a
-        child whose parent another write of this unit produces is deferred.
+        so a child whose parent is absent there expects no parent; if that
+        parent publishes in the same unit, the child's write finds it and
+        refuses as moved lineage. Such a child is deferred and re-prepared
+        against the published parent.
+
+        A key defers while any other write of this unit produces its parent,
+        so a lineage chain (a fork of a fork) converges one generation per
+        phase. A parent cycle has no such head: its least key publishes first,
+        without its still-absent parent. A refused key publishes nothing, so
+        it is never a parent here. Every pass publishes at least one key and
+        the deferred keys re-prepare with fewer in-unit parents, so
+        re-preparation terminates by progress, without a deferral budget.
         """
-        produced = {session_id: logical_key for logical_key, (_raw_id, session_id) in write_keys.items()}
-        # Logical key -> the in-unit logical key producing its claimed parent.
-        waiting_on: dict[str, str] = {}
-        for logical_key, write_key in write_keys.items():
+        from polylogue.core.sources import origin_from_provider
+
+        publishing = {key: write_key for key, write_key in write_keys.items() if key not in refused_keys}
+        key_by_session = {session_id: key for key, (_raw_id, session_id) in publishing.items()}
+        parent_of: dict[str, str] = {}
+        for logical_key, write_key in publishing.items():
             write = prepared_writes.get(write_key)
             selected = selected_writes.get(write_key)
             if write is None or selected is None or write.context.parent_session_id is not None:
@@ -958,41 +967,26 @@ class RawObservationDerivation(RawObservationInspection):
             claimed = write.context.hook_parent_native_id or session.parent_session_provider_id
             if not claimed:
                 continue
-            from polylogue.core.sources import origin_from_provider
-
             parent_session_id = f"{origin_from_provider(session.source_name).value}:{claimed.strip()}"
-            if parent_session_id == write_key[1] or parent_session_id not in produced:
+            parent_key = key_by_session.get(parent_session_id)
+            if parent_session_id == write_key[1] or parent_key is None or parent_key == logical_key:
                 continue
-            waiting_on[logical_key] = produced[parent_session_id]
+            parent_of[logical_key] = parent_key
 
-        # A child whose in-unit parent is itself deferred waits with it: that
-        # parent publishes nothing in this phase, so the wait spends none of
-        # the child's single deferral. Only a deferral against a parent that
-        # publishes now is spent, which keeps the "at most once" progress
-        # guarantee while a lineage chain (a fork of a fork) arriving in one
-        # unit publishes one generation per phase instead of being refused.
-        decided: dict[str, bool] = {}
-        spent: list[str] = []
-
-        def defers(logical_key: str, visiting: frozenset[str]) -> bool:
-            if logical_key in decided:
-                return decided[logical_key]
-            parent_key = waiting_on.get(logical_key)
-            if parent_key is None or logical_key in visiting:
-                decided[logical_key] = False
-                return False
-            if parent_key in waiting_on and defers(parent_key, visiting | {logical_key}):
-                decided[logical_key] = True
-                return True
-            result = logical_key not in self._lineage_deferred
-            if result:
-                spent.append(logical_key)
-            decided[logical_key] = result
-            return result
-
-        deferred = [logical_key for logical_key in waiting_on if defers(logical_key, frozenset())]
-        self._lineage_deferred.update(spent)
-        return tuple(sorted(deferred))
+        # One generation per phase: a key publishes only when no other write
+        # of this unit produces its parent. A parent cycle has no such key, so
+        # its least key anchors it and publishes without its still-absent
+        # parent; every other member waits for the generation before it.
+        heads = {key for key in publishing if key not in parent_of}
+        for start in sorted(parent_of):
+            path: list[str] = []
+            node = start
+            while node in parent_of and node not in path:
+                path.append(node)
+                node = parent_of[node]
+            if node in path:
+                heads.add(min(path[path.index(node) :]))
+        return tuple(sorted(key for key in publishing if key not in heads))
 
     @staticmethod
     def _lineage_parent_raw_ids(
@@ -2238,7 +2232,10 @@ class RawObservationDerivation(RawObservationInspection):
                                 },
                             }
                             prepared_lineage_deferrals = self._lineage_deferrals(
-                                prepared_writes, selected_writes, write_keys=write_keys
+                                prepared_writes,
+                                selected_writes,
+                                write_keys=write_keys,
+                                refused_keys=prepared_key_refusals,
                             )
                             for deferred_key in prepared_lineage_deferrals:
                                 prepared_byte_outcomes.pop(deferred_key, None)

@@ -53,7 +53,8 @@ def _ingest(archive_root: Path, source: Path, *, provider: Provider = Provider.C
     bootstrap_archive_root(archive_root)
     processor = LiveBatchProcessor(
         Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
-        (WatchSource(name=provider.value, root=source.parent),),
+        # The production Hermes source watches its JSON session snapshots too.
+        (WatchSource(name=provider.value, root=source.parent, suffixes=(".json", ".jsonl")),),
         cursor=CursorStore(archive_root / "index.db"),
         parser_fingerprint=_PARSER_FINGERPRINT,
     )
@@ -71,7 +72,10 @@ def test_live_hermes_profile_receipts_replay_without_mutable_alias_or_original_f
     from polylogue.core.raw_failure_evidence import MissingProfileIdentityError
     from polylogue.sources.revision_backfill import _parse_one
 
-    document = json.dumps({"session_id": "shared", "messages": [{"role": "user", "content": "same input"}]})
+    # A Hermes snapshot is recognized by its session signature fields.
+    document = json.dumps(
+        {"session_id": "shared", "platform": "cli", "messages": [{"role": "user", "content": "same input"}]}
+    )
     first = tmp_path / "profile-a"
     second = tmp_path / "profile-b"
     for root in (first, second):

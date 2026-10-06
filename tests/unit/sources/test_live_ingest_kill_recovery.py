@@ -27,7 +27,6 @@ from typing import Any
 
 import pytest
 
-import polylogue.operations.raw_observation_derivation as raw_observation_derivation
 import polylogue.sources.live.cursor as cursor_module
 from polylogue import Polylogue
 from polylogue.daemon.intake import AdmissionOutcome
@@ -35,6 +34,7 @@ from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntake
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
 from tests.infra.raw_owner_routes import live_owner_set
 
 _SESSION_ID = "kill-recovery"
@@ -294,33 +294,42 @@ async def test_sigkill_inside_an_append_index_write_recovers_exactly(
     _kill_child_during_write(archive_root, source_root, kill_at=1, log_dir=log_dir)
     assert _message_rows(archive_root) == (3, 3, 1)
 
-    # Make the restart's first page defer the tail's preparation. Preparation
-    # is never abandoned on a deadline, so the deferral comes from the event
-    # that still produces one: the raw owner's preparation fails retryably (a
-    # worker loss). The deferral schedules a retry, and until that retry is
-    # due the tail is owed work, so no page may acknowledge it as DUPLICATE.
-    # Before the fix the second page did, and the appended messages were
-    # never materialized.
-    original_preparation = raw_observation_derivation.publish_raw_observation_once
+    # Make the restart's pages fail the tail's preparation. Preparation is
+    # never abandoned on a deadline, so the failure comes from the event that
+    # still produces one: the raw owner's preparation fails retryably (a
+    # worker loss). The restart re-observes the killed file through the full
+    # retained route, and every route prepares through the same derivation.
+    # Until a retry publishes, the tail is owed work, so no page may
+    # acknowledge it as DUPLICATE. Before the fix the second page did, and the
+    # appended messages were never materialized.
+    original_preparation = RawObservationDerivation.compute
 
-    def failing_preparation(*args: object, **kwargs: object) -> bool:
+    def failing_preparation(*args: object, **kwargs: object) -> RawObservationReplacement:
         raise RetainedPreparationRetryableError("synthetic preparation worker failure")
 
-    monkeypatch.setattr("polylogue.daemon.raw_observation_owner.publish_raw_observation_once", failing_preparation)
+    monkeypatch.setattr(RawObservationDerivation, "compute", failing_preparation)
     restart_pages = await _admit_pages(archive_root, source_root, pages=3)
-    assert all(result.outcome is AdmissionOutcome.DEFERRED for page in restart_pages for result in page.values()), (
-        restart_pages
-    )
+    assert all(
+        result.outcome in {AdmissionOutcome.DEFERRED, AdmissionOutcome.RETRYABLE}
+        for page in restart_pages
+        for result in page.values()
+    ), restart_pages
     assert _message_rows(archive_root) == (3, 3, 1)
 
     # Restore the preparation and make the scheduled retry due at once so the
     # next pages reach it through the owner's own route.
-    monkeypatch.setattr("polylogue.daemon.raw_observation_owner.publish_raw_observation_once", original_preparation)
+    monkeypatch.setattr(RawObservationDerivation, "compute", original_preparation)
     monkeypatch.setattr(cursor_module, "_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S", 0)
     CursorStore(archive_root / "index.db").defer_full_cursor_reconciliation(source_path)
 
     outcomes = await _admit(archive_root, source_root)
-    assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.ADMITTED}, outcomes
+    # The due retry publishes the retained tail inside this page; the page's
+    # own selection may then find nothing new and acknowledge it. Either way
+    # the acknowledgement follows materialization, never precedes it.
+    assert {result.outcome for result in outcomes.values()} <= {
+        AdmissionOutcome.ADMITTED,
+        AdmissionOutcome.DUPLICATE,
+    }, outcomes
     assert _message_rows(archive_root) == (6, 6, 1)
     assert _raw_parse_errors(archive_root, source_path) == []
 

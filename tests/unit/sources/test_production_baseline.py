@@ -366,7 +366,7 @@ def test_temporarily_unopenable_sqlite_source_remains_a_retryable_baseline_fault
         sqlite3.connect(f"file:{tmp_path / 'temporarily-unavailable.db'}?mode=ro", uri=True)
     assert unavailable.value.sqlite_errorcode & 0xFF == sqlite3.SQLITE_CANTOPEN
 
-    def unavailable_revision(_path: Path) -> tuple[str, int]:
+    def unavailable_revision(_path: Path, **_kwargs: object) -> tuple[str, int]:
         raise unavailable.value
 
     monkeypatch.setattr(production_baseline, "sqlite_member_revision_and_size", unavailable_revision)
