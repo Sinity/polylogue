@@ -41,7 +41,7 @@ def recoverable_actuators() -> Mapping[str, RecoverableActuator]:
     return registered_recovery_routes()
 
 
-def recover_interrupted_operations(archive_root: Path, *, input_demand: Callable[[int], None] | None = None) -> None:
+def recover_interrupted_operations(archive_root: Path, *, input_demand: Callable[[int], None]) -> None:
     """Resolve dead operations at the daemon's single-writer startup seam.
 
     This is deliberately not executor composition.  Request handlers construct
@@ -96,7 +96,7 @@ def recover_interrupted_operations(archive_root: Path, *, input_demand: Callable
         raise RecoveryDeferredError("startup Excision recovery lacks settled exact-attempt evidence")
 
 
-def _reconcile_startup_source_preparation(archive_root: Path, *, input_demand: Callable[[int], None] | None) -> None:
+def _reconcile_startup_source_preparation(archive_root: Path, *, input_demand: Callable[[int], None]) -> None:
     """Retain the canonical pre-accept cleanup under one original Source witness."""
     from polylogue.core.stage_admission import admit_stage_write
     from polylogue.storage.io_phase_metrics import connection_cursor
@@ -120,8 +120,6 @@ def _reconcile_startup_source_preparation(archive_root: Path, *, input_demand: C
     ):
         if cursor.fetchone() is None:
             return
-    if input_demand is None:
-        raise ReferenceSealError("startup Source reconciliation requires original prepared input admission")
     with PreparedIndexMutation.source_only(archive_root=archive_root, input_demand=input_demand) as seal:
         with seal.original_read_snapshot(), seal.source_producer():
             selected = (

@@ -93,7 +93,6 @@ from polylogue.operations.mutation_actuators import (
     WorkspaceSaveActuator,
     WorkspaceSaveArgs,
 )
-from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.mutation_transaction import (
     ConfirmationRequiredError,
     MutationAuthorization,
@@ -114,6 +113,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_saved_view,
     assertion_id_for_workspace,
 )
+from tests.infra.operation_recovery import recover_on_admitted_owner
 
 
 def test_blob_abandon_refuses_blocked_liveness_before_deleting_any_receipt(
@@ -339,7 +339,7 @@ class TestSessionDeleteActuator:
             )
             conn.commit()
 
-        recover_interrupted_operations(archive_root)
+        recover_on_admitted_owner(archive_root)
 
         with sqlite3.connect(archive_root / "audit.db") as conn:
             assert conn.execute(
@@ -376,7 +376,7 @@ class TestSessionDeleteActuator:
 
         # The attempt owner is this live process, exactly as a concurrent
         # writer in another process would look to the recovering daemon.
-        recover_interrupted_operations(archive_root)
+        recover_on_admitted_owner(archive_root)
 
         with sqlite3.connect(archive_root / "audit.db") as conn:
             assert conn.execute(
@@ -397,8 +397,8 @@ class TestSessionDeleteActuator:
         initialize_active_archive_root(archive_root)
         _seed_archive_session(archive_root, native_id="quiet")
 
-        recover_interrupted_operations(archive_root)
-        recover_interrupted_operations(archive_root)
+        recover_on_admitted_owner(archive_root)
+        recover_on_admitted_owner(archive_root)
 
         with sqlite3.connect(archive_root / "audit.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM operation_events").fetchone() == (0,)
@@ -439,7 +439,7 @@ class TestSessionDeleteActuator:
             )
             conn.commit()
 
-        recover_interrupted_operations(archive_root)
+        recover_on_admitted_owner(archive_root)
 
         with sqlite3.connect(archive_root / "audit.db") as conn:
             assert conn.execute(
@@ -477,8 +477,8 @@ class TestSessionDeleteActuator:
             )
             conn.commit()
 
-        recover_interrupted_operations(archive_root)
-        recover_interrupted_operations(archive_root)
+        recover_on_admitted_owner(archive_root)
+        recover_on_admitted_owner(archive_root)
 
         with sqlite3.connect(archive_root / "audit.db") as conn:
             assert conn.execute(
@@ -527,8 +527,8 @@ class TestSessionDeleteActuator:
             )
             conn.commit()
 
-        recover_interrupted_operations(archive_root)
-        recover_interrupted_operations(archive_root)
+        recover_on_admitted_owner(archive_root)
+        recover_on_admitted_owner(archive_root)
 
         with sqlite3.connect(archive_root / "audit.db") as conn:
             assert conn.execute(

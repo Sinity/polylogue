@@ -45,7 +45,6 @@ from polylogue.operations.machine_receipts import (
     ingest_insight_pages_digest,
     ingest_session_ids_digest,
 )
-from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.mutation_transaction import (
     AuditFinalizationError,
     AuthorizationMismatchError,
@@ -82,6 +81,7 @@ from polylogue.storage.sqlite.audit_leaf import (
     open_verified_audit_read_connection,
 )
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
+from tests.infra.operation_recovery import recover_on_admitted_owner
 
 
 @dataclass
@@ -1235,7 +1235,7 @@ def test_unreplayable_interrupted_work_is_terminal_not_unknown(
     if registered:
         _register_fixture(monkeypatch, retired)
 
-    recover_interrupted_operations(tmp_path)
+    recover_on_admitted_owner(tmp_path)
 
     assert (actuator.recoveries, retired.recoveries) == (0, 0)
     assert _run_state(tmp_path, operation_id) == ("failed", "recovery_not_replayable", ("failed",))
@@ -1254,8 +1254,8 @@ def test_startup_replays_an_interrupted_operation_to_completion(
     _register_fixture(monkeypatch, actuator)
     audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
 
-    recover_interrupted_operations(tmp_path)
-    recover_interrupted_operations(tmp_path)
+    recover_on_admitted_owner(tmp_path)
+    recover_on_admitted_owner(tmp_path)
 
     assert (actuator.recoveries, actuator.calls) == (1, 1)
     assert _run_state(tmp_path, operation_id) == ("completed", "recovered_complete", ("applied",))
@@ -1283,10 +1283,10 @@ def test_recovery_resolution_replays_after_source_prepare_crash_at_daemon_startu
 
     monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_resolution)
     with pytest.raises(RuntimeError, match="recovery resolution prepare"):
-        recover_interrupted_operations(tmp_path)
+        recover_on_admitted_owner(tmp_path)
     monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
 
-    recover_interrupted_operations(tmp_path)
+    recover_on_admitted_owner(tmp_path)
 
     assert _run_state(tmp_path, operation_id) == ("completed", "recovered_complete", ("applied",))
     with sqlite3.connect(tmp_path / "source.db") as source:
@@ -2859,7 +2859,7 @@ def test_recovery_needing_an_unservable_tier_is_deferred_not_failed(
     _register_fixture(monkeypatch, actuator)
     _audit_repo, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
 
-    recover_interrupted_operations(tmp_path)
+    recover_on_admitted_owner(tmp_path)
 
     status, _reason, _targets = _run_state(tmp_path, operation_id)
     assert status == "interrupted"

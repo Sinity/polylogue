@@ -11,7 +11,6 @@ from polylogue.operations.audit import AuditRepository, MachineRequestBinding, M
 from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.ingest_acceptance import IngestActuator, ingest_plan
 from polylogue.operations.machine_lifecycle import machine_request_state
-from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.mutation_transaction import (
     AuthorizationMismatchError,
     MutationAuthorization,
@@ -33,6 +32,7 @@ from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.frozen_clock import FrozenClock
+from tests.infra.operation_recovery import recover_on_admitted_owner
 from tests.infra.source_builders import prepared_ingest_manifest
 
 
@@ -40,24 +40,6 @@ def _leased_ingest_manifest(archive_root: Path, *args: Any, **kwargs: Any) -> Se
     """Prepare the staged manifest under the archive's writer lease, as production does."""
     with write_lease("test.ingest-manifest", archive_root=archive_root):
         return prepared_ingest_manifest(archive_root, *args, **kwargs)
-
-
-def _recover_on_admitted_owner(archive_root: Path) -> None:
-    """Run startup recovery as the daemon does, with its original input admission."""
-    import asyncio
-
-    from tests.infra.live_ingest import prepared_live_convergence_owner
-
-    async def run() -> None:
-        async with prepared_live_convergence_owner(archive_root) as owner:
-            await owner.run_convergence_sync(
-                "fixture.ingest.startup-recovery",
-                recover_interrupted_operations,
-                archive_root,
-                input_demand=owner._compute_adapter.amend_current_input_demand,
-            )
-
-    asyncio.run(run())
 
 
 def _authorize(plan: MutationPlan, actuator: IngestActuator, principal: MutationPrincipal) -> MutationAuthorization:
@@ -191,7 +173,7 @@ def test_startup_reclaims_interrupted_preaccept_pages_and_unattached_reservation
     # Startup recovery runs on the daemon's admitted preparation owner, which
     # charges the original Source rows the cleanup reads; a bare call has no
     # input admission and is refused before any row is read.
-    _recover_on_admitted_owner(tmp_path)
+    recover_on_admitted_owner(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute("SELECT COUNT(*) FROM prepared_source_manifests").fetchone() == (0,)
         assert source.execute("SELECT COUNT(*) FROM prepared_source_manifest_members").fetchone() == (0,)
@@ -246,7 +228,7 @@ def test_sealed_manifest_acceptance_promotes_every_member_atomically(tmp_path: P
             "SELECT COUNT(*) FROM source_items WHERE source_generation_id='sealed:test'"
         ).fetchone() == (2,)
         assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
-    recover_interrupted_operations(tmp_path)
+    recover_on_admitted_owner(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute(
             "SELECT COUNT(*) FROM prepared_source_manifest_members WHERE source_generation_id='sealed:test'"

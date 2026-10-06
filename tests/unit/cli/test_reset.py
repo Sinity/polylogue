@@ -21,6 +21,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 from tests.infra.daemon_operations import DaemonOperationStack, cli_daemon_archive
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.operation_recovery import recover_on_admitted_owner
 
 
 def test_reset_session_resolution_uses_readonly_database_boundary(
@@ -453,7 +454,7 @@ class TestResetCommandDeletion:
         recovery deletes the tiers; skip sidecars of a deleted database and a
         ``-wal`` survives beside the recreated file.
         """
-        from polylogue.operations.mutation_replay import apply_staged_archive_resets, recover_interrupted_operations
+        from polylogue.operations.mutation_replay import apply_staged_archive_resets
         from polylogue.storage.sqlite.write_guard import declared_unguarded_write
 
         with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
@@ -484,7 +485,7 @@ class TestResetCommandDeletion:
         self._end_attempt_owner(archive_root, operation_id)
         # Ordinary recovery runs after tiers open: it must leave the plan pending.
         with declared_unguarded_write("test: startup recovery outside the tier seam"):
-            recover_interrupted_operations(archive_root)
+            recover_on_admitted_owner(archive_root)
         # It may mark the dead attempt interrupted, but the plan stays nonterminal.
         [(_operation_id, status)] = self._reset_runs(archive_root)
         assert status in {"running", "interrupted"}
