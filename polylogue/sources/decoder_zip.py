@@ -133,8 +133,15 @@ def prepare_zip_entry(
     provider: Provider,
     source_path: str,
     profile_identity: str | None = None,
+    path_rule_recovery: bool = False,
 ) -> Iterator[PreparedJsonl]:
-    """Prepare the complete exact member with the existing streamed parser owner."""
+    """Prepare the complete exact member with the existing streamed parser owner.
+
+    ``path_rule_recovery`` lets a member at a weak non-session path rule reach
+    the full parser, exactly as a retained Raw replay does. It is set only
+    where the parse is the evidence that overrides that rule
+    (:func:`zip_entry_session_artifact`) or follows from that override.
+    """
     from .dispatch import is_stream_record_provider
     from .prepared_jsonl import prepare_jsonl_blob
 
@@ -153,6 +160,7 @@ def prepare_zip_entry(
             profile_identity=profile_identity,
             shard_directory=str(root),
             strict_jsonl_records=True,
+            retained_session_recovery=path_rule_recovery,
         )
         try:
             yield artifact
@@ -179,6 +187,9 @@ def zip_entry_session_artifact(
         provider=provider,
         source_path=info.filename,
         profile_identity=profile_identity,
+        # The parse is the evidence that overrides the weak path rule; with
+        # the rule still applied it could never find any.
+        path_rule_recovery=True,
     ) as prepared:
         assert isinstance(prepared, PreparedJsonl)
         if prepared.error is not None or prepared.deferred or prepared.blob_hash is None:

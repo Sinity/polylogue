@@ -38,6 +38,7 @@ if TYPE_CHECKING:
 
 from polylogue.core.compute_cancel import compute_cancel_requested
 from polylogue.core.enums import Origin
+from polylogue.core.errors import RefusedBeforeEffectError
 from polylogue.core.refs import (
     EvidenceRef,
     ObjectRef,
@@ -146,6 +147,14 @@ class _SourceAllocationCollisionError(ReferenceSealError):
 
 class ReferenceSealStaleError(ReferenceSealError):
     """A tier changed after the off-writer reference census was prepared."""
+
+
+class ReferenceOrphanRefusalError(ReferenceSealError, RefusedBeforeEffectError):
+    """An Index mutation would orphan a resolved durable reference.
+
+    Postimage validation raises it inside the mutation's transaction, which
+    then rolls back, so the refused mutation has no effect.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -9319,7 +9328,7 @@ class PreparedIndexMutation:
                         if first is None:
                             first = ref
             if lost_count and first is not None:
-                raise ReferenceSealError(
+                raise ReferenceOrphanRefusalError(
                     f"index mutation would orphan {lost_count} resolved durable reference(s); "
                     f"first lost {first.kind} reference in session {first.owner_session_id!r}"
                 )

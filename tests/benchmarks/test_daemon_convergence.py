@@ -14,8 +14,10 @@ chunk/catch-up/hook-drain route. That route is deleted. Those receipts are
 historical for a deleted path, not current production.
 
 Run with:
-    pytest tests/benchmarks/test_daemon_convergence.py \\
-      --benchmark-enable -p no:xdist -o "addopts=" -v
+    devtools test tests/benchmarks/test_daemon_convergence.py --benchmark-enable
+
+The md, lg, xl and xxl tiers and the huge-session probe are the heavy lane:
+add ``--run-heavy-benchmarks`` to run them.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot
 from tests.infra.compute_owner import owned_compute_adapter
 from tests.infra.convergence_probe_contract import intake_measurement
 from tests.infra.workload_declarations import (
+    CONVERGENCE_HEAVY_SCALE_TIERS,
     CONVERGENCE_SCALE_TIERS,
     convergence_corpus_specs,
     convergence_workload_profile,
@@ -176,8 +179,22 @@ def _run_convergence_probe(
 # ── Benchmark tests ─────────────────────────────────────────────────
 
 
+#: Heavy tiers keep cancellation with the managed run (``timeout(0)``, see
+#: TESTING.md) instead of a fixed deadline: their declared workloads need
+#: longer than the repository's 900 s cap on explicit deadlines, and a
+#: deadline that fails slow-but-progressing work is a defect.
+_HEAVY_LANE = (pytest.mark.heavy_benchmark, pytest.mark.timeout(0))
+
+
+def _scale_tier_params() -> list[Any]:
+    return [
+        *(pytest.param(tier, id=str(tier.value)) for tier in CONVERGENCE_SCALE_TIERS),
+        *(pytest.param(tier, id=str(tier.value), marks=_HEAVY_LANE) for tier in CONVERGENCE_HEAVY_SCALE_TIERS),
+    ]
+
+
 @pytest.mark.benchmark
-@pytest.mark.parametrize("tier", CONVERGENCE_SCALE_TIERS)
+@pytest.mark.parametrize("tier", _scale_tier_params())
 def test_convergence_scale_tier(benchmark, tier: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:  # type: ignore[no-untyped-def]
     """Measure convergence throughput at each scale tier."""
     corpus_root = _generate_corpus(tmp_path, tier)
@@ -360,6 +377,8 @@ def test_convergence_large_session_memory(
 
 
 @pytest.mark.benchmark
+@pytest.mark.heavy_benchmark
+@pytest.mark.timeout(0)
 def test_convergence_huge_session_memory_bounded(
     benchmark: BenchmarkFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -203,7 +203,9 @@ def probe_zip_container(path: Path) -> bool:
         getattr(os, "O_PATH", getattr(os, "O_SEARCH", os.O_RDONLY)) | os.O_DIRECTORY | os.O_NOFOLLOW,
     )
     try:
-        main = _named_identity(directory, physical.name)
+        # A raw stat: ``_named_identity`` refuses any non-regular file itself,
+        # which would turn this "not a ZIP container" answer into an error.
+        main = _identity(os.stat(physical.name, dir_fd=directory, follow_symlinks=False))
         if main[2] != stat.S_IFREG:
             return False
         parent = _identity(os.fstat(directory))
@@ -365,7 +367,7 @@ def bind_source_input(
     A caller binding a page of inputs lends its live ``byte_page``: that
     reader proves the binding instead of a fresh process per input.
     """
-    from polylogue.sources.sqlite_export import _exchange_source_worker, _identity, _named_identity
+    from polylogue.sources.sqlite_export import _exchange_source_worker, _identity
 
     path = path.absolute()
     physical_path = path.resolve(strict=True) if parent_anchor is None else path
@@ -399,7 +401,9 @@ def bind_source_input(
             raise OSError(errno.ESTALE, "source input parent changed", str(path))
         if staged_input is None and _identity(os.fstat(metadata_descriptor)) != _identity(path.parent.stat()):
             raise OSError(errno.ESTALE, "declared input parent changed", str(path))
-        main = _named_identity(descriptor, physical_path.name)
+        # A raw stat, so a FIFO or device reaches this binding's own typed
+        # refusal instead of the SQLite exporter's.
+        main = _identity(os.stat(physical_path.name, dir_fd=descriptor, follow_symlinks=False))
         if main[2] != stat.S_IFREG:
             raise OSError(errno.ESTALE, "source input must be a regular file", str(path))
         if staged_input is not None and main != staged_input.file_identity:

@@ -113,7 +113,9 @@ def _seed_archive_without_embedding_ledgers(
     # that needs a non-index anchor file to exist alongside a real index.db.
     db_path = _index_path(db_path) if at_index_tier else db_path
     with sqlite3.connect(db_path) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT NOT NULL DEFAULT 'claude-code-session')"
+        )
         conn.execute(
             """
             CREATE TABLE messages (
@@ -123,7 +125,8 @@ def _seed_archive_without_embedding_ledgers(
                 message_type TEXT NOT NULL DEFAULT 'message',
                 material_origin TEXT NOT NULL DEFAULT 'human_authored',
                 word_count INTEGER NOT NULL DEFAULT 8,
-                content_hash TEXT
+                content_hash TEXT,
+                text TEXT
             )
             """
         )
@@ -131,9 +134,14 @@ def _seed_archive_without_embedding_ledgers(
             "INSERT INTO sessions (session_id) VALUES (?)",
             [("conv-1",), ("conv-2",)],
         )
+        # Each message carries embeddable prose (>= 20 characters), so both
+        # seeded sessions are genuine pending embedding work.
         conn.executemany(
-            "INSERT INTO messages (message_id, session_id, content_hash) VALUES (?, ?, ?)",
-            [("msg-1", "conv-1", "h1"), ("msg-2", "conv-2", "h2")],
+            "INSERT INTO messages (message_id, session_id, content_hash, text) VALUES (?, ?, ?, ?)",
+            [
+                ("msg-1", "conv-1", "h1", "authored prose for the first seeded message"),
+                ("msg-2", "conv-2", "h2", "authored prose for the second seeded message"),
+            ],
         )
         _mirror_text_blocks(conn)
         from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -1408,7 +1416,7 @@ def test_status_json_detail_matches_archive_embedding_text_floor(tmp_path: Path)
     with sqlite3.connect(index_db) as conn:
         conn.executescript(
             """
-            CREATE TABLE sessions (session_id TEXT PRIMARY KEY);
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT NOT NULL DEFAULT 'claude-code-session');
             CREATE TABLE messages (
                 message_id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
@@ -1419,7 +1427,7 @@ def test_status_json_detail_matches_archive_embedding_text_floor(tmp_path: Path)
                 word_count INTEGER NOT NULL DEFAULT 1,
                 content_hash TEXT
             );
-            INSERT INTO sessions VALUES ('conv-1');
+            INSERT INTO sessions (session_id) VALUES ('conv-1');
             INSERT INTO messages (
                 message_id, session_id, text, role, message_type, material_origin, word_count, content_hash
             ) VALUES

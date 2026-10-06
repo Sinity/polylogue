@@ -771,6 +771,7 @@ def _run_source_worker(
     heartbeat: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     from polylogue.sources.source_staging import _verify_staging_metadata_name, bind_source_input
+    from polylogue.sources.sqlite_snapshot import member_export_scope
 
     if source_binding is None:
         with bind_source_input(source, parent_anchor=parent_anchor) as binding:
@@ -831,6 +832,10 @@ def _run_source_worker(
             "provenance": source_binding.provenance,
             "expected_content_kind": source_binding.expected_content_kind,
             "expected_content_revision": source_binding.expected_content_revision,
+            # The accepted revision was exported under the member's declared
+            # scope (``_backup_source_database``); authenticating it under the
+            # caller's operation scope compares two different exports.
+            "expected_content_scope": asdict(member_export_scope(source_binding.source_path)),
             "accepted_source_path": str(
                 source_binding.source_path if source_binding.staged else source_binding.physical_path
             ),
@@ -1105,7 +1110,9 @@ def _source_worker_main() -> None:
                     if request.get("expected_content_kind") != "sqlite":
                         raise OSError(errno.ESTALE, "staged source is not the accepted SQLite input", str(source))
                     accepted_revision = _HashingSink(progress if request.get("progress") else None)
-                    _write_export_connection(conn, accepted_revision, scope, schema)
+                    _write_export_connection(
+                        conn, accepted_revision, MemberExportScope(**request["expected_content_scope"]), schema
+                    )
                     proof.validate()
                     if accepted_revision.hexdigest() != expected_revision:
                         raise OSError(errno.ESTALE, "staged SQLite differs from the accepted input", str(source))

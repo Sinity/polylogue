@@ -27,7 +27,7 @@ def test_demo_seed_and_verify_json_roundtrip(tmp_path: Path, monkeypatch: pytest
 
     seed = runner.invoke(cli, ["demo", "seed", "--with-overlays", "--format", "json"])
     assert seed.exit_code == 0, seed.output
-    seed_payload = json.loads(seed.output)
+    seed_payload = json.loads(seed.stdout)
     assert seed_payload["session_count"] == len(DEMO_SESSION_IDS)
     assert seed_payload["message_count"] >= 35
     assert seed_payload["overlays_seeded"] is True
@@ -36,7 +36,7 @@ def test_demo_seed_and_verify_json_roundtrip(tmp_path: Path, monkeypatch: pytest
 
     verify = runner.invoke(cli, ["demo", "verify", "--require-overlays", "--format", "json"])
     assert verify.exit_code == 0, verify.output
-    verify_payload = json.loads(verify.output)
+    verify_payload = json.loads(verify.stdout)
     assert verify_payload["ok"] is True
     assert DEMO_CLAUDE_CODE_SESSION_ID in verify_payload["query_hits"]
     assert verify_payload["absolute_path_leaks"] == []
@@ -58,7 +58,7 @@ def test_demo_receipts_compares_claim_with_structural_outcomes(
 
     result = runner.invoke(cli, ["demo", "receipts", "--format", "json"])
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
 
     assert payload["session_ref"] == f"session:{DEMO_CODEX_RECEIPTS_SESSION_ID}"
     assert payload["verdict"] == "contradicted_at_claim_time_then_repaired"
@@ -88,7 +88,7 @@ def test_demo_receipts_is_self_contained_without_configured_archive(
     result = runner.invoke(cli, ["demo", "receipts", "--format", "json"])
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["seeded_for_command"] is True
     assert payload["verdict"] == "contradicted_at_claim_time_then_repaired"
@@ -130,7 +130,7 @@ def test_demo_receipts_uses_configured_archive_without_reseeding(
     result = runner.invoke(cli, ["demo", "receipts", "--format", "json"])
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["seeded_for_command"] is False
     assert (archive / "index.db").stat().st_mtime_ns == index_mtime
 
@@ -174,7 +174,7 @@ def test_demo_script_seed_and_verify_commands_are_executable(
 
     seed = runner.invoke(cli, demo_commands[1])
     assert seed.exit_code == 0, seed.output
-    seed_payload = json.loads(seed.output)
+    seed_payload = json.loads(seed.stdout)
     assert seed_payload["session_count"] == len(DEMO_SESSION_IDS)
     assert seed_payload["message_count"] >= 35
     assert seed_payload["overlays_seeded"] is True
@@ -182,7 +182,7 @@ def test_demo_script_seed_and_verify_commands_are_executable(
 
     verify = runner.invoke(cli, demo_commands[2])
     assert verify.exit_code == 0, verify.output
-    verify_payload = json.loads(verify.output)
+    verify_payload = json.loads(verify.stdout)
     assert verify_payload["ok"] is True
     assert verify_payload["overlays_present"] is True
     assert DEMO_CLAUDE_CODE_SESSION_ID in verify_payload["query_hits"]
@@ -210,7 +210,7 @@ def test_demo_tour_writes_report_transcript_and_recording(
     )
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["first_result_s"] <= 30
     assert payload["total_duration_s"] <= 420

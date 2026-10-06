@@ -438,9 +438,15 @@ def _convergence_profile(
     return ConvergenceWorkloadProfile(tier, _convergence_workload(tier), provider_session_shapes)
 
 
+#: Tiers small enough for an ordinary explicit benchmark selection.
 CONVERGENCE_SCALE_TIERS = (
     ConvergenceWorkloadTier.XS_TINY_FILES,
     ConvergenceWorkloadTier.SM_SMALL_CORPUS,
+)
+
+#: Genuine scale workloads: they run only in the heavy benchmark lane
+#: (``--run-heavy-benchmarks``).
+CONVERGENCE_HEAVY_SCALE_TIERS = (
     ConvergenceWorkloadTier.MD_MEDIUM_CORPUS,
     ConvergenceWorkloadTier.LG_FEW_LARGE,
     ConvergenceWorkloadTier.XL_SINGLE_GIANT,
@@ -486,6 +492,7 @@ def convergence_corpus_specs(
 
 __all__ = [
     "BENCHMARK_WORKLOAD_PROFILES",
+    "CONVERGENCE_HEAVY_SCALE_TIERS",
     "CONVERGENCE_SCALE_TIERS",
     "CONVERGENCE_WORKLOAD_PROFILES",
     "MULTI_PROVIDER_SCALE_TIERS",

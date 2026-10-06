@@ -150,15 +150,35 @@ def cli_archive_writer_ownership() -> Iterator[None]:
         # archive-tier open re-asks before it happens.
         stack = ExitStack()
         offline_lock_held = False
+        resolved_root = root.resolve()
 
         def refuse_a_later_arrival(path: Path) -> None:
             nonlocal offline_lock_held
-            if not offline_lock_held:
-                # Serialize only commands that actually open a writable tier;
-                # the shared pidfile lock then stays held through the command.
-                stack.enter_context(hold_daemon_start_exclusion(root))
+            from polylogue.core.write_lease import current_write_lease
+
+            # An open inside the configured archive answers to it. An open
+            # outside it, made under a held write lease, belongs to that
+            # lease's operation: a separate archive the command builds under
+            # its own lease (``demo receipts`` seeds one under the working
+            # directory) or that operation's scratch probes. It answers to the
+            # leased root's residency, never to the configured archive's.
+            resolved_path = path.resolve()
+            held = current_write_lease()
+            lease_root = held.archive_root.resolve() if held is not None and held.archive_root is not None else None
+            target = (
+                lease_root
+                if lease_root is not None and not resolved_path.is_relative_to(resolved_root)
+                else resolved_root
+            )
+            if target == resolved_root and not offline_lock_held:
+                # Serialize only commands that actually open the configured
+                # archive's writable tiers; the shared pidfile lock then stays
+                # held through the command. A separately leased archive is
+                # serialized by its lease alone: the command that built it may
+                # go on to start that archive's own resident (``demo tour``).
+                stack.enter_context(hold_daemon_start_exclusion(target))
                 offline_lock_held = True
-            arrived = resident_archive_writer(root)
+            arrived = resident_archive_writer(target)
             if arrived is None:
                 from polylogue.core.write_lease import (
                     archive_write_custody,
@@ -169,23 +189,23 @@ def cli_archive_writer_ownership() -> Iterator[None]:
 
                 lease = current_write_lease()
                 if lease is not None:
-                    if lease.archive_root is None or lease.archive_root.resolve() != root.resolve():
+                    if lease.archive_root is None or lease.archive_root.resolve() != target:
                         raise ArchiveWriterOwnershipError(
                             f"this CLI process has a write lease for a different archive while opening {path}",
-                            archive_root=root,
+                            archive_root=target,
                         )
-                    require_write_lease("CLI archive writer ownership", archive_root=root)
+                    require_write_lease("CLI archive writer ownership", archive_root=target)
                     custody = current_sql_custody()
                     if custody is None:
                         raise ArchiveWriterOwnershipError(
                             "this CLI writer has no current physical archive custody",
-                            archive_root=root,
+                            archive_root=target,
                         )
                     custody.assert_namespace()
                     # The declared operation owner already holds this exact
                     # root's custody; do not open a second flock descriptor.
                     return
-                stack.enter_context(archive_write_custody(root))
+                stack.enter_context(archive_write_custody(target))
                 # A command may open several tiers. Keep one physical owner
                 # until the Click resource closes, alongside the daemon-start
                 # exclusion acquired above.
