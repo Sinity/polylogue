@@ -240,13 +240,14 @@ def test_installed_polylogue_entrypoints_under_fresh_xdg(
     assert "polylogued run" in status.stdout, status.stdout
 
     # polylogued status: daemon-side status against fresh XDG paths (#1265 AC).
-    # `polylogued status` exits non-zero when no daemon is running ("absent
-    # heartbeat"), which is the correct report here rather than a smoke
-    # failure. What this probe is for is that the entry point loads and does
-    # not traceback.
+    # `polylogued status` exits non-zero when no daemon is running (a typed
+    # `daemon_absent` report naming `polylogued run`), which is the correct
+    # report here rather than a smoke failure. What this probe is for is that
+    # the entry point loads and does not traceback.
     daemon_status = _run((str(bin_dir / "polylogued"), "status"), env=env, cwd=home, timeout=60, check=False)
     assert "Traceback" not in daemon_status.stdout + daemon_status.stderr
-    assert "heartbeat" in (daemon_status.stdout + daemon_status.stderr).lower()
+    assert "daemon_absent" in daemon_status.stdout + daemon_status.stderr
+    assert "polylogued run" in daemon_status.stdout + daemon_status.stderr
 
     # Runtime dependency-closure probe (#2307): the query-first `find` path pulls
     # in the Lark grammar, FTS/search providers, and archive storage — a strictly
@@ -271,11 +272,12 @@ def test_installed_polylogue_entrypoints_under_fresh_xdg(
         "expected --diagnose dispatch trace; query-first import closure did not "
         f"reach archive handling. stderr=\n{diagnose.stderr}"
     )
-    # Reaching archive handling (here: the missing index.db report on a fresh
-    # root) is the closure proof — dispatch ran the query path through to
-    # storage instead of dying on a missing import.
-    assert "archive" in combined.lower(), (
-        f"query-first dispatch did not reach archive handling on a fresh root; stdout+stderr=\n{combined}"
+    # Reaching the query operation's daemon boundary (archive reads are
+    # daemon-served, so with none running it refuses ``cli.query`` by name) is
+    # the closure proof -- dispatch ran the query path through to its
+    # operation instead of dying on a missing import.
+    assert "cli.query" in combined and "polylogued run" in combined, (
+        f"query-first dispatch did not reach its query operation on a fresh root; stdout+stderr=\n{combined}"
     )
 
     after = _snapshot(home)
