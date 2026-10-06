@@ -2549,6 +2549,7 @@ class RawObservationDerivation(RawObservationInspection):
         publication_failure: Callable[[BaseException], None] | None,
     ) -> bool:
         from polylogue.sources.revision_backfill import (
+            RetainedPreparationNoProgressError,
             RetainedPreparationRetryableError,
             apply_prepared_revision_replay,
         )
@@ -2648,6 +2649,19 @@ class RawObservationDerivation(RawObservationInspection):
                     # prepared against them by the next phase of this pass.
                     self._phase_committed[id(replacement)] = replacement.key
                     return False
+                published_nothing = not (
+                    replay_receipt.replayed_logical_sources
+                    or replay_receipt.written_session_ids
+                    or replay_receipt.writer_changed_raw_ids
+                    or replay_receipt.membership_refusals
+                )
+                if published_nothing and self.inspect(frame, (replacement.key,)).get(replacement.key) != "valid":
+                    # The replay applied nothing and left this key unsettled:
+                    # its cohort has no accepted chain (an append over a
+                    # baseline whose authority is only asserted). Preparing
+                    # again reads the same Source state, so this is no
+                    # progress, never a publication.
+                    raise RetainedPreparationNoProgressError(f"retained replay published nothing for {replacement.key}")
                 return True
             finally:
                 if lifetime_bound:

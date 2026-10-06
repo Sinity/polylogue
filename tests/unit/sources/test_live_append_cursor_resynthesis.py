@@ -236,9 +236,9 @@ def test_append_plan_resynthesizes_an_append_kind_head(tmp_path: Path) -> None:
                 authority=RawRevisionAuthority.QUARANTINED,
             ),
         )
-        # Promote the append into the accepted chain the same way the real
-        # append-ingest path does, via the durable classifier.
-        archive.classify_raw_revision_cohort_for_live_watch(f"codex:{session_id}")
+        # Promote the append into the accepted chain through the durable
+        # byte-chain classifier.
+        archive.classify_raw_revision_cohort_for_rebuild_repair(f"codex:{session_id}")
     second_append = _codex_message("second-append")
     source.write_bytes(baseline + first_append_delta + second_append)
     _seed_native_session(tmp_path, session_id=session_id)
@@ -282,7 +282,7 @@ def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) 
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        archive.classify_raw_revision_cohort_for_live_watch(f"codex-session:{session_id}")
+        archive.classify_raw_revision_cohort_for_rebuild_repair(f"codex-session:{session_id}")
     # Publish the baseline through replay so the append extends a governed
     # head: an ungoverned seeded session is incomparable Index state that
     # replay refuses to adopt.

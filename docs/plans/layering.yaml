@@ -60,8 +60,7 @@ writer_modules:
           interruption: atomic
       entrypoints:
         [apply_prepared_membership_index, apply_raw_revision_replay,
-        classify_raw_revision_cohort_for_frozen_candidate, classify_raw_revision_cohort_for_live_watch,
-        classify_raw_revision_cohort_for_live_watch_in_transaction,
+        classify_raw_revision_cohort_for_frozen_candidate,
         classify_raw_revision_cohort_for_rebuild_repair,
         classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
         prepare_membership_classification_source,

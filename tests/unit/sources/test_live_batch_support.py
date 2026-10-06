@@ -7394,7 +7394,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
 
         # Exactly the polylogue-52l2 guard-tripping sequence: no unique
         # byte-prefix chain across a and b.
-        plan = store.classify_raw_revision_cohort_for_live_watch("chatgpt-export:shared")
+        plan = store.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:shared")
         assert plan.accepted_raw_ids == ()
 
         convertible = list(store.convertible_full_revision_raw_ids("chatgpt-export:shared"))

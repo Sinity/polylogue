@@ -107,7 +107,7 @@ def test_reparse_of_accepted_head_keeps_head_and_session_content_hash_in_sync(tm
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair(LOGICAL_KEY)
         apply_prepared_revision_replay(archive, plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
 
     head_hash, session_hash = _hashes(tmp_path)
@@ -117,7 +117,7 @@ def test_reparse_of_accepted_head_keeps_head_and_session_content_hash_in_sync(tm
     # A parser fix re-derives DIFFERENT content from the SAME accepted raw;
     # the retained raw is replayed again through its prepared route.
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair(LOGICAL_KEY)
         apply_prepared_revision_replay(archive, plan, {raw_id: _session("corrected parse")}, acquired_at_ms=2)
 
     reparsed_head, reparsed_session = _hashes(tmp_path)
@@ -164,7 +164,7 @@ def test_batched_reparse_rolls_back_receipt_and_head_with_failed_session_write(t
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair(LOGICAL_KEY)
         apply_prepared_revision_replay(archive, plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
         before = _hashes(tmp_path)
         before_receipt_count = archive._conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
@@ -213,7 +213,7 @@ def test_unchanged_reparse_of_accepted_head_issues_no_new_receipt(tmp_path: Path
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair(LOGICAL_KEY)
         apply_prepared_revision_replay(archive, plan, {raw_id: _session("stable parse")}, acquired_at_ms=1)
 
     def receipt_count() -> int:
@@ -223,7 +223,7 @@ def test_unchanged_reparse_of_accepted_head_issues_no_new_receipt(tmp_path: Path
     before = receipt_count()
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair(LOGICAL_KEY)
         apply_prepared_revision_replay(archive, plan, {raw_id: _session("stable parse")}, acquired_at_ms=2)
 
     assert receipt_count() == before
