@@ -265,9 +265,8 @@ def _handle_get_session_topology(
     :data:`polylogue.daemon.topology_http.MAX_NODE_LIMIT` regardless of
     client input (#1121 AC: lineage rendering is bounded).
     """
-    import asyncio
-
     from polylogue.archive.query.transaction import archive_read_context
+    from polylogue.core.async_bridge import complete_without_suspension
     from polylogue.daemon.http import _web_reader_archive_root
     from polylogue.daemon.topology_http import (
         build_topology_envelope,
@@ -293,7 +292,7 @@ def _handle_get_session_topology(
             arguments={"path": getattr(self, "path", "")},
             projection="http-read",
         ) as archive:
-            topology = asyncio.run(
+            topology = complete_without_suspension(
                 read_session_topology(archive, conv_id, node_offset=node_offset, node_limit=node_limit)
             )
         result = (
@@ -333,9 +332,8 @@ def _handle_get_session_parent_chain(
     - ``descendants=0`` — omit descendant sessions and return
       only the ancestor chain (root → target).
     """
-    import asyncio
-
     from polylogue.archive.query.transaction import archive_read_context
+    from polylogue.core.async_bridge import complete_without_suspension
     from polylogue.daemon.http import _web_reader_archive_root
     from polylogue.daemon.topology_http import build_parent_chain_envelope
     from polylogue.operations.http_read_models import read_session_topology
@@ -351,7 +349,7 @@ def _handle_get_session_parent_chain(
             arguments={"path": getattr(self, "path", "")},
             projection="http-read",
         ) as archive:
-            topology = asyncio.run(read_session_topology(archive, conv_id))
+            topology = complete_without_suspension(read_session_topology(archive, conv_id))
         result = (
             build_parent_chain_envelope(topology, include_descendants=include_descendants)
             if topology is not None
