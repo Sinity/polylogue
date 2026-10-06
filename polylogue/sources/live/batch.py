@@ -365,36 +365,6 @@ def _stable_truncated_tail_admission(record: RawSessionRecord) -> PartialAdmissi
     )
 
 
-def _hot_capture_prefix_is_proven(
-    path: str,
-    payload: bytes | None,
-    *,
-    blob_hash: str,
-    blob_size: int,
-) -> bool:
-    """Prove a rejected JSONL capture is a live prefix, never merely assume it.
-
-    A later source size alone is insufficient because a rewrite can have the
-    same pathname.  The retained bytes must still be the exact current prefix
-    and the source must have grown beyond them.
-    """
-    expected_fingerprint = sha256(payload).hexdigest() if payload is not None else blob_hash.lower()
-    if len(expected_fingerprint) != 64 or any(
-        character not in "0123456789abcdef" for character in expected_fingerprint
-    ):
-        return False
-    source = Path(path)
-    try:
-        proof_start = source.stat()
-        if proof_start.st_size <= blob_size:
-            return False
-        fingerprint, _bytes_read = sha256_range_from_path(source, start_offset=0, end_offset=blob_size)
-        proof_end = source.stat()
-    except (EOFError, OSError):
-        return False
-    return fingerprint == expected_fingerprint and _file_observation(proof_start) == _file_observation(proof_end)
-
-
 def _disposition_delta(before: Mapping[str, int], after: Mapping[str, int]) -> dict[str, int]:
     """Prepared-row dispositions recorded between two snapshots, zero terms dropped."""
     delta = {reason: after[reason] - before.get(reason, 0) for reason in after}
@@ -578,55 +548,6 @@ def _enrichment_evidence_first(paths: list[Path], provider: Provider) -> list[Pa
         return 0 if rule is not None and rule.kind in _ENRICHMENT_EVIDENCE_KINDS else 1
 
     return sorted(paths, key=evidence_rank)
-
-
-def _captured_jsonl_ends_at_record_boundary(
-    *,
-    source_path: str,
-    required: bool,
-    payload: bytes | None,
-    blob_store: BlobStore,
-    blob_hash: str,
-    blob_size: int,
-) -> bool:
-    if not required or not is_jsonl_source_path(source_path):
-        return True
-    if blob_size <= 0:
-        # A zero-byte capture has zero records -- none complete, none
-        # incomplete -- so it is trivially at a record boundary. This is
-        # NOT the same condition as a mid-write truncation: a session file
-        # the provider has created but not yet written its first line into
-        # (a live-watcher race) is empty by construction, not corrupted.
-        # Treating it as "incomplete" here misclassified genuinely-empty
-        # raws as truncated-boundary parse failures (polylogue raw-failure
-        # accounting, 2026-07-29); the correct downstream outcome for an
-        # empty payload is the ordinary "produced no sessions" path below,
-        # not this one.
-        return True
-    if payload is not None:
-        tail = payload.rsplit(b"\n", 1)[-1]
-    else:
-        chunks: list[bytes] = []
-        remaining = blob_size
-        with blob_store.open(blob_hash) as handle:
-            while remaining > 0:
-                chunk_size = min(64 * 1024, remaining)
-                remaining -= chunk_size
-                handle.seek(remaining)
-                chunk = handle.read(chunk_size)
-                newline = chunk.rfind(b"\n")
-                if newline >= 0:
-                    chunks.append(chunk[newline + 1 :])
-                    break
-                chunks.append(chunk)
-        tail = b"".join(reversed(chunks))
-    if not tail.strip():
-        return True
-    try:
-        json_loads(tail)
-    except (UnicodeDecodeError, ValueError):
-        return False
-    return True
 
 
 _FullRecordKey = tuple[str, str, int | None]
@@ -3484,7 +3405,6 @@ class LiveBatchProcessor:
         )
         archive_active = self._archive_active(archive_root)
         archive_bootstrapped = False
-        archive_active = self._archive_active(archive_root)
         if heartbeat is not None:
             heartbeat(
                 "full_archive_storage_probe",

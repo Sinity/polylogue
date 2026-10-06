@@ -116,6 +116,51 @@ async def test_changed_cursor_without_source_is_not_a_healthy_frontier(tmp_path:
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(0)
+async def test_deferred_cursor_findings_remain_a_proven_healthy_projection(tmp_path: Path) -> None:
+    """An inspected cursor that compares against no head is not a checked cursor.
+
+    Anti-vacuity: count every inspected cursor as ``cursor_checks`` in the
+    findings and the readiness validator sees one checked cursor with zero
+    comparisons, refuses the projection, and source selection blocks on a
+    frontier whose every status is healthy.
+    """
+    from polylogue.readiness.capability import raw_frontier_integrity_is_proven_healthy
+    from polylogue.storage.raw_retention import raw_frontier_integrity_projection
+
+    root = tmp_path / "archive"
+    await run_archive_fixture_write(root, lambda: bootstrap_archive_root(root))
+
+    def add_deferred_cursor() -> None:
+        with owned_daemon_connection(root / "ops.db", archive_root=root) as conn, conn:
+            with closing(
+                conn.execute(
+                    "INSERT INTO ingest_cursor(source_path,byte_offset,deferred_end_offset,updated_at_ms) "
+                    "VALUES(?,?,?,?)",
+                    ("neutral/deferred.jsonl", 0, 10, 1),
+                )
+            ):
+                pass
+
+    await run_archive_fixture_write(root, add_deferred_cursor)
+    async with prepared_live_convergence_owner(root) as owner:
+        inspected = await owner.run_convergence_sync(
+            "fixture.frontier.inspect",
+            inspect_prepared_raw_authority_frontier,
+            root,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+        )
+    assert inspected.healthy
+    assert inspected.cursor_checks == 1
+    materialization = {"available": True, "lost_source_evidence_count": 0, "lost_source_evidence_samples": []}
+    projected = raw_frontier_integrity_projection(root, materialization).to_dict()
+    assert projected["overall_status"] == "healthy"
+    assert projected["cursor_authority_deferred_count"] == 1
+    assert projected["cursor_ahead_checked_count"] == projected["cursor_head_comparison_count"] == 0
+    assert raw_frontier_integrity_is_proven_healthy(projected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(0)
 async def test_real_retained_head_records_blob_proof_and_current_coverage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

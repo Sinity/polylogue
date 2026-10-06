@@ -1556,7 +1556,7 @@ def inspect_prepared_raw_authority_frontier(
             )
 
             head_count = blocking_count = broken_count = cursor_count = ahead_count = gap_count = 0
-            ahead_comparisons = cursor_comparisons = deferred_count = missing_refs = 0
+            ahead_comparisons = cursor_comparisons = comparable_cursor_count = deferred_count = missing_refs = 0
             broken_samples: list[BrokenAppendHeadSample] = []
             ahead_samples: list[CursorAheadSample] = []
             gap_samples: list[CursorAuthorityGapSample] = []
@@ -1578,6 +1578,10 @@ def inspect_prepared_raw_authority_frontier(
                             broken_samples.extend(cast(tuple[BrokenAppendHeadSample, ...], chain[3])[:1])
                 for cursor, comparison, retained_path in _iter_selected_cursor_proofs(source, frame.selection, ops):
                     cursor_count += 1
+                    # The findings carry the canonical comparable-cursor count, the same
+                    # ``checked`` the direct comparison reports: a gap or deferred cursor
+                    # is inspected but compares against no accepted byte head.
+                    comparable_cursor_count += int(comparison.checked)
                     ahead_count += int(comparison.ahead_count > 0)
                     ahead_comparisons += comparison.ahead_count
                     cursor_comparisons += comparison.comparison_count
@@ -1652,7 +1656,7 @@ def inspect_prepared_raw_authority_frontier(
                     blocking_heads=blocking_count,
                     broken_heads=broken_count,
                     broken_head_samples=tuple(broken_samples),
-                    cursor_checks=cursor_count,
+                    cursor_checks=comparable_cursor_count,
                     cursor_comparisons=cursor_comparisons,
                     cursor_ahead=ahead_count,
                     cursor_ahead_comparisons=ahead_comparisons,
