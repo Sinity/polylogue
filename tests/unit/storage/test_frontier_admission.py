@@ -163,7 +163,8 @@ def test_trigger_change_and_tier_disappearance_revoke_certificate(tmp_path: Path
     initialize_active_archive_root(tmp_path)
     assert frontier_existence.raw_existence_block_reason(tmp_path) is None
     with sqlite3.connect(tmp_path / "source.db") as external:
-        external.execute("DROP TRIGGER raw_existence_delete")
+        # Migration 006 replaced raw_existence_delete with the frontier journal trigger.
+        external.execute("DROP TRIGGER raw_existence_frontier_raw_sessions_delete")
     assert "trigger" in str(frontier_existence.raw_existence_block_reason(tmp_path))
     (tmp_path / "index.db").rename(tmp_path / "index-retired.db")
     assert "unavailable" in str(frontier_existence.raw_existence_block_reason(tmp_path))
@@ -310,7 +311,13 @@ def test_selected_chain_refuses_only_its_path_and_keeps_new_path_gap(tmp_path: P
             "UPDATE raw_sessions SET revision_kind = 'append', predecessor_raw_id = 'lost' WHERE raw_id = 'broken'"
         )
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(new_alias), updated_at_ms=1, byte_offset=1)
+        upsert_ingest_cursor(
+            conn,
+            source_path=str(new_alias),
+            canonical_source_path=str(new_alias.resolve()),
+            updated_at_ms=1,
+            byte_offset=1,
+        )
     assert frontier_existence.raw_existence_block_reason(tmp_path) is None
     selected = raw_frontier_blocked_selected_paths(tmp_path, (broken, healthy, new))
     assert selected.unattributed_reason is None
@@ -504,7 +511,13 @@ def test_mixed_byte_and_membership_container_keeps_byte_cursor_refusal(tmp_path:
             (bytes(32),),
         )
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(container), updated_at_ms=1, byte_offset=2)
+        upsert_ingest_cursor(
+            conn,
+            source_path=str(container),
+            canonical_source_path=str(container.resolve()),
+            updated_at_ms=1,
+            byte_offset=2,
+        )
     assert frontier_existence.raw_existence_block_reason(tmp_path) is None
     selected = raw_frontier_blocked_selected_paths(tmp_path, (container, sibling))
     assert selected.unattributed_reason is None
@@ -523,24 +536,42 @@ def test_selected_cursor_ahead_refuses_alias_and_safe_deferred_tail(tmp_path: Pa
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.execute("UPDATE raw_revision_heads SET accepted_frontier_kind = 'byte'")
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(alias), updated_at_ms=1, byte_offset=2)
+        upsert_ingest_cursor(
+            conn, source_path=str(alias), canonical_source_path=str(alias.resolve()), updated_at_ms=1, byte_offset=2
+        )
     assert frontier_existence.raw_existence_block_reason(tmp_path) is None
     refused = raw_frontier_blocked_selected_paths(tmp_path, (path,))
     assert refused.unattributed_reason is None
     assert str(alias) in refused.source_paths
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         conn.execute("DELETE FROM ingest_cursor WHERE source_path = ?", (str(alias),))
-        upsert_ingest_cursor(conn, source_path=str(path), updated_at_ms=1, byte_offset=2)
+        upsert_ingest_cursor(
+            conn, source_path=str(path), canonical_source_path=str(path.resolve()), updated_at_ms=1, byte_offset=2
+        )
     differently_spelled = raw_frontier_blocked_selected_paths(tmp_path, (path,))
     assert str(path) in differently_spelled.source_paths
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(path), updated_at_ms=2, byte_offset=2, deferred_end_offset=3)
+        upsert_ingest_cursor(
+            conn,
+            source_path=str(path),
+            canonical_source_path=str(path.resolve()),
+            updated_at_ms=2,
+            byte_offset=2,
+            deferred_end_offset=3,
+        )
     # A deferred range does not accept its prefix: committed offset 2 is past
     # the accepted head (1), so the cursor is still ahead.
     ahead_deferred = raw_frontier_blocked_selected_paths(tmp_path, (path,))
     assert str(path) in ahead_deferred.source_paths
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(path), updated_at_ms=3, byte_offset=1, deferred_end_offset=3)
+        upsert_ingest_cursor(
+            conn,
+            source_path=str(path),
+            canonical_source_path=str(path.resolve()),
+            updated_at_ms=3,
+            byte_offset=1,
+            deferred_end_offset=3,
+        )
     safe = raw_frontier_blocked_selected_paths(tmp_path, (path,))
     assert safe.unattributed_reason is None
     assert not safe.source_paths
@@ -554,7 +585,14 @@ def test_all_deferred_page_still_refuses_unrelated_missing_raw(tmp_path: Path) -
     _raw(tmp_path, "unrelated")
     _session(tmp_path, "unrelated", 1)
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(selected), updated_at_ms=1, byte_offset=1, deferred_end_offset=2)
+        upsert_ingest_cursor(
+            conn,
+            source_path=str(selected),
+            canonical_source_path=str(selected.resolve()),
+            updated_at_ms=1,
+            byte_offset=1,
+            deferred_end_offset=2,
+        )
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="codex", root=tmp_path),),
@@ -609,7 +647,13 @@ def test_selected_authority_change_during_read_refuses_same_page(
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.execute("UPDATE raw_revision_heads SET accepted_frontier_kind = 'byte'")
     with sqlite3.connect(tmp_path / "ops.db") as conn:
-        upsert_ingest_cursor(conn, source_path=str(selected), updated_at_ms=1, byte_offset=1)
+        upsert_ingest_cursor(
+            conn,
+            source_path=str(selected),
+            canonical_source_path=str(selected.resolve()),
+            updated_at_ms=1,
+            byte_offset=1,
+        )
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (WatchSource(name="codex", root=tmp_path),),

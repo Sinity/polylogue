@@ -82,18 +82,21 @@ async def test_original_attachment_claims_follow_direct_cohort_and_aggregate_row
                 provider=Provider.UNKNOWN,
                 payload=asset,
                 source_path="neutral-asset.bin",
+                canonical_source_path="neutral-asset.bin",
                 acquired_at_ms=1,
             )
             raw_id = archive.write_raw_payload(
                 provider=Provider.CHATGPT,
                 payload=payload,
                 source_path="neutral-session.json",
+                canonical_source_path="neutral-session.json",
                 acquired_at_ms=2,
             )
             second_raw_id = archive.write_raw_payload(
                 provider=Provider.CHATGPT,
                 payload=second_payload,
                 source_path="neutral-second-session.json",
+                canonical_source_path="neutral-second-session.json",
                 acquired_at_ms=3,
             )
             if route != "aggregate_acquired":

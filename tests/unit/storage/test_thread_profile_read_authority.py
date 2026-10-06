@@ -127,16 +127,20 @@ async def test_thread_read_reports_a_stale_profile_as_written_not_as_recovered(t
     await _materialize_child(index_db)
     assert _stored_profile_lineage(index_db) == (None, False)
 
-    with open_connection(index_db) as conn:
-        write_fixture_index_session(conn, _parent())
-        conn.commit()
-        assert (
-            conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (_CHILD_ID,)).fetchone()[0]
-            == _PARENT_ID
-        )
-        root_id = str(
-            conn.execute("SELECT root_session_id FROM sessions WHERE session_id = ?", (_CHILD_ID,)).fetchone()[0]
-        )
+    def _seed_parent_0() -> str:
+        with open_connection(index_db) as conn:
+            write_fixture_index_session(conn, _parent())
+            conn.commit()
+            assert (
+                conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (_CHILD_ID,)).fetchone()[0]
+                == _PARENT_ID
+            )
+            root_id = str(
+                conn.execute("SELECT root_session_id FROM sessions WHERE session_id = ?", (_CHILD_ID,)).fetchone()[0]
+            )
+        return root_id
+
+    root_id = run_off_event_loop(_seed_parent_0)
 
     # The producer has not re-run. The read must not pretend otherwise.
     assert _stored_profile_lineage(index_db) == (None, False)
@@ -173,12 +177,17 @@ async def test_reconvergence_is_what_makes_the_profile_lineage_current(tmp_path:
 
     run_off_event_loop(_seed_1)
     await _materialize_child(index_db)
-    with open_connection(index_db) as conn:
-        write_fixture_index_session(conn, _parent())
-        conn.commit()
-        root_id = str(
-            conn.execute("SELECT root_session_id FROM sessions WHERE session_id = ?", (_CHILD_ID,)).fetchone()[0]
-        )
+
+    def _seed_parent_1() -> str:
+        with open_connection(index_db) as conn:
+            write_fixture_index_session(conn, _parent())
+            conn.commit()
+            root_id = str(
+                conn.execute("SELECT root_session_id FROM sessions WHERE session_id = ?", (_CHILD_ID,)).fetchone()[0]
+            )
+        return root_id
+
+    root_id = run_off_event_loop(_seed_parent_1)
 
     await _materialize_child(index_db)
 

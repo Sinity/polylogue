@@ -41,6 +41,7 @@ def _request(
         origin=Origin.CHATGPT_EXPORT,
         capture_mode=Provider.CHATGPT,
         source_path=source_path,
+        canonical_source_path=source_path,
         source_index=source_index,
         blob_hash=hashlib.sha256(payload).digest(),
         blob_size=len(payload),

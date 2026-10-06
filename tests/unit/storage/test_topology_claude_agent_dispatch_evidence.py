@@ -37,7 +37,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.write import ConnectionSessionSourceRead
 from tests.infra.archive_templates import bootstrapped_tier_path
-from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.index_writer import write_fixture_index_session, write_fixture_prepared_session
 
 _PARENT = "8f6c4d02-1f4a-4f2f-9a1e-1b2c3d4e5f60"
 _OTHER_PARENT = "3b7e9a15-6c2d-4e8f-8a0b-7d6c5b4a3f21"
@@ -434,7 +434,7 @@ def test_parser_parent_with_its_own_hook_claim_supersedes_the_preserved_one(tmp_
 def test_preserved_hook_parent_controls_prefix_slicing(tmp_path: Path, source_available: bool, route: str) -> None:
     from contextlib import closing
 
-    from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write, prepared_lineage_bindings
+    from polylogue.storage.sqlite.archive_tiers.write import prepared_lineage_bindings
 
     with closing(_index_conn(tmp_path / "index.db")) as index, closing(_source_conn(tmp_path / "source.db")) as source:
         _write_tool_hook_event(source, payload=_snake_payload())
@@ -464,22 +464,10 @@ def test_preserved_hook_parent_controls_prefix_slicing(tmp_path: Path, source_av
             f"{Origin.CLAUDE_CODE_SESSION.value}:{_PARENT}",
         )
         if route == "prepared":
-            prepared = prepare_session_write(
-                index,
-                replay,
-                merge_append=False,
-                source_read=None if replay_source is None else ConnectionSessionSourceRead(replay_source),
-            )
-            try:
-                write_fixture_index_session(
-                    index,
-                    replay,
-                    source_conn=replay_source,
-                    prepared_write=prepared,
-                    content_hash=prepared.input_content_hash.hex(),
-                )
-            finally:
-                prepared.close()
+            # Canonical preparation always reads its seal's original Source
+            # snapshot; source availability varies only the inline route and
+            # the lineage-binding read above.
+            write_fixture_prepared_session(index, replay)
         else:
             write_fixture_index_session(index, replay, source_conn=replay_source)
         rows = index.execute(

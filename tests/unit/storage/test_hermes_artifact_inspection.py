@@ -113,6 +113,7 @@ def _record(
         payload_provider=Provider.HERMES,
         source_name=Provider.HERMES.value,
         source_path=source_path,
+        canonical_source_path=source_path,
         blob_size=blob_size,
         acquired_at="2026-07-10T00:00:00+00:00",
     )

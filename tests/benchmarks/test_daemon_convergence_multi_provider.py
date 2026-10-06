@@ -14,8 +14,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -49,14 +48,12 @@ def _run_convergence_probe(
 
     from polylogue.daemon.convergence import DaemonConverger
     from polylogue.daemon.convergence_stages import make_default_convergence_stages
-    from polylogue.sources.live.batch import LiveBatchProcessor
-    from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import WatchSource
+    from tests.infra.live_batch import prepared_live_batch_processor
 
     # Archive root / config are scoped by the calling test via
     # ``monkeypatch.setenv`` so the probe never mutates process-global
-    # ``os.environ`` directly (#1878). The convergence path reads the archive
-    # root from the ``_BenchmarkPolylogue`` object, not the env.
+    # ``os.environ`` directly (#1878).
     db_path = tmp_path / "index.db"
 
     files = list(corpus_root.rglob("*.jsonl")) + list(corpus_root.rglob("*.json"))
@@ -65,18 +62,22 @@ def _run_convergence_probe(
 
     with owned_compute_adapter() as compute:
         converger = DaemonConverger(stages=make_default_convergence_stages(db_path, compute_adapter=compute))
-        polylogue = _BenchmarkPolylogue(tmp_path, db_path)
-        processor = LiveBatchProcessor(
-            cast(Any, polylogue),
-            (WatchSource(name="benchmark", root=corpus_root),),
-            cursor=CursorStore(db_path),
-            parser_fingerprint="benchmark-multi-v1",
-            converger=converger,
-        )
 
-        t_total = time.perf_counter()
-        metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
-        elapsed = time.perf_counter() - t_total
+        async def ingest() -> tuple[Any, float]:
+            # The production live batch: it bootstraps the archive and runs
+            # its Source bodies and retained publication on the daemon owners.
+            async with prepared_live_batch_processor(
+                tmp_path,
+                (WatchSource(name="benchmark", root=corpus_root),),
+                parser_fingerprint="benchmark-multi-v1",
+                converger=converger,
+                compute_adapter=compute,
+            ) as processor:
+                started = time.perf_counter()
+                result = await processor.ingest_files(files, emit_event=False)
+                return result, time.perf_counter() - started
+
+        metrics, elapsed = asyncio.run(ingest())
         summary = converger.summary()
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -109,12 +110,6 @@ def _run_convergence_probe(
             "parse_wall_s": metrics.parse_time_s,
             "convergence_wall_s": metrics.convergence_time_s,
         }
-
-
-class _BenchmarkPolylogue:
-    def __init__(self, archive_root: Path, db_path: Path) -> None:
-        self.archive_root = archive_root
-        self.backend = SimpleNamespace(db_path=db_path)
 
 
 # ── Parameterized benchmark tests ─────────────────────────────────────

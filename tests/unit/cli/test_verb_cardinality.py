@@ -28,7 +28,7 @@ from polylogue.cli import query_verbs
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.select import SelectSessionRow
 from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality
-from tests.infra.cli_selection import selection_for_ids, selection_for_rows
+from tests.infra.cli_selection import selection_for_rows
 from tests.infra.daemon_operations import cli_daemon_archive
 
 # ---------------------------------------------------------------------------
@@ -384,48 +384,37 @@ class TestDeleteVerbCardinality:
 
 
 # ---------------------------------------------------------------------------
-# resolve_session_ids_for_verb — --sample is rejected, never silently ignored
+# require_exact_mutation_selection — --sample is rejected, never silently ignored
 # ---------------------------------------------------------------------------
 
 
 class TestSampleRejectedForMutatingVerbs:
     """``--sample`` must not silently widen a mutating verb's blast radius.
 
-    ``--sample N`` is a display-window random subset; the verb resolution path
-    deliberately resolves the COMPLETE matched set. Honoring it would mean a
-    destructive ``delete``/``mark`` operated on every match while the operator
-    believed only N rows were in scope. The shared resolver rejects the
+    ``--sample N`` is a display-window random subset; the resident selection
+    walk deliberately resolves the COMPLETE matched set. Honoring it would mean
+    a destructive ``delete``/``mark`` operated on every match while the
+    operator believed only N rows were in scope. The verb guard rejects the
     combination up front rather than ignoring it.
     """
 
-    def test_resolver_rejects_sample(self) -> None:
-        from polylogue.cli.verb_cardinality import resolve_session_ids_for_verb
+    def test_guard_rejects_sample(self) -> None:
+        from polylogue.cli.verb_cardinality import require_exact_mutation_selection
 
         request = RootModeRequest.from_params({"sample": 5})
         assert request.query_spec().sample == 5
 
-        with patch("polylogue.cli.session_rows.query_complete_session_selection") as mock_resolve:
-            with pytest.raises(click.UsageError, match="--sample"):
-                resolve_session_ids_for_verb(cast(object, MagicMock()), request)  # type: ignore[arg-type]
+        with pytest.raises(click.UsageError, match="--sample"):
+            require_exact_mutation_selection(request, allow_all=True, operation="delete")
 
-        # The guard fires before any read.
-        mock_resolve.assert_not_called()
-
-    def test_resolver_allows_absent_sample(self) -> None:
-        """Without --sample the resolver proceeds to the declared read."""
-        from polylogue.cli.verb_cardinality import resolve_session_ids_for_verb
+    def test_guard_allows_absent_sample(self) -> None:
+        """Without --sample the guard lets the verb reach its resident walk."""
+        from polylogue.cli.verb_cardinality import require_exact_mutation_selection
 
         request = RootModeRequest.from_params({})
         assert request.query_spec().sample is None
 
-        with patch(
-            "polylogue.cli.session_rows.query_complete_session_selection",
-            return_value=selection_for_ids(["id1"]),
-        ) as mock_resolve:
-            result = resolve_session_ids_for_verb(cast(object, MagicMock()), request)  # type: ignore[arg-type]
-
-        assert result == ["id1"]
-        mock_resolve.assert_called_once()
+        require_exact_mutation_selection(request, allow_all=True, operation="delete")
 
 
 # ---------------------------------------------------------------------------

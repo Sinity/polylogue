@@ -61,6 +61,7 @@ from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 from polylogue.storage.archive_identity import ArchiveLocationError
 from polylogue.storage.sqlite.reference_seal import ReferenceSealError, ReferenceSealStaleError
+from polylogue.storage.sqlite.write_lease import UnleasedWriteError
 
 _T = TypeVar("_T")
 
@@ -839,9 +840,12 @@ class FileIntakeAdapter(IntakeAdapter):
             # the cursor rows, so doing it first would touch (and create) the
             # store outside the writer lease.
             cursor = getattr(self.context.watcher, "_cursor", None)
-            run_writer_sync = getattr(self.context.watcher, "_run_writer_sync", None)
-            if cursor is not None and callable(run_writer_sync):
-                await run_writer_sync("watcher.intake.cursor_initialize", cursor.initialize)
+            if cursor is not None:
+                if not self.context.watcher.has_write_coordinator:
+                    raise UnleasedWriteError(
+                        "watcher.intake.cursor_initialize writes the cursor store and requires the daemon write coordinator"
+                    )
+                await self.context.watcher._run_writer_sync("watcher.intake.cursor_initialize", cursor.initialize)
             # Narrow the page before it costs anything more: a bounded walk
             # re-offers files whose cursor already accounts for them, and
             # handing those to the batch buys a planning pass per file per
@@ -859,8 +863,10 @@ class FileIntakeAdapter(IntakeAdapter):
                 # run through the writer admission like every other one --
                 # under process-wide lease enforcement an unadmitted cursor
                 # write is refused, which turned the whole page retryable.
-                if callable(run_writer_sync):
-                    selected, pending = await run_writer_sync("watcher.intake.select", classify, paths)
+                if self.context.watcher.has_write_coordinator:
+                    selected, pending = await self.context.watcher._run_writer_sync(
+                        "watcher.intake.select", classify, paths
+                    )
                 else:
                     selected, pending = classify(paths)
                 needed = set(selected)

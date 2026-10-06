@@ -77,6 +77,7 @@ def _insert_raw_record(
             conn,
             origin=origin,
             source_path=source_path,
+            canonical_source_path=source_path,
             source_index=0,
             blob_hash=bytes.fromhex(raw_id),
             blob_size=blob_size,
@@ -329,13 +330,26 @@ class TestVerifyRawCorpus:
 
     def test_quarantine_malformed_flag_preserved(self, tmp_path: Path) -> None:
         db, location = _empty_archive(tmp_path)
-        # Should not raise even with quarantine_malformed=True on empty DB
+        # An empty corpus has no verdicts, so the writer is never asked.
+        handed: list[object] = []
         report = verify_raw_corpus(
             db_path=db,
             archive_location=location,
             request=SchemaVerificationRequest(quarantine_malformed=True),
+            quarantine=handed.append,
         )
         assert report.total_records == 0
+        assert handed == []
+
+    def test_quarantine_without_a_writer_is_refused(self, tmp_path: Path) -> None:
+        """Verification never takes the Source writer itself."""
+        db, location = _empty_archive(tmp_path)
+        with pytest.raises(ValueError, match="quarantine writer"):
+            verify_raw_corpus(
+                db_path=db,
+                archive_location=location,
+                request=SchemaVerificationRequest(quarantine_malformed=True),
+            )
 
     def test_report_structure_matches_schema(self, tmp_path: Path) -> None:
         db, location = _empty_archive(tmp_path)

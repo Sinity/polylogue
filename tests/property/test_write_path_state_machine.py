@@ -24,6 +24,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import Provider, TopologyEdgeStatus
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope, read_archive_session_envelope
@@ -511,7 +512,7 @@ def test_repository_get_messages_composes_prefix_sharing_child() -> None:
         archive_root = Path(root_text)
         initialize_active_archive_root(archive_root)
         db_path = archive_root / "index.db"
-        conn = sqlite3.connect(str(db_path))
+        conn = connect_measured(str(db_path))
         try:
             parent = ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
@@ -558,7 +559,7 @@ def test_grandchild_transcript_recomposes_after_intermediate_ancestor_message_de
         archive_root = Path(root_text)
         initialize_active_archive_root(archive_root)
         db_path = archive_root / "index.db"
-        conn = sqlite3.connect(str(db_path))
+        conn = connect_measured(str(db_path))
         try:
             parent = ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
@@ -640,7 +641,7 @@ def test_session_link_resolver_quarantines_cycle() -> None:
         archive_root = Path(root_text)
         initialize_active_archive_root(archive_root)
         db_path = archive_root / "index.db"
-        conn = sqlite3.connect(str(db_path))
+        conn = connect_measured(str(db_path))
         try:
             parent_v1 = ParsedSession(
                 source_name=Provider.CLAUDE_CODE,

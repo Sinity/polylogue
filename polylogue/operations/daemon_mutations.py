@@ -6,7 +6,7 @@ import functools
 import json
 import tempfile
 from builtins import BaseExceptionGroup
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -411,6 +411,29 @@ def maintenance_secret_scan(
         "sequence": 1,
         "effect": effect,
         "result": detail,
+    }
+
+
+def maintenance_schema_quarantine(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Persist schema-verification quarantine verdicts under the resident writer."""
+    del audit, snapshot
+    from polylogue.schemas.validation.corpus import quarantine_raw_sessions
+
+    verdicts = cast(Sequence[Mapping[str, object]], request.payload["verdicts"])
+    marked = quarantine_raw_sessions(
+        context.archive_root, [(str(verdict["raw_id"]), str(verdict["reason"])) for verdict in verdicts]
+    )
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed" if marked else "no-effect",
+        "result": {"affected_count": marked},
     }
 
 
@@ -1327,6 +1350,33 @@ def mutation_judgment_record(
     }
 
 
+def _observe_frontier_authority(request: DaemonOperationRequest, context: OperationContext) -> OperationControlRead:
+    """Control provenance plus the Index condition the frontier owner reads.
+
+    Control authority carries Source/Audit versions only. Frontier inspection
+    also reads the active Index, so a caller's Index precondition is observed
+    on that tier instead of being compared against an absent version.
+    """
+    from polylogue.archive.query.execution_control import QueryExecutionContext
+    from polylogue.operations.daemon_execution import _observe_explicit_index_condition
+    from polylogue.operations.operation_context import observe_control_authority
+
+    read_control = context.read_control or QueryExecutionContext(
+        call_id=str(request.request_id),
+        query_ref=request.fingerprint,
+        deadline_monotonic=None,
+        owner_ref=context.principal.actor_ref,
+    )
+    authority = _observe_explicit_index_condition(
+        request,
+        observe_control_authority(context.archive_root),
+        archive_root=context.archive_root,
+        read_control=read_control,
+    )
+    read_control.mark_cleanup_complete()
+    return authority
+
+
 async def execute_raw_authority_blocker_resolve_operation(
     request: DaemonOperationRequest,
     context: OperationContext,
@@ -1349,7 +1399,7 @@ async def execute_raw_authority_blocker_resolve_operation(
     audit = runtime.audit_for_request(request, context)
 
     def execute() -> Any:
-        authority = observe_control_authority(context.archive_root)
+        authority = _observe_frontier_authority(request, context)
         _validate_identity(request, context, authority)
         runtime.observe_snapshot(request, authority)
         blocker_id = str(request.payload["blocker_id"])
@@ -1450,7 +1500,7 @@ async def execute_raw_authority_frontier_operation(request: DaemonOperationReque
     started = monotonic()
 
     def accept() -> None:
-        authority = observe_control_authority(context.archive_root)
+        authority = _observe_frontier_authority(request, context)
         _validate_identity(request, context, authority)
         runtime.observe_snapshot(request, authority)
         runtime.begin_unbound_write(request, snapshot=authority)

@@ -52,7 +52,7 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import CursorPathAuthority, CursorRecord, CursorStore
 from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, LiveBatchMetrics
-from polylogue.sources.live.watcher import WriteCoordinator
+from polylogue.sources.live.watcher import WriteCoordinator, default_sources
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
@@ -63,6 +63,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.frozen_clock import FrozenClock
+from tests.infra.prepared_replay import apply_prepared_membership_classification
 from tests.infra.raw_owner_routes import (
     ingest_files_with_owners,
     replay_retained_raws_async,
@@ -1607,7 +1608,9 @@ def test_hermes_profile_retarget_reopens_same_inode_cursor(
     alias = tmp_path / "profile"
     alias.symlink_to(first, target_is_directory=True)
     path = alias / "sessions" / name
-    watcher, _ = _make_watcher(tmp_path, alias, sources=(WatchSource(name="hermes", root=alias),))
+    # The production Hermes source admits its SQLite ledgers as well as JSONL.
+    hermes = next(source for source in default_sources(hermes_root=alias) if source.name == "hermes")
+    watcher, _ = _make_watcher(tmp_path, alias, sources=(hermes,))
     store = BlobStore(tmp_path / "blobs")
 
     def acquire() -> tuple[str, str]:
@@ -1621,6 +1624,15 @@ def test_hermes_profile_retarget_reopens_same_inode_cursor(
 
     original_stat = path.stat()
     blob_hash, original_profile = acquire()
+    if sqlite_input:
+        accepted_tail = sqlite_source_revision(path)
+    else:
+        # A settled JSONL cursor carries the prefix/tail hash authority of
+        # the exact observation it accepted, including its ctime.
+        accepted_prefix = sha256(path.read_bytes()).hexdigest()
+        accepted_tail = encode_cursor_hash_authority(
+            accepted_prefix, accepted_prefix, ctime_ns=original_stat.st_ctime_ns
+        )
 
     def stamp(profile: str) -> None:
         watcher._cursor.set(
@@ -1630,7 +1642,7 @@ def test_hermes_profile_retarget_reopens_same_inode_cursor(
             authority=CursorPathAuthority(str(path.resolve()), profile),
             parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
             content_fingerprint=None if cursor_state == "deferred" else blob_hash,
-            tail_hash=sqlite_source_revision(path),
+            tail_hash=accepted_tail,
             st_dev=original_stat.st_dev,
             st_ino=original_stat.st_ino,
             mtime_ns=original_stat.st_mtime_ns,
@@ -1681,7 +1693,8 @@ def test_hermes_sqlite_profile_retarget_between_probe_and_bound_gate_requires_ac
     alias = tmp_path / "profile"
     alias.symlink_to(profiles[0], target_is_directory=True)
     declared = alias / "sessions" / "state.db"
-    watcher, _ = _make_watcher(tmp_path, alias, sources=(WatchSource(name="hermes", root=alias),))
+    hermes = next(source for source in default_sources(hermes_root=alias) if source.name == "hermes")
+    watcher, _ = _make_watcher(tmp_path, alias, sources=(hermes,))
     store = BlobStore(tmp_path / "blobs")
     accepted = snapshot_sqlite_to_blob(declared, store)
     before = declared.stat()
@@ -1776,7 +1789,8 @@ def test_hermes_file_alias_wal_commit_reopens_actual_acquired_cursor(tmp_path: P
         writer.execute("PRAGMA journal_mode=WAL")
         writer.execute("PRAGMA wal_autocheckpoint=0")
         writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        watcher, _ = _make_watcher(tmp_path, root, sources=(WatchSource(name="hermes", root=root),))
+        hermes = next(source for source in default_sources(hermes_root=root) if source.name == "hermes")
+        watcher, _ = _make_watcher(tmp_path, root, sources=(hermes,))
         accepted = snapshot_sqlite_to_blob(declared, BlobStore(tmp_path / "blobs"))
         before = declared.stat()
         watcher._cursor.set(
@@ -2392,8 +2406,10 @@ async def test_live_batch_processor_records_cursor_after_each_converged_group(
     debt = cursor.list_convergence_debt()
     assert len(debt) == 1
     assert debt[0].stage == "convergence"
-    assert debt[0].subject_type == "session_id"
-    assert "second-session" in debt[0].subject_id
+    # Debt is keyed by the unit the converger failed on: on the retained
+    # route that is the source observation, before any session exists.
+    assert debt[0].subject_type == "source_path"
+    assert debt[0].subject_id == str(second_path)
 
 
 def test_full_parse_progress_groups_bounds_files_by_count(
@@ -2700,6 +2716,7 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
                 _atof_record(session_id="atof-session-a", uuid="a-turn-1", timestamp="2026-07-18T00:00:00Z"),
             ],
         )
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
         await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         # Growth batch spans a session boundary -- the real shared-file shape.
@@ -2709,6 +2726,7 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
                 _atof_record(session_id="atof-session-b", uuid="b-turn-1", timestamp="2026-07-18T00:00:02Z"),
             ):
                 handle.write(json.dumps(record) + "\n")
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
         await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         # fs1.14: a resolvable profile root (the watched directory) now
@@ -2727,12 +2745,32 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
         # Idempotent replay: re-ingesting the SAME growth batch bytes again
         # (e.g. a poll cycle firing before the cursor advanced, or a daemon
         # restart replaying its tail) must not duplicate or lose anything.
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
         await ingest_files_with_owners(processor, [source_path], emit_event=False)
         replayed = _atof_event_uuids_by_session(workspace_env["archive_root"])
         assert replayed == event_uuids_by_session
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
         assert processor.require_cursor_authority() is None
     finally:
         await archive.close()
+
+
+async def _inspect_accepted_frontier(archive_root: Path) -> None:
+    """Run the daemon's accepted-frontier inspection convergence stage.
+
+    Source selection refuses until the frontier is inspected, and the daemon
+    runs that inspection between live passes, never inside one.
+    """
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        await owner.run_convergence_sync(
+            "test.live-watcher.frontier",
+            inspect_prepared_raw_authority_frontier,
+            archive_root,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+        )
 
 
 def _browser_capture_payload(*, provider_session_id: str, assistant_turn_id: str, updated_at: str) -> dict[str, object]:
@@ -2868,9 +2906,11 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
             ),
             encoding="utf-8",
         )
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
         second = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert second.succeeded_file_count == 1, "ambiguous membership debt is not retried as a file failure (#3282)"
         assert second.failed_file_count == 0
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
         assert processor.require_cursor_authority() is None
 
         record = cursor.get_record(source_path)
@@ -4342,11 +4382,13 @@ def test_decided_unresolved_membership_reconciles_the_cursor_instead_of_re_readi
             provider=Provider.CODEX,
             payload=payload,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             acquired_at_ms=1,
         )
     seed_membership_census(tmp_path, [(raw_id, [session])], parser_fingerprint="test-parser")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        archive.apply_raw_membership_classification(
+        apply_prepared_membership_classification(
+            archive,
             "codex-session:decided-unresolved",
             MembershipClassification((), (), (raw_id,)),
             {raw_id: session},
@@ -4421,12 +4463,14 @@ def test_cursor_reconciliation_restores_the_newest_archived_outcome(
             provider=Provider.CODEX,
             payload=materialized_payload,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             acquired_at_ms=materialized_at_ms,
         )
         decided = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=decided_payload,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             acquired_at_ms=decided_at_ms,
         )
         parsed = {materialized: session("m0"), decided: session("m0", "m1")}
@@ -4436,7 +4480,8 @@ def test_cursor_reconciliation_restores_the_newest_archived_outcome(
         parser_fingerprint="test-parser",
     )
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        archive.apply_raw_membership_classification(
+        apply_prepared_membership_classification(
+            archive,
             "codex-session:newest-outcome",
             MembershipClassification((materialized,), (), (decided,)),
             parsed,

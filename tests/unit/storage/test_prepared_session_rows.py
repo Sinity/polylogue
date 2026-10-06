@@ -36,6 +36,7 @@ from polylogue.pipeline import ids as pipeline_ids
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -48,11 +49,12 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepared_session_rows_from_shard,
     read_archive_session_envelope,
 )
-from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.index_writer import fixture_index_mutation_scope, write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -190,8 +192,9 @@ def _write_all(conn: sqlite3.Connection, sessions: list[ParsedSession], *, prepa
 def test_prepared_and_inline_writes_produce_identical_rows(tmp_path: Path) -> None:
     sessions = _synthetic_sessions()
 
-    inline_conn = _connect(tmp_path / "inline.db")
-    prepared_conn = _connect(tmp_path / "prepared.db")
+    # Each comparison archive owns its own active Index.
+    inline_conn = _connect(tmp_path / "inline" / "index.db")
+    prepared_conn = _connect(tmp_path / "prepared" / "index.db")
     try:
         _write_all(inline_conn, sessions, prepared=False)
         _write_all(prepared_conn, sessions, prepared=True)
@@ -583,12 +586,13 @@ def test_prepared_write_preserves_prefix_sharing_context_without_writer_lowering
         monkeypatch.setattr(archive_tier_write, "_extract_prefix_tail", _boom)
         monkeypatch.setattr(archive_tier_write, "_build_message_rows", _boom)
         monkeypatch.setattr(archive_tier_write, "_build_block_rows", _boom)
-        child_id = write_fixture_index_session(
-            conn,
-            child,
-            content_hash=str(session_content_hash(child)),
-            prepared_write=prepared,
-        )
+        with fixture_index_mutation_scope(conn):
+            child_id = write_fixture_index_session(
+                conn,
+                child,
+                content_hash=str(session_content_hash(child)),
+                prepared_write=prepared,
+            )
         assert [row[0] for row in conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (child_id,))] == [
             "c"
         ]
@@ -700,12 +704,13 @@ def test_prepared_lineage_refuses_changed_earlier_parent_prefix(tmp_path: Path) 
             force_replace=True,
         )
         with pytest.raises(PreparedSessionWriteRefusedError, match="lineage prefix changed"):
-            write_fixture_index_session(
-                conn,
-                child,
-                content_hash=str(session_content_hash(child)),
-                prepared_write=prepared,
-            )
+            with fixture_index_mutation_scope(conn):
+                write_fixture_index_session(
+                    conn,
+                    child,
+                    content_hash=str(session_content_hash(child)),
+                    prepared_write=prepared,
+                )
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE native_id = 'waiting-child'").fetchone()[0] == 0
     finally:
         conn.close()
@@ -761,8 +766,9 @@ def test_prepared_cross_acquisition_union_matches_inline_and_skips_writer_merge(
         }
     )
 
-    expected = _connect(tmp_path / "expected.db")
-    actual = _connect(tmp_path / "actual.db")
+    # Each comparison archive owns its own active Index.
+    expected = _connect(tmp_path / "expected" / "index.db")
+    actual = _connect(tmp_path / "actual" / "index.db")
     try:
         write_fixture_index_session(expected, rich, raw_id="older", content_hash=str(session_content_hash(rich)))
         write_fixture_index_session(expected, poor, raw_id="newer", content_hash=str(session_content_hash(poor)))
@@ -796,13 +802,14 @@ def test_prepared_cross_acquisition_union_matches_inline_and_skips_writer_merge(
         )
         assert prepared.cross_acquisition_union is not None
         assert not isinstance(prepared.cross_acquisition_union.rows.message_rows, tuple)
-        write_fixture_index_session(
-            actual,
-            publication,
-            raw_id="newer",
-            content_hash=publication.content_hash,
-            prepared_write=prepared,
-        )
+        with fixture_index_mutation_scope(actual):
+            write_fixture_index_session(
+                actual,
+                publication,
+                raw_id="newer",
+                content_hash=publication.content_hash,
+                prepared_write=prepared,
+            )
         for table in ("sessions", "messages", "blocks"):
             assert [tuple(row) for row in actual.execute(f"SELECT * FROM {table} ORDER BY rowid")] == [
                 tuple(row) for row in expected.execute(f"SELECT * FROM {table} ORDER BY rowid")
@@ -853,13 +860,14 @@ def test_prepared_cross_acquisition_union_refuses_changed_predecessor(tmp_path: 
             force_replace=True,
         )
         with pytest.raises(PreparedSessionWriteRefusedError, match="predecessor changed"):
-            write_fixture_index_session(
-                conn,
-                second,
-                raw_id="second",
-                content_hash=str(session_content_hash(second)),
-                prepared_write=prepared,
-            )
+            with fixture_index_mutation_scope(conn):
+                write_fixture_index_session(
+                    conn,
+                    second,
+                    raw_id="second",
+                    content_hash=str(session_content_hash(second)),
+                    prepared_write=prepared,
+                )
         assert (
             conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == "competing"
         )
@@ -894,7 +902,7 @@ def test_a_dropped_prepared_union_still_refreshes_replaced_attachments(tmp_path:
     tables = ("attachments", "attachment_refs")
     snapshots = []
     for prepared_route in (False, True):
-        conn = _connect(tmp_path / f"index-{prepared_route}.db")
+        conn = _connect(tmp_path / f"route-{prepared_route}" / "index.db")
         try:
             write_fixture_index_session(conn, first, raw_id="old", content_hash=str(session_content_hash(first)))
             prepared = (
@@ -902,14 +910,24 @@ def test_a_dropped_prepared_union_still_refreshes_replaced_attachments(tmp_path:
             )
             if prepared is not None:
                 assert prepared.cross_acquisition_union is not None
-            write_fixture_index_session(
-                conn,
-                second,
-                raw_id="second",
-                content_hash=str(session_content_hash(second)),
-                force_replace=True,
-                prepared_write=prepared,
-            )
+            if prepared is None:
+                write_fixture_index_session(
+                    conn,
+                    second,
+                    raw_id="second",
+                    content_hash=str(session_content_hash(second)),
+                    force_replace=True,
+                )
+            else:
+                with fixture_index_mutation_scope(conn):
+                    write_fixture_index_session(
+                        conn,
+                        second,
+                        raw_id="second",
+                        content_hash=str(session_content_hash(second)),
+                        force_replace=True,
+                        prepared_write=prepared,
+                    )
             snapshots.append(
                 {
                     table: [tuple(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]

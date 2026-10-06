@@ -188,7 +188,7 @@ class PendingPreParseRawAdmissionRequest:
     blob_hash: bytes
     blob_size: int
     acquired_at_ms: int
-    canonical_source_path: str | None = None
+    canonical_source_path: str
     captured_profile_key: str | None = None
     captured_zip_coordinate: CapturedZipMemberCoordinate | None = None
     addressing_mode: str | None = None
@@ -552,7 +552,7 @@ def _assert_existing_raw_observation_identity(
     origin: Origin | str,
     native_id: str | None,
     source_path: str,
-    canonical_source_path: str | None,
+    canonical_source_path: str,
     captured_profile_key: str | None,
     source_index: int,
     blob_hash: bytes,
@@ -618,7 +618,7 @@ def admit_raw_observation(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
-    canonical_source_path: str | None = None,
+    canonical_source_path: str,
     captured_profile_key: str | None = None,
     source_index: int = 0,
     payload: bytes,
@@ -962,7 +962,7 @@ def admit_raw_blob_observation(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
-    canonical_source_path: str | None = None,
+    canonical_source_path: str,
     captured_profile_key: str | None = None,
     captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
     source_item: SourceItemAdmission | None = None,
@@ -1012,7 +1012,7 @@ def admit_raw_artifact_blob_observation(
     origin: Origin | str,
     capture_mode: Provider | str | None = None,
     source_path: str,
-    canonical_source_path: str | None = None,
+    canonical_source_path: str,
     captured_profile_key: str | None = None,
     captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
     source_item: SourceItemAdmission | None = None,
@@ -1084,7 +1084,7 @@ def _admit_artifact(
     origin: Origin | str,
     capture_mode: Provider | str | None,
     source_path: str,
-    canonical_source_path: str | None,
+    canonical_source_path: str,
     captured_profile_key: str | None,
     source_index: int,
     payload: bytes,

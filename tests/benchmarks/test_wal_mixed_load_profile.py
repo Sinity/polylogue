@@ -165,7 +165,10 @@ class _MixedLoad:
 @pytest.mark.benchmark
 def test_bench_wal_mixed_load_profile(benchmark: BenchmarkFixture, tmp_path: Path) -> None:
     """Interactive reads, incremental ingest and candidate construction, then one checkpoint."""
-    db = tmp_path / "index.db"
+    # Not named after an archive tier: the profile's synthetic ``payload``
+    # table is no tier's schema, and a tier file name makes every read frame
+    # validate it as that tier and refuse it as skewed.
+    db = tmp_path / "mixed-load.db"
     _seed(db)
     before_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     wal_start = _wal_bytes(db)

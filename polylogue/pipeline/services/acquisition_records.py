@@ -173,7 +173,7 @@ def pending_pre_parse_raw_admission_request(
         origin=origin,
         capture_mode=record.capture_mode,
         source_path=record.source_path,
-        canonical_source_path=record.canonical_source_path,
+        canonical_source_path=record.frozen_canonical_source_path(),
         captured_profile_key=record.captured_profile_key,
         captured_zip_coordinate=record.captured_zip_coordinate,
         source_item=record.source_item,

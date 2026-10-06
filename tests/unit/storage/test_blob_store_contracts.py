@@ -273,6 +273,7 @@ def test_gc_skips_blobs_with_db_reference(tmp_path: Path) -> None:
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="/src.jsonl",
+            canonical_source_path="/src.jsonl",
             source_index=0,
             native_id="still-referenced",
             payload=b"still-referenced",

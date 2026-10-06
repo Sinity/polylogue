@@ -31,8 +31,9 @@ def test_prepared_inactive_scope_writes_only_its_captured_owned_generation(tmp_p
     from polylogue.storage.index_generation import IndexGenerationStore
     from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
 
+    # Bootstrap owns its own lease; the generation is created under this law's.
+    bootstrap_archive_root(tmp_path)
     with write_lease("test.prepare-inactive-destination", archive_root=tmp_path):
-        bootstrap_archive_root(tmp_path)
         generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="prepared-destination")
     destination = IndexMutationDestination.owned_inactive(generation)
     with PreparedIndexMutation(Path(generation.index_path), archive_root=tmp_path, destination=destination) as seal:
@@ -616,7 +617,11 @@ def test_archive_retains_failed_scope_and_retries_children_only_on_explicit_owne
                 archive.commit()
             with pytest.raises(ArchiveStoreSettlementError):
                 archive.write_raw_payload(
-                    provider=Provider.CODEX, source_path="refused-new-work", acquired_at_ms=0, payload=b"new"
+                    provider=Provider.CODEX,
+                    source_path="refused-new-work",
+                    canonical_source_path="refused-new-work",
+                    acquired_at_ms=0,
+                    payload=b"new",
                 )
             assert connection.rollback_attempts == 1
             assert cursors[0].close_attempts == 1
@@ -1144,7 +1149,11 @@ def test_store_terminal_parent_request_refuses_work_before_first_native_close(tm
                 archive.commit()
             with pytest.raises(ArchiveStoreSettlementError):
                 archive.write_raw_payload(
-                    provider=Provider.CODEX, source_path="refused-terminal-parent", acquired_at_ms=0, payload=b"new"
+                    provider=Provider.CODEX,
+                    source_path="refused-terminal-parent",
+                    canonical_source_path="refused-terminal-parent",
+                    acquired_at_ms=0,
+                    payload=b"new",
                 )
             assert not any(child.close_required for child in children)
             archive.close()
@@ -1291,10 +1300,18 @@ async def test_bound_removal_permission_stays_with_actual_apply_task_and_thread(
 
     monkeypatch.setattr(SessionDeleteActuator, "apply", apply)
 
+    def seed() -> str:
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            seeded = write_index_session(archive, reference_session("creator-removal"))
+            archive.commit()
+            return seeded
+
+    # The fixture writer bootstraps under its own lease, so the session is
+    # seeded before the coordinator's writer holds the archive.
+    target = await asyncio.to_thread(seed)
+
     async def owner() -> None:
         with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-            target = write_index_session(archive, reference_session("creator-removal"))
-            archive.commit()
             args = SessionDeleteArgs(archive=archive, session_ids=(target,))
             binding = runtime_operation_binding(SessionDeleteActuator())
             principal = MutationPrincipal("test", frozenset({"archive.delete_session"}), "api", "write")

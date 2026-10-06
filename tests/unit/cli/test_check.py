@@ -812,8 +812,15 @@ class TestCheckCommandSupplementary:
         self,
         cli_workspace: WorkspacePaths,
         cli_runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """`doctor --schemas` reports and persists legitimate raw quarantine failures."""
+        """`doctor --schemas` reports quarantine failures and the daemon persists them.
+
+        The CLI only verifies; the verdicts reach Source through the resident
+        daemon's ``maintenance.schema.quarantine`` writer.
+        """
+        from tests.infra.daemon_operations import cli_daemon_archive
+
         db_path = cli_workspace["db_path"]
         # Bootstrap the archive (creates source.db) before inserting the
         # malformed raw row.
@@ -831,21 +838,22 @@ class TestCheckCommandSupplementary:
             ),
         )
 
-        result = cli_runner.invoke(
-            cli,
-            [
-                "--plain",
-                "ops",
-                "doctor",
-                "--schemas",
-                "--schema-origin",
-                "codex",
-                "--schema-quarantine-malformed",
-            ],
-            catch_exceptions=False,
-        )
+        with cli_daemon_archive(db_path.parent, monkeypatch):
+            result = cli_runner.invoke(
+                cli,
+                [
+                    "--plain",
+                    "ops",
+                    "doctor",
+                    "--schemas",
+                    "--schema-origin",
+                    "codex",
+                    "--schema-quarantine-malformed",
+                ],
+                catch_exceptions=False,
+            )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert "Schema verification: 1 raw records" in result.output
         assert "codex: valid=0 invalid=0 drift=0 skipped=0 decode_errors=1 quarantined=1" in result.output
 

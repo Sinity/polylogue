@@ -89,6 +89,7 @@ def _write_codex_raw(
             provider=Provider.CODEX,
             payload=payload,
             source_path=source_path,
+            canonical_source_path=source_path,
             acquired_at_ms=acquired_at_ms,
             revision=(
                 RawRevisionEnvelope(

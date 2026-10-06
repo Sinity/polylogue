@@ -206,21 +206,25 @@ def _inspect_payload_envelope(record: RawSessionRecord, *, blob_store: BlobStore
     with blob_path.open("rb") as handle:
         provider, detection_detail = detect_provider_from_raw_stream_evidence(handle, record.source_path, provider)
         handle.seek(0)
-        try:
-            artifact = classify_artifact_stream(
-                handle,
-                provider=provider,
-                source_path=record.source_path,
-                wire_format="json",
-            ).classification
-            wire_format = "json"
-        except (ijson.JSONError, UnicodeError):
-            handle.seek(0)
+        # A record stream's one-record file is also a valid JSON document; its
+        # declared stream path decides the wire format, not that accident.
+        wire_format = "jsonl" if _prefers_json_stream(record.source_path) else "json"
+        if wire_format == "json":
+            try:
+                artifact = classify_artifact_stream(
+                    handle,
+                    provider=provider,
+                    source_path=record.source_path,
+                    wire_format="json",
+                ).classification
+            except (ijson.JSONError, UnicodeError):
+                handle.seek(0)
+                wire_format = "jsonl"
+        if wire_format == "jsonl":
             scan = scan_jsonl_session_artifact(handle, provider=provider, source_path=record.source_path)
             if scan.malformed_records and (scan.artifact is None or not scan.artifact.parse_as_session):
                 raise ValueError("retained artifact has no complete decodable session evidence") from None
             artifact = scan.artifact
-            wire_format = "jsonl"
     prefix = _inspection_prefix(record, blob_store=blob_store)
     # A fully contained payload can supply genuine schema material. A prefix
     # of a larger artifact is only a diagnostic sample, never a support proof.

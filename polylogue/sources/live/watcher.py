@@ -73,6 +73,7 @@ from polylogue.sources.sqlite_snapshot import (
 )
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.write_lease import UnleasedWriteError
 from polylogue.storage.tier_access import capture_sqlite_read
 
 logger = get_logger(__name__)
@@ -448,8 +449,14 @@ class LiveWatcher:
         **kwargs: Any,
     ) -> Any:
         """Run blocking watcher writes on the coordinator's writer."""
-        assert self._write_coordinator is not None, "the writer runner exists only with a write coordinator"
+        if self._write_coordinator is None:
+            raise UnleasedWriteError(f"{actor} writes the archive and requires the daemon write coordinator")
         return await self._write_coordinator.run_sync(actor, function, *args, **kwargs)
+
+    @property
+    def has_write_coordinator(self) -> bool:
+        """Whether archive writes run on a daemon write coordinator."""
+        return self._write_coordinator is not None
 
     @property
     def watcher_ready(self) -> asyncio.Event:
@@ -978,10 +985,18 @@ class LiveWatcher:
     def _invalidate_deferred_full_cursor(self, path: Path, *, stat: os.stat_result) -> None:
         """Clear a busy-handoff defer when current bytes reject archive authority."""
 
+        existing = self._cursor.get_record(path)
+        authority = CursorPathAuthority.of_record(existing) if existing is not None else None
+        if authority is None:
+            try:
+                authority = CursorPathAuthority.observe(path)
+            except FileNotFoundError:
+                self._cursor.mark_failed(path, authority=None)
+                return
         updated = self._cursor.set(
             path,
             stat.st_size,
-            authority=CursorPathAuthority.observe(path),
+            authority=authority,
             byte_offset=0,
             last_complete_newline=0,
             parser_fingerprint=_PARSER_FINGERPRINT,
@@ -1310,7 +1325,10 @@ class LiveWatcher:
                 tail_hash,
                 ctime_ns=stat.st_ctime_ns,
             )
-        authority = CursorPathAuthority.observe(path)
+        try:
+            authority = CursorPathAuthority.observe(path)
+        except FileNotFoundError:
+            return _ArchivedCursorReconciliation.UNAVAILABLE
         if authority.captured_profile_key != captured_profile_key:
             # The archived raw was captured under another profile namespace.
             return _ArchivedCursorReconciliation.INCOMPATIBLE

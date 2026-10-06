@@ -258,10 +258,11 @@ def publish_raw_observation_once(
         prepaid_blob_inputs=prepaid_blob_inputs,
     )
     frame = raw_observation_frame(archive_root, raw_ids=(raw_id,), index_db_path=index_path)
-    # A committed census, classification or byte restoration is this raw's
-    # own phase, not a moved input: prepare the next phase against it, up to
-    # the adapter's declared phase count, exactly as the derivation kernel does.
-    for _phase in range(adapter.publication_phases):
+    # A committed census, classification, byte restoration or deferred-child
+    # parent publication is this raw's own phase, not a moved input: prepare
+    # the next phase against it while the adapter reports committed progress,
+    # exactly as the derivation kernel does.
+    while True:
         replacement = adapter.compute(frame, raw_id)
         retained_replacements.append(replacement)
 
@@ -269,6 +270,11 @@ def publish_raw_observation_once(
             replacement.close()
             retained_replacements.remove(replacement)
 
+        if replacement.prepared_key_refusals:
+            # One exact raw has no healthy sibling key to publish around: its
+            # refused member is this raw's outcome, never a silent deferral.
+            close()
+            raise replacement.prepared_key_refusals[0]
         try:
             check_compute_cancelled()
             result = admit_stage_write(
@@ -283,7 +289,6 @@ def publish_raw_observation_once(
         close()
         if result or not adapter.publication_advanced(replacement):
             return result
-    return False
 
 
 if TYPE_CHECKING:

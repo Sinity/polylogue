@@ -36,9 +36,12 @@ async def prepared_live_batch_processor(
 ) -> AsyncIterator[LiveBatchProcessor]:
     """Keep one real kernel, coordinator, capture stage and Raw owner for the pass.
 
-    ``converger`` runs its stages through the Raw owner's convergence runner.
-    A supplied ``compute_adapter`` (the one those stages were built on) stays
-    owned by the caller; otherwise the fixture creates and settles its own.
+    ``converger`` is handed to the processor unchanged, for a law that also
+    observes the per-file convergence stages after intake. A converger built
+    from ``make_default_convergence_stages`` must share this pass's compute
+    adapter, as the daemon's stages share its own: pass that adapter as
+    ``compute_adapter``. The caller then owns its shutdown; otherwise the
+    fixture creates and joins one.
     """
     owns_compute = compute_adapter is None
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1) if compute_adapter is None else compute_adapter
@@ -106,8 +109,8 @@ async def prepared_live_batch_processor(
                 raise RuntimeError("live fixture coordinator did not physically settle")
         except BaseException as failure:
             failures.append(failure)
-        if owns_compute:
-            try:
+        try:
+            if owns_compute:
                 closing = asyncio.create_task(asyncio.to_thread(compute.shutdown, wait=coordinator_settled))
                 while not closing.done():
                     try:
@@ -115,8 +118,8 @@ async def prepared_live_batch_processor(
                     except asyncio.CancelledError as failure:
                         failures.append(failure)
                 closing.result()
-            except BaseException as failure:
-                failures.append(failure)
+        except BaseException as failure:
+            failures.append(failure)
         if failures:
             if primary is not None:
                 failures.insert(0, primary)

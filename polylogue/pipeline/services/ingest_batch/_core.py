@@ -20,6 +20,7 @@ from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROW
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.core.enums import Provider
+from polylogue.core.raw_failure_evidence import CohortMembershipRefusalError, RetainedRawDecodeRefusalError
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import session_evidence_timestamps
 from polylogue.logging import get_logger
@@ -1293,7 +1294,24 @@ async def process_ingest_batch(
             "retained ingest requires its canonical accepted-marker and outbox producer before publication"
         )
     started = time.perf_counter()
-    receipts = await service.retained_runner(tuple(batch_ids))
+    # A parse failure is a typed refusal the owner settled: a terminal decode
+    # refusal or a refused cohort member. A membership-quarantined revision is
+    # governance evidence, not a failed parse, so receipts' ``quarantined``
+    # counts are not failures.
+    refusals: list[object] = []
+
+    def settle_terminal_refusal(_keys: tuple[str, ...], refusal: RetainedRawDecodeRefusalError) -> None:
+        refusals.append(refusal)
+
+    def settle_membership_refusal(refusal: CohortMembershipRefusalError) -> None:
+        refusals.append(refusal)
+
+    receipts = await service.retained_runner(
+        tuple(batch_ids),
+        on_terminal_refusal=settle_terminal_refusal,
+        on_membership_refusal=settle_membership_refusal,
+    )
+    result.parse_failures += len(refusals)
     written: dict[str, None] = {}
     changed: dict[str, None] = {}
     for receipt in receipts:
@@ -1304,7 +1322,6 @@ async def process_ingest_batch(
                 result.counts[key] += count
             if key in result.changed_counts and key != "sessions":
                 result.changed_counts[key] += count
-        result.parse_failures += receipt.quarantined
         for key, seconds in receipt.stage_timings_s.items():
             result.stage_timings_s[key] = result.stage_timings_s.get(key, 0.0) + seconds
     result.processed_ids.update(written)
@@ -1317,7 +1334,7 @@ async def process_ingest_batch(
         "sessions": len(written),
         "messages": sum(receipt.written_message_count for receipt in receipts),
         "changed_sessions": len(changed),
-        "failed_raw_count": sum(receipt.quarantined for receipt in receipts),
+        "failed_raw_count": len(refusals),
         "converged": all(receipt.adoption_deferred == 0 for receipt in receipts),
         "elapsed_ms": (time.perf_counter() - started) * 1000,
     }

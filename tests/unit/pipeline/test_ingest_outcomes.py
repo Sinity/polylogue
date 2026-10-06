@@ -51,6 +51,7 @@ def _make_raw_record(
         raw_id=actual_raw_id,
         source_name=provider,
         source_path=path,
+        canonical_source_path=path,
         source_index=None,
         blob_size=blob_size,
         acquired_at=now,

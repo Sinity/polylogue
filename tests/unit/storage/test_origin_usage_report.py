@@ -21,6 +21,7 @@ from polylogue.storage.usage import (
     provider_usage_coverage_matrix,
     provider_usage_event_identity,
 )
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.session_profiles import write_session_profile
 
@@ -622,6 +623,9 @@ def test_origin_usage_report_handles_empty_origin_filter(tmp_path: Path) -> None
 
 
 def test_origin_usage_report_exposes_source_debt_and_stale_rollups(tmp_path: Path) -> None:
+    # Source rows are seeded before the fixture writer runs, so the archive
+    # (and its format birth marker) must exist before any tier is opened.
+    bootstrap_archive_root(tmp_path)
     index_conn = _connect(tmp_path / "index.db")
     source_conn = _connect(tmp_path / "source.db", ArchiveTier.SOURCE)
     _insert_raw_session(source_conn, raw_id="raw-materialized", native_id="provider-usage-report")

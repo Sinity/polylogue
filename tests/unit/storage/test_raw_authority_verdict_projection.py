@@ -29,6 +29,7 @@ def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_so
         provider=Provider.CODEX,
         payload=payload,
         source_path="session.jsonl",
+        canonical_source_path="session.jsonl",
         acquired_at_ms=1,
         raw_id=raw_id,
     )
@@ -55,6 +56,7 @@ def _bind_append(
         provider=Provider.CODEX,
         payload=payload,
         source_path="session.jsonl",
+        canonical_source_path="session.jsonl",
         source_index=-1,
         acquired_at_ms=1,
         raw_id=raw_id,
@@ -121,6 +123,7 @@ def test_unresolved_kind_projects_unchecked_alongside_a_proven_sibling(tmp_path:
             provider=Provider.CODEX,
             payload=b"not yet classified",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=1,
             raw_id="pending",
         )

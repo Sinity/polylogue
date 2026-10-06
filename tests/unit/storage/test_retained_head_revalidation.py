@@ -41,6 +41,7 @@ def _admit(root: Path, payload: bytes, acquired_at_ms: int) -> str:
             provider=Provider.CODEX,
             payload=payload,
             source_path=str(root / "sessions" / "head-race.jsonl"),
+            canonical_source_path=str(root / "sessions" / "head-race.jsonl"),
             acquired_at_ms=acquired_at_ms,
         )
 

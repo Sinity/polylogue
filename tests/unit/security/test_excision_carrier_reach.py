@@ -42,7 +42,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.excision_execution import execute_excision
-from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
+from tests.infra.sync_as_async import AsyncConnectionView
 
 _NATIVE_ID = "session-under-excision"
 _OTHER_NATIVE_ID = "session-sharing-the-container"
@@ -73,6 +73,7 @@ def _seed_archive(tmp_path: Path) -> tuple[str, str]:
                 conn,
                 origin="chatgpt-export",
                 source_path="/exports/conversations.json",
+                canonical_source_path="/exports/conversations.json",
                 source_index=index,
                 payload=payload,
                 acquired_at_ms=1_000 + index,
@@ -196,8 +197,8 @@ def test_excision_erases_marker_carriers_and_keeps_only_terminal_evidence(tmp_pa
     with sqlite3.connect(tmp_path / "source.db") as source:
         source.execute("BEGIN IMMEDIATE")
         persist_pending_marker_input_sync(source, target, expected_incarnation_id=str(uuid.uuid4()))
-        asyncio.run(append_accepted_marker_input(_AsyncConnection(source), accepted_target))
-        asyncio.run(append_accepted_marker_input(_AsyncConnection(source), other))
+        asyncio.run(append_accepted_marker_input(AsyncConnectionView(source), accepted_target))
+        asyncio.run(append_accepted_marker_input(AsyncConnectionView(source), other))
     from tests.infra.excision_embeddings import seed_excision_marker_witnesses
 
     seed_excision_marker_witnesses(tmp_path, (target, accepted_target, other))
@@ -238,7 +239,7 @@ def test_excision_erases_marker_carriers_and_keeps_only_terminal_evidence(tmp_pa
         with pytest.raises(AcceptedMarkerInputExcisedError):
             persist_pending_marker_input_sync(source, target, expected_incarnation_id=str(uuid.uuid4()))
         with pytest.raises(AcceptedMarkerInputExcisedError):
-            asyncio.run(append_accepted_marker_input(_AsyncConnection(source), accepted_target))
+            asyncio.run(append_accepted_marker_input(AsyncConnectionView(source), accepted_target))
         source.rollback()
         replacement = prepare_accepted_marker_input(
             "raw-other",
@@ -246,7 +247,7 @@ def test_excision_erases_marker_carriers_and_keeps_only_terminal_evidence(tmp_pa
             request_facts={"revision": "after-excision"},
         )
         source.execute("BEGIN IMMEDIATE")
-        replacement_sequence = asyncio.run(append_accepted_marker_input(_AsyncConnection(source), replacement))
+        replacement_sequence = asyncio.run(append_accepted_marker_input(AsyncConnectionView(source), replacement))
         source.commit()
         assert replacement_sequence > int(accepted_tombstone[4])
     with sqlite3.connect(tmp_path / "index.db") as index:
