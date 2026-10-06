@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast, get_args
 
@@ -16,6 +15,7 @@ from polylogue.archive.context_models import (
 )
 from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
 from polylogue.context.product_image import compile_context_image
+from polylogue.core.async_bridge import complete_without_suspension
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import AssertionClaimPayload
 from polylogue.surfaces.projection_spec import projection_from_views
@@ -186,7 +186,7 @@ def context_image_from_pinned_reader(payload: Mapping[str, Any], *, archive: Arc
     )
     if include_assertions:
         archive.require_user_tier()
-    image = asyncio.run(
+    image = complete_without_suspension(
         compile_context_image(
             PinnedContextImageSource(archive, observed_at_ms=int(payload.get("observed_at_ms", 0))), spec
         )
