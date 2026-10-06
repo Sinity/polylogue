@@ -18,10 +18,8 @@ import pytest
 from polylogue.config import Config, Source
 from polylogue.daemon.drive_catchup import DriveCatchupExecution
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
-from polylogue.pipeline.services.ingest_batch import _core as ingest
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources import DriveFile
-from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
@@ -383,23 +381,13 @@ async def test_drive_phased_matches_ordinary_document_growth(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Two real Drive revisions retain the same lineage, content and FTS in both routes."""
+    """Two real Drive revisions retain the same lineage, content and FTS in both routes.
+
+    Membership governance is the one revision authority for a Drive document:
+    the re-serialized larger revision is applied and the earlier capture is
+    superseded by it, in both routes.
+    """
     source = Source(name="gemini", folder="fixture", path=tmp_path / "shared-source")
-    structural = ingest._drive_structural_growth_predecessor
-    structural_calls = 0
-
-    def compare(
-        source_conn: sqlite3.Connection,
-        blob_publisher: ArchiveBlobPublisher,
-        *,
-        raw_id: str,
-        logical_source_key: str,
-    ) -> tuple[str, int, str] | None:
-        nonlocal structural_calls
-        assert current_write_lease() is None
-        structural_calls += 1
-        return structural(source_conn, blob_publisher, raw_id=raw_id, logical_source_key=logical_source_key)
-
     snapshots = []
     for phased in (False, True):
         root = tmp_path / ("phased" if phased else "ordinary")
@@ -408,8 +396,6 @@ async def test_drive_phased_matches_ordinary_document_growth(
         monkeypatch.setattr(
             "polylogue.sources.drive._resolved_drive_client", lambda fixture_client=client, **kwargs: fixture_client
         )
-        if phased:
-            monkeypatch.setattr(ingest, "_drive_structural_growth_predecessor", compare)
         with arm_write_lease_enforcement(armed=phased, process_wide=True):
             first = await parser.ingest_sources(sources=[source])
             assert first.parse_result.processed_ids
@@ -423,6 +409,11 @@ async def test_drive_phased_matches_ordinary_document_growth(
                 "SELECT raw_id, blob_hash, logical_source_key, revision_kind, revision_authority, "
                 "predecessor_raw_id, baseline_raw_id, parsed_at_ms IS NOT NULL, parse_error "
                 "FROM raw_sessions ORDER BY raw_id"
+            ).fetchall()
+            memberships = conn.execute(
+                "SELECT m.raw_id, m.logical_source_key, m.decision, m.revision_authority "
+                "FROM raw_session_memberships AS m JOIN raw_sessions AS r ON r.raw_id = m.raw_id "
+                "ORDER BY r.acquired_at_ms"
             ).fetchall()
         with sqlite3.connect(root / "index.db") as conn:
             sessions = conn.execute(
@@ -438,11 +429,14 @@ async def test_drive_phased_matches_ordinary_document_growth(
                 "SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'Neutral' ORDER BY rowid"
             ).fetchall()
         assert len(raw) == 2
-        assert any(row[4] == "asserted" and row[5] for row in raw), (phased, raw)
-        snapshots.append((raw, sessions, messages, attachments, fts))
+        assert [(row[1], row[2], row[3]) for row in memberships] == [
+            ("aistudio-drive:neutral", "superseded_prefix", "byte_proven"),
+            ("aistudio-drive:neutral", "applied", "byte_proven"),
+        ], (phased, memberships)
+        assert [row[2] for row in sessions] == [memberships[1][0]]
+        snapshots.append((raw, memberships, sessions, messages, attachments, fts))
         assert source.path is not None
         (source.path / "neutral.json").unlink()
-    assert structural_calls == 2
     assert snapshots[0] == snapshots[1]
 
 
