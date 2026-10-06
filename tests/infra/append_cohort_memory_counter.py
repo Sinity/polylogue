@@ -253,10 +253,8 @@ def append_cohort_memory_counter() -> Iterator[AppendCohortMemoryCounter]:
 
     def counted_replay_plan(archive: ArchiveStore, logical_source_key: str) -> Any:
         counter.record("raw_revision_replay_plan")
-        counter.snapshot("raw_revision_replay_plan:before")
         result = real_replay_plan(archive, logical_source_key)
         counter.record("accepted_raw_ids", len(result.accepted_raw_ids))
-        counter.snapshot("raw_revision_replay_plan:after")
         return result
 
     def counted_read_all(publisher: ArchiveBlobPublisher, hash_hex: str) -> bytes:

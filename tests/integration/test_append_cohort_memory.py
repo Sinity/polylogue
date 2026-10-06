@@ -327,11 +327,16 @@ def test_watcher_append_defers_when_a_newer_asserted_full_hides_the_append(tmp_p
     assert counter.calls_by_site["raw_append_revision_parent"] == 2
     assert counter.calls_by_site["historical_full_blob.read_all"] == 0
     with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "index.db") as index:
-        assert source.execute("SELECT 1 FROM raw_sessions WHERE revision_kind = 'append'").fetchone() is not None
-        assert (
-            index.execute(
-                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
-                ("codex-session:append-partial-classification-proof",),
-            ).fetchone()
-            is None
-        )
+        (append_raw,) = source.execute("SELECT raw_id FROM raw_sessions WHERE revision_kind = 'append'").fetchone()
+        (proven_head,) = source.execute(
+            "SELECT raw_id FROM raw_sessions WHERE source_revision = 'full-1' AND revision_authority = 'byte_proven'"
+        ).fetchone()
+        # Single-pass replay publishes the byte-proven prefix; the head stops
+        # there and the append past the asserted full stays deferred.
+        assert index.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key = ?",
+            ("codex-session:append-partial-classification-proof",),
+        ).fetchone() == (proven_head,)
+        assert index.execute(
+            "SELECT decision FROM raw_revision_applications WHERE raw_id = ?", (append_raw,)
+        ).fetchone() == ("deferred",)
