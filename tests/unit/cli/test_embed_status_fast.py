@@ -1447,6 +1447,42 @@ def test_status_json_detail_matches_archive_embedding_text_floor(tmp_path: Path)
     assert payload["message_coverage_percent"] == 0.0
 
 
+def test_status_json_detail_never_reports_an_unreadable_relation_as_zero(tmp_path: Path) -> None:
+    """A relation present without a column the reader needs is unmeasured, not empty.
+
+    Anti-vacuity: classify ``no such column`` as a missing table again and the
+    embeddable-message count reads a measured 0, so the payload claims an exact
+    pending_messages == 0 beside a pending session.
+    """
+    index_db = tmp_path / "index.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY);
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                text TEXT,
+                role TEXT NOT NULL DEFAULT 'user',
+                message_type TEXT NOT NULL DEFAULT 'message',
+                material_origin TEXT NOT NULL DEFAULT 'human_authored',
+                word_count INTEGER NOT NULL DEFAULT 6,
+                content_hash TEXT
+            );
+            INSERT INTO sessions (session_id) VALUES ('conv-1');
+            INSERT INTO messages (message_id, session_id, text, content_hash)
+            VALUES ('msg-1', 'conv-1', 'authored prose long enough to embed', 'h1');
+            """
+        )
+        _mirror_text_blocks(conn)
+        conn.commit()
+
+    payload = _run_status(index_db, "--detail")
+
+    assert payload["pending_messages_exact"] is False
+    assert payload["pending_messages"] is None
+
+
 def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
     _seed_archive_without_embedding_ledgers(db_path)

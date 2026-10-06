@@ -294,7 +294,7 @@ def _scalar_int_with_timeout(
     competing handler and propagates any outer interruption unchanged.
     """
 
-    from polylogue.storage.embeddings.support import is_missing_table_error
+    from polylogue.storage.embeddings.support import is_missing_table_error, is_unreadable_relation_error
 
     if timeout_ms is None:
         row = conn.execute(sql, params).fetchone()
@@ -307,6 +307,9 @@ def _scalar_int_with_timeout(
         message = str(exc).lower()
         if is_missing_table_error(exc):
             return 0
+        if is_unreadable_relation_error(exc):
+            # Present but unreadable: not measured, so never a zero.
+            return None
         if "interrupted" in message or "locked" in message or "busy" in message:
             return None
         raise
@@ -324,7 +327,12 @@ def _rows_with_timeout(
 ) -> list[sqlite3.Row | tuple[object, ...]] | None:
     """Return query rows, or ``None`` when the live archive cannot answer quickly."""
 
-    from polylogue.storage.embeddings.support import is_missing_table_error
+    from polylogue.storage.embeddings.support import (
+        READINESS_RELATION_UNAVAILABLE,
+        EmbeddingCoverageUnmeasurableError,
+        is_missing_table_error,
+        is_unreadable_relation_error,
+    )
 
     if timeout_ms is None:
         return list(conn.execute(sql, params).fetchall())
@@ -336,6 +344,8 @@ def _rows_with_timeout(
         message = str(exc).lower()
         if is_missing_table_error(exc):
             return []
+        if is_unreadable_relation_error(exc):
+            raise EmbeddingCoverageUnmeasurableError(f"{READINESS_RELATION_UNAVAILABLE}: {exc}") from exc
         if "interrupted" in message or "locked" in message or "busy" in message:
             return None
         raise
@@ -626,7 +636,12 @@ def _authoritative_archive_embedding_state(
         FROM sessions AS s
         LEFT JOIN per_session AS p ON p.session_id = s.session_id
         """
-    rows = _rows_with_timeout(conn, sql, timeout_ms=timeout_ms)
+    from polylogue.storage.embeddings.support import EmbeddingCoverageUnmeasurableError
+
+    try:
+        rows = _rows_with_timeout(conn, sql, timeout_ms=timeout_ms)
+    except EmbeddingCoverageUnmeasurableError as exc:
+        return ArchiveEmbeddingStateProbe(counts=None, reason=exc.reason)
     if rows is None:
         return ArchiveEmbeddingStateProbe(counts=None, reason="readiness_inspection_timeout")
     if not rows:
