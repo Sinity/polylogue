@@ -2854,6 +2854,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=DeletePreviewRequest,
         result_model=MutationResult,
         durable_request=True,
+        handler="execute_session_delete_preview_operation",
     ),
     DaemonOperationSpec(
         "mutation.session.delete.authorize",

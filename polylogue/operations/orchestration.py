@@ -6,13 +6,13 @@ builder holds one page per relation at a time instead of the whole session.
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
 from typing import TYPE_CHECKING
 
 from polylogue.archive.message.models import Message
 from polylogue.archive.session.events import SessionEvent
+from polylogue.core.async_bridge import complete_without_suspension
 from polylogue.core.identity_law import transcript_order_sql
 from polylogue.storage.hydrators import message_from_record, session_event_from_record
 from polylogue.storage.runtime import BlockRecord
@@ -180,7 +180,9 @@ def read_session_orchestration(
         session_id = archive.resolve_session_id(session_ref)
     except KeyError:
         return None
-    topology = asyncio.run(derive_session_topology_async(_TopologySnapshot(archive, raise_if_aborted), session_id))
+    topology = complete_without_suspension(
+        derive_session_topology_async(_TopologySnapshot(archive, raise_if_aborted), session_id)
+    )
     artifacts, _ = archive.raw_artifacts_for_session(session_id, limit=1, offset=0)
     predicate = QueryFieldPredicate(field="session.id", values=(session_id,), op="=").with_field_ref(
         QueryFieldRef(scope="session", name="id", source_name="session.id")

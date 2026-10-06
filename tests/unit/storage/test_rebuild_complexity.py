@@ -635,7 +635,10 @@ def test_bounded_replay_work_is_batch_bounded_independent_of_backlog(
         def counted_backfill(*args: Any, _original: Any = original_backfill, **kwargs: Any) -> Any:
             nonlocal selected_work
             result = _original(*args, **kwargs)
-            selected_work += result.scanned
+            # The census commits in place during preparation, so the replay
+            # scans no census rows; its selected work is the logical sources
+            # it replays.
+            selected_work += result.replayed_logical_sources
             return result
 
         with monkeypatch.context() as mutation:

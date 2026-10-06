@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 from builtins import BaseExceptionGroup
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
@@ -454,6 +454,8 @@ def write_fixture_prepared_session(
     session: ParsedSession,
     *,
     inspect: Callable[[PreparedSessionWrite], None] | None = None,
+    prepared_rows: PreparedSessionRows | None = None,
+    publish_options: Mapping[str, Any] | None = None,
     **kwargs: Any,
 ) -> str:
     """Prepare one write on an original seal, let the law inspect it, then publish.
@@ -461,8 +463,11 @@ def write_fixture_prepared_session(
     For laws about the prepared carrier itself (its union, its resolved root):
     preparation reads the seal's original Source snapshot and publication runs
     under that seal's admitted Index scope, as ``write_fixture_index_session``
-    does internally. ``kwargs`` are the write's options (``raw_id``,
-    ``merge_append``, ``force_replace``, ``content_hash``).
+    does internally. ``prepared_rows`` is an optional parse-side row carrier for
+    preparation; ``kwargs`` are the write's options (``raw_id``,
+    ``merge_append``, ``force_replace``, ``content_hash``), and
+    ``publish_options`` override them for publication only (a law whose
+    writer overrules what preparation decided).
     """
     path = index_path_for_connection(conn)
     root = path.parent
@@ -477,13 +482,16 @@ def write_fixture_prepared_session(
                 ),
                 raw_id=kwargs.get("raw_id"),
                 force_replace=bool(kwargs.get("force_replace", False)),
+                prepared_rows=_canonical_prepared_rows(prepared_rows),
                 before_input=seal.before_index_input,
             )
         try:
             if inspect is not None:
                 inspect(prepared)
             with _fixture_writer_admission(conn, "test.fixture.prepared.publish", root), seal.mutation_scope(conn):
-                return write_fixture_index_session(conn, session, prepared_write=prepared, **kwargs)
+                return write_fixture_index_session(
+                    conn, session, prepared_write=prepared, **{**kwargs, **(publish_options or {})}
+                )
         finally:
             prepared.close()
 

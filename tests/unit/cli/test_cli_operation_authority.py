@@ -61,11 +61,23 @@ def _run(archive_root: Path, *args: str) -> Result:
 
 
 def _user_tier_digest(archive_root: Path) -> str:
-    """Digest ``user.db`` and its journal: any local write changes it."""
+    """Digest ``user.db`` and its journal: any local write changes it.
+
+    A committed or pending write lands in the main file, in WAL frames, or in
+    a rollback journal. The ``-shm`` WAL index and an empty ``-wal`` are what
+    a read-only open of a WAL database creates (an excision plan and a
+    materialization preview read the archive before submitting), so they are
+    not evidence of a write and are left out.
+    """
     digest = hashlib.sha256()
     for path in sorted(archive_root.glob("user.db*")):
+        if path.name.endswith("-shm"):
+            continue
+        content = path.read_bytes()
+        if path.name.endswith("-wal") and not content:
+            continue
         digest.update(path.name.encode())
-        digest.update(path.read_bytes())
+        digest.update(content)
     return digest.hexdigest()
 
 

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable, Mapping
 
+from polylogue.core.async_bridge import complete_without_suspension
 from polylogue.storage.runtime import SessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.outcome import lineage_page_outcome
@@ -107,7 +107,7 @@ def execute_topology_read(
     except KeyError as exc:
         raise KeyError(f"Session not found: {session_id}") from exc
     snapshot = _TopologySnapshot(archive, raise_if_aborted)
-    topology = asyncio.run(
+    topology = complete_without_suspension(
         derive_session_topology_async(
             snapshot,
             resolved,

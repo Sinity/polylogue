@@ -3511,7 +3511,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         source_tool_calls: dict[str, str] | None = None,
     ) -> Any:
         """Build a scheduler-admitted context preamble for one boundary."""
-        import asyncio
         from contextlib import suppress
         from datetime import datetime, timezone
 
@@ -3525,21 +3524,19 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             _active_archive_root(self.config),
             operation="context.preamble",
             arguments={"session_id": session_id, "related_limit": related_limit, "boundary": boundary},
-            work=lambda archive: asyncio.run(
-                execute_context_preamble(
-                    archive,
-                    session_id=session_id,
-                    related_limit=related_limit,
-                    repo_path=repo_path,
-                    cwd=cwd,
-                    recent_files=recent_files,
-                    source_tool_calls=source_tool_calls or {"context_preamble_payload": "polylogue-api"},
-                    require_session=require_session,
-                    boundary=boundary,
-                    token_budget=token_budget,
-                    observed_project_state=project_state,
-                    observed_at=observed_at,
-                )
+            work=lambda archive: execute_context_preamble(
+                archive,
+                session_id=session_id,
+                related_limit=related_limit,
+                repo_path=repo_path,
+                cwd=cwd,
+                recent_files=recent_files,
+                source_tool_calls=source_tool_calls or {"context_preamble_payload": "polylogue-api"},
+                require_session=require_session,
+                boundary=boundary,
+                token_budget=token_budget,
+                observed_project_state=project_state,
+                observed_at=observed_at,
             ),
         )
         if result.ledger is not None:
@@ -5369,12 +5366,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         At least one of ``session_id`` or ``query`` must be provided.
         """
-        import asyncio
-
         from polylogue.archive.session.neighbor_candidates import (
             NeighborDiscoveryRequest,
             discover_neighbor_candidates,
         )
+        from polylogue.core.async_bridge import complete_without_suspension
 
         request = NeighborDiscoveryRequest(
             session_id=session_id,
@@ -5393,7 +5389,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 "limit": limit,
                 "window_hours": window_hours,
             },
-            work=lambda archive: asyncio.run(discover_neighbor_candidates(_ArchiveNeighborRuntime(archive), request)),
+            # The admitted read may run nested on a compute worker driving an
+            # event loop; the archive-backed runtime never suspends.
+            work=lambda archive: complete_without_suspension(
+                discover_neighbor_candidates(_ArchiveNeighborRuntime(archive), request)
+            ),
             page_size=limit,
             projection="neighbor-candidates",
             stable_order="score,time,session_id",

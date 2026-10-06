@@ -456,7 +456,7 @@ async def test_get_session_page_reports_the_normalized_offset(tmp_path: Path) ->
     try:
 
         def _off_loop_1() -> Any:
-            with ArchiveStore.open_existing(tmp_path) as store:
+            with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
                 session_id = write_index_session(store, session)
             return (session_id,)
 

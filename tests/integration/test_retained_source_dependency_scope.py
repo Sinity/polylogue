@@ -124,7 +124,7 @@ async def test_generation_owned_cohort_spans_input_pages(tmp_path: Path) -> None
 
 
 async def test_source_census_codex_artifact_enrolls_original_projected_titles(tmp_path: Path) -> None:
-    """The first Source census artifact already uses its original Index title evidence."""
+    """The first retained preparation of a rollout already uses its original Index title evidence."""
     root = tmp_path / "archive"
     title = "curated title"
     _codex_thread_state_snapshot_bytes(tmp_path, title)
@@ -176,7 +176,10 @@ async def test_source_census_codex_artifact_enrolls_original_projected_titles(tm
             replacement = adapter.compute(frame, raw_id)
             retained.append(replacement)
             try:
-                assert replacement.prepared_source_census is not None
+                # Acquisition already records the rollout's parser census, so
+                # its first preparation is the replay itself; the original
+                # artifact it prepares must already carry the projected title.
+                assert replacement.prepared_source_census is None
                 assert replacement.prepared_inputs is not None
                 artifact = replacement.prepared_inputs[raw_id].prepared_artifact
                 assert artifact is not None
@@ -211,7 +214,10 @@ async def test_source_census_codex_artifact_enrolls_original_projected_titles(tm
             assert census_receipt is not None
             assert census_receipt[0] == "complete"
             assert json.loads(census_receipt[1]) == ["codex-session:codex-state-thread"]
-            assert index.execute("SELECT 1 FROM sessions WHERE native_id='codex-state-thread'").fetchone() is None
+            row = index.execute(
+                "SELECT title,title_source FROM sessions WHERE native_id='codex-state-thread'"
+            ).fetchone()
+            assert row is not None and tuple(row) == (title, TitleSource.ORIGIN.value)
         await owner.replay_retained_raw_ids((raw_id,))
     with ArchiveStore.open_existing(root, read_only=True) as archive:
         index = archive.index_connection

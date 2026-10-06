@@ -676,6 +676,19 @@ def _family_budgets(*, vm_steps: int, response_bytes: int) -> tuple[WorkloadBudg
     )
 
 
+def _frame_state_allowance(family_id: str) -> ScanAllowance:
+    return ScanAllowance(
+        family_id=family_id,
+        detail="SCAN query_unit_frame_state",
+        disposition="expected",
+        owner="polylogue.archive.query.transaction",
+        reason=(
+            "the continuation frame reads every tracked relation's epoch from the reader's snapshot; "
+            "the table holds one row per tracked relation, a fixed set independent of archive size"
+        ),
+    )
+
+
 CENSUS_FAMILIES: tuple[CensusFamily, ...] = (
     CensusFamily(
         family_id="query:messages:origin-scope",
@@ -691,6 +704,7 @@ CENSUS_FAMILIES: tuple[CensusFamily, ...] = (
         pushdown_marker="WHERE s.origin IN ('claude-code-session')",
         budgets=_family_budgets(vm_steps=4_000_000, response_bytes=4_000_000),
         scan_allowances=(
+            _frame_state_allowance("query:messages:origin-scope"),
             ScanAllowance(
                 family_id="query:messages:origin-scope",
                 detail="SCAN sqlite_master",
@@ -737,6 +751,7 @@ CENSUS_FAMILIES: tuple[CensusFamily, ...] = (
         pushdown_marker="WHERE lower(a.tool_name) = 'workflow'",
         budgets=_family_budgets(vm_steps=4_000_000, response_bytes=2_000_000),
         scan_allowances=(
+            _frame_state_allowance("query:actions:tool-scope"),
             ScanAllowance(
                 family_id="query:actions:tool-scope",
                 detail="SCAN sqlite_master",
@@ -803,6 +818,7 @@ CENSUS_FAMILIES: tuple[CensusFamily, ...] = (
         pushdown_marker="WHERE s.origin IN ('claude-code-session')",
         budgets=_family_budgets(vm_steps=4_000_000, response_bytes=2_000_000),
         scan_allowances=(
+            _frame_state_allowance("query:delegations:coordinator-scope"),
             ScanAllowance(
                 family_id="query:delegations:coordinator-scope",
                 detail="SCAN sqlite_master",

@@ -118,16 +118,30 @@ def _deferrals(edges: dict[str, str | None], *, refused: frozenset[str] = frozen
     )
 
 
+def _in_cycle(edges: dict[str, str | None], key: str) -> bool:
+    seen: set[str] = set()
+    node = edges.get(key)
+    while node is not None and node in edges and node not in seen:
+        if node == key:
+            return True
+        seen.add(node)
+        node = edges[node]
+    return False
+
+
 @pytest.mark.parametrize(
     ("edges", "refused", "expected"),
     [
-        # A three-level chain publishes its head, defers the middle (its
-        # parent publishes) and publishes the leaf beside its absent parent.
-        ({"a": None, "b": "a", "c": "b"}, frozenset(), {"b"}),
-        # A parent cycle has no head: its least key publishes first and the
-        # cycle member that is its parent never publishes beside it.
+        # A fork of a fork converges one generation per phase: only the
+        # head publishes, and the grandchild waits for its parent's
+        # generation instead of publishing before it (test_corpus_program's
+        # in-unit fork chain).
+        ({"a": None, "b": "a", "c": "b"}, frozenset(), {"b", "c"}),
+        ({"b": "a", "c": "b"}, frozenset(), {"c"}),
+        # A parent cycle has no head: its least key publishes first and every
+        # other member waits for the generation before it.
         ({"a": "c", "b": "a", "c": "b"}, frozenset(), {"b", "c"}),
-        ({"a": "d", "b": "a", "c": "b", "d": "c"}, frozenset(), {"b", "d"}),
+        ({"a": "d", "b": "a", "c": "b", "d": "c"}, frozenset(), {"b", "c", "d"}),
         # A refused parent publishes nothing, so its child does not wait.
         ({"a": None, "b": "a"}, frozenset({"a"}), set()),
     ],
@@ -135,11 +149,13 @@ def _deferrals(edges: dict[str, str | None], *, refused: frozenset[str] = frozen
 def test_in_unit_deferral_never_publishes_a_child_beside_its_parent(
     edges: dict[str, str | None], refused: frozenset[str], expected: set[str]
 ) -> None:
-    """Every pass publishes a head and no child beside its in-unit parent.
+    """Every pass publishes a head and nothing before its in-unit parent.
 
     Anti-vacuity: restore the once-per-adapter guard (defer every child once,
     then force it) and a parent cycle publishes every member beside its
     parent on the second pass, refusing as moved lineage on every pass.
+    Alternate generations instead and a grandchild publishes before its
+    parent and is refused once that parent lands.
     """
     deferred = _deferrals(edges, refused=refused)
     assert deferred == expected
@@ -147,4 +163,6 @@ def test_in_unit_deferral_never_publishes_a_child_beside_its_parent(
     assert publishing
     for key in publishing:
         parent = edges[key]
-        assert parent is None or parent not in publishing
+        # Only a cycle anchor publishes while its parent is another write of
+        # this unit.
+        assert parent is None or parent not in edges or parent in refused or _in_cycle(edges, key)

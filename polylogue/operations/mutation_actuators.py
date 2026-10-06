@@ -858,17 +858,24 @@ class BlobPublicationAbandonActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: BlobPublicationAbandonArgs) -> MutationReceipt:
+        from polylogue.core.stage_admission import admit_stage_write
         from polylogue.storage.blob_publication import abandon_blob_publication_receipts
 
         blocked = cast("list[str]", plan.context.get("blocked", []))
         if blocked:
             raise RecoveryDeferredError(f"blob publication liveness is blocked for receipts: {blocked}")
-        abandonment = abandon_blob_publication_receipts(
-            args.archive_root / "source.db",
-            args.archive_root / "blob",
-            args.publication_ids,
-            confirmed=True,
-            index_db_path=_index_db_path(args.archive_root),
+        # The abandonment writes Source. A daemon request already holds the
+        # writer (admission falls through); startup recovery replays this
+        # apply outside it, where an unadmitted Source transaction is denied.
+        abandonment = admit_stage_write(
+            "operation.blob-publication-abandon.apply",
+            lambda: abandon_blob_publication_receipts(
+                args.archive_root / "source.db",
+                args.archive_root / "blob",
+                args.publication_ids,
+                confirmed=True,
+                index_db_path=_index_db_path(args.archive_root),
+            ),
         )
         return MutationReceipt(
             operation=self.operation,

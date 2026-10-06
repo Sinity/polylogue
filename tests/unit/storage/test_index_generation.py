@@ -25,6 +25,7 @@ from polylogue.storage.index_generation import (
     rebuild_lease_status,
     source_revision_snapshot,
 )
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.sqlite_cursor_settlement import (
     native_settlement_connections,  # noqa: F401  # Pytest fixture discovery.
@@ -41,6 +42,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_custody_probe import archive_custody_available
 from tests.infra.archive_templates import bootstrap_archive_root, clone_archive_template, finalize_archive_template
+from tests.infra.index_writer import close_fixture_index_connection
 
 _ARCHIVE_TEMPLATE: Path | None = None
 
@@ -915,7 +917,8 @@ def test_promotion_refuses_candidate_that_orphans_a_resolved_durable_message_ref
         ],
     )
     with write_lease("test.seed-promotion-reference", archive_root=tmp_path):
-        conn = sqlite3.connect(tmp_path / "index.db")
+        # The fixture producer captures only a handle from the measured factory.
+        conn = connect_measured(tmp_path / "index.db")
         conn.row_factory = sqlite3.Row
         try:
             session_id = write_fixture_index_session(conn, session)
@@ -924,7 +927,7 @@ def test_promotion_refuses_candidate_that_orphans_a_resolved_durable_message_ref
             )
             conn.commit()
         finally:
-            conn.close()
+            close_fixture_index_connection(conn)
         target_ref = ObjectRef("message", message_id).format()
         if anchor == "assertion":
             from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1088,7 +1091,7 @@ def test_promotion_preserves_same_composed_session_evidence_ref(tmp_path: Path) 
 
     _archive(tmp_path)
     store = IndexGenerationStore.for_archive_root(tmp_path)
-    active = sqlite3.connect(tmp_path / "index.db")
+    active = connect_measured(tmp_path / "index.db")
     active.row_factory = sqlite3.Row
     try:
         parent, child = parent_and_child("composed-child")
@@ -1119,19 +1122,15 @@ def test_promotion_preserves_same_composed_session_evidence_ref(tmp_path: Path) 
             finally:
                 user.close()
     finally:
-        active.close()
+        close_fixture_index_connection(active)
 
     candidate = store.create(owner_id="candidate-owner", source_snapshot="snapshot-b")
     with write_lease("test.seed-composed-candidate", archive_root=tmp_path):
-        with (
-            ArchiveStore.open_owned_inactive_generation(
-                Path(candidate.index_path).parent,
-                generation_id=candidate.generation_id,
-                owner_id=candidate.owner_id,
-            ) as candidate_archive,
-            candidate_archive.index_mutation_scope(),
-        ):
-            candidate_conn = candidate_archive._conn
+        with ArchiveStore.open_owned_inactive_generation(
+            Path(candidate.index_path).parent,
+            generation_id=candidate.generation_id,
+            owner_id=candidate.owner_id,
+        ) as candidate_archive:
             # The candidate has the same physical target row, but the child has no
             # composed prefix edge. A global message-id-only guard would accept it.
             child_without_parent = ParsedSession(
@@ -1153,24 +1152,22 @@ def test_promotion_preserves_same_composed_session_evidence_ref(tmp_path: Path) 
             )
             # Parent's target is present in the candidate, but the child's scoped
             # EvidenceRef must remain composed through the child-parent edge.
-            write_fixture_index_session(candidate_conn, parent)
-            write_fixture_index_session(candidate_conn, child_without_parent)
+            # Each session prepares before the generation's Index transaction scope.
+            _write_prepared_session(candidate_archive, parent)
+            _write_prepared_session(candidate_archive, child_without_parent)
     with pytest.raises(ReferenceSealError, match="promotion would orphan"):
         store.prepare_promotion(candidate)
 
     preserving = store.create(owner_id="preserving-owner", source_snapshot="snapshot-c")
     with write_lease("test.seed-preserving-composed-candidate", archive_root=tmp_path):
-        with (
-            ArchiveStore.open_owned_inactive_generation(
-                Path(preserving.index_path).parent,
-                generation_id=preserving.generation_id,
-                owner_id=preserving.owner_id,
-            ) as preserving_archive,
-            preserving_archive.index_mutation_scope(),
-        ):
+        with ArchiveStore.open_owned_inactive_generation(
+            Path(preserving.index_path).parent,
+            generation_id=preserving.generation_id,
+            owner_id=preserving.owner_id,
+        ) as preserving_archive:
             parent, child = parent_and_child("composed-child")
-            write_fixture_index_session(preserving_archive._conn, parent)
-            write_fixture_index_session(preserving_archive._conn, child)
+            _write_prepared_session(preserving_archive, parent)
+            _write_prepared_session(preserving_archive, child)
     with store.prepare_promotion(preserving) as prepared:
         with write_lease("test.promote-composed-evidence", archive_root=tmp_path):
             promoted = store.promote(preserving, prepared)
@@ -1530,7 +1527,9 @@ def test_promotion_settles_operation_cache_before_artifact_validation(
     )
 
     def materialize(connection: sqlite3.Connection) -> object:
-        seen.append(connection.execute("SELECT title FROM sessions").fetchone()[0])
+        # Hydration runs on the Source tier writer (581ba8b05e), never on a
+        # cached Index handle the promotion must already have settled.
+        seen.append(Path(next(row[2] for row in connection.execute("PRAGMA database_list") if row[1] == "main")).name)
         return actual_materialize(connection)
 
     monkeypatch.setattr(artifacts, "materialize_artifact_observations", materialize)
@@ -1575,7 +1574,7 @@ def test_promotion_settles_operation_cache_before_artifact_validation(
                     )
                     == []
                 )
-                assert seen == ["new", "new"]
+                assert seen == ["source.db", "source.db"]
             finally:
                 if isinstance(old, SettlementConnection):
                     old.allow_cleanup.set()

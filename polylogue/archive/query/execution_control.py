@@ -794,6 +794,9 @@ async def execute_archive_read(
             try:
                 return await asyncio.shield(asyncio.wrap_future(physical, loop=loop))
             except DaemonOperationCancelled:
+                # The compute owner refused or stopped the read before the
+                # reader opened a store; the settled future owns nothing.
+                ctx.mark_cleanup_complete()
                 if ctx.cancelled or ctx.deadline_exceeded():
                     raise _abort_error(ctx) from None
                 raise
@@ -803,6 +806,9 @@ async def execute_archive_read(
                 if deadline_timer is not None:
                     deadline_timer.cancel()
                 _release()
+                # Refused before submission (a cancelled or expired admission):
+                # no reader ran, so there is nothing left to clean up.
+                ctx.mark_cleanup_complete()
             raise
 
     worker = asyncio.create_task(_admitted_submission())

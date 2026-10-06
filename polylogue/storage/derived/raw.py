@@ -945,13 +945,13 @@ class RawObservationDerivation(RawObservationInspection):
         refuses as moved lineage. Such a child is deferred and re-prepared
         against the published parent.
 
-        A key defers exactly when its in-unit parent publishes in this pass,
-        so its siblings in a parent chain alternate and every pass publishes
-        at least the chain heads. A parent cycle has no head: its least key
-        publishes first, without its still-absent parent, and the cycle
-        member whose child that is defers. A refused key publishes nothing,
-        so it is never a parent here. Every pass adds a session to the Index
-        that a child was waiting for, so re-preparation terminates.
+        A key defers while any other write of this unit produces its parent,
+        so a lineage chain (a fork of a fork) converges one generation per
+        phase. A parent cycle has no such head: its least key publishes first,
+        without its still-absent parent. A refused key publishes nothing, so
+        it is never a parent here. Every pass publishes at least one key and
+        the deferred keys re-prepare with fewer in-unit parents, so
+        re-preparation terminates by progress, without a deferral budget.
         """
         from polylogue.core.sources import origin_from_provider
 
@@ -973,9 +973,11 @@ class RawObservationDerivation(RawObservationInspection):
                 continue
             parent_of[logical_key] = parent_key
 
-        # Anchor each parent cycle at its least key, which publishes as a head.
-        heads: set[str] = set()
-        cycle_parents: set[str] = set()
+        # One generation per phase: a key publishes only when no other write
+        # of this unit produces its parent. A parent cycle has no such key, so
+        # its least key anchors it and publishes without its still-absent
+        # parent; every other member waits for the generation before it.
+        heads = {key for key in publishing if key not in parent_of}
         for start in sorted(parent_of):
             path: list[str] = []
             node = start
@@ -983,33 +985,8 @@ class RawObservationDerivation(RawObservationInspection):
                 path.append(node)
                 node = parent_of[node]
             if node in path:
-                cycle = path[path.index(node) :]
-                head = min(cycle)
-                heads.add(head)
-                cycle_parents.add(parent_of[head])
-
-        publishes: dict[str, bool] = {}
-
-        def resolve(key: str) -> bool:
-            chain: list[str] = []
-            node = key
-            while node not in publishes:
-                if node not in parent_of or node in heads:
-                    publishes[node] = True
-                    break
-                chain.append(node)
-                node = parent_of[node]
-            for member in reversed(chain):
-                publishes[member] = not publishes[parent_of[member]]
-            return publishes[key]
-
-        for key in publishing:
-            resolve(key)
-        # A cycle head publishes without its parent, so that parent must not
-        # publish beside it.
-        for parent in cycle_parents:
-            publishes[parent] = False
-        return tuple(sorted(key for key, publish in publishes.items() if not publish))
+                heads.add(min(path[path.index(node) :]))
+        return tuple(sorted(key for key in publishing if key not in heads))
 
     @staticmethod
     def _lineage_parent_raw_ids(
@@ -1964,6 +1941,18 @@ class RawObservationDerivation(RawObservationInspection):
                                     else prepared[tip_raw_id].prepared_artifact
                                 )
                                 if selected_artifact is None:
+                                    # The accepted tip's retained bytes did not parse, so
+                                    # the key has no session to write (acquisition already
+                                    # settled such bytes as a typed non-session admission).
+                                    # Refuse the key here so no later byte phase expects an
+                                    # adoption for it while the healthy keys publish.
+                                    tip_input = prepared.get(tip_raw_id)
+                                    tip_error = tip_input.parser_error if tip_input is not None else None
+                                    prepared_key_refusals[logical_key] = CohortMembershipRefusalError(
+                                        logical_key,
+                                        tip_raw_id,
+                                        f"retained raw did not parse: {tip_error or 'no prepared artifact'}",
+                                    )
                                     continue
                                 try:
                                     selected_session = prepared_session_for_revision_key(

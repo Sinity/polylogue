@@ -284,8 +284,29 @@ def test_terminal_membership_cannot_replace_missing_head_application(tmp_path: P
     assert _derived_success(_derive_raw_observations(tmp_path))
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
     receipt = dict(raw_authority_mod.raw_replay_application_receipt(tmp_path, plan))
-    assert receipt["membership_rows"]
-    assert receipt["application_rows"]
+    application_rows = cast(list[dict[str, object]], receipt["application_rows"])
+    assert len(application_rows) == 1
+    # A single-session full raw is governed by its full-revision binding and
+    # records no membership row; the law needs a terminal membership covering
+    # the key, so the receipt and its immutable witness carry one.
+    application = application_rows[0]
+    application_key = str(application["logical_source_key"])
+    application_revision = str(application["source_revision"])
+    receipt["membership_rows"] = [
+        {
+            "raw_id": raw_id,
+            "logical_source_key": application_key,
+            "source_revision": application_revision,
+            "decision": "applied",
+        }
+    ]
+    plan = replace(
+        plan,
+        authority_witness={
+            **plan.authority_witness,
+            "memberships": [{"raw_id": raw_id, "logical_source_key": application_key}],
+        },
+    )
     receipt["application_rows"] = []
 
     valid, problems = raw_authority_mod.validate_raw_replay_application_receipt(plan, receipt)
@@ -299,7 +320,8 @@ def test_terminal_membership_cannot_replace_missing_head_application(tmp_path: P
     [
         ("source_revision", "wrong-source-revision"),
         ("accepted_source_revision", "wrong-accepted-source-revision"),
-        ("accepted_frontier_kind", "byte"),
+        # A first head takes the publisher's byte frontier (revision_replay_frontier).
+        ("accepted_frontier_kind", "semantic"),
         ("accepted_frontier", 999),
         ("acquisition_generation", 999),
         ("append_end_offset", 999),
@@ -545,11 +567,13 @@ def test_raw_observation_report_bounds_retained_outcomes_without_losing_counts(t
             report = await owner.run_prepared_sync(
                 "test.ledger.bounded-phase", run_phase, settlement_owners=lambda: (), estimated_bytes=0
             )
-            assert report.pending == 10
+            # Single-pass convergence: each raw censuses and replays in one
+            # compute, so the bounded outcome list still counts all ten done.
+            assert report.done == 10
+            assert report.pending == 0
             assert report.failed == 0
             assert len(report.outcomes) == 8
             assert report.truncated is True
-            await owner.replay_retained_raw_ids(_raw_ids(tmp_path))
             return report
 
     asyncio.run(exercise())
@@ -735,9 +759,11 @@ def test_v5_semantic_refusal_is_recensused_and_replayed_from_retained_bytes(
         assert source.execute(
             "SELECT parser_fingerprint, status FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
         ).fetchone() == (raw_authority_parser_fingerprint(), "complete")
+        # Single-pass convergence: the recensused membership is accepted and
+        # replayed in the same pass, so it ends terminally applied.
         assert (
             source.execute("SELECT decision FROM raw_session_memberships WHERE raw_id = ?", (raw_id,)).fetchone()[0]
-            == "accepted"
+            == "applied"
         )
     with ArchiveStore.open_existing(tmp_path) as archive:
         assert archive.resolve_exact_session_ids(("codex-session:semantic-receipt",)) == {
@@ -745,7 +771,7 @@ def test_v5_semantic_refusal_is_recensused_and_replayed_from_retained_bytes(
         }
         assert (
             archive._conn.execute(
-                "SELECT text FROM messages WHERE session_id = ?", ("codex-session:semantic-receipt",)
+                "SELECT text FROM blocks WHERE session_id = ?", ("codex-session:semantic-receipt",)
             ).fetchone()[0]
             == "authored content"
         )

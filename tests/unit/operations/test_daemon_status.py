@@ -11,7 +11,7 @@ import pytest
 from polylogue.operations.daemon_status import _sqlite_maintenance, produce_direct_status
 from polylogue.operations.operation_context import open_operation_read, prepare_operation_journals
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_schema_drift_sample
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, bootstrap_ready_archive_root
 
 
 class _ArchiveStats(TypedDict):
@@ -407,6 +407,10 @@ def test_direct_status_certifies_a_healthy_archive_without_the_exact_probe(tmp_p
     assert written, "the retained subject must publish its parsed session"
     converge_session_profiles(tmp_path / "index.db", tmp_path, None, now=lambda: 0.0)
     prepare_operation_journals(tmp_path)
+    # Healthy includes an inspected accepted frontier: the daemon's frontier
+    # stage records that mark over the populated archive; without it the
+    # frontier is reported as uninspected rather than healthy.
+    bootstrap_ready_archive_root(tmp_path)
     with open_operation_read(tmp_path) as pinned:
         payload = produce_direct_status(archive=pinned.archive, now_ms=1_700_000_000_000)
 

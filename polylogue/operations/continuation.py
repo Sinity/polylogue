@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from dataclasses import asdict
 from typing import TYPE_CHECKING
@@ -15,6 +14,7 @@ from polylogue.archive.query.unit_results import query_unit_envelope, query_unit
 from polylogue.archive.resume_routing import route_resume
 from polylogue.archive.session.domain_models import Session
 from polylogue.context.product_image import compile_context_image
+from polylogue.core.async_bridge import complete_without_suspension
 from polylogue.core.errors import SessionNotFoundError
 from polylogue.operations.context_image_product import PinnedContextImageSource
 from polylogue.operations.daemon_protocol import (
@@ -107,7 +107,7 @@ def execute_continuation_read(
             )
         )
         return {**asdict(route), "command": route.command, "argv": list(route.argv)}
-    image = asyncio.run(
+    image = complete_without_suspension(
         compile_context_image(
             _PinnedContinuationSource(
                 archive,

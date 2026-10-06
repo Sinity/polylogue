@@ -190,6 +190,7 @@ class TestRawSessionEdgeCases:
                 raw_id="raw-123",
                 source_name="claude-ai",
                 source_path="/path/to/file.jsonl",
+                canonical_source_path="/path/to/file.jsonl",
                 blob_size=blob_size,
                 acquired_at="2024-01-01T00:00:00Z",
             ),

@@ -1418,7 +1418,11 @@ async def execute_raw_authority_blocker_resolve_operation(
                 args = BlockerResolveArgs(context.archive_root, blocker_id, resolution, prepared)
 
                 def begin() -> StartedBoundMutation:
-                    current = observe_control_authority(context.archive_root)
+                    # Re-observe the same authority the admission read did:
+                    # control provenance alone carries no Index version, so a
+                    # caller's Index precondition compared against it always
+                    # refused as ``schema_version_mismatch``.
+                    current = _observe_frontier_authority(request, context)
                     _validate_identity(request, context, current)
                     if current.identity != authority.identity:
                         raise ValueError("archive changed before blocker acknowledgement authorization")

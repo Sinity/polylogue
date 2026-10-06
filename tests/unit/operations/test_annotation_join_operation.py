@@ -79,6 +79,23 @@ def test_resident_join_preserves_paging_and_missing_target_verdict(tmp_path: Pat
     assert AnnotationJoinOperationResult.model_validate(second["result"]).result.next_offset is None
 
 
+async def test_join_completes_nested_on_a_thread_driving_a_loop(tmp_path: Path) -> None:
+    """The pinned join runs inside an admitted read on a loop-driving worker.
+
+    Anti-vacuity: drive ``join_typed_annotations`` through ``asyncio.run``
+    again and this call raises "asyncio.run() cannot be called from a running
+    event loop".
+    """
+    root = tmp_path / "archive"
+    await asyncio.to_thread(bootstrap_archive_root, root)
+    await asyncio.to_thread(_seed_labels, root)
+    with open_operation_read(root) as pinned:
+        result = AnnotationJoinOperationResult.model_validate(
+            execute_annotation_join(_request(), archive=pinned.archive, checkpoint=pinned.archive.check_operation_read)
+        )
+    assert result.result.matched_annotation_count == 2
+
+
 def test_join_reads_the_pinned_user_selection_after_overlay_changes(tmp_path: Path) -> None:
     with running_daemon_operations(tmp_path / "archive", seed_archive=_seed_labels) as stack:
         with open_operation_read(stack.archive_root, publication_guard=stack.runtime.publication_guard) as pinned:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -11,6 +10,7 @@ from polylogue.analysis.resume import _rank_resume_profiles
 from polylogue.archive.hydration import archive_envelope_to_session
 from polylogue.context.preamble import build_context_preamble_payload
 from polylogue.context.scheduler import ContextAssembly
+from polylogue.core.async_bridge import complete_without_suspension
 from polylogue.surfaces.payloads import AssertionClaimPayload, ContextPreamble, ContextPreambleProjectState
 
 if TYPE_CHECKING:
@@ -94,7 +94,7 @@ class _PinnedPreambleReader:
         ][:limit]
 
 
-async def execute_context_preamble(
+def execute_context_preamble(
     archive: ArchiveStore,
     *,
     session_id: str | None,
@@ -109,7 +109,14 @@ async def execute_context_preamble(
     token_budget: int | None = None,
     source_tool_calls: dict[str, str] | None = None,
 ) -> ContextPreambleResult:
-    """Return a preamble and a ledger intent; the writer owns persistence."""
+    """Return a preamble and a ledger intent; the writer owns persistence.
+
+    This runs on the thread that holds the pinned snapshot, which may be a
+    compute worker already driving an event loop (the HTTP reader's nested
+    admitted read). The shared builder is a coroutine only because the
+    facade reader is asynchronous; over the pinned reader it never suspends,
+    so it is driven to completion here rather than through a second loop.
+    """
 
     ledger: ContextAssembly | None = None
 
@@ -117,20 +124,22 @@ async def execute_context_preamble(
         nonlocal ledger
         ledger = assembly
 
-    payload = await build_context_preamble_payload(
-        _PinnedPreambleReader(archive, observed_at_ms=int(observed_at.timestamp() * 1000)),
-        session_id=session_id,
-        related_limit=related_limit,
-        repo_path=repo_path,
-        cwd=cwd,
-        recent_files=recent_files,
-        source_tool_calls=source_tool_calls,
-        require_session=require_session,
-        boundary=boundary,
-        token_budget=token_budget,
-        observed_project_state=observed_project_state,
-        observed_at=observed_at,
-        ledger_sink=retain,
+    payload = complete_without_suspension(
+        build_context_preamble_payload(
+            _PinnedPreambleReader(archive, observed_at_ms=int(observed_at.timestamp() * 1000)),
+            session_id=session_id,
+            related_limit=related_limit,
+            repo_path=repo_path,
+            cwd=cwd,
+            recent_files=recent_files,
+            source_tool_calls=source_tool_calls,
+            require_session=require_session,
+            boundary=boundary,
+            token_budget=token_budget,
+            observed_project_state=observed_project_state,
+            observed_at=observed_at,
+            ledger_sink=retain,
+        )
     )
     return ContextPreambleResult(payload, ledger, int(observed_at.timestamp() * 1000))
 
@@ -158,23 +167,21 @@ def execute_context_preamble_read(payload: dict[str, object], *, archive: Archiv
             # Optional context targets can be non-session assertion targets;
             # preserve their spelling when no session resolves.
             session_id = raw_session_id
-    result = asyncio.run(
-        execute_context_preamble(
-            archive,
-            session_id=session_id,
-            observed_at=observed_at,
-            observed_project_state=(
-                project,
-                str(payload["project_failure"]) if payload.get("project_failure") else None,
-            ),
-            cwd=str(payload["cwd"]) if payload.get("cwd") is not None else None,
-            repo_path=str(payload["repo_path"]) if payload.get("repo_path") is not None else None,
-            recent_files=tuple(str(value) for value in recent_raw),
-            related_limit=int(str(payload.get("related_limit", 5))),
-            require_session=bool(payload.get("require_session", True)),
-            boundary=str(payload.get("boundary", "session_start")),
-            token_budget=int(str(payload["token_budget"])) if payload.get("token_budget") is not None else None,
-            source_tool_calls=source,
-        )
+    result = execute_context_preamble(
+        archive,
+        session_id=session_id,
+        observed_at=observed_at,
+        observed_project_state=(
+            project,
+            str(payload["project_failure"]) if payload.get("project_failure") else None,
+        ),
+        cwd=str(payload["cwd"]) if payload.get("cwd") is not None else None,
+        repo_path=str(payload["repo_path"]) if payload.get("repo_path") is not None else None,
+        recent_files=tuple(str(value) for value in recent_raw),
+        related_limit=int(str(payload.get("related_limit", 5))),
+        require_session=bool(payload.get("require_session", True)),
+        boundary=str(payload.get("boundary", "session_start")),
+        token_budget=int(str(payload["token_budget"])) if payload.get("token_budget") is not None else None,
+        source_tool_calls=source,
     )
     return result.to_wire()

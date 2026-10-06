@@ -31,13 +31,16 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONValue
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.audit_continuity import CanonicalAuditLiteral
 
 LifecycleMode = Literal["mirror", "primary"]
 LifecycleState = Literal["pending", "acknowledged", "confirmed", "rejected"]
@@ -375,6 +378,9 @@ def apply_primary_invalidation_if_confirmed(
     archive_root: Path,
     conn_user: sqlite3.Connection,
     assertion_id: str,
+    *,
+    input_demand: Callable[[int], None],
+    result_sink: Callable[[Mapping[str, object], CanonicalAuditLiteral], None],
 ) -> LifecycleInvalidationOutcome:
     """Invalidate the local replica for a primary-mode request -- confirmed only.
 
@@ -383,6 +389,10 @@ def apply_primary_invalidation_if_confirmed(
     explicit reason and never touches the archive. Only a request whose
     durable state is exactly ``confirmed`` proceeds to
     the audited Excision operation.
+
+    The caller is the Excision's operation owner: ``input_demand`` is its
+    original creator byte-demand admission and ``result_sink`` its result
+    delivery owner, exactly as :class:`SessionExcisionArgs` requires.
     """
     user_path = next((str(item[2]) for item in conn_user.execute("PRAGMA database_list") if item[1] == "main"), "")
     if not user_path or Path(user_path).resolve(strict=True) != (archive_root / "user.db").resolve(strict=True):
@@ -394,10 +404,16 @@ def apply_primary_invalidation_if_confirmed(
     # the exact row again under its physical exclusion before any effects.
     with readonly_connection_context(archive_root / "user.db") as durable_user:
         row = read_lifecycle_request(durable_user, assertion_id)
-    return _apply_confirmed_primary_row(archive_root, row)
+    return _apply_confirmed_primary_row(archive_root, row, input_demand=input_demand, result_sink=result_sink)
 
 
-def _apply_confirmed_primary_row(archive_root: Path, row: LifecycleRequestRow | None) -> LifecycleInvalidationOutcome:
+def _apply_confirmed_primary_row(
+    archive_root: Path,
+    row: LifecycleRequestRow | None,
+    *,
+    input_demand: Callable[[int], None],
+    result_sink: Callable[[Mapping[str, object], CanonicalAuditLiteral], None],
+) -> LifecycleInvalidationOutcome:
     if row is None:
         return LifecycleInvalidationOutcome(success=False, reason="unknown_request")
     if row.mode != "primary":
@@ -416,13 +432,21 @@ def _apply_confirmed_primary_row(archive_root: Path, row: LifecycleRequestRow | 
 
     session_id = row.target_ref.removeprefix("session:")
     args = SessionExcisionArgs(
-        archive_root=archive_root, session_id=session_id, reason=row.reason, actor=row.actor, cascade_lineage=False
+        archive_root=archive_root,
+        session_id=session_id,
+        reason=row.reason,
+        actor=row.actor,
+        cascade_lineage=False,
+        input_demand=input_demand,
+        result_sink=result_sink,
     )
     binding = runtime_operation_binding(SessionExcisionActuator())
     # The confirmed primary request supplies exactly this excision capability;
-    # it grants no broader archive administration or lineage cascade.
+    # it grants no broader archive administration or lineage cascade. The
+    # product applies it on the durable request's behalf (``internal``), so
+    # the public API facade gains no Excision surface.
     principal = MutationPrincipal(
-        row.actor, frozenset({"archive.excise_session"}), "api", "confirmed-primary-lifecycle"
+        row.actor, frozenset({"archive.excise_session"}), "internal", "confirmed-primary-lifecycle"
     )
     executor = OperationExecutor.for_archive_root(archive_root)
     try:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict, cast
@@ -20,7 +19,7 @@ from polylogue.operations.daemon_reads import (
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
-from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.index_writer import fixture_index_connection, write_fixture_index_session
 
 
 def test_sampled_and_moving_date_queries_are_not_cached() -> None:
@@ -494,10 +493,9 @@ def _seed_lineage_child(root: Path) -> str:
     def _msg(pid: str, role: Role, text: str, position: int) -> ParsedMessage:
         return ParsedMessage(provider_message_id=pid, role=role, text=text, position=position)
 
-    bootstrap_archive_root(root)
-    conn = sqlite3.connect(root / "index.db")
-    try:
-        conn.row_factory = sqlite3.Row
+    # Fixture writers prepare on the measured Index connection they will
+    # publish through; a bare sqlite3 handle is not that creator.
+    with fixture_index_connection(root / "index.db") as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         write_fixture_index_session(
             conn,
@@ -527,9 +525,6 @@ def _seed_lineage_child(root: Path) -> str:
                 ],
             ),
         )
-        conn.commit()
-    finally:
-        conn.close()
     return str(child_id)
 
 

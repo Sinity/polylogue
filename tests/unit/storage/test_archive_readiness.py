@@ -200,8 +200,15 @@ def test_raw_materialization_assessment_distinguishes_unmeasured_and_convergence
             "critical": 1,
         }
     )
-    assert missing_denominator_with_debt.state is RawMaterializationAssessmentState.UNMEASURED
-    assert missing_denominator_with_debt.reason == "raw_artifact_count_unavailable"
+    # An observed blocker refutes convergence even without a denominator
+    # (c42f5ea3a1); only a debt-free snapshot without one stays unmeasured.
+    assert missing_denominator_with_debt.state is RawMaterializationAssessmentState.POPULATED_UNCONVERGED
+    assert missing_denominator_with_debt.reason == "blocking_materialization_debt"
+    missing_denominator = assess_raw_materialization(
+        {"available": True, "raw_authority_parser_census": {"available": True}}
+    )
+    assert missing_denominator.state is RawMaterializationAssessmentState.UNMEASURED
+    assert missing_denominator.reason == "raw_artifact_count_unavailable"
 
 
 def test_raw_materialization_snapshot_rejects_malformed_parser_receipt(tmp_path: Path) -> None:
@@ -467,7 +474,9 @@ def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> No
         replacement = adapter.compute(frame, raw_id)
         receipts: list[tuple[str, RevisionCensusResult | PreparedRevisionReplayResult]] = []
         try:
-            assert replacement.needs_source_census
+            # Single-pass convergence: compute commits the census and the
+            # classification in place; publication reports them with its replay.
+            assert not replacement.needs_source_census
             admit_stage_write(
                 "test.readiness.census",
                 partial(
@@ -482,7 +491,7 @@ def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> No
         return receipts
 
     receipts = run_on_convergence_owner(tmp_path, "test.readiness.census", census_phase)
-    assert [kind for kind, _receipt in receipts] == ["census"]
+    assert [kind for kind, _receipt in receipts] == ["census", "classification", "replay"]
     assert receipts[0][1].scanned == 1
     with sqlite3.connect(tmp_path / "source.db") as conn:
         receipt = conn.execute(

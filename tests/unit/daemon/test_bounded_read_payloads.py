@@ -499,11 +499,13 @@ async def test_db_backed_window_composes_no_transcript(
     seeded_archive: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The database-backed message window composes no transcript at all.
+    """The database-backed message window never composes the transcript.
 
     Its rows come from the paginated read and its header from the session
-    row, so nothing on this route has to compose a transcript -- including
-    the deep link, whose locate is answered from indexed counts.
+    row. The deep link's locate is answered from indexed counts, and its
+    window is read through the archive's bounded page reader
+    (``read_session_page``, the anchored route of polylogue-idrej), which
+    composes exactly the one window it serves.
 
     Anti-vacuity: restore either ``poly.get_session()`` call (the header read
     or the deep-link anchor) and the counter reports 2,000 composed rows for
@@ -523,7 +525,8 @@ async def test_db_backed_window_composes_no_transcript(
     )
     deep_rows = sum(composed)
 
-    assert paged_rows == deep_rows == 0
+    assert paged_rows == 0
+    assert deep_rows == _PAGE
     assert len(paged["messages"]) == len(deep["messages"]) == _PAGE
     assert paged["total"] == deep["total"] == _MESSAGE_COUNT
     assert deep["offset"] == _DEEP_INDEX - (_DEEP_INDEX % _PAGE)

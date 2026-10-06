@@ -2004,6 +2004,18 @@ def apply_prepared_revision_replay(
                     archive.defer_raw_revision_adoption(prepared_replay_adoption[(logical_key, accepted_members)])
                     adoption_deferred += len(accepted_members)
                     continue
+                if (
+                    accepted_members
+                    and head_plan.yield_to_head_raw_id is None
+                    and head_plan.conflict is None
+                    and membership_plan.source_decisions.get(accepted_members[-1]) is MembershipDecision.DEFERRED
+                ):
+                    # The original Source preparation found the session
+                    # suppressed and acknowledged its accepted members as
+                    # deferred without retaining a carrier. The Index writes
+                    # nothing for it, exactly as a suppressed byte outcome.
+                    adoption_deferred += len(accepted_members)
+                    continue
                 attachments = (
                     {}
                     if not accepted_members

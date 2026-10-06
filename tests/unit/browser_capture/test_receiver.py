@@ -1710,7 +1710,10 @@ def test_selected_message_candidate_persists_through_the_daemon_actuator(
     message_ref = "chatgpt-export:conv-123:n:turn-1"
     spool = tmp_path / "spool"
     write_capture_envelope(BrowserCaptureEnvelope.model_validate(_payload()), spool_path=spool)
-    with write_lease("test.capture-intelligence"), ArchiveStore(archive_root) as archive:
+    # An outer write lease names its archive root; custody admits only an
+    # existing root directory.
+    archive_root.mkdir(parents=True, exist_ok=True)
+    with write_lease("test.capture-intelligence", archive_root=archive_root), ArchiveStore(archive_root) as archive:
         write_index_session(
             archive,
             ParsedSession(

@@ -115,7 +115,7 @@ async def test_file_edit_rows_match_the_facade_reader_they_replaced(seeded_root:
     finally:
         await archive.close()
 
-    with ArchiveStore(seeded_root, read_only=True) as store:
+    with ArchiveStore.open_existing(seeded_root) as store:
         rows, total = read_file_edits_page(store, _SESSION_ID, limit=len(facade_rows or ()) or 1, offset=0)
 
     assert facade_rows, "the fixture must actually record file edits, or this comparison is vacuous"
@@ -135,7 +135,7 @@ async def test_agent_policy_rows_match_the_facade_reader_they_replaced(seeded_ro
     finally:
         await archive.close()
 
-    with ArchiveStore(seeded_root, read_only=True) as store:
+    with ArchiveStore.open_existing(seeded_root) as store:
         evidence = read_agent_policies_evidence(store, _SESSION_ID)
 
     assert facade_rows is not None
@@ -153,7 +153,7 @@ async def test_web_content_rows_match_the_facade_reader_they_replaced(seeded_roo
     finally:
         await archive.close()
 
-    with ArchiveStore(seeded_root, read_only=True) as store:
+    with ArchiveStore.open_existing(seeded_root) as store:
         rows, total = read_web_content_constructs_page(store, _SESSION_ID, limit=len(facade_rows or ()) or 1, offset=0)
 
     assert facade_rows is not None

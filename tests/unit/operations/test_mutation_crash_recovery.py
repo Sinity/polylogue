@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -37,6 +38,7 @@ from polylogue.operations.specs import build_runtime_operation_catalog
 from polylogue.security.lifecycle import _request_assertion_id
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.audit_leaf import open_verified_sqlite_read_connection
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.operation_recovery import recover_on_admitted_owner
 from tests.unit.operations.test_mutation_actuators import _seed_archive_session, _seed_raw_authority_blocker
 
@@ -56,12 +58,12 @@ def _session(root: Path) -> str:
 
 
 def _indexed(root: Path, session_id: str) -> bool:
-    with sqlite3.connect(root / "index.db") as conn:
+    with closing(sqlite3.connect(root / "index.db")) as conn, conn:
         return conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is not None
 
 
 def _assertion(root: Path, assertion_id: str) -> bool:
-    with sqlite3.connect(root / "user.db") as conn:
+    with closing(sqlite3.connect(root / "user.db")) as conn, conn:
         row = conn.execute("SELECT status FROM assertions WHERE assertion_id = ?", (assertion_id,)).fetchone()
     return row is not None and row[0] != "deleted"
 
@@ -328,13 +330,13 @@ def _corrected_session(root: Path, archive: ArchiveStore) -> str:
 
 
 def _note_posted(root: Path) -> bool:
-    with sqlite3.connect(root / "user.db") as conn:
+    with closing(sqlite3.connect(root / "user.db")) as conn, conn:
         row = conn.execute("SELECT status, body_text FROM assertions WHERE kind = 'note'").fetchone()
     return row is not None and row[0] != "deleted" and row[1] == _BLACKBOARD_BODY
 
 
 def _setting(root: Path, key: str) -> object:
-    with sqlite3.connect(root / "user.db") as conn:
+    with closing(sqlite3.connect(root / "user.db")) as conn, conn:
         return conn.execute("SELECT 1 FROM user_settings WHERE setting_key = ?", (key,)).fetchone()
 
 
@@ -344,7 +346,7 @@ def _blocker(root: Path) -> str:
 
 
 def _blocker_resolved(root: Path) -> bool:
-    with sqlite3.connect(root / "source.db") as conn:
+    with closing(sqlite3.connect(root / "source.db")) as conn, conn:
         row = conn.execute(
             "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id = 'blocker-crash'"
         ).fetchone()
@@ -371,10 +373,24 @@ def _crash_mid_mutation(root: Path, scenario: _Scenario, crash: Crash) -> str:
         preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
         authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
         assert executor._audit is not None
-        operation_id = executor._audit.consume_authorization_and_start(preview, authorization)
+        # ``begin_bound`` journals the same durable intent ``execute_bound``
+        # does; the after-apply leg then runs the executor's own apply phase
+        # (removal authority, started-mutation transfer) and dies before
+        # finalization. Calling ``actuator.apply`` bare would skip the removal
+        # authority a real destructive apply always holds.
+        started = executor.begin_bound(binding, preview, authorization, args)
+        assert started.operation_id is not None
+        operation_id = started.operation_id
         if crash == "after-apply":
-            scenario.actuator.apply(preview.plan, args)
-    with sqlite3.connect(root / "audit.db") as conn:
+            # The daemon applies under its admitted writer; the library route
+            # takes the same root-bound lease.
+            scope = executor._prevalidated_executions.set(((scenario.actuator, started),))
+            try:
+                with write_lease("test.crash-mid-mutation.apply", archive_root=root):
+                    executor.execute(scenario.actuator, started.plan, authorization, args)
+            finally:
+                executor._prevalidated_executions.reset(scope)
+    with closing(sqlite3.connect(root / "audit.db")) as conn, conn:
         conn.execute(
             "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (operation_id,)
         )
@@ -382,8 +398,21 @@ def _crash_mid_mutation(root: Path, scenario: _Scenario, crash: Crash) -> str:
     return operation_id
 
 
-@pytest.mark.parametrize("crash", ["before-apply", "after-apply"])
-@pytest.mark.parametrize("scenario", _SCENARIOS, ids=[scenario.name for scenario in _SCENARIOS])
+# An Excision's physical apply runs only inside its prepared compute phase
+# with the original input-demand owner and result sink, which this generic
+# route does not construct. Its crash after a committed Source effect is
+# ``test_audited_excision_recovery_keeps_exact_removal_authority``
+# (``tests/unit/operations/test_mutation_actuators.py``), which interrupts the
+# real prepared apply between its Source and paid commits and recovers it.
+_CRASH_CASES = tuple(
+    pytest.param(scenario, crash, id=f"{scenario.name}-{crash}")
+    for scenario in _SCENARIOS
+    for crash in ("before-apply", "after-apply")
+    if not (scenario.name == "session-excision" and crash == "after-apply")
+)
+
+
+@pytest.mark.parametrize(("scenario", "crash"), _CRASH_CASES)
 def test_restart_leaves_an_interrupted_mutation_complete_and_unblocked(
     tmp_path: Path, scenario: _Scenario, crash: Crash
 ) -> None:
@@ -450,25 +479,31 @@ def test_excision_is_not_reported_complete_from_a_missing_index_row(tmp_path: Pa
     """An interrupted excision whose index row is gone but that has no record fails visibly.
 
     The rebuildable index is where excision finds the session; its absence is
-    not proof the durable content was removed. Anti-vacuity: treat
-    ``found=False`` as ``already_satisfied`` without checking the excision
-    record and this run ends ``recovered_complete`` with its source row intact.
+    not proof the durable content was removed. Startup recovery refuses with a
+    typed ``RecoveryDeferredError`` and keeps the run's barrier: an Excision
+    lacking settled exact-attempt evidence refuses startup instead of ending
+    as a terminal replay failure (``recover_interrupted_operations``).
+    Anti-vacuity: treat ``found=False`` as ``already_satisfied`` without
+    checking the excision record and recovery completes the run with its
+    source row intact.
     """
+    from polylogue.operations.mutation_transaction import RecoveryDeferredError
+
     root = tmp_path / "archive"
     root.mkdir()
     _seed_archive_session(root, native_id="bootstrap")
     scenario = next(item for item in _SCENARIOS if item.name == "session-excision")
     operation_id = _crash_mid_mutation(root, scenario, "before-apply")
-    with sqlite3.connect(root / "index.db") as conn:
+    with closing(sqlite3.connect(root / "index.db")) as conn, conn:
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (_SID,))
 
-    recover_on_admitted_owner(root)
+    with pytest.raises(RecoveryDeferredError):
+        recover_on_admitted_owner(root)
 
-    with sqlite3.connect(root / "audit.db") as conn:
-        assert conn.execute(
-            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
-        ).fetchone() == ("failed", "recovery_replay_failed")
-    with sqlite3.connect(root / "source.db") as conn:
+    with closing(sqlite3.connect(root / "audit.db")) as conn, conn:
+        (status,) = conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone()
+    assert status in {"running", "interrupted"}
+    with closing(sqlite3.connect(root / "source.db")) as conn, conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE native_id = 'crash-target'").fetchone() == (1,)
 
 
@@ -483,11 +518,11 @@ def test_replayed_setting_keeps_its_original_timestamp(tmp_path: Path) -> None:
     _seed_archive_session(root, native_id="bootstrap")
     scenario = next(item for item in _SCENARIOS if item.name == "set-user-setting")
     operation_id = _crash_mid_mutation(root, scenario, "after-apply")
-    with sqlite3.connect(root / "user.db") as conn:
+    with closing(sqlite3.connect(root / "user.db")) as conn, conn:
         (before,) = conn.execute(
             "SELECT updated_at_ms FROM user_settings WHERE setting_key = 'subscription_tier'"
         ).fetchone()
-    with sqlite3.connect(root / "user.db") as conn:
+    with closing(sqlite3.connect(root / "user.db")) as conn, conn:
         conn.execute(
             "UPDATE user_settings SET updated_at_ms = ? WHERE setting_key = 'subscription_tier'", (before - 1,)
         )
@@ -495,11 +530,11 @@ def test_replayed_setting_keeps_its_original_timestamp(tmp_path: Path) -> None:
 
     recover_on_admitted_owner(root)
 
-    with sqlite3.connect(root / "user.db") as conn:
+    with closing(sqlite3.connect(root / "user.db")) as conn, conn:
         assert conn.execute(
             "SELECT updated_at_ms FROM user_settings WHERE setting_key = 'subscription_tier'"
         ).fetchone() == (before - 1,)
-    with sqlite3.connect(root / "audit.db") as conn:
+    with closing(sqlite3.connect(root / "audit.db")) as conn, conn:
         assert conn.execute(
             "SELECT terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
         ).fetchone() == ("recovered_complete",)
@@ -520,7 +555,7 @@ def test_filesystem_reset_recovery_leaves_a_recreated_path_alone(tmp_path: Path)
     recover_on_admitted_owner(root)
 
     assert (root / "scratch.bin").read_bytes() == b"recreated after the reset"
-    with sqlite3.connect(root / "audit.db") as conn:
+    with closing(sqlite3.connect(root / "audit.db")) as conn, conn:
         assert conn.execute(
             "SELECT terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
         ).fetchone() == ("recovered_complete",)
@@ -545,7 +580,7 @@ def test_saved_view_recovery_refuses_a_collision_the_plan_did_not_name(tmp_path:
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         assert archive.get_view("view-later") is not None
         assert archive.get_view("view-crash") is None
-    with sqlite3.connect(root / "audit.db") as conn:
+    with closing(sqlite3.connect(root / "audit.db")) as conn, conn:
         assert conn.execute(
             "SELECT terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
         ).fetchone() == ("recovery_replay_failed",)
@@ -582,7 +617,7 @@ def test_replayed_annotation_keeps_its_original_timestamp(tmp_path: Path) -> Non
     _seed_archive_session(root, native_id="bootstrap")
     scenario = next(item for item in _SCENARIOS if item.name == "annotation-save")
     _crash_mid_mutation(root, scenario, "after-apply")
-    with sqlite3.connect(root / "user.db") as conn:
+    with closing(sqlite3.connect(root / "user.db")) as conn, conn:
         conn.execute("UPDATE assertions SET created_at_ms = 7, updated_at_ms = 7 WHERE key = 'note-crash'")
         conn.commit()
 
@@ -611,7 +646,7 @@ def test_committed_view_delete_is_not_replayed_over_a_new_watched_view(tmp_path:
 
     recover_on_admitted_owner(root)
 
-    with sqlite3.connect(root / "user.db") as conn:
+    with closing(sqlite3.connect(root / "user.db")) as conn, conn:
         assert conn.execute("SELECT watch FROM query_names WHERE name = 'Crash'").fetchone() == (1,)
 
 
@@ -639,17 +674,17 @@ def test_watched_save_interrupted_before_its_baseline_is_measured_on_recovery(tm
         assert executor._audit is not None
         operation_id = executor._audit.consume_authorization_and_start(preview, authorization)
         archive.save_view("view-watch", "Watched", query_json, watch=True)
-    with sqlite3.connect(root / "audit.db") as conn:
+    with closing(sqlite3.connect(root / "audit.db")) as conn, conn:
         conn.execute(
             "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (operation_id,)
         )
         conn.commit()
-    with sqlite3.connect(root / "user.db") as conn:
+    with closing(sqlite3.connect(root / "user.db")) as conn, conn:
         assert conn.execute("SELECT COUNT(*) FROM watched_query_baselines").fetchone() == (0,)
 
     recover_on_admitted_owner(root)
 
-    with sqlite3.connect(root / "user.db") as conn:
+    with closing(sqlite3.connect(root / "user.db")) as conn, conn:
         baselined = conn.execute(
             "SELECT rs.member_count FROM query_names AS n "
             "JOIN watched_query_baselines AS b ON b.query_hash = n.query_hash "
@@ -657,7 +692,7 @@ def test_watched_save_interrupted_before_its_baseline_is_measured_on_recovery(tm
             "WHERE n.name = 'Watched' AND n.watch = 1"
         ).fetchall()
     assert baselined == [(1,)]
-    with sqlite3.connect(root / "audit.db") as conn:
+    with closing(sqlite3.connect(root / "audit.db")) as conn, conn:
         assert conn.execute(
             "SELECT terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
         ).fetchone() == ("recovered_complete",)
@@ -717,12 +752,12 @@ def test_user_write_recovery_waits_while_its_session_does_not_resolve(tmp_path: 
     _seed_archive_session(root, native_id="bootstrap")
     scenario = next(item for item in _SCENARIOS if item.name == "tag-add")
     operation_id = _crash_mid_mutation(root, scenario, "before-apply")
-    with sqlite3.connect(root / "index.db") as conn:
+    with closing(sqlite3.connect(root / "index.db")) as conn, conn:
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (_SID,))
 
     recover_on_admitted_owner(root)
 
-    with sqlite3.connect(root / "audit.db") as conn:
+    with closing(sqlite3.connect(root / "audit.db")) as conn, conn:
         (status,) = conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone()
     assert status == "interrupted"
 
@@ -771,12 +806,12 @@ def test_corrections_clear_recovery_waits_while_its_session_does_not_resolve(tmp
     _seed_archive_session(root, native_id="bootstrap")
     scenario = next(item for item in _SCENARIOS if item.name == "corrections-clear")
     operation_id = _crash_mid_mutation(root, scenario, "before-apply")
-    with sqlite3.connect(root / "index.db") as conn:
+    with closing(sqlite3.connect(root / "index.db")) as conn, conn:
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (_SID,))
 
     recover_on_admitted_owner(root)
 
-    with sqlite3.connect(root / "audit.db") as conn:
+    with closing(sqlite3.connect(root / "audit.db")) as conn, conn:
         (status,) = conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone()
     assert status == "interrupted"
 
@@ -796,17 +831,17 @@ def test_replayed_identity_reset_keeps_its_suppression_timestamp(tmp_path: Path)
     scenario = next(item for item in _SCENARIOS if item.name == "identity-reset")
     operation_id = _crash_mid_mutation(root, scenario, "after-apply")
     suppression = assertion_id_for_suppression(_SID)
-    with sqlite3.connect(root / "user.db") as conn:
+    with closing(sqlite3.connect(root / "user.db")) as conn, conn:
         conn.execute("UPDATE assertions SET updated_at_ms = 7 WHERE assertion_id = ?", (suppression,))
         conn.commit()
 
     recover_on_admitted_owner(root)
 
-    with sqlite3.connect(root / "user.db") as conn:
+    with closing(sqlite3.connect(root / "user.db")) as conn, conn:
         assert conn.execute(
             "SELECT updated_at_ms FROM assertions WHERE assertion_id = ?", (suppression,)
         ).fetchone() == (7,)
-    with sqlite3.connect(root / "audit.db") as conn:
+    with closing(sqlite3.connect(root / "audit.db")) as conn, conn:
         assert conn.execute(
             "SELECT terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
         ).fetchone() == ("recovered_complete",)

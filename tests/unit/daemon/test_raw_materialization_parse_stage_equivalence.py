@@ -15,9 +15,9 @@ from polylogue.core.enums import Provider
 from polylogue.daemon import cli as daemon_cli
 from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
-from polylogue.operations.raw_observation_derivation import converge_raw_observations
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.raw_owner_routes import converge_raw_observations_with_owner
 
 
 def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -55,9 +55,7 @@ def _connect(path: Path) -> sqlite3.Connection:
 
 
 @pytest.mark.asyncio
-async def test_raw_materialization_hands_current_output_to_the_canonical_session_derivation(
-    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
-) -> None:
+async def test_raw_materialization_hands_current_output_to_the_canonical_session_derivation(tmp_path: Path) -> None:
     """Raw admission targets its actual output after releasing the writer lease.
 
     Anti-vacuity: removing the raw-to-session query or calling the profile
@@ -80,11 +78,10 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
 
     raw_id = await asyncio.to_thread(acquire)
     result = await asyncio.to_thread(
-        converge_raw_observations,
+        converge_raw_observations_with_owner,
         archive_root,
         source_roots=(),
         limit=1,
-        compute_adapter=bounded_compute_adapter,
     )
     assert result.done == 1 and result.failed == 0
     session_ids = daemon_cli._raw_materialized_session_ids(archive_root, raw_id)
@@ -124,9 +121,7 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
 
 
 @pytest.mark.asyncio
-async def test_two_accepted_revisions_survive_one_periodic_profile_pass(
-    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
-) -> None:
+async def test_two_accepted_revisions_survive_one_periodic_profile_pass(tmp_path: Path) -> None:
     """Accepted R1/R2 marker inputs survive a coalesced profile publication.
 
     Two retained revisions of one Codex session each carry a note marker. They
@@ -149,12 +144,13 @@ async def test_two_accepted_revisions_survive_one_periodic_profile_pass(
                 )
 
         await asyncio.to_thread(acquire)
+        # Each call is a fresh pass with no carried cursor, so its discovery
+        # bound must reach past the already-current earlier revision.
         result = await asyncio.to_thread(
-            converge_raw_observations,
+            converge_raw_observations_with_owner,
             archive_root,
             source_roots=(),
-            limit=1,
-            compute_adapter=bounded_compute_adapter,
+            limit=revision,
         )
         assert result.done == 1 and result.failed == 0
 
@@ -202,9 +198,7 @@ async def test_two_accepted_revisions_survive_one_periodic_profile_pass(
         await coordinator.shutdown(timeout=1.0)
 
 
-def test_raw_materialized_session_ids_exclude_stale_component_sessions_without_current_heads(
-    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
-) -> None:
+def test_raw_materialized_session_ids_exclude_stale_component_sessions_without_current_heads(tmp_path: Path) -> None:
     """Raw-to-profile handoff follows authoritative heads, not residual session rows.
 
     Anti-vacuity: querying ``sessions`` by raw component alone includes the
@@ -243,7 +237,7 @@ def test_raw_materialized_session_ids_exclude_stale_component_sessions_without_c
             canonical_source_path="split.json",
             acquired_at_ms=1,
         )
-    result = converge_raw_observations(archive_root, source_roots=(), limit=1, compute_adapter=bounded_compute_adapter)
+    result = converge_raw_observations_with_owner(archive_root, source_roots=(), limit=1)
     assert result.done == 1 and result.failed == 0
     with sqlite3.connect(archive_root / "index.db") as index:
         index.execute("DELETE FROM raw_revision_heads WHERE session_id = ?", ("chatgpt-export:stale",))

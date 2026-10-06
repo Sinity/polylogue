@@ -83,7 +83,6 @@ from polylogue.storage.blob_publication import (
     publication_refused,
 )
 from polylogue.storage.source_generation_receipts import iter_source_item_raw_receipts, source_generation_receipt_page
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.raw_admission import execute_source_item_admission
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     FrozenSourceInput,
@@ -169,7 +168,7 @@ class IngestProjectionUnrecoverableError(RuntimeError):
 class IngestReprepareRequiredError(RuntimeError):
     """The pinned generation moved under this attempt; nothing here is permanent.
 
-    Raised by :meth:`IngestExecution.archive_write` when a concurrent index
+    Raised by :meth:`IngestExecution.require_publication_identity` when a concurrent index
     promotion or writer already advanced the archive past the snapshot this
     attempt pinned. The work this attempt already did is still valid (the
     manifest and prepared source are content-addressed), only the active
@@ -547,23 +546,6 @@ class IngestExecution:
         ):
             raise IngestReprepareRequiredError("ingest publication generation changed; reprepare required")
 
-    async def archive_write(self, work: Callable[[ArchiveStore], _T]) -> _T:
-        assert self.snapshot is not None
-        expected = self.snapshot.identity
-
-        def publish() -> _T:
-            self.check_stop()
-            self.require_publication_identity(expected)
-            location = ArchiveLocation.resolve(self.archive_root)
-            with ArchiveStore.open_existing(self.archive_root, read_only=False) as archive:
-                if archive.index_db_path.resolve() != location.active_index_path.resolve():
-                    raise IngestReprepareRequiredError("ingest writer opened another index generation")
-                result = work(archive)
-                archive.commit()
-                return result
-
-        return await self.runtime.write_phase("ingest.publish", publish)
-
     async def accept(self) -> RetainedSourceGeneration | None:
         # Required derivation capability must exist before accepting retained work.
         self.runtime.require_session_maintenance()
@@ -725,7 +707,12 @@ class IngestExecution:
 
         def load_started() -> StartedBoundMutation:
             assert self.binding is not None
-            with self.audit.settled_machine_read():
+            # This execution just accepted the request. Another audit
+            # continuity transition (a concurrent request's write) holding the
+            # lock at this instant is contention, not absence: wait for it on
+            # this compute phase, which stays cancellable, rather than refuse
+            # an accepted ingest as indeterminate.
+            with self.audit.settled_machine_read(wait_for_lock=True):
                 parts = self.audit.machine_parts(self.binding)
                 if len(parts) != 1 or not parts[0].get("operation_id") or not parts[0].get("authorization_ref"):
                     raise ValueError("legacy accepted source intent lacks an audited ingest execution")

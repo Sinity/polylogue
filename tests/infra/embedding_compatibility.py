@@ -12,6 +12,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import seeds_off_event_loop
 from tests.infra.live_ingest import write_index_session
 
 _PAYLOAD = json.loads((Path(__file__).parents[1] / "fixtures" / "embedding_compatibility.json").read_text())
@@ -19,6 +20,7 @@ _TEXT = _PAYLOAD["retained"]
 _NEW_TEXT = _PAYLOAD["missing"]
 
 
+@seeds_off_event_loop
 def _session(root: Path, *, extra: bool = False) -> tuple[str, tuple[str, ...]]:
     messages = [
         ParsedMessage(

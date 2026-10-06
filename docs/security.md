@@ -413,7 +413,10 @@ lifecycle:
 - **Primary mode invalidates the local replica only after a `confirmed`
   state** (`apply_primary_invalidation_if_confirmed`); a rejected, still-
   pending, or unknown request always returns `success=False` with an
-  explicit reason and never touches the archive. A network fault leaves the
+  explicit reason and never touches the archive. A confirmed request runs
+  the audited Excision on the `internal` operation surface; its caller is
+  the operation owner and supplies the original creator byte-demand
+  admission and the result delivery sink. A network fault leaves the
   request `pending` (retryable), never silently reinterpreted as a
   rejection or a confirmation.
 - A "process restart" is modeled in tests by constructing a **new**

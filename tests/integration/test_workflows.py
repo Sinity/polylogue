@@ -303,7 +303,13 @@ async def test_incremental_sync_no_duplicates(
 
 
 async def test_incremental_sync_with_updates(temp_config_and_repo: WorkflowRepos) -> None:
-    """Modified sessions are updated, not duplicated."""
+    """A rewritten export is retained, not duplicated and not silently adopted.
+
+    The second revision rewrites an existing message, so it is neither a
+    prefix extension nor byte-identical: its membership is ambiguous. That is
+    convergence debt, not a blocker -- the stored head keeps the first
+    revision and both revisions stay retained with a quarantined membership.
+    """
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
     # Create initial source with 1 session
@@ -380,10 +386,20 @@ async def test_incremental_sync_with_updates(temp_config_and_repo: WorkflowRepos
         all_convs = await conv_repo.list()
         assert len(all_convs) == 1
 
-        # Should have updated content
+        # The ambiguous rewrite does not replace the stored head.
         conv = all_convs[0]
-        assert conv.title == "Updated version"
-        assert "Updated answer" in [m.text for m in conv.messages]
+        assert conv.title == "Version 1"
+        assert "Original answer" in [m.text for m in conv.messages]
+
+        # Both revisions are retained; the membership is recorded as ambiguous debt.
+        import sqlite3
+
+        with sqlite3.connect(archive_root / "source.db") as source:
+            decisions = source.execute(
+                "SELECT revision_authority, decision FROM raw_session_memberships WHERE logical_source_key = ?",
+                ("chatgpt-export:test-conv-1",),
+            ).fetchall()
+        assert sorted(decisions) == [("quarantined", "ambiguous"), ("quarantined", "ambiguous")]
 
     finally:
         source_path_before_update.unlink()
