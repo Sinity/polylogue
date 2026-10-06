@@ -76,7 +76,9 @@ async def make_parser(
     await asyncio.to_thread(bootstrap_archive_root, root)
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
-        lambda **kwargs: SimpleNamespace(schema_validation="advisory", sinex_mode="off", archive_root=root),
+        lambda **kwargs: SimpleNamespace(
+            schema_validation="advisory", sinex_mode="off", archive_root=root, backup_verify_tmpdir=None
+        ),
     )
     source = Source(name="gemini", folder="fixture", path=root / "source")
     config = Config(archive_root=root, render_root=root / "render", db_path=root / "index.db", sources=[source])
