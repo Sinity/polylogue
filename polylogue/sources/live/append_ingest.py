@@ -35,6 +35,7 @@ from polylogue.sources.live.archive_open import _open_archive_for_live_write, _s
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult, hook_carrier_logical_source_key
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
+from polylogue.sources.revision_backfill import RetainedPreparationNoProgressError
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
@@ -300,7 +301,15 @@ def ingest_append_plans(
                 continue
             if not source_only:
                 t0 = time.perf_counter()
-                converge_raw(archive_root, raw_id, plan)
+                try:
+                    converge_raw(archive_root, raw_id, plan)
+                except RetainedPreparationNoProgressError:
+                    # The append's chain has no accepted baseline to extend
+                    # yet; its bytes are sound, so it waits rather than being
+                    # settled as a refusal.
+                    _add_timing(timings, "append.canonical_raw", t0)
+                    deferred.append(plan)
+                    continue
                 _add_timing(timings, "append.canonical_raw", t0)
             check_compute_cancelled()
             terminal, session_id = admit_stage_write(
