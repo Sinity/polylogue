@@ -23,7 +23,14 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Final
 
-__all__ = ["PLUGIN_NAME", "REPORT_FILE_OPTION", "StreamingReport", "report_file_argument", "spool_paths"]
+__all__ = [
+    "PLUGIN_NAME",
+    "REPORT_FILE_OPTION",
+    "StreamingReport",
+    "report_file_argument",
+    "report_nodeid_to_selector",
+    "spool_paths",
+]
 
 PLUGIN_NAME: Final = "polylogue_stream_report"
 REPORT_FILE_OPTION: Final = "--polylogue-report-file"
@@ -36,6 +43,32 @@ _QUIET_OUTCOMES: Final = frozenset({"passed"})
 def report_file_argument(path: object) -> str:
     """The command-line argument that directs a managed run's report to ``path``."""
     return f"{REPORT_FILE_OPTION}={path}"
+
+
+def report_nodeid_to_selector(nodeid: str) -> str:
+    """Strip xdist's ``@<group>`` suffix so a report node id selects again.
+
+    ``--dist=loadgroup`` reports ``path::test[param]@group``; pytest cannot
+    collect that literal. A parametrization id may itself contain ``@``, so
+    only a suffix after the closing bracket (or after the bare test name) is
+    removed.
+    """
+    head, sep, tail = nodeid.rpartition("@")
+    if not sep or "::" not in head:
+        return nodeid
+    if "[" in tail or "]" in tail or "/" in tail or "::" in tail:
+        # The suite shortens a long id after xdist named its group, so the
+        # group can also sit between the test name and its ``[param-...]``
+        # label: ``path::test@group[param-<digest>]``.
+        prefix, _, last = nodeid.rpartition("::")
+        name, bracket, label = last.partition("[")
+        test_name, group_sep, group = name.rpartition("@")
+        if prefix and bracket and group_sep and test_name and group and "/" not in group:
+            return f"{prefix}::{test_name}[{label}"
+        return nodeid
+    if head.endswith("]") or "[" not in head.rsplit("::", 1)[-1]:
+        return head
+    return nodeid
 
 
 def spool_paths(path: Path | str) -> tuple[Path, ...]:
