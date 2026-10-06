@@ -31,10 +31,10 @@ from polylogue.sources.revision_backfill import (
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.derived.raw import RawObservationReplacement
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
 from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 from polylogue.storage.sqlite.write_lease import write_lease
-from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.live_ingest import prepared_live_convergence_owner
 
 
@@ -122,7 +122,9 @@ def retained_raw_fixture(
                 else observation[3] // 1_000_000
             )
             with write_lease("test.retained-json.acquire", archive_root=root):
-                bootstrap_archive_root(root)
+                # The lease is held by this thread; bootstrap on it rather than
+                # hopping to a loop-free thread the lease does not authorize.
+                initialize_active_archive_root(root)
                 with ArchiveStore.open_existing(root, read_only=False) as archive:
                     raw_id = archive.write_raw_payload(
                         provider=provider,
@@ -194,7 +196,9 @@ def retained_parser_fixture(
 def prepared_source_fixture(root: Path) -> Iterator[PreparedSessionSourceRead]:
     """Borrow the actual original Source window after fixture initialization."""
     with write_lease("test.retained-source.initialize", archive_root=root):
-        bootstrap_archive_root(root)
+        # Under an enclosing async lease a running loop is present, and the
+        # off-loop hop would run bootstrap on a thread the lease does not own.
+        initialize_active_archive_root(root)
     with PreparedIndexMutation.source_only(archive_root=root) as seal:
         with seal.original_read_snapshot(), seal.source_producer():
             yield PreparedSessionSourceRead(seal, blob_store=BlobStore(root / "blob"))

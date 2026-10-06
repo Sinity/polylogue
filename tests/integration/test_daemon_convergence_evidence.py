@@ -42,6 +42,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue.daemon.convergence import DaemonConverger
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 from polylogue.operations.daemon_workload_probe import REPORT_VERSION, compare, probe
 from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
 from polylogue.sources.live.batch import LiveBatchProcessor
@@ -182,12 +183,15 @@ def test_daemon_convergence_evidence_full_archive_state(
     # ── Drive convergence: same primitives as polylogued run ─────────
     converger = DaemonConverger(())
     polylogue = _MinimalPolylogue(tmp_path, db_path)
+    # Source-writing batch bodies run only on the daemon's writer runner.
+    writer = DaemonWriteCoordinator(archive_root=tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="claude-code", root=corpus_root),),
         cursor=CursorStore(db_path),
         parser_fingerprint="convergence-evidence-v1",
         converger=converger,
+        sync_runner=writer.run_sync,
     )
 
     metrics = asyncio.run(processor.ingest_files(files, emit_event=False))

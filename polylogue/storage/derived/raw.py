@@ -1921,6 +1921,18 @@ class RawObservationDerivation(RawObservationInspection):
                                     else prepared[tip_raw_id].prepared_artifact
                                 )
                                 if selected_artifact is None:
+                                    # The accepted tip's retained bytes did not parse, so
+                                    # the key has no session to write (acquisition already
+                                    # settled such bytes as a typed non-session admission).
+                                    # Refuse the key here so no later byte phase expects an
+                                    # adoption for it while the healthy keys publish.
+                                    tip_input = prepared.get(tip_raw_id)
+                                    tip_error = tip_input.parser_error if tip_input is not None else None
+                                    prepared_key_refusals[logical_key] = CohortMembershipRefusalError(
+                                        logical_key,
+                                        tip_raw_id,
+                                        f"retained raw did not parse: {tip_error or 'no prepared artifact'}",
+                                    )
                                     continue
                                 try:
                                     selected_session = prepared_session_for_revision_key(

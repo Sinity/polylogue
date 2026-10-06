@@ -20,6 +20,7 @@ from polylogue.storage.sqlite.archive_population import ArchivePopulationError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import _template_key, clone_archive_template, finalize_archive_template
 from tests.infra.workload_artifacts import ImmutableTreeArtifact
 
@@ -102,6 +103,18 @@ def test_clone_validates_source_release_before_any_source_backup(
             verified = True
         return result
 
+    # A finalized template is a relocated (detached) source: population admits
+    # it against each released train's immutable historical proof instead of
+    # verifying it as the live archive. Either check must precede the backup.
+    historical = durable_change_train._historical_schema_evidence
+
+    def verified_history(train: Any) -> object:
+        nonlocal verified
+        result = historical(train)
+        if train.tier is ArchiveTier.SOURCE:
+            verified = True
+        return result
+
     from polylogue.storage.io_phase_metrics import _MeasuredConnection
 
     # Production opens tiers through its measured connection; the observer
@@ -118,6 +131,7 @@ def test_clone_validates_source_release_before_any_source_backup(
         return cast(sqlite3.Connection, connect(*args, **(kwargs | {"factory": ObservedConnection})))
 
     monkeypatch.setattr(durable_change_train, "_verify_released_train_live_tier", verified_release)
+    monkeypatch.setattr(durable_change_train, "_historical_schema_evidence", verified_history)
     monkeypatch.setattr(sqlite3, "connect", tracked_connect)
     clone_archive_template(source, tmp_path / "destination")
     assert backed_up == [str(source / "source.db")]

@@ -75,15 +75,24 @@ async def test_demo_receipts_resolves_shared_raw_source_material(tmp_path: Path)
     assert result.ok is True
     assert result.raw_id is not None
     assert result.raw_blob_sha256 is not None
+    # A native rollout binds the session through its own revision key; a
+    # grouped export through its membership census (42c17e2557). Either is
+    # the session's source material.
     with sqlite3.connect(archive_root / "source.db") as conn:
         rows = conn.execute(
             """
             SELECT DISTINCT r.raw_id, lower(hex(r.blob_hash))
             FROM raw_sessions AS r
-            JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
             WHERE r.origin = 'codex-session'
-                  AND m.logical_source_key = 'codex-session:demo-receipts'
-              AND m.provider_session_id = 'demo-receipts'
+              AND (
+                r.logical_source_key = 'codex-session:demo-receipts'
+                OR EXISTS (
+                  SELECT 1 FROM raw_session_memberships AS m
+                  WHERE m.raw_id = r.raw_id
+                    AND m.logical_source_key = 'codex-session:demo-receipts'
+                    AND m.provider_session_id = 'demo-receipts'
+                )
+              )
             """
         ).fetchall()
     assert rows == [(result.raw_id, result.raw_blob_sha256)]

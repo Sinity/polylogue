@@ -37,6 +37,7 @@ from unittest.mock import patch
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import _AppendResult, _DeferredAppend, _FullIngestResult
 from polylogue.sources.live.cursor import CursorStore
@@ -190,7 +191,11 @@ def _mock_live_ingest(
         del expected_origin
         return existing_ids.get(path)
 
+    # Source-writing batch bodies (raw compaction) run only on the daemon
+    # writer runner; give the processor the real coordinator's runner.
+    writer = DaemonWriteCoordinator(archive_root=Path(proc._polylogue.archive_root))
     with (
+        patch.object(proc, "_sync_runner", writer.run_sync),
         patch.object(proc, "_ingest_full_paths", fake_full_ingest),
         patch.object(proc, "_append_runner", fake_append_ingest),
         patch.object(proc, "_existing_provider_session_id", fake_existing_provider_session_id),
