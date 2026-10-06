@@ -5,16 +5,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import sqlite3
 import time
 import zipfile
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import IO, Any, cast
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -34,7 +34,6 @@ from polylogue.operations.intake_adapters import (
     FileIntakeAdapter,
     _bounded_source_paths,
 )
-from polylogue.readiness.capability import raw_frontier_integrity_projection
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import (
     _FULL_PARSE_PROGRESS_MAX_BYTES,
@@ -56,13 +55,13 @@ from polylogue.sources.live.watcher import WriteCoordinator, default_sources
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
-from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.frozen_clock import FrozenClock
+from tests.infra.live_ingest import write_index_session
 from tests.infra.prepared_membership import publish_prepared_membership_classification
 from tests.infra.raw_owner_routes import (
     ingest_files_with_owners,
@@ -336,33 +335,34 @@ async def test_live_watcher_allows_append_at_authoritative_frontier(tmp_path: Pa
 
 @pytest.mark.asyncio
 async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path) -> None:
-    from polylogue.sources.live.batch import cursor_authority_path_digest, scoped_cursor_authority_authorization
+    """Live writes and cursor reconciliation follow the active index pointer.
 
-    processor, watcher, _cursor, source_path = await _seed_live_cursor_authority_case(tmp_path)
+    The cursor sits at an authoritative frontier but carries a stale parser
+    fingerprint, so the ordinary live route (no repair authorization exists
+    in production) re-reads the file in full: the replacement is published
+    into the active generation and the root shadow index stays untouched.
+    """
+    processor, watcher, _cursor, source_path = await _seed_live_cursor_authority_case(
+        tmp_path, exact_frontier=True, force_full_fallback=True
+    )
     shadow_index = tmp_path / "index.db"
     active_index = tmp_path / "generations" / "active" / "index.db"
     active_index.parent.mkdir(parents=True)
-    shutil.copy2(shadow_index, active_index)
+    # A WAL-mode tier's committed pages may still live in its -wal file; copy
+    # through SQLite so the generation holds every committed row.
+    with closing(sqlite3.connect(shadow_index)) as source, closing(sqlite3.connect(active_index)) as target:
+        source.backup(target)
     (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
-    projection = raw_frontier_integrity_projection(
-        tmp_path,
-        raw_materialization_readiness_snapshot(tmp_path),
-    )
-    sample = projection.cursor_ahead_samples[0]
-    shadow_before = shadow_index.read_bytes()
-    active_before = active_index.read_bytes()
-    with scoped_cursor_authority_authorization(
-        source_path_digest=cursor_authority_path_digest(source_path),
-        cursor_byte_offset=sample.cursor_byte_offset,
-        accepted_frontier=sample.accepted_frontier,
-        plan_digest="active-index-test",
-        force_full_ingest=True,
-    ):
-        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
+    # Compare committed rows, not file bytes: a WAL tier's writes land in its
+    # -wal file first.
+    shadow_before = _sqlite_snapshot(shadow_index)
+    active_before = _sqlite_snapshot(active_index)
 
-    assert metrics.full_file_count == 1
-    assert shadow_index.read_bytes() == shadow_before
-    assert active_index.read_bytes() != active_before
+    metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
+
+    assert metrics.succeeded_file_count == metrics.full_file_count == 1
+    assert _sqlite_snapshot(shadow_index) == shadow_before
+    assert _sqlite_snapshot(active_index) != active_before
     with sqlite3.connect(shadow_index) as conn:
         conn.execute("DELETE FROM sessions")
         conn.commit()
@@ -1080,6 +1080,8 @@ async def test_live_full_ingest_streams_large_paths_before_processing(
         handle.write(b"\n")
 
     db_path = tmp_path / "archive.sqlite"
+    # The live route acquires into an existing archive (#3952).
+    bootstrap_archive_root(tmp_path)
     polylogue = MagicMock()
     polylogue.archive_root = tmp_path
     polylogue.backend.db_path = db_path
@@ -1092,20 +1094,19 @@ async def test_live_full_ingest_streams_large_paths_before_processing(
     )
 
     calls: list[str] = []
-    original_prepare_from_fileobj = BlobStore.prepare_from_fileobj
+    from polylogue.sources.acquisition_boundary import capture_bound_path as original_capture
 
-    def spy_prepare_from_fileobj(
-        store: BlobStore, source: IO[bytes], *, heartbeat: Callable[[], None] | None = None
-    ) -> PreparedBlob:
-        # The capture streams the file through the acquisition boundary.
-        calls.append(f"path:{Path(source.raw.name).name}")  # type: ignore[attr-defined]
-        return original_prepare_from_fileobj(store, source, heartbeat=heartbeat)
+    def spy_capture(blob_store: BlobStore, path: Path | str, *args: Any, **kwargs: Any) -> Any:
+        # The capture streams the bound file through the acquisition boundary.
+        calls.append(f"path:{Path(path).name}")
+        return original_capture(blob_store, path, *args, **kwargs)
 
-    def fail_prepare_from_bytes(_store: object, _payload: bytes) -> PreparedBlob:
+    def fail_from_bytes(_store: object, _payload: bytes, **_kwargs: object) -> PreparedBlob:
         raise AssertionError("large live full ingest should stream from path")
 
-    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_fileobj", spy_prepare_from_fileobj)
-    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_bytes", fail_prepare_from_bytes)
+    monkeypatch.setattr("polylogue.sources.live.batch.capture_bound_path", spy_capture)
+    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_bytes", fail_from_bytes)
+    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.write_from_bytes", fail_from_bytes)
 
     async with supplied_live_owners(processor):
         result = await processor._ingest_full_paths([source_path], source_name="projects")
@@ -1202,8 +1203,15 @@ def test_page_classification_names_scheduled_retries_as_pending(tmp_path: Path) 
     for path in (owed, settled):
         path.write_text('{"role":"user","content":"a"}\n')
     watcher, _parse_sources = _make_watcher(tmp_path, root)
+    # Retry state belongs to the parser that recorded it; a cursor from
+    # another parser is reattempted at once rather than waiting.
     watcher._cursor.set(
-        owed, 0, failure_count=1, next_retry_at="2999-01-01T00:00:00+00:00", authority=fixture_cursor_authority(owed)
+        owed,
+        0,
+        failure_count=1,
+        next_retry_at="2999-01-01T00:00:00+00:00",
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        authority=fixture_cursor_authority(owed),
     )
     observed = settled.stat()
     watcher._cursor.set(
@@ -1953,14 +1961,42 @@ def test_hermes_cursor_keeps_snapshot_time_fingerprint(tmp_path: Path) -> None:
     assert record.tail_hash == "snapshot-time-fingerprint"
 
 
+def _archive_codex_session(archive_root: Path, native_id: str) -> None:
+    """Archive the Codex session an append delta binds to.
+
+    The planner emits an append plan only for a delta whose session identity
+    is already bound (c07c4f44b1); without one the full route re-reads.
+    """
+    bootstrap_archive_root(archive_root)
+
+    def seed() -> None:
+        with ArchiveStore(archive_root) as store:
+            write_index_session(
+                store,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id=native_id,
+                    title=native_id,
+                    messages=[ParsedMessage(provider_message_id=f"{native_id}-0", role=Role.USER, text="seed")],
+                ),
+            )
+
+    run_off_event_loop(seed)
+
+
 def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
     f = root / "session.jsonl"
-    original = b'{"a":1}\n'
-    appended = b'{"b":2}\n{"c":'
+    original = b'{"type":"session_meta","payload":{"id":"completed-tail"}}\n'
+    completed = (
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"b"}]}}\n'
+    )
+    appended = completed + b'{"type":'
     f.write_bytes(original + appended)
-    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    _archive_codex_session(tmp_path, "completed-tail")
+    watcher, _parse_sources = _make_watcher(tmp_path, root, sources=(WatchSource(name="codex", root=root),))
     stat = f.stat()
     watcher._cursor.set(
         f,
@@ -1985,9 +2021,9 @@ def test_append_plan_reads_only_completed_tail(tmp_path: Path) -> None:
     assert plan is not None
     append_plan = cast(Any, plan)
     assert append_plan.start_offset == len(original)
-    assert append_plan.payload == b'{"b":2}\n'
+    assert append_plan.payload == completed
     assert append_plan.bytes_read == len(appended)
-    assert append_plan.last_complete_newline == len(original) + len(b'{"b":2}\n')
+    assert append_plan.last_complete_newline == len(original) + len(completed)
 
 
 def test_large_incomplete_jsonl_append_defers_until_the_file_changes(tmp_path: Path) -> None:
@@ -2475,9 +2511,9 @@ async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
         attempt_id: str | None = None,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
-        prepared_json_paths: frozenset[str] = frozenset(),
+        captured_sqlite_by_path: object = None,
     ) -> _FullIngestResult:
-        del source_name, heartbeat, attempt_id, max_pass_seconds, pass_started, prepared_json_paths
+        del source_name, heartbeat, attempt_id, max_pass_seconds, pass_started, captured_sqlite_by_path
         time.sleep(0.2)
         return _FullIngestResult(
             succeeded=list(paths),
@@ -2529,8 +2565,11 @@ async def test_live_full_ingest_admits_claude_originspec_fact_artifact(
     try:
         metrics = await ingest_files_with_owners(processor, [run_path], emit_event=False)
 
-        assert metrics.succeeded_file_count == 1
+        # The snapshot is retained raw authority. It carries no session, so the
+        # batch reports it as a settled no-session exclusion (xf8qp), never a
+        # failure.
         assert metrics.failed_file_count == 0
+        assert metrics.excluded_reasons == {REFUSED_NO_SESSIONS: 1}
         with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
             assert (
                 conn.execute(
@@ -2604,8 +2643,12 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
             )
         second = await ingest_files_with_owners(processor, [journal_path], emit_event=False)
 
-        assert first.succeeded_file_count == 2
-        assert second.succeeded_file_count == 1
+        # Workflow artifacts are retained raw evidence without sessions, so each
+        # pass reports them as settled no-session exclusions (xf8qp), not
+        # failures; the full revisions below are what they retain.
+        assert first.failed_file_count == second.failed_file_count == 0
+        assert first.excluded_reasons == {REFUSED_NO_SESSIONS: 2}
+        assert second.excluded_reasons == {REFUSED_NO_SESSIONS: 1}
         with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
             assert (
                 conn.execute(
@@ -2626,6 +2669,8 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
         }
         assert summary.call_count == 1
         assert summary.journal_result_count == 1
+        # Source selection reads the completed frontier inspection.
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
         assert processor.require_cursor_authority() is None
     finally:
         await archive.close()
@@ -3440,18 +3485,9 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
         fallback = await archive.get_session("codex-session:codex-session")
         assert append_metrics.append_file_count == 1
         assert append_metrics.full_file_count == 0
-        assert {
-            "append.archive_open",
-            "append.index.blocks",
-            "append.index_parsed_write",
-            "append.index.messages",
-            "append.index.session_events",
-            "append.index.session_upsert",
-            "append.json_stream",
-            "append.provider_parse",
-            "append.raw_and_index_write",
-            "append.source_raw_write",
-        }.issubset(append_metrics.stage_timings_s)
+        # The append route acquires the delta, then publishes it through the
+        # canonical raw owner (561dbe2ff0); those are its two timed stages.
+        assert {"append.source_raw_write", "append.canonical_raw"}.issubset(append_metrics.stage_timings_s)
         assert existing is not None
         assert [message.text for message in existing.messages] == ["codex first", "codex appended"]
         assert fallback is None
