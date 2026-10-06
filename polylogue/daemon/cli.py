@@ -1372,17 +1372,20 @@ def _browser_capture_spool_has_pending_files() -> bool:
 
 
 def _daemon_stage_write_admission() -> StageWriteAdmission:
-    """Admission that hands one stage's write section to the daemon writer.
+    """Admission that holds the daemon writer for one stage's write section.
 
-    The ``None`` timeout is deliberate: the coordinator owns the worker thread
-    until the transaction really returns, so a caller-side timeout can never
-    admit a second archive writer for the same partition.
+    The section runs on the stage's own thread under a delegated lease, as raw
+    observation publication does: a write section may use SQLite connections
+    the stage opened for its observation, and a connection never crosses
+    threads.
     """
-    coordinator = daemon_write_coordinator()
-    loop = asyncio.get_running_loop()
+    from polylogue.core.write_lease import adopt_write_lease
+
+    bridge = DaemonWriteThreadBridge(daemon_write_coordinator(), asyncio.get_running_loop())
 
     def admission(actor: str, work: Callable[[], Any]) -> Any:
-        return asyncio.run_coroutine_threadsafe(coordinator.run_sync(actor, work), loop).result()
+        with bridge.hold(actor) as delegation, adopt_write_lease(delegation):
+            return work()
 
     return admission
 
