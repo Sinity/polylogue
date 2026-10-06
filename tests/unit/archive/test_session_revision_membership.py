@@ -118,7 +118,7 @@ def test_refuses_divergent_maxima_even_when_existing_head_already_matches_the_fa
     safe in practice: re-accepting that raw_id through membership governance
     still overwrites the head's own ``accepted_frontier_kind``/generation
     metadata (verified against a real write-back regression,
-    ``test_live_multi_session_divergence_reopens_raw_authority``), so the
+    ``test_live_multi_session_divergence_keeps_accepted_head_as_debt``), so the
     guard refuses ANY existing head, not just a differing one.
     """
     result = classify_membership_revisions(

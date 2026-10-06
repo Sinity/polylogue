@@ -79,7 +79,6 @@ from tests.infra.raw_owner_routes import (
     ingest_files_with_owners,
     run_ingest_files,
     seed_membership_census,
-    seed_membership_census_async,
     supplied_live_owners,
 )
 from tests.infra.retained_replay import replay_retained_components
@@ -3911,7 +3910,16 @@ async def test_inbox_browser_capture_json_replacement_uses_full_ingest(tmp_path:
 
 @pytest.mark.asyncio
 async def test_browser_capture_replacement_advances_membership_head_and_acquires_attachment(tmp_path: Path) -> None:
-    """A mutable receiver snapshot must retain both raws but materialize the newer capture."""
+    """A mutable receiver snapshot must retain both raws but materialize the newer capture.
+
+    Every retained raw of the logical key governs its membership, whatever
+    route acquired it: a divergent capture is ambiguity debt that keeps the
+    accepted head (the final divergent pass below, and
+    ``test_live_multi_session_divergence_keeps_accepted_head_as_debt``). The
+    former law that excluded an unrelated quarantined census of the same key
+    predates membership-only governance (5d94f28b73 injects every cohort
+    member and the head into the comparison).
+    """
     from polylogue.api import Polylogue
 
     root = tmp_path / "browser-capture"
@@ -3991,36 +3999,6 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
             )
         assert first.succeeded_file_count == 1
 
-        foreign_path = root / "foreign-quarantined.json"
-        foreign_payload = json.dumps(
-            capture([first_turn, divergent_turn], captured_at="2026-07-12T00:00:03+00:00")
-        ).encode("utf-8")
-        foreign_sessions = parse_payload(
-            Provider.CHATGPT,
-            [json.loads(foreign_payload)],
-            foreign_path.stem,
-            source_path=str(foreign_path),
-        )
-        assert len(foreign_sessions) == 1
-
-        def acquire_foreign() -> str:
-            # A writable open takes a synchronous lease; keep it off the loop.
-            with ArchiveStore.open_existing(archive.archive_root, read_only=False) as foreign_archive:
-                raw_id = foreign_archive.write_raw_payload(
-                    provider=Provider.CHATGPT,
-                    payload=foreign_payload,
-                    source_path=str(foreign_path),
-                    canonical_source_path=str(foreign_path.resolve()),
-                    acquired_at_ms=1,
-                )
-                foreign_archive.commit()
-                return raw_id
-
-        foreign_raw_id = run_off_event_loop(acquire_foreign)
-        await seed_membership_census_async(
-            archive.archive_root, [(foreign_raw_id, foreign_sessions)], parser_fingerprint="foreign-quarantined-test"
-        )
-
         path.write_text(json.dumps(capture([first_turn, acquired_turn])), encoding="utf-8")
         replacement = await ingest_files_with_owners(processor, [path], emit_event=False)
         with sqlite3.connect(archive.archive_root / "source.db") as source_conn:
@@ -4051,14 +4029,6 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
         assert set(live_decisions.values()) == {"superseded_prefix", "applied"}
         assert live_decisions[accepted_raw_id] == "applied"
         assert attachment == ("acquired", len(asset_bytes), asset_hash)
-        with sqlite3.connect(archive.archive_root / "source.db") as source_conn:
-            assert source_conn.execute(
-                """
-                SELECT decision FROM raw_session_memberships
-                WHERE raw_id = ? AND logical_source_key = 'chatgpt-export:browser-replacement'
-                """,
-                (foreign_raw_id,),
-            ).fetchone() == (None,)
 
         with sqlite3.connect(archive.archive_root / "source.db") as source_conn:
             raw_ids_before_reverse = {
@@ -7141,7 +7111,7 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
         assert excised_hash not in reserved, "a refused excised write left its publication reservation behind"
 
 
-def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> None:
+def test_live_multi_session_divergence_keeps_accepted_head_as_debt(tmp_path: Path) -> None:
     root = tmp_path / "inbox"
     root.mkdir()
     first = root / "first.json"
@@ -7273,11 +7243,17 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
             """
         ).fetchall() == [("base",), ("left",)]
 
+    # Retrying the accepted file re-observes the same bytes: the same raw, the
+    # same cohort, the same decision. A decided-ambiguous cohort keeps its
+    # last accepted head with the conflict as debt on every member's row,
+    # including the head's (#3282); only new evidence can resolve it.
     retry_result = _full_paths_sync(processor, [first], source_name="inbox")
 
     assert retry_result.succeeded == [first]
     assert retry_result.failed == []
+    assert retry_result.raw_fingerprints[first] == accepted_raw_id
     with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (2,)
         assert conn.execute(
             """
             SELECT r.source_path, m.decision, m.revision_authority,
@@ -7288,7 +7264,7 @@ def test_live_multi_session_divergence_reopens_raw_authority(tmp_path: Path) -> 
             ORDER BY r.source_path
             """
         ).fetchall() == [
-            (str(first), "applied", "byte_proven", 1, None),
+            (str(first), "ambiguous", "quarantined", 0, None),
             (str(second), "ambiguous", "quarantined", 0, None),
         ]
     with sqlite3.connect(index_db) as conn:

@@ -59,6 +59,7 @@ from .dispatch import (
     is_jsonl_source_path,
 )
 from .parsers.base import RawSessionData
+from .parsers.hermes_identity import declares_profile_identity
 from .source_staging import SourceInputBinding, bind_source_input
 from .sqlite_snapshot import is_sqlite_path, snapshot_sqlite_to_blob
 
@@ -513,11 +514,9 @@ def _read_plain_source_file(context: SourceReadContext, binding: SourceInputBind
     return raw_data_record(
         source_path=str(original_source_path or context.path),
         canonical_source_path=canonical_source_path,
-        captured_profile_key=(
-            captured_profile_key if detected_provider in {Provider.HERMES, Provider.UNKNOWN} else None
-        ),
+        captured_profile_key=(captured_profile_key if declares_profile_identity(detected_provider) else None),
         captured_profile_source_path=(
-            captured_profile_source_path if detected_provider in {Provider.HERMES, Provider.UNKNOWN} else None
+            captured_profile_source_path if declares_profile_identity(detected_provider) else None
         ),
         captured_file_observation=captured_file_observation,
         file_mtime=context.file_mtime,

@@ -8777,6 +8777,24 @@ class PreparedSessionSourceRead:
         with self.open_raw_revision_material(raw_id) as (provider, payload, source_path, kind):
             return provider, payload.read(), source_path, kind
 
+    @contextmanager
+    def open_raw_container_material(self, raw_id: str) -> Generator[BinaryIO | None, None, None]:
+        """Open the accepted physical container a ZIP member raw was read from.
+
+        The container identity comes from the member's pinned coordinate
+        receipt; its bytes are charged as an original input before the read.
+        """
+        coordinate = self.raw_captured_zip_coordinate(raw_id)
+        if coordinate is None:
+            raise ValueError(f"raw has no captured ZIP container: {raw_id}")
+        path = self.blob_store.blob_path(coordinate.container_blob_hash)
+        if not path.exists():
+            yield None
+            return
+        self._seal.retain_original_container_input(bytes.fromhex(coordinate.container_blob_hash), path.stat().st_size)
+        with self.blob_store.open(coordinate.container_blob_hash) as container:
+            yield container
+
     def raw_revision_blob_path(self, raw_id: str) -> Path | None:
         """Enroll this original retained acquisition before any payload access.
 

@@ -265,3 +265,36 @@ def test_archived_cursor_reconciliation_rejects_parsed_raw_without_index_materia
         assert watcher._cursor.get_record(source_path) is None
     finally:
         watcher.stop()
+
+
+@pytest.mark.parametrize(
+    ("source_name", "keeps_profile_key"),
+    [("codex", False), ("claude-code", False), ("hermes", True)],
+)
+def test_cursor_records_profile_key_only_where_acquisition_declares_one(
+    tmp_path: Path, source_name: str, keeps_profile_key: bool
+) -> None:
+    """A cursor writer keeps the observed profile key only for Hermes inputs.
+
+    Acquisition captures a profile namespace only for Hermes and undetected
+    inputs (``declares_profile_identity``), and archived-cursor reconciliation
+    compares through the same rule. Persisting the observed key for any other
+    origin turns the non-Hermes cases red.
+    """
+    from polylogue.sources.live.cursor import CursorPathAuthority
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "sessions" / "session.jsonl"
+    source.parent.mkdir()
+    source.write_text("{}\n", encoding="utf-8")
+    authority = CursorPathAuthority.observe(source)
+    assert authority.captured_profile_key is not None
+    cursor = CursorStore(tmp_path / "ops.db")
+
+    cursor.set(source, source.stat().st_size, source_name=source_name, authority=authority)
+
+    record = cursor.get_record(source)
+    assert record is not None
+    assert record.captured_profile_key == (authority.captured_profile_key if keeps_profile_key else None)
+    assert record.canonical_source_path == authority.canonical_source_path

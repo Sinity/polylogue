@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from builtins import BaseExceptionGroup
 from collections import Counter
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
@@ -180,6 +181,41 @@ def _resolved_retained_provider(payload: BinaryIO, source_path: str) -> tuple[Pr
         kind = DecodeFailure.JSONL_RECORD if jsonl else DecodeFailure.DOCUMENT
         raise PreparedDecodeError(kind, str(error)) from error
     return (Provider.UNKNOWN if provider is None else Provider(provider)), evidence
+
+
+def _resolved_retained_member_provider(
+    evidence_reader: RetainedRawRead, raw_id: str, payload: BinaryIO, source_path: str
+) -> tuple[Provider, str]:
+    """Resolve an UNKNOWN retained raw by its own shape, then by its ZIP container.
+
+    Source-only acquisition retains every ZIP member as UNKNOWN. A member's own
+    records name its provider when they can; a sibling that no detector
+    claims (a GDPR export's ``message_feedback.json``) takes the container
+    hint, exactly as retained enumeration of the same physical ZIP assigns it
+    through ``zip_member_admission`` (polylogue-hs3y).
+    """
+    provider, evidence = _resolved_retained_provider(payload, source_path)
+    if provider is not Provider.UNKNOWN:
+        return provider, evidence
+    coordinate = evidence_reader.raw_captured_zip_coordinate(raw_id)
+    if coordinate is None:
+        return provider, evidence
+    from polylogue.sources.source_acquisition_components import zip_member_admission
+
+    with evidence_reader.open_raw_container_material(raw_id) as physical:
+        if physical is None:
+            raise RetainedPreparationRetryableError(f"retained ZIP container bytes are absent for raw {raw_id}")
+        with zipfile.ZipFile(physical) as archive:
+            entries = archive.infolist()
+            if coordinate.entry_ordinal >= len(entries) or (
+                entries[coordinate.entry_ordinal].filename != coordinate.member_name
+            ):
+                raise RetainedZipMembershipUnprovedError("retained ZIP member differs from its container receipt")
+            admission = zip_member_admission(archive, Path(coordinate.declared_container), entries, Provider.UNKNOWN)
+            container_provider = admission.entry_provider_hint(archive, entries[coordinate.entry_ordinal])
+    if container_provider is Provider.UNKNOWN:
+        return provider, evidence
+    return container_provider, f"zip container member admission: {container_provider.value}"
 
 
 def _expand_frozen_revision_link_selection(archive_root: Path, raw_ids: Sequence[str]) -> tuple[str, ...]:
@@ -704,7 +740,7 @@ def prepare_retained_jsonl_artifact(
     if provider is Provider.UNKNOWN:
         try:
             with evidence_reader.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
-                provider, _evidence = _resolved_retained_provider(payload, source_path)
+                provider, _evidence = _resolved_retained_member_provider(evidence_reader, raw_id, payload, source_path)
         except PreparedDecodeError as exc:
             return PreparedJsonl(
                 blob_hash,
@@ -905,7 +941,9 @@ def prepare_retained_non_json_artifact(
         resolved_provider = Provider.from_string(sessions[0].source_name) if sessions else provider
         if not sessions and resolved_provider is Provider.UNKNOWN:
             with evidence_reader.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
-                resolved_provider, _evidence = _resolved_retained_provider(payload, source_path)
+                resolved_provider, _evidence = _resolved_retained_member_provider(
+                    evidence_reader, raw_id, payload, source_path
+                )
         parsed = True
         store = SqliteMessageStore(sessions_path)
         for session in sessions:
@@ -2667,7 +2705,7 @@ def parse_retained_raw_sessions(archive: RetainedRawRead, raw_id: str) -> list[P
             _stream_path,
             _stream_kind,
         ):
-            provider, _evidence = _resolved_retained_provider(stream_payload, source_path)
+            provider, _evidence = _resolved_retained_member_provider(archive, raw_id, stream_payload, source_path)
         if is_stream_record_provider(source_path, str(provider)):
             with archive.open_raw_revision_material(raw_id) as (
                 _stream_provider,
@@ -3340,6 +3378,12 @@ def prepare_revision_source_census(
             resolved_provider = artifact.resolved_provider
             if provider is Provider.UNKNOWN and resolved_provider is not Provider.UNKNOWN:
                 prepare_raw_state_update(seal, raw_id, state=RawSessionStateUpdate(payload_provider=resolved_provider))
+            if evidence_reader.raw_captured_zip_coordinate(raw_id) is not None:
+                # A ZIP member's provider is its export's, which acquisition of
+                # the decoded container would have stamped as its origin; the
+                # placeholder converges to it. A loose non-session input keeps
+                # the placeholder and records only its detected provider.
+                refine_prepared_raw_origin(seal, raw_id, origin_from_provider(resolved_provider))
             stream_classification = artifact.stream_classification()
             terminalized = _persist_terminal_non_session_artifact(
                 producer,
@@ -3998,6 +4042,8 @@ class RetainedRawRead(Protocol):
     ) -> AbstractContextManager[tuple[Provider, BinaryIO, str, RawRevisionKind]]: ...
 
     def raw_revision_material(self, raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]: ...
+
+    def open_raw_container_material(self, raw_id: str) -> AbstractContextManager[BinaryIO | None]: ...
 
     def retained_sidecar_resolver(self) -> SidecarResolver: ...
 

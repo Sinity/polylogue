@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import os
 import re
 import sqlite3
@@ -271,61 +270,6 @@ RAW_RETENTION_BACKLOG_PER_PASS = 64
 
 class CursorAuthorityBlockedError(RuntimeError):
     """The canonical raw frontier proof did not authorize live source selection."""
-
-
-@dataclass(slots=True)
-class CursorAuthorityAuthorization:
-    """Single-use, exact-use exception to the live cursor authority gate.
-
-    This token is deliberately process-local and context-local.  It is not a
-    switch, environment variable, or archive setting.  The reconciliation
-    command creates one only after re-proving the selected path and frontier;
-    the first gate check consumes it.
-    """
-
-    source_path_digest: str
-    cursor_byte_offset: int
-    accepted_frontier: int
-    plan_digest: str
-    force_full_ingest: bool = False
-    consumed: bool = False
-
-
-_CURSOR_AUTHORIZATION: contextvars.ContextVar[CursorAuthorityAuthorization | None] = contextvars.ContextVar(
-    "polylogue_cursor_authority_authorization",
-    default=None,
-)
-
-
-def cursor_authority_path_digest(path: Path) -> str:
-    """Digest one resolved source path without retaining its private text."""
-
-    return sha256(str(path.resolve()).encode("utf-8")).hexdigest()
-
-
-@contextmanager
-def scoped_cursor_authority_authorization(
-    *,
-    source_path_digest: str,
-    cursor_byte_offset: int,
-    accepted_frontier: int,
-    plan_digest: str,
-    force_full_ingest: bool = False,
-) -> Iterator[None]:
-    """Install one exact-use authorization for the normal ingest route."""
-
-    authorization = CursorAuthorityAuthorization(
-        source_path_digest=source_path_digest,
-        cursor_byte_offset=cursor_byte_offset,
-        accepted_frontier=accepted_frontier,
-        plan_digest=plan_digest,
-        force_full_ingest=force_full_ingest,
-    )
-    marker = _CURSOR_AUTHORIZATION.set(authorization)
-    try:
-        yield
-    finally:
-        _CURSOR_AUTHORIZATION.reset(marker)
 
 
 def _file_observation(stat: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -920,46 +864,7 @@ class LiveBatchProcessor:
 
         return raw_frontier_source_selection_block_reason(archive_root)
 
-    def _consume_scoped_cursor_authority(self, paths: Iterable[Path]) -> CursorAuthorityAuthorization:
-        authorization = _CURSOR_AUTHORIZATION.get()
-        if authorization is None:
-            raise CursorAuthorityBlockedError("scoped cursor authority authorization is missing")
-        if authorization.consumed:
-            raise CursorAuthorityBlockedError("scoped cursor authority authorization was already consumed")
-        selected_paths = tuple(path.resolve() for path in paths)
-        if (
-            len(selected_paths) != 1
-            or cursor_authority_path_digest(selected_paths[0]) != authorization.source_path_digest
-        ):
-            raise CursorAuthorityBlockedError("scoped cursor authority authorization does not match the selected path")
-        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
-        from polylogue.readiness.capability import raw_frontier_integrity_projection
-        from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
-
-        projection = raw_frontier_integrity_projection(
-            archive_root,
-            raw_materialization_readiness_snapshot(archive_root),
-            sample_limit=100,
-        )
-        if (
-            projection.overall_status != "violated"
-            or projection.broken_head_count
-            or projection.missing_source_raw_count
-            or projection.cursor_ahead_count != 1
-            or len(projection.cursor_ahead_samples) != 1
-        ):
-            raise CursorAuthorityBlockedError("scoped cursor authority no longer matches the global violation set")
-        sample = projection.cursor_ahead_samples[0]
-        if (
-            cursor_authority_path_digest(Path(sample.source_path)) != authorization.source_path_digest
-            or sample.cursor_byte_offset != authorization.cursor_byte_offset
-            or sample.accepted_frontier != authorization.accepted_frontier
-        ):
-            raise CursorAuthorityBlockedError("scoped cursor authority frontier binding changed")
-        authorization.consumed = True
-        return authorization
-
-    def require_cursor_authority(self, paths: Iterable[Path] | None = None) -> CursorAuthorityAuthorization | None:
+    def require_cursor_authority(self, paths: Iterable[Path] | None = None) -> None:
         """Fail closed before a live batch can create attempts or write data."""
         selected = [Path(path) for path in paths] if paths is not None else None
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
@@ -984,17 +889,6 @@ class LiveBatchProcessor:
                 raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {global_reason}")
 
         require_global_existence()
-        authorization = _CURSOR_AUTHORIZATION.get()
-        if authorization is not None:
-            if selected is None:
-                raise CursorAuthorityBlockedError("scoped cursor authority requires an exact selected path")
-            try:
-                with stable_selected_authority_frame(archive_root):
-                    consumed = self._consume_scoped_cursor_authority(selected)
-                    require_global_existence()
-            except (OSError, ValueError) as exc:
-                raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {exc}") from exc
-            return consumed
         if selected is None:
             # The production entry points pass their exact page. Keep the
             # pathless diagnostic contract for callers without a selection.
@@ -1232,7 +1126,7 @@ class LiveBatchProcessor:
             # IOPS storm in #1003 — nor the source-selection gate, which reads
             # the archive's existence journals on every call.
             return self._degraded_skip_metrics(paths, queued_file_count, skipped_file_count)
-        authorization = self.require_cursor_authority(paths)
+        self.require_cursor_authority(paths)
         refused_paths = self._refused_paths
         self._refused_paths = frozenset()
         if refused_paths:
@@ -1280,14 +1174,6 @@ class LiveBatchProcessor:
             parse_time_s=0.0,
             convergence_time_s=0.0,
             total_time_s=0.0,
-            stage_payload=(
-                {
-                    "cursor_authority_plan_digest": authorization.plan_digest,
-                    "cursor_authority_path_digest": authorization.source_path_digest,
-                }
-                if authorization is not None
-                else None
-            ),
         )
         source_payload_read_bytes = 0
         cursor_fingerprint_read_bytes = 0
@@ -1452,9 +1338,6 @@ class LiveBatchProcessor:
                 deferred_paths.append(plan.path)
 
         for path in paths:
-            if authorization is not None and authorization.force_full_ingest:
-                full_paths.append(path)
-                continue
             if _source_tier_acquisition_required():
                 # Append planning and replay both consult the active index to
                 # prove lineage. In acquire-only mode the derived tier is the
