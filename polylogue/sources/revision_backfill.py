@@ -1604,7 +1604,11 @@ def prepare_membership_replay(
                 MembershipRevision(
                     raw_id,
                     projections[raw_id],
-                    session.updated_at,
+                    # Only the producer's own time orders browser snapshots. An
+                    # acquisition fallback (the capture file's mtime) is not
+                    # provider authority: the receiver rewrites one spool file
+                    # per capture, so its mtime would order any two captures.
+                    session.updated_at if session.updated_at_provenance != "fallback" else None,
                     browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
                     # Declared capture order: the latest retained observation
                     # of these bytes, never their evidence volume.
