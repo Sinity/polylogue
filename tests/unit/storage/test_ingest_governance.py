@@ -546,14 +546,17 @@ async def _run_original_raw_carrier_case(
                         assert committed, "Raw returned neither a preparatory receipt nor a destination write"
                         assert source_receipt_assertion is not None, "an in-place Source receipt has a receipt check"
                         reported: list[_PhaseReceipt] = []
+
+                        def report(
+                            kind: Literal["census", "classification", "replay"],
+                            receipt: RevisionCensusResult | PreparedRevisionReplayResult,
+                            reported: list[_PhaseReceipt] = reported,
+                        ) -> None:
+                            reported.append((kind, receipt))
+
                         admit_stage_write(
                             "fixture.raw.committed-receipt",
-                            partial(
-                                adapter.publish,
-                                frame,
-                                replacement,
-                                phase_receipt=lambda kind, receipt, reported=reported: reported.append((kind, receipt)),
-                            ),
+                            partial(adapter.publish, frame, replacement, phase_receipt=report),
                         )
                         assert reported == committed
                         source_receipt_assertion(raw_id, reported)

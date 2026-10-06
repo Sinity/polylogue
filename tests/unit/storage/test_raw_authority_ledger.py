@@ -290,11 +290,13 @@ def test_terminal_membership_cannot_replace_missing_head_application(tmp_path: P
     # records no membership row; the law needs a terminal membership covering
     # the key, so the receipt and its immutable witness carry one.
     application = application_rows[0]
+    application_key = str(application["logical_source_key"])
+    application_revision = str(application["source_revision"])
     receipt["membership_rows"] = [
         {
             "raw_id": raw_id,
-            "logical_source_key": application["logical_source_key"],
-            "source_revision": application["source_revision"],
+            "logical_source_key": application_key,
+            "source_revision": application_revision,
             "decision": "applied",
         }
     ]
@@ -302,7 +304,7 @@ def test_terminal_membership_cannot_replace_missing_head_application(tmp_path: P
         plan,
         authority_witness={
             **plan.authority_witness,
-            "memberships": [{"raw_id": raw_id, "logical_source_key": application["logical_source_key"]}],
+            "memberships": [{"raw_id": raw_id, "logical_source_key": application_key}],
         },
     )
     receipt["application_rows"] = []
