@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from polylogue.core.errors import DatabaseError
 from polylogue.pipeline.services.parsing_models import (
@@ -18,10 +18,23 @@ from polylogue.pipeline.services.parsing_workflow import ingest_sources, parse_f
 if TYPE_CHECKING:
     from polylogue.config import Config, Source
     from polylogue.core.protocols import ProgressCallback
+    from polylogue.core.raw_failure_evidence import CohortMembershipRefusalError, RetainedRawDecodeRefusalError
     from polylogue.pipeline.services.ingest_execution import IngestExecution
     from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+
+class IngestRetainedRunner(Protocol):
+    """The retained owner's publication, settling each typed refusal through a callback."""
+
+    def __call__(
+        self,
+        raw_ids: Sequence[str],
+        *,
+        on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
+        on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None = None,
+    ) -> Awaitable[tuple[PreparedRevisionReplayResult, ...]]: ...
 
 
 class ParsingService:
@@ -39,7 +52,7 @@ class ParsingService:
         *,
         ingest_workers: int | None = None,
         execution: IngestExecution | None = None,
-        retained_runner: Callable[[Sequence[str]], Awaitable[tuple[PreparedRevisionReplayResult, ...]]] | None = None,
+        retained_runner: IngestRetainedRunner | None = None,
     ) -> None:
         if ingest_workers is not None and ingest_workers <= 0:
             raise ValueError("ingest_workers must be a positive integer")

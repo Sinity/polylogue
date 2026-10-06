@@ -104,6 +104,7 @@ def _write_codex_raw(root: Path, *, native_id: str, source_path: str) -> str:
             provider=Provider.CODEX,
             payload=payload,
             source_path=source_path,
+            canonical_source_path=source_path,
             acquired_at_ms=1,
         )
 

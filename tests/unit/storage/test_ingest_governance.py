@@ -92,6 +92,7 @@ def _write_raws(archive: ArchiveStore, count: int) -> tuple[str, ...]:
             provider=Provider.CODEX,
             payload=f'{{"raw":{index}}}'.encode(),
             source_path=f"prepared-{index}.jsonl",
+            canonical_source_path=f"prepared-{index}.jsonl",
             acquired_at_ms=index + 1,
         )
         for index in range(count)
@@ -473,6 +474,7 @@ async def _run_original_raw_carrier_case(
                     else raw_payload
                 ),
                 source_path="prepared-membership.jsonl",
+                canonical_source_path="prepared-membership.jsonl",
                 acquired_at_ms=1,
             )
 
@@ -654,6 +656,7 @@ async def test_canonical_accepted_head_foreign_parse_is_a_typed_per_key_refusal(
                 provider=Provider.CODEX,
                 payload=b'{"type":"session_meta","payload":{"id":"prepared-membership"}}\n',
                 source_path="prepared-membership.jsonl",
+                canonical_source_path="prepared-membership.jsonl",
                 acquired_at_ms=1,
             )
 
@@ -704,6 +707,7 @@ async def test_canonical_retained_sqlite_busy_stays_retryable(tmp_path: Path, mo
                 provider=Provider.CODEX,
                 payload=b'{"type":"session_meta","payload":{"id":"census-busy"}}\n',
                 source_path="census-busy.jsonl",
+                canonical_source_path="census-busy.jsonl",
                 acquired_at_ms=1,
             )
 
@@ -773,6 +777,7 @@ async def test_original_raw_selects_each_sessions_own_attachment_claim(
                 provider=Provider.CODEX,
                 payload=b'{"type":"session_meta","payload":{"id":"prepared-multiple"}}\n',
                 source_path="prepared-multiple.jsonl",
+                canonical_source_path="prepared-multiple.jsonl",
                 acquired_at_ms=1,
             )
 

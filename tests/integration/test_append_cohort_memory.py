@@ -79,6 +79,7 @@ def _admit_full_snapshots(
                     capture_mode=Provider.CODEX,
                     payload=payload,
                     source_path=str(source_path),
+                    canonical_source_path=str(source_path),
                     source_index=0,
                     acquired_at_ms=index + 1,
                     revision=RawRevisionEnvelope(
@@ -111,6 +112,8 @@ def _seed_cohort_and_append_plan(
     stat = source_path.stat()
     return _AppendPlan(
         path=source_path,
+        canonical_source_path=str(source_path),
+        captured_profile_key=None,
         source_name="codex",
         start_offset=len(snapshots[-1]),
         last_complete_newline=stat.st_size,
@@ -149,6 +152,8 @@ def _seed_partially_classified_cohort_and_append_plan(archive_root: Path) -> _Ap
     stat = source_path.stat()
     return _AppendPlan(
         path=source_path,
+        canonical_source_path=str(source_path),
+        captured_profile_key=None,
         source_name="codex",
         start_offset=len(snapshots[-1]),
         last_complete_newline=stat.st_size,

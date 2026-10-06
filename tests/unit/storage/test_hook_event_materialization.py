@@ -52,6 +52,7 @@ async def test_hook_artifact_materializes_event_rows(
                         blob_hash=blob_hash,
                         source_name="claude-code",
                         source_path="/hooks/claude-code-session-1.jsonl",
+                        canonical_source_path="/hooks/claude-code-session-1.jsonl",
                         source_index=0,
                         blob_size=blob_size,
                         acquired_at="2026-07-10T10:00:02+00:00",

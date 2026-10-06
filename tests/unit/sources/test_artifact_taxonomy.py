@@ -595,6 +595,7 @@ def test_antigravity_brain_metadata_sidecar_is_rejected_from_live_and_schema_rou
             provider=Provider.ANTIGRAVITY,
             payload=payload,
             source_path=str(metadata_path),
+            canonical_source_path=str(metadata_path),
             acquired_at_ms=1_767_798_895_216,
         )
 
@@ -639,6 +640,7 @@ def test_schema_sampling_uses_detected_provider_for_unknown_acquisition(workspac
             provider=Provider.UNKNOWN,
             payload=payload,
             source_path="/captures/learned/session.jsonl",
+            canonical_source_path="/captures/learned/session.jsonl",
             acquired_at_ms=1,
         )
     with sqlite3.connect(archive_root / "source.db") as conn:

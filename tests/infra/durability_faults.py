@@ -258,53 +258,61 @@ def durability_faults() -> Iterator[DurabilityFaultRegistry]:
     )
 
 
-class _CrashingConnection:
-    """Wrap a real connection and crash after a counted mutating statement.
+_MUTATING_STATEMENT = re.compile(r"^\s*(?:insert|update|delete|replace)\b", re.IGNORECASE)
 
-    ``sqlite3.Connection`` is an immutable type, so the counter is attached by
-    delegation rather than by patching the class. Only the statement-issuing
-    methods are intercepted; everything else is forwarded untouched, so
-    production code runs its own SQL on a real connection.
+
+def _count_mutation(budget: list[int], sql: object) -> None:
+    if not _MUTATING_STATEMENT.match(str(sql)):
+        return
+    budget[0] += 1
+    if budget[0] == budget[1]:
+        raise InjectedCrash(DurabilityFaultPoint.STATEMENT, budget[1])
+
+
+def _crashing_connection_class(base: type[sqlite3.Connection], budget: list[int]) -> type[sqlite3.Connection]:
+    """Subclass the requested connection factory so the crash counter is native.
+
+    The connection stays a real instance of the factory production asked for
+    (a measured connection keeps its custody, cursor registry and
+    ``blobopen``); only the default cursor counts mutating statements.
+    ``Connection.execute`` and ``executemany`` create their cursor through
+    ``cursor()``, so every statement route is counted once.
     """
+    from polylogue.storage.io_phase_metrics import _MeasuredConnection, _MeasuredCursor
 
-    _MUTATION = re.compile(r"^\s*(?:insert|update|delete|replace)\b", re.IGNORECASE)
+    default_cursor: type[sqlite3.Cursor] = _MeasuredCursor if issubclass(base, _MeasuredConnection) else sqlite3.Cursor
 
-    def __init__(self, connection: sqlite3.Connection, budget: list[int]) -> None:
-        object.__setattr__(self, "_connection", connection)
-        object.__setattr__(self, "_budget", budget)
+    def execute(self: sqlite3.Cursor, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        _count_mutation(budget, sql)
+        return default_cursor.execute(self, sql, parameters)
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._connection, name)
+    def executemany(self: sqlite3.Cursor, sql: str, parameters: Any, /) -> sqlite3.Cursor:
+        _count_mutation(budget, sql)
+        return default_cursor.executemany(self, sql, parameters)
 
-    def __setattr__(self, name: str, value: Any) -> None:
-        setattr(self._connection, name, value)
+    crashing_cursor = type("CrashingCursor", (default_cursor,), {"execute": execute, "executemany": executemany})
 
-    def _count(self, sql: object) -> None:
-        if not self._MUTATION.match(str(sql)):
-            return
-        budget = self._budget
-        budget[0] += 1
-        if budget[0] == budget[1]:
-            raise InjectedCrash(DurabilityFaultPoint.STATEMENT, budget[1])
+    def cursor(self: sqlite3.Connection, factory: Any = None) -> sqlite3.Cursor:
+        selected: sqlite3.Cursor = base.cursor(self, crashing_cursor if factory is None else factory)
+        return selected
 
-    def execute(self, sql: object, *args: Any, **kwargs: Any) -> Any:
-        self._count(sql)
-        return self._connection.execute(sql, *args, **kwargs)
+    namespace: dict[str, Any] = {"cursor": cursor}
+    # The native Connection.execute/executemany create their cursor without
+    # calling the Python-level cursor(); route those through it, once. A base
+    # that already implements them in Python reaches cursor() itself.
+    if base.execute is sqlite3.Connection.execute:
 
-    def executemany(self, sql: object, *args: Any, **kwargs: Any) -> Any:
-        self._count(sql)
-        return self._connection.executemany(sql, *args, **kwargs)
+        def connection_execute(self: sqlite3.Connection, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+            return cursor(self).execute(sql, parameters)
 
-    def backup(self, target: Any, *args: Any, **kwargs: Any) -> Any:
-        inner = target._connection if isinstance(target, _CrashingConnection) else target
-        return self._connection.backup(inner, *args, **kwargs)
+        namespace["execute"] = connection_execute
+    if base.executemany is sqlite3.Connection.executemany:
 
-    def __enter__(self) -> _CrashingConnection:
-        self._connection.__enter__()
-        return self
+        def connection_executemany(self: sqlite3.Connection, sql: str, parameters: Any, /) -> sqlite3.Cursor:
+            return cursor(self).executemany(sql, parameters)
 
-    def __exit__(self, *exc: Any) -> Any:
-        return self._connection.__exit__(*exc)
+        namespace["executemany"] = connection_executemany
+    return type(f"Crashing{base.__name__}", (base,), namespace)
 
 
 @contextmanager
@@ -315,14 +323,21 @@ def crash_after_mutating_statements(count: int) -> Iterator[list[int]]:
     the interesting case for resume: unlike a commit-boundary fault it leaves a
     partially applied statement sequence for SQLite to roll back. The yielded
     list carries ``[observed, target]`` so a caller can assert the fault fired.
+    The fault is injected at the connection-factory seam: each connection is a
+    real subclass of the factory its caller requested.
     """
     if count < 1:
         raise ValueError("crash count must be positive")
     budget = [0, count]
     real_connect = sqlite3.connect
+    classes: dict[type[sqlite3.Connection], type[sqlite3.Connection]] = {}
 
     def crashing_connect(*args: Any, **kwargs: Any) -> Any:
-        return _CrashingConnection(real_connect(*args, **kwargs), budget)
+        base = kwargs.get("factory") or sqlite3.Connection
+        if base not in classes:
+            classes[base] = _crashing_connection_class(base, budget)
+        kwargs["factory"] = classes[base]
+        return real_connect(*args, **kwargs)
 
     with patch.object(sqlite3, "connect", crashing_connect):
         yield budget

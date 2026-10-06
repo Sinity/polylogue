@@ -168,6 +168,7 @@ def test_strict_ingest_uses_accepted_historical_schema_resolution(
         source_name=Provider.CLAUDE_CODE,
         payload_provider=Provider.CLAUDE_CODE,
         source_path="/exports/legacy-claude-code.jsonl",
+        canonical_source_path="/exports/legacy-claude-code.jsonl",
         blob_size=blob_size,
         acquired_at="2026-01-01T00:00:00Z",
     )

@@ -48,7 +48,11 @@ async def test_final_retained_writer_admits_original_prepared_identity_carrier(
         bootstrap_archive_root(root)
         with ArchiveStore.open_existing(root, read_only=False) as archive:
             return archive.write_raw_payload(
-                provider=Provider.CLAUDE_CODE, payload=_payload(), source_path="session.jsonl", acquired_at_ms=1
+                provider=Provider.CLAUDE_CODE,
+                payload=_payload(),
+                source_path="session.jsonl",
+                canonical_source_path="session.jsonl",
+                acquired_at_ms=1,
             )
 
     raw_id = await run_archive_fixture_write(root, acquire)

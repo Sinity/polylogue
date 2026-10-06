@@ -853,7 +853,7 @@ writes:
     classification: row_supersession
     reason: "content-keyed derived receipt replaced wholesale by re-observing the same unchanged evidence: the key is raw_id, itself a SHA-256 over (origin, source_path, source_index, blob_hash, native_id), and the row's parser_fingerprint/cohort_fingerprint column records which generation produced it. Every column in the write comes from that one re-derivation, so no field survives from an earlier generation to be corrected"
   - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "replace_raw_membership_census"
+    function: "_retire_prepared_full_revision_binding"
     table: "raw_sessions"
     kind: "update"
     tier: "source"

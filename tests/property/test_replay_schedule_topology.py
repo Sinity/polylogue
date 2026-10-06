@@ -265,12 +265,14 @@ def test_aliased_spelling_is_typed_and_replays_beside_its_identity(tmp_path: Pat
                 provider=Provider.CODEX,
                 payload=codex_lineage_payload(native_id, [f"{native_id}-0"]),
                 source_path=f"{native_id}.jsonl",
+                canonical_source_path=f"{native_id}.jsonl",
                 acquired_at_ms=1,
             )
         archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=codex_lineage_payload("aaa", ["aaa-0", "aaa-1"]),
             source_path="aaa-legacy.jsonl",
+            canonical_source_path="aaa-legacy.jsonl",
             acquired_at_ms=2,
         )
     _assign_rebuild_keys(root)
@@ -300,6 +302,7 @@ def test_contested_cohort_claim_resolves_to_the_newest_acquisition(tmp_path: Pat
                 provider=Provider.CODEX,
                 payload=codex_lineage_payload(native_id, [f"{native_id}-only"]),
                 source_path=f"{native_id}.jsonl",
+                canonical_source_path=f"{native_id}.jsonl",
                 acquired_at_ms=1,
             )
         for acquired_at_ms, claimed in ((2, "early-parent"), (3, "late-parent")):
@@ -311,6 +314,7 @@ def test_contested_cohort_claim_resolves_to_the_newest_acquisition(tmp_path: Pat
                     forked_from_id=claimed,
                 ),
                 source_path=f"contested-{claimed}.jsonl",
+                canonical_source_path=f"contested-{claimed}.jsonl",
                 acquired_at_ms=acquired_at_ms,
             )
     _assign_rebuild_keys(root)

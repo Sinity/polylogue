@@ -77,6 +77,7 @@ def _raw_session(conn: sqlite3.Connection, **overrides: object) -> str:
     kwargs: dict[str, Any] = {
         "origin": Origin.CLAUDE_CODE_SESSION,
         "source_path": "/captures/record.jsonl",
+        "canonical_source_path": "/captures/record.jsonl",
         "source_index": 0,
         "payload": PAYLOAD,
         "acquired_at_ms": 1,
@@ -282,6 +283,7 @@ def test_async_admission_refuses_out_of_vocabulary_before_any_sql(
             origin=Origin.CHATGPT_EXPORT,
             capture_mode=Provider.CHATGPT,
             source_path="/captures/source.json",
+            canonical_source_path="/captures/source.json",
             source_index=0,
             blob_hash=BLOB_HASH,
             blob_size=len(PAYLOAD),

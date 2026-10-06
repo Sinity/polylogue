@@ -840,7 +840,11 @@ def _retain_chain(
         initialize_active_archive_root(archive_root)
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         full_raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX, payload=full, source_path=str(path), acquired_at_ms=1
+            provider=Provider.CODEX,
+            payload=full,
+            source_path=str(path),
+            canonical_source_path=str(path),
+            acquired_at_ms=1,
         )
         archive.bind_raw_revision(
             full_raw_id, RawRevisionEnvelope("codex-session:grow", RawRevisionKind.FULL, "revision-0", 0)
@@ -852,6 +856,7 @@ def _retain_chain(
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path=str(path),
+                canonical_source_path=str(path),
                 source_index=-1,
                 acquired_at_ms=1 + generation,
                 post_parse=True,

@@ -18,6 +18,7 @@ from polylogue.pipeline.ids import message_content_identity, session_content_has
 from polylogue.sources.chunk_positions import ChunkPositions
 from polylogue.sources.dispatch import merge_parsed_session_chunks
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.sources.parsers.claude.code_parser import order_working_directories, relocated_cwds_of
 from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact
 from polylogue.sources.prepared_message_sink import (
     SqliteAttachmentSink,
@@ -273,6 +274,9 @@ def prepare_retained_cohort_artifact(ordered: Sequence[tuple[str, PreparedJsonl]
     source_hash = prepared_cohort_source_hash(ordered)
     merged_metadata: ParsedSession | None = None
     identity: tuple[Provider, str] | None = None
+    # Metadata merges without events, but Claude Code orders its working
+    # directories by the relocation events; carry those in record order.
+    relocated_cwds: list[str] = []
     for _, artifact in ordered:
         check_compute_cancelled()
         session = _single_prepared_session(artifact)
@@ -280,6 +284,8 @@ def prepare_retained_cohort_artifact(ordered: Sequence[tuple[str, PreparedJsonl]
         if identity is not None and candidate != identity:
             raise ValueError("retained revisions disagree on provider-native session identity")
         identity = candidate
+        if session.source_name is Provider.CLAUDE_CODE:
+            relocated_cwds.extend(relocated_cwds_of(session.session_events))
         metadata_only = session.model_copy(update={"messages": [], "session_events": [], "attachments": []})
         merged_metadata = (
             metadata_only
@@ -287,6 +293,12 @@ def prepare_retained_cohort_artifact(ordered: Sequence[tuple[str, PreparedJsonl]
             else merge_parsed_session_chunks([merged_metadata, metadata_only])[0]
         )
     assert merged_metadata is not None
+    if merged_metadata.source_name is Provider.CLAUDE_CODE:
+        merged_metadata = merged_metadata.model_copy(
+            update={
+                "working_directories": order_working_directories(merged_metadata.working_directories, relocated_cwds)
+            }
+        )
 
     directory.mkdir(parents=True, exist_ok=True)
     store_path = directory / f"prepared-cohort-{uuid.uuid4().hex}.db"

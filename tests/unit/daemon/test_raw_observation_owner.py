@@ -49,6 +49,7 @@ def _admit(root: Path, native_id: str = "owner") -> str:
             provider=Provider.CHATGPT,
             payload=json.dumps(payload).encode(),
             source_path=f"{native_id}.json",
+            canonical_source_path=f"{native_id}.json",
             acquired_at_ms=1,
         )
 
@@ -107,6 +108,7 @@ async def test_retained_jsonl_converges_from_sealed_carrier(tmp_path: Path, monk
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path="above-cache-budget.jsonl",
+                canonical_source_path="above-cache-budget.jsonl",
                 acquired_at_ms=1,
             )
 
@@ -284,6 +286,7 @@ async def test_multi_session_claude_code_raw_settles_every_session(
                 provider=Provider.CLAUDE_CODE,
                 payload=payload,
                 source_path="multi-session.jsonl",
+                canonical_source_path="multi-session.jsonl",
                 acquired_at_ms=1,
                 post_parse=True,
             )
@@ -379,6 +382,7 @@ async def test_multi_session_raw_overlapping_a_byte_chain_decides_every_member(
                 provider=Provider.CLAUDE_CODE,
                 payload=_claude_code_payload("overlap-alpha"),
                 source_path="overlap.jsonl",
+                canonical_source_path="overlap.jsonl",
                 acquired_at_ms=1,
                 post_parse=True,
             )
@@ -394,6 +398,7 @@ async def test_multi_session_raw_overlapping_a_byte_chain_decides_every_member(
                     provider=Provider.CLAUDE_CODE,
                     payload=_claude_code_payload("overlap-alpha", "overlap-beta"),
                     source_path=second_path,
+                    canonical_source_path=second_path,
                     acquired_at_ms=2,
                     post_parse=True,
                 )

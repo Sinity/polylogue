@@ -386,7 +386,7 @@ async def test_source_required_mode_refuses_before_retained_publication(
 
     calls: list[tuple[str, ...]] = []
 
-    async def retained_runner(raw_ids: object) -> tuple[Any, ...]:
+    async def retained_runner(raw_ids: object, **_refusal_handlers: object) -> tuple[Any, ...]:
         calls.append(tuple(cast(Any, raw_ids)))
         return ()
 

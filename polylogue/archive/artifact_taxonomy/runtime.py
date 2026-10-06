@@ -537,6 +537,8 @@ def classify_artifact_stream(
     """Classify complete caller-owned input, privately replaying non-seekable streams."""
     from polylogue.archive.raw_payload.streams import rewindable_byte_stream
 
+    if (declared := declared_evidence_classification(source_path, provider=provider)) is not None:
+        return ArtifactStreamClassification(declared, True, 0)
     with rewindable_byte_stream(handle, check_stop=check_stop) as stream:
         return _classify_seekable_artifact_stream(
             cast(BinaryIO, stream),
@@ -546,6 +548,36 @@ def classify_artifact_stream(
             check_stop=check_stop,
             retained_session_recovery=retained_session_recovery,
         )
+
+
+def declared_evidence_classification(
+    source_path: str | Path | None,
+    *,
+    provider: str | Provider,
+) -> ArtifactClassification | None:
+    """Return the terminal classification of a declared ``raw-only`` evidence path.
+
+    A ``raw-only`` rule states its bytes are evidence and never a session,
+    and that content shape cannot decide otherwise (a hook carrier, a Markdown
+    memory document, a tool-result sidecar). Its classification is the
+    declaration itself: the bytes are never decoded as a session grammar, so
+    non-JSON evidence or one malformed carrier line cannot become a decode
+    refusal of the retained artifact.
+    """
+    normalized = normalize_source_path(source_path)
+    if not normalized:
+        return None
+    classification = strong_path_classification(normalized, provider=provider)
+    if classification is None or classification.parse_as_session:
+        return None
+    from polylogue.sources.origin_specs import path_declaration_refuses_session
+
+    if classification.kind is not ArtifactKind.TOOL_RESULT_SIDECAR and not path_declaration_refuses_session(
+        classification.provider, normalized
+    ):
+        # The tool-result rule is matched provider-agnostically above.
+        return None
+    return classification
 
 
 def _classify_seekable_artifact_stream(

@@ -233,6 +233,7 @@ async def test_terminal_supersessions_remain_readable_without_creating_obligatio
                         provider=Provider.CLAUDE_CODE,
                         payload=("".join(json.dumps(record) + "\n" for record in records[:count])).encode(),
                         source_path="neutral/retirement-session.jsonl",
+                        canonical_source_path="neutral/retirement-session.jsonl",
                         acquired_at_ms=count,
                     )
                 )

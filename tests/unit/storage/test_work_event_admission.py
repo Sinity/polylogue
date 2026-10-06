@@ -35,6 +35,7 @@ async def test_work_event_requires_actual_unambiguous_target_acquisition(
                 capture_mode=mode,
                 payload=payload,
                 source_path=str(source_path),
+                canonical_source_path=str(source_path),
                 acquired_at_ms=1_767_000_000_000,
                 file_mtime_ms=1_767_000_000_000,
             )

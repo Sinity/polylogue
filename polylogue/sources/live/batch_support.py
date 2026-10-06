@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Buffer, Callable, Iterable, Iterator, Seq
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Protocol, cast
+from typing import IO, TYPE_CHECKING, Any, Protocol, cast
 
 import ijson
 
@@ -30,10 +30,12 @@ from polylogue.archive.artifact_taxonomy import (
 from polylogue.archive.raw_payload.decode import (
     jsonl_session_artifact,
 )
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_failure_evidence import PartialAdmission, RetainedRawDecodeRefusalError
+from polylogue.core.sources import origin_from_provider
 from polylogue.sources.acquisition_boundary import refuse_declared_foreign, refuse_foreign_path
 from polylogue.sources.dispatch import (
     ForeignOriginContentError,
@@ -245,9 +247,14 @@ class _AppendPlan:
     payload_hash: str
     cursor_fingerprint: str | None
     bytes_read: int
+    # The physical coordinate frozen from the opened file; every append raw
+    # records it.
+    canonical_source_path: str
+    # The profile identity captured with that coordinate (Hermes profiles);
+    # the cursor written after publication carries this captured authority.
+    captured_profile_key: str | None
     # Historical fixture/replay callers can preserve a source ordering index;
     # live watcher plans retain the legacy sentinel when no index is known.
-    canonical_source_path: str | None = None
     source_index: int = -1
     accepted_tail_hash: str | None = None
     ctime_ns: int | None = None
@@ -1425,6 +1432,14 @@ def _classify_pre_acquisition(
         and hermes_member is not None
         and hermes_member.disposition != "out-of-scope"
     )
+    if (
+        fallback_provider in {Provider.ANTIGRAVITY, Provider.UNKNOWN}
+        and sqlite_classification is not None
+        and sqlite_classification.antigravity
+    ):
+        # A schema-verified trajectory store is admitted by its schema, also
+        # when staged in the import inbox, whose source carries no provider.
+        return PreAcquisitionDecision(None)
     source_class = recognize_source_class(
         fallback_provider, path, source_only=source_only, sqlite_classification=sqlite_classification
     )
@@ -1438,12 +1453,6 @@ def _classify_pre_acquisition(
         except ForeignOriginContentError as exc:
             return PreAcquisitionDecision(foreign_origin_exclusion(exc), refused=True)
         return PreAcquisitionDecision("unsupported source class")
-    if (
-        fallback_provider in {Provider.ANTIGRAVITY, Provider.UNKNOWN}
-        and sqlite_classification is not None
-        and sqlite_classification.antigravity
-    ):
-        return PreAcquisitionDecision(None)
     hermes_signature = sqlite_classification is not None and (
         sqlite_classification.hermes_state or sqlite_classification.hermes_verification
     )
@@ -1466,19 +1475,21 @@ def _classify_pre_acquisition(
         return PreAcquisitionDecision(None)
     if codex_member is not None:
         return PreAcquisitionDecision("declared out-of-scope or structurally unverified state database")
-    if source_only:
-        return PreAcquisitionDecision(None)
-    if sqlite_classification is not None:
-        return PreAcquisitionDecision("path rule refuses session parsing", fallback_provider)
     origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
     jsonl = is_jsonl_source_path(str(path))
-    if origin_artifact_rule is None and not jsonl:
+    if sqlite_classification is None and origin_artifact_rule is None and not jsonl:
         strong = strong_path_classification(path, provider=fallback_provider)
         if strong is not None and not strong.parse_as_session:
             # Only definitive sidecar paths are excluded before retained
             # acquisition. Weak locations reach the same parser at every
-            # size, where decoded evidence determines their disposition.
+            # size, where decoded evidence determines their disposition. A
+            # path rule reads no bytes, so source-only acquisition applies
+            # it too: intake retains exactly what the baseline requires.
             return PreAcquisitionDecision("path rule classifies this as non-session evidence")
+    if source_only:
+        return PreAcquisitionDecision(None)
+    if sqlite_classification is not None:
+        return PreAcquisitionDecision("path rule refuses session parsing", fallback_provider)
     if origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
         return PreAcquisitionDecision(None, fallback_provider)
     if jsonl:
@@ -1533,3 +1544,31 @@ def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payloa
     except JSONDecodeError:
         return False
     return classify_artifact(document, provider=provider, source_path=path).parse_as_session
+
+
+def hook_carrier_logical_source_key(*, provider: Provider, source_path: str) -> str:
+    """Return the physical-carrier revision key under its acquisition origin."""
+    return f"{origin_from_provider(provider).value}:{source_path}"
+
+
+def bind_hook_carrier_baseline_revision(
+    archive: Any,
+    raw_id: str,
+    *,
+    provider: Provider,
+    source_path: str,
+    source_revision: str,
+) -> str:
+    """Bind an initially acquired carrier to its physical append chain."""
+    logical_source_key = hook_carrier_logical_source_key(provider=provider, source_path=source_path)
+    archive.bind_raw_revision(
+        raw_id,
+        RawRevisionEnvelope(
+            logical_source_key=logical_source_key,
+            kind=RawRevisionKind.FULL,
+            source_revision=source_revision,
+            acquisition_generation=0,
+            authority=RawRevisionAuthority.ASSERTED,
+        ),
+    )
+    return logical_source_key

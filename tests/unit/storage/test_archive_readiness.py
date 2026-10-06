@@ -215,6 +215,7 @@ def test_raw_materialization_snapshot_rejects_malformed_parser_receipt(tmp_path:
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"malformed-census"}}\n',
             source_path="codex/malformed-census.jsonl",
+            canonical_source_path="codex/malformed-census.jsonl",
             acquired_at_ms=1,
         )
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -248,6 +249,7 @@ def test_raw_materialization_snapshot_rejects_receipt_key_drift_from_durable_bin
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"durable-binding"}}\n',
             source_path="codex/durable-binding.jsonl",
+            canonical_source_path="codex/durable-binding.jsonl",
             acquired_at_ms=1,
             revision=RawRevisionEnvelope("codex:durable-binding", RawRevisionKind.FULL, "v1", 0),
         )
@@ -281,6 +283,7 @@ def test_raw_materialization_snapshot_audits_validation_skipped_raws(tmp_path: P
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"skipped-census"}}\n',
             source_path="codex/skipped-census.jsonl",
+            canonical_source_path="codex/skipped-census.jsonl",
             acquired_at_ms=1,
         )
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -308,6 +311,7 @@ def test_raw_materialization_snapshot_accepts_parser_confirmed_empty_non_session
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"empty-census"}}\n',
             source_path="codex/empty-census.jsonl",
+            canonical_source_path="codex/empty-census.jsonl",
             acquired_at_ms=1,
             post_parse=True,
         )
@@ -357,6 +361,7 @@ def test_raw_materialization_snapshot_streams_parser_census_rows(
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"stream-census"}}\n',
             source_path="codex/stream-census.jsonl",
+            canonical_source_path="codex/stream-census.jsonl",
             acquired_at_ms=1,
             revision=RawRevisionEnvelope("codex:stream-census", RawRevisionKind.FULL, "v1", 0),
         )
@@ -446,6 +451,7 @@ def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> No
                 b'"content":[{"type":"input_text","text":"exact readiness"}]}}\n'
             ),
             source_path="codex/exact-readiness.jsonl",
+            canonical_source_path="codex/exact-readiness.jsonl",
             acquired_at_ms=1,
         )
 
@@ -647,6 +653,7 @@ def test_raw_materialization_snapshot_reads_append_census_writer_contract(tmp_pa
             provider=Provider.CODEX,
             payload=b'{"append":true}\n',
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             source_index=-1,
             acquired_at_ms=1,
         )
@@ -1525,6 +1532,7 @@ def test_converged_archive_reports_its_real_materialization_counts(tmp_path: Pat
             provider=Provider.CODEX,
             payload=b'{"type":"session_meta","payload":{"id":"converged-counts"}}\n',
             source_path="codex/converged-counts.jsonl",
+            canonical_source_path="codex/converged-counts.jsonl",
             acquired_at_ms=1,
             post_parse=True,
         )

@@ -616,7 +616,11 @@ def test_archive_retains_failed_scope_and_retries_children_only_on_explicit_owne
                 archive.commit()
             with pytest.raises(ArchiveStoreSettlementError):
                 archive.write_raw_payload(
-                    provider=Provider.CODEX, source_path="refused-new-work", acquired_at_ms=0, payload=b"new"
+                    provider=Provider.CODEX,
+                    source_path="refused-new-work",
+                    canonical_source_path="refused-new-work",
+                    acquired_at_ms=0,
+                    payload=b"new",
                 )
             assert connection.rollback_attempts == 1
             assert cursors[0].close_attempts == 1
@@ -1144,7 +1148,11 @@ def test_store_terminal_parent_request_refuses_work_before_first_native_close(tm
                 archive.commit()
             with pytest.raises(ArchiveStoreSettlementError):
                 archive.write_raw_payload(
-                    provider=Provider.CODEX, source_path="refused-terminal-parent", acquired_at_ms=0, payload=b"new"
+                    provider=Provider.CODEX,
+                    source_path="refused-terminal-parent",
+                    canonical_source_path="refused-terminal-parent",
+                    acquired_at_ms=0,
+                    payload=b"new",
                 )
             assert not any(child.close_required for child in children)
             archive.close()

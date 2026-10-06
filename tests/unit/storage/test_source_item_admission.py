@@ -53,6 +53,7 @@ def _archive(
         origin=Origin.CLAUDE_CODE_SESSION,
         capture_mode=Provider.CLAUDE_CODE,
         source_path=f"/synthetic/{coordinate}",
+        canonical_source_path=f"/synthetic/{coordinate}",
         source_index=0,
         blob_hash=blob_hash,
         blob_size=len(payload),

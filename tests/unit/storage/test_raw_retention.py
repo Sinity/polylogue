@@ -303,6 +303,7 @@ def _seed_real_full_supersession(root: Path) -> tuple[str, str]:
             provider=Provider.CODEX,
             payload=b"a" * 10,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             acquired_at_ms=1,
         )
         archive.bind_raw_revision(
@@ -325,6 +326,7 @@ def _seed_real_full_supersession(root: Path) -> tuple[str, str]:
             provider=Provider.CODEX,
             payload=b"a" * 20,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             acquired_at_ms=2,
         )
         archive.bind_raw_revision(
@@ -846,6 +848,7 @@ def test_terminal_coordinate_uses_latest_repeated_raw_observation(tmp_path: Path
             conn,
             origin="claude-code-session",
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             source_index=0,
             payload=b"session A",
             acquired_at_ms=1,
@@ -854,6 +857,7 @@ def test_terminal_coordinate_uses_latest_repeated_raw_observation(tmp_path: Path
             conn,
             origin="claude-code-session",
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             source_index=0,
             payload=b"terminal B",
             acquired_at_ms=2,
@@ -878,6 +882,7 @@ def test_terminal_coordinate_uses_latest_repeated_raw_observation(tmp_path: Path
                 conn,
                 origin="claude-code-session",
                 source_path=str(source_path),
+                canonical_source_path=str(source_path),
                 source_index=0,
                 payload=b"session A",
                 acquired_at_ms=3,
@@ -1651,7 +1656,11 @@ def test_address_scoped_frontier_preserves_unreadable_tier_refusal(
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"[]", source_path="neutral.json", acquired_at_ms=1
+            provider=Provider.CHATGPT,
+            payload=b"[]",
+            source_path="neutral.json",
+            canonical_source_path="neutral.json",
+            acquired_at_ms=1,
         )
     assert raw_retention_mod.raw_frontier_blocked_raw_ids(tmp_path, (raw_id,)).unattributed_reason is None
     (tmp_path / tier).write_bytes(b"not a sqlite database")
@@ -3268,6 +3277,7 @@ def test_snapshot_cleanup_keeps_the_raw_whose_receipt_is_newest_after_a_clock_ro
                 conn,
                 origin="claude-code-session",
                 source_path=str(source_path),
+                canonical_source_path=str(source_path),
                 source_index=0,
                 payload=payload,
                 acquired_at_ms=acquired_at_ms,
