@@ -856,16 +856,6 @@ def prepared_audit_continuity_command(
     )
 
 
-def audit_semantic_sha256(path: Path) -> str:
-    """Hash audit content while excluding the self-mutating continuity head."""
-
-    try:
-        with open_verified_audit_read_connection(path) as connection:
-            return _audit_semantic_sha256_connection(connection)
-    except (AuditLeafError, sqlite3.DatabaseError) as exc:
-        raise AuditContinuityError("cannot hash audit content for continuity validation") from exc
-
-
 @contextmanager
 def _open_source_read_connection(path: Path) -> Iterator[sqlite3.Connection]:
     try:
@@ -892,13 +882,6 @@ def _entry_is_absent(path: Path) -> bool:
     except OSError as exc:
         raise AuditContinuityError(f"cannot inspect audit continuity tier entry: {path}") from exc
     return False
-
-
-def _audit_semantic_sha256_connection(connection: sqlite3.Connection) -> str:
-    """Return the continuity-independent semantic digest for one open audit DB."""
-
-    lines = (line for line in connection.iterdump() if "audit_continuity_head" not in line)
-    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
 class AuditContinuityCoordinator:
@@ -1453,6 +1436,5 @@ __all__ = [
     "scan_excision_source_completion",
     "PreparedAuditContinuityCommand",
     "excision_completion_identity",
-    "audit_semantic_sha256",
     "prepared_audit_continuity_command",
 ]

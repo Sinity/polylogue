@@ -188,7 +188,15 @@ def test_complete_candidacy_reader_preserves_large_record_and_late_message() -> 
             assert 0 < size <= _INSPECTION_PREFIX_BYTES + 1
             return super().readline(size)
 
-    oversized = b'{"ignored":"' + (b"x" * (_INSPECTION_PREFIX_BYTES * 3)) + b'"}\n'
+    # A record with an unknown Codex type now refuses the stream visibly
+    # (774ec3f070), so the oversized record is a known one that alone proves
+    # no session: a session_meta-only stream is a metadata document, and only
+    # the late message makes it a session candidate.
+    oversized = (
+        b'{"type":"session_meta","payload":{"id":"bounded","instructions":"'
+        + (b"x" * (_INSPECTION_PREFIX_BYTES * 3))
+        + b'"}}\n'
+    )
     message = (
         b'{"type":"response_item","payload":{"type":"message","id":"message-1",'
         b'"role":"user","content":[{"type":"input_text","text":"hello"}]}}\n'

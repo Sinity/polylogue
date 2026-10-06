@@ -54,6 +54,7 @@ from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
 from polylogue.storage.sqlite.write_lease import async_write_lease
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.index_writer import write_fixture_index_session
 
 # Realistic Codex cumulative usage: input is inclusive of cached (96% cached,
@@ -212,13 +213,20 @@ def test_codex_profile_tokens_match_model_usage_after_sync_rebuild(tmp_path: Pat
 
 
 async def test_codex_profile_tokens_match_model_usage_after_async_rebuild(tmp_path: Path) -> None:
-    async with async_write_lease("test.runtime.async-fixture", archive_root=tmp_path):
-        session_id = "codex-session:model-usage-consistency-async"
-        sync_conn = _make_archive_conn(tmp_path)
-        write_fixture_index_session(sync_conn, _codex_session("model-usage-consistency-async"))
-        model_usage = _model_usage_totals(sync_conn, session_id)
-        sync_conn.close()
+    session_id = "codex-session:model-usage-consistency-async"
 
+    def seed() -> tuple[int, int, int, int]:
+        # The fixture producer takes its own writer lease off the event loop;
+        # it must not inherit the async test's lease.
+        sync_conn = _make_archive_conn(tmp_path)
+        try:
+            write_fixture_index_session(sync_conn, _codex_session("model-usage-consistency-async"))
+            return _model_usage_totals(sync_conn, session_id)
+        finally:
+            sync_conn.close()
+
+    model_usage = run_off_event_loop(seed)
+    async with async_write_lease("test.runtime.async-fixture", archive_root=tmp_path):
         async with aiosqlite.connect(tmp_path / "index.db") as conn:
             conn.row_factory = aiosqlite.Row
             await conn.execute("PRAGMA foreign_keys = ON")
@@ -316,19 +324,31 @@ async def test_profile_rows_and_usage_overlay_share_one_snapshot(
 ) -> None:
     """Anti-vacuity: without one snapshot, a commit between the two reads pairs
     the old profile title with the replaced usage row (9000 input tokens)."""
+
+    def seed() -> str:
+        # The fixture producer takes its own writer lease off the event loop;
+        # it must not inherit the async test's lease.
+        conn = _make_archive_conn(tmp_path)
+        try:
+            # WAL lets the interleaved writer commit while the reader holds its snapshot.
+            conn.execute("PRAGMA journal_mode = WAL")
+            seeded = write_fixture_index_session(conn, _claude_code_session("profile-snapshot"))
+            rebuild_session_insights_sync(conn, session_ids=[seeded])
+            conn.commit()
+            return seeded
+        finally:
+            conn.close()
+
+    session_id = run_off_event_loop(seed)
     async with async_write_lease("test.runtime.async-fixture", archive_root=tmp_path):
         from polylogue.archive.semantic.cost_records import ModelUsageTotals
         from polylogue.storage.derived.session.profile_cost import read_model_usage_batch_async as read_usage
         from polylogue.storage.query_models import SessionProfileListQuery
         from polylogue.storage.sqlite.queries import session_insight_profile_reads
 
-        writer = _make_archive_conn(tmp_path)
+        writer = connect_measured(tmp_path / "index.db")
+        writer.row_factory = sqlite3.Row
         try:
-            # WAL lets the interleaved writer commit while the reader holds its snapshot.
-            writer.execute("PRAGMA journal_mode = WAL")
-            session_id = write_fixture_index_session(writer, _claude_code_session("profile-snapshot"))
-            rebuild_session_insights_sync(writer, session_ids=[session_id])
-            writer.commit()
             title = writer.execute("SELECT title FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[
                 0
             ]

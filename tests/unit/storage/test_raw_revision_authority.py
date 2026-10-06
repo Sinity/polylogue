@@ -693,7 +693,13 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
         )
         archive.bind_raw_revision(
             baseline_raw_id,
-            RawRevisionEnvelope("codex-session:session-1", RawRevisionKind.FULL, "full-revision", 1),
+            RawRevisionEnvelope(
+                "codex-session:session-1",
+                RawRevisionKind.FULL,
+                "full-revision",
+                1,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
         )
 
     append_payload = (
@@ -716,9 +722,13 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
         payload=append_payload,
-        payload_hash="append-hash",
+        payload_hash=sha256(append_payload).hexdigest(),
         cursor_fingerprint="full-revision",
         bytes_read=len(append_payload),
+        # The planner binds a Codex append to its resolved session identity,
+        # carried as a sidecar for both logical and acquisition identity.
+        native_id_hint="session-1",
+        acquisition_native_id_hint="session-1",
     )
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     owner = SimpleNamespace(
@@ -741,7 +751,8 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
         baseline_raw_id,
         len(full_payload),
         stat.st_size,
-        1,
+        # An append child is one acquisition generation past its parent.
+        2,
         "byte_proven",
     )
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -761,7 +772,7 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
         )
 
 
-def test_live_append_admits_declared_non_session_artifact(tmp_path: Path) -> None:
+def test_live_append_refuses_declared_non_session_artifact(tmp_path: Path) -> None:
     """Regression for polylogue-xwkh: close the third chokepoint.
 
     Live daemon ingest (``ingest_worker.py``) and rebuild replay
@@ -778,6 +789,11 @@ def test_live_append_admits_declared_non_session_artifact(tmp_path: Path) -> Non
     growing file into append tracking (e.g. an ops.db cursor reset that
     resynthesizes a cursor from a durable 'full' baseline in source.db -- see
     ``batch.py``'s ``_resynthesize_cursor_from_source``).
+
+    Append acquisition now binds every delta to its declared session identity
+    and the planner resolves one only from archived session evidence, which a
+    fact journal never has. The identity-less plan is refused before any raw
+    is admitted, so the journal is classified on the full route instead.
     """
     initialize_active_archive_root(tmp_path)
     full_payload = b'{"contentKey":"call-1","agentId":"agent-a"}\n'
@@ -811,7 +827,7 @@ def test_live_append_admits_declared_non_session_artifact(tmp_path: Path) -> Non
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
         payload=append_payload,
-        payload_hash="append-hash",
+        payload_hash=sha256(append_payload).hexdigest(),
         cursor_fingerprint="full-revision",
         bytes_read=len(append_payload),
     )
@@ -823,21 +839,14 @@ def test_live_append_admits_declared_non_session_artifact(tmp_path: Path) -> Non
 
     result = ingest_append_plans_on_owner(tmp_path, owner, [plan])
 
-    assert result.succeeded == [plan]
-    assert result.failed == []
+    assert result.succeeded == []
+    assert result.deferred == []
+    assert result.failed == [plan]
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        raw = conn.execute(
-            "SELECT raw_id, logical_source_key, revision_kind, revision_authority FROM raw_sessions "
-            "WHERE source_path = ? ORDER BY acquired_at_ms DESC LIMIT 1",
-            (str(path),),
-        ).fetchone()
-        assert raw is not None
-        artifact = conn.execute(
-            "SELECT artifact_kind, parse_as_session, raw_id FROM raw_artifacts WHERE raw_id = ?",
-            (raw[0],),
-        ).fetchone()
-    assert raw[1:] == (None, "unknown", "quarantined")
-    assert artifact == ("workflow_journal", 0, raw[0])
+        raws = conn.execute("SELECT raw_id FROM raw_sessions WHERE source_path = ?", (str(path),)).fetchall()
+    assert raws == [(baseline_raw_id,)]
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
 
 def test_live_append_retains_cursor_identity_until_baseline_arrives(
@@ -864,9 +873,13 @@ def test_live_append_retains_cursor_identity_until_baseline_arrives(
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
         payload=append_payload,
-        payload_hash="append-hash",
+        payload_hash=sha256(append_payload).hexdigest(),
         cursor_fingerprint="late-full-revision",
         bytes_read=len(append_payload),
+        # The planner binds a Codex append to its resolved session identity,
+        # carried as a sidecar for both logical and acquisition identity.
+        native_id_hint="session-1",
+        acquisition_native_id_hint="session-1",
     )
     cursor = CursorStore(tmp_path / "cursor.sqlite")
     owner = SimpleNamespace(
@@ -894,7 +907,7 @@ def test_live_append_retains_cursor_identity_until_baseline_arrives(
                FROM raw_sessions WHERE revision_kind = 'append'"""
         ).fetchone()
     assert observed == (
-        append_source_revision("late-full-revision", "append-hash"),
+        append_source_revision("late-full-revision", sha256(append_payload).hexdigest()),
         "late-full-revision",
         None,
         None,

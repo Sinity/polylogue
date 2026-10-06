@@ -10,7 +10,7 @@ import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from unittest.mock import Mock
 
 import pytest
@@ -334,9 +334,13 @@ def test_sqlite_page_image_uses_worker_without_materializing_a_session(tmp_path:
         adapter = make_raw_observation_derivation(tmp_path, compute_adapter=compute_adapter)
         frame = raw_observation_frame(tmp_path)
         replacement = adapter.compute(frame, raw_id)
-        assert replacement.prepared_inputs is not None
+        # The census commits in place during preparation and settles the
+        # page image as non-session evidence: no replay input remains.
+        assert [phase for phase, _receipt in replacement.committed_phase_receipts] == ["census"]
+        assert replacement.prepared_inputs is None
         assert replacement.payload is None
-        assert _publish_to_valid(adapter, frame, replacement)
+        assert _publish(adapter, frame, replacement)
+        assert adapter.inspect(frame, (raw_id,))[raw_id] == "valid"
         with sqlite3.connect(tmp_path / "index.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
@@ -347,6 +351,7 @@ def test_sqlite_page_image_uses_worker_without_materializing_a_session(tmp_path:
 def test_logical_sqlite_export_uses_worker_and_replays_session(tmp_path: Path, retained_name: str) -> None:
     def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
         """Logical export bytes outrank a JSON suffix when choosing the worker."""
+        from polylogue.core.provider_identity import captured_hermes_profile_key
         from polylogue.sources.sqlite_export import logical_export_bytes
         from polylogue.sources.sqlite_snapshot import member_export_scope
 
@@ -377,6 +382,9 @@ def test_logical_sqlite_export_uses_worker_and_replays_session(tmp_path: Path, r
                 payload=logical_export_bytes(source, scope=member_export_scope(source)),
                 source_path=str(source.with_name(retained_name)),
                 canonical_source_path=str(source.with_name(retained_name)),
+                # Hermes acquisition captures the profile identity its
+                # session ids are qualified by.
+                captured_profile_key=captured_hermes_profile_key(source.parent),
                 acquired_at_ms=1,
             )
         adapter = make_raw_observation_derivation(tmp_path, compute_adapter=compute_adapter)
@@ -438,7 +446,7 @@ def test_one_pass_replays_a_shared_raw_component_once(tmp_path: Path, monkeypatc
             raw_ids = tuple(
                 archive.write_raw_payload(
                     provider=Provider.CHATGPT,
-                    payload=b"[]",
+                    payload=_chatgpt_payload(("shared-session",)),
                     source_path="shared-component.json",
                     canonical_source_path="shared-component.json",
                     source_index=index,
@@ -564,12 +572,18 @@ def test_duplicate_raws_share_preparation_but_keep_distinct_census(
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
         frame = raw_observation_frame(tmp_path)
         replacement = adapter.compute(frame, raw_ids[0])
-        assert replacement.prepared_inputs is not None
+        # The census commits in place during preparation: the shared worker
+        # parse settles both raws, each with its own census row.
+        assert [phase for phase, _receipt in replacement.committed_phase_receipts] == ["census"]
         assert len(worker_calls) == 1 and worker_calls[0] in raw_ids
-        assert replacement.prepared_inputs[raw_ids[0]].raw_id == raw_ids[0]
-        assert replacement.prepared_inputs[raw_ids[1]].raw_id == raw_ids[1]
-        assert _publish_to_valid(adapter, frame, replacement)
+        assert _publish(adapter, frame, replacement)
         assert adapter.inspect(frame, raw_ids) == dict.fromkeys(raw_ids, "valid")
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            censused = {
+                str(row[0]): str(row[1])
+                for row in conn.execute("SELECT raw_id, status FROM raw_authority_parser_census")
+            }
+        assert censused == dict.fromkeys(raw_ids, "complete")
 
     _run_raw_law(tmp_path, run_phase)
 
@@ -752,9 +766,12 @@ def test_retained_fact_json_is_terminal_without_a_session(tmp_path: Path) -> Non
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
         frame = raw_observation_frame(tmp_path)
         replacement = adapter.compute(frame, raw_id)
-        assert replacement.prepared_inputs is not None
-        assert replacement.prepared_inputs[raw_id].parser_error is None
-        assert _publish_to_valid(adapter, frame, replacement)
+        # The census commits in place during preparation and settles the
+        # declared fact document: nothing remains for a session replay.
+        assert [phase for phase, _receipt in replacement.committed_phase_receipts] == ["census"]
+        assert replacement.prepared_inputs is None
+        assert not (replacement.needs_source_census or replacement.needs_source_classification)
+        assert _publish(adapter, frame, replacement)
         assert adapter.inspect(frame, (raw_id,))[raw_id] == "valid"
         with sqlite3.connect(tmp_path / "index.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
@@ -798,11 +815,12 @@ def test_unknown_retained_json_resolves_on_prepared_route_past_cache_budget(tmp_
         replacement = adapter.compute(frame, raw_id)
         assert replacement.prepared_inputs is not None
         # The census commits in place during preparation: the raw keeps its
-        # acquired identity and records the provider its bytes resolved to.
+        # raw identity, records the provider its bytes resolved to, and the
+        # parsed origin replaces acquisition's unknown-export placeholder.
         with sqlite3.connect(tmp_path / "source.db") as conn:
             assert conn.execute(
                 "SELECT origin, detected_provider FROM raw_sessions WHERE raw_id = ?", (raw_id,)
-            ).fetchone() == ("unknown-export", "chatgpt")
+            ).fetchone() == ("chatgpt-export", "chatgpt")
         artifact = replacement.prepared_inputs[raw_id].prepared_artifact
         assert artifact is not None
         assert artifact.resolved_provider is Provider.CHATGPT
@@ -835,10 +853,7 @@ def test_unsupported_unknown_json_keeps_typed_refusal_in_prepared_publication(
 
     from polylogue.core.stage_admission import admit_stage_write
     from polylogue.sources.revision_backfill import (
-        RetainedPreparationNoProgressError,
         RevisionCensusResult,
-        UnsupportedRetainedJsonShapeError,
-        _sealed_retained_sessions,
     )
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
@@ -871,25 +886,23 @@ def test_unsupported_unknown_json_keeps_typed_refusal_in_prepared_publication(
                 replacement = adapter.compute(frame, raw_id)
                 retained.append(replacement)
                 try:
-                    assert replacement.prepared_inputs is not None
-                    prepared = replacement.prepared_inputs[raw_id]
-                    assert prepared.parser_error is not None
-                    assert prepared.unsupported_shape is True
-                    assert isinstance(_sealed_retained_sessions(prepared), UnsupportedRetainedJsonShapeError)
+                    # Single preparation: the census commits in place during
+                    # compute and settles the deterministic unsupported-shape
+                    # refusal, so no replay input remains to prepare.
+                    assert [phase for phase, _receipt in replacement.committed_phase_receipts] == ["census"]
+                    assert replacement.prepared_inputs is None
+                    assert not (replacement.needs_source_census or replacement.needs_source_classification)
                     phases: list[tuple[str, RevisionCensusResult | PreparedRevisionReplayResult]] = []
 
                     def record_phase(phase: str, receipt: RevisionCensusResult | PreparedRevisionReplayResult) -> None:
                         phases.append((phase, receipt))
 
-                    # The census committed in place during preparation and left
-                    # the raw quarantined; the census it needs again changes
-                    # nothing, so publication reports the committed receipt
-                    # and refuses with the typed no-progress outcome.
-                    with pytest.raises(RetainedPreparationNoProgressError):
-                        admit_stage_write(
-                            "test.unsupported.raw-publication",
-                            lambda: adapter.publish(frame, replacement, phase_receipt=record_phase),
-                        )
+                    # Publication reports the committed census receipt and
+                    # replays nothing.
+                    admit_stage_write(
+                        "test.unsupported.raw-publication",
+                        lambda: adapter.publish(frame, replacement, phase_receipt=record_phase),
+                    )
                     assert len(phases) == 1
                     phase, receipt = phases[0]
                     assert phase == "census"
@@ -1029,9 +1042,11 @@ def test_retained_parser_error_settles_as_terminal_refusal(tmp_path: Path, monke
             lambda *args, **kwargs: PreparedJsonl(None, None, None, "synthetic parser refusal"),
         )
         replacement = adapter.compute(frame, raw_id)
-        assert replacement.prepared_inputs is not None
-        # The census settles the refusal; no replay publication follows it.
-        _publish_to_valid(adapter, frame, replacement)
+        # The census commits in place during preparation and settles the
+        # refusal; no replay publication follows it.
+        assert [phase for phase, _receipt in replacement.committed_phase_receipts] == ["census"]
+        assert replacement.prepared_inputs is None
+        assert _publish(adapter, frame, replacement)
         assert adapter.inspect(frame, (raw_id,)) == {raw_id: "valid"}
         with sqlite3.connect(tmp_path / "source.db") as conn:
             assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
@@ -1067,7 +1082,16 @@ def test_publish_rejects_changed_source_or_generation(tmp_path: Path, mutation: 
             from dataclasses import replace
 
             frame = replace(frame, source_revision=str(tmp_path / "another-index.db"))
-        assert _publish(adapter, frame, prepared) is False
+        if mutation == "descriptor":
+            # The census commits in place during preparation, so a changed Source
+            # row now reaches the replay publication's original observer seal,
+            # which refuses before any effect with its typed stale error.
+            from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+            with pytest.raises(ReferenceSealStaleError):
+                _publish(adapter, frame, prepared)
+        else:
+            assert _publish(adapter, frame, prepared) is False
         with sqlite3.connect(tmp_path / "index.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
@@ -1112,7 +1136,10 @@ def test_poison_observation_does_not_suppress_healthy_sibling(tmp_path: Path, mo
 
         assert raw_observation_backlog_snapshot(tmp_path, limit=8)["candidate_count"] == 0
         with sqlite3.connect(tmp_path / "source.db") as source:
-            source.execute("UPDATE raw_artifacts SET classification_reason='{}' WHERE raw_id=?", (poison,))
+            # A census-settled decode carrier records no validation failure, so
+            # its typed kind and support status, not worker provenance, carry
+            # its authority; an inconsistent carrier is no refusal.
+            source.execute("UPDATE raw_artifacts SET support_status='unknown' WHERE raw_id=?", (poison,))
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
         assert adapter.terminal_decode_refusals((poison,)) == {}
         assert adapter.inspect(raw_observation_frame(tmp_path), (poison,))[poison] == "stale"
@@ -1155,7 +1182,10 @@ def test_every_raw_discovery_lane_preserves_terminal_receipt_authority(tmp_path:
 
         assert select() == ()
         with sqlite3.connect(tmp_path / "source.db") as source:
-            source.execute("UPDATE raw_artifacts SET classification_reason='{}' WHERE raw_id=?", (poison,))
+            # A census-settled decode carrier records no validation failure, so
+            # its typed kind and support status, not worker provenance, carry
+            # its authority; an inconsistent carrier is no refusal.
+            source.execute("UPDATE raw_artifacts SET support_status='unknown' WHERE raw_id=?", (poison,))
         assert select() == (poison,)
 
     _run_raw_law(tmp_path, run_phase)
@@ -1372,6 +1402,10 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
 
         bootstrap_archive_root(tmp_path)
         source = tmp_path / "sources"
+        # 2048 members keep the red twin's sorted-scope work near twice the
+        # bound while one single-pass census of the whole component fits the
+        # managed cutoff.
+        members = 2048
         with _fixture_archive(tmp_path) as archive:
             raw_ids = [
                 archive.write_raw_payload(
@@ -1382,26 +1416,24 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
                     source_index=index,
                     acquired_at_ms=1,
                 )
-                for index in range(4096)
+                for index in range(members)
             ]
-        assert len(set(raw_ids)) == 4096
+        assert len(set(raw_ids)) == members
         # A real source component lets one canonical publication census every
-        # acquired observation. The observer counts successful publication members,
-        # not setup rows or a synthetic inspection verdict.
-        _prepare_source_phases(
-            RawObservationDerivation(tmp_path, compute_adapter=compute_adapter),
-            raw_observation_frame(tmp_path, raw_ids=(raw_ids[0],)),
-            raw_ids[0],
-        )
-        published: list[str] = []
+        # acquired observation. Single-pass convergence commits that census in
+        # place during preparation; the observer counts the members of the
+        # census receipts a successful publication reports, not setup rows or
+        # a synthetic inspection verdict.
+        censused: list[str] = []
         publish = RawObservationDerivation.publish
 
         def counted_publish(
-            self: RawObservationDerivation, frame: RawFrame, replacement: RawObservationReplacement
+            self: RawObservationDerivation, frame: RawFrame, replacement: RawObservationReplacement, **kwargs: Any
         ) -> bool:
-            committed = publish(self, frame, replacement)
+            committed = publish(self, frame, replacement, **kwargs)
             if committed:
-                published.extend(replacement.raw_ids)
+                for _phase, receipt in replacement.committed_phase_receipts:
+                    censused.extend(receipt.input_raw_ids)
             return committed
 
         with monkeypatch.context() as setup:
@@ -1413,8 +1445,8 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
                 publisher=lambda actor, work: _writer(tmp_path, actor, work),
             )
         assert publication.done == 1 and publication.failed == publication.pending == 0
-        assert len(published) == len(set(published)) == 4096
-        assert set(published) == set(raw_ids)
+        assert len(censused) == len(set(censused)) == members
+        assert set(censused) == set(raw_ids)
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
         frame = raw_observation_frame(tmp_path, source_roots=(source,))
         with sqlite_work_counter(step_interval=1) as indexed:

@@ -2468,8 +2468,11 @@ class PreparedIndexMutation:
             return None
         link = os.readlink(path) if stat.S_ISLNK(before.st_mode) else None
         after = path.lstat()
-        identity = (before.st_dev, before.st_ino, before.st_mode, link)
-        if (after.st_dev, after.st_ino, after.st_mode) != identity[:3]:
+        # The binding a path names: its object and file type, never its
+        # permission bits. The cached write connection hardens a tier to 0600
+        # on open; that changes no binding and must not stale a seal.
+        identity = (before.st_dev, before.st_ino, stat.S_IFMT(before.st_mode), link)
+        if (after.st_dev, after.st_ino, stat.S_IFMT(after.st_mode)) != identity[:3]:
             raise ReferenceSealStaleError("configured archive namespace changed during capture")
         return identity
 

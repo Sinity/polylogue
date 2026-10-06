@@ -540,43 +540,30 @@ def test_frozen_replay_skips_typed_terminal_non_session_raw(tmp_path: Path) -> N
 
     # The retired frozen-evidence loader is replaced by the canonical Raw
     # derivation: its census phase must settle the typed terminal raw itself.
-    from functools import partial
-
+    # Preparation commits that census in place on the writer and then reports
+    # the settled typed refusal instead of dispatching the malformed bytes.
     from polylogue.core.compute import BoundedComputeAdapter
-    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
     from polylogue.operations.raw_observation_derivation import raw_observation_frame
-    from polylogue.sources.revision_backfill import PreparedRevisionReplayResult, RevisionCensusResult
     from polylogue.storage.derived.raw import RawObservationDerivation
     from tests.infra.prepared_replay import run_on_convergence_owner
 
-    def census_phase(compute: BoundedComputeAdapter) -> list[RevisionCensusResult | PreparedRevisionReplayResult]:
+    def census_rows() -> list[tuple[object, ...]]:
+        with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+            return conn.execute("SELECT * FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)).fetchall()
+
+    assert census_rows() == []
+
+    def census_phase(compute: BoundedComputeAdapter) -> RetainedRawDecodeRefusalError:
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
         frame = raw_observation_frame(tmp_path)
-        replacement = adapter.compute(frame, raw_id)
-        receipts: list[RevisionCensusResult | PreparedRevisionReplayResult] = []
-        try:
-            assert replacement.needs_source_census
-            admit_stage_write(
-                "test.revision.terminal-replay",
-                partial(
-                    adapter.publish,
-                    frame,
-                    replacement,
-                    phase_receipt=lambda kind, receipt: receipts.append(receipt) if kind == "census" else None,
-                ),
-            )
-        finally:
-            replacement.close()
-        return receipts
+        with pytest.raises(RetainedRawDecodeRefusalError) as refused:
+            adapter.compute(frame, raw_id)
+        return refused.value
 
-    receipts = run_on_convergence_owner(tmp_path, "test.revision.terminal-replay", census_phase)
-    assert len(receipts) == 1
-    census = receipts[0]
-    assert isinstance(census, RevisionCensusResult)
-    assert census.scanned == 1
-    assert census.input_raw_ids == (raw_id,)
-    assert census.classified_full == 0
-    assert census.quarantined == 0
+    refusal = run_on_convergence_owner(tmp_path, "test.revision.terminal-replay", census_phase)
+    assert refusal.kind is RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT
+    assert len(census_rows()) == 1
 
 
 def test_membership_receipt_excludes_post_parse_pending_identity(tmp_path: Path) -> None:
@@ -3040,9 +3027,12 @@ def test_terminal_failure_carrier_survives_ordinary_reclassification(tmp_path: P
         assert carrier_id.startswith("raw-failure:")
         assert carrier_kind == RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value
 
-        # The ordinary Claude path rule re-observing the exact same carrier id.
+    # The ordinary Claude path rule re-observing the exact same carrier id. The
+    # archive's own Source handle admits only its declared producers, so the
+    # upsert law runs on a fixture connection.
+    with sqlite3.connect(tmp_path / "source.db") as fixture_source:
         upsert_raw_artifact(
-            archive._ensure_source_conn(),
+            fixture_source,
             raw_id,
             ArchiveSourceArtifact(
                 artifact_id=carrier_id,

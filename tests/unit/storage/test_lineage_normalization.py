@@ -938,9 +938,11 @@ def test_variant_prefix_lineage_converges_across_order_and_parent_replacement(
 
     This is the deterministic reduction of the state-machine order failure:
     parent-first and child-first ingestion must leave the same child tail,
-    resolved link, and composed transcript.  Replacing the parent then proves
-    the child composes the latest accepted sibling values rather than retaining
-    a duplicate child-owned variant.
+    resolved link, and composed transcript.  Replacing the parent with changed
+    content at the branch point then invalidates the branch-point witness: the
+    child keeps the transcript it inherited, materialized once as its own rows
+    (both sibling variants), and the edge becomes spawned-fresh, while the
+    parent reads its new values.
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
@@ -1005,22 +1007,24 @@ def test_variant_prefix_lineage_converges_across_order_and_parent_replacement(
     )
     write_fixture_index_session(conn, replacement)
 
-    assert asyncio.run(_read_texts(db, child_id)) == ["root", "primary v2", "sibling v2", "child tail"]
-    assert (
-        conn.execute(
+    # A rewritten branch point no longer re-stamps the child's witness
+    # (aa23fea308): the child keeps its pre-write transcript as its own rows.
+    assert asyncio.run(_read_texts(db, child_id)) == ["root", "primary v1", "sibling v1", "child tail"]
+    assert asyncio.run(_read_texts(db, parent_id)) == ["root", "primary v2", "sibling v2"]
+    assert [
+        tuple(row)
+        for row in conn.execute(
             "SELECT native_id, position, variant_index FROM messages WHERE session_id = ? ORDER BY position, variant_index",
             (child_id,),
         ).fetchall()
-        == physical
-    )
-    assert (
+    ] == [("p0", 0, 0), ("p1", 1, 0), ("p1-alt", 1, 1), ("c2", 2, 0)]
+    assert tuple(
         conn.execute(
             "SELECT resolved_dst_session_id, branch_point_message_id, inheritance, status "
             "FROM session_links WHERE src_session_id = ?",
             (child_id,),
         ).fetchone()
-        == link
-    )
+    ) == (parent_id, None, "spawned-fresh", None)
     close_fixture_index_connection(conn)
 
 
@@ -1348,7 +1352,10 @@ def test_full_replace_graph_failure_rolls_back_then_retries_idempotently(
     monkeypatch.setattr(_write_module, "_resolve_session_graph", real_resolve)
     write_fixture_index_session(conn, replacement)
     after_retry = _state()
-    assert after_retry[2:] == (["root", "parent v2", "child tail"], True, None)
+    # The replacement changes the branch-point content, so the child keeps its
+    # pre-write prefix as its own rows (aa23fea308) and stays complete.
+    assert after_retry[2:] == (["root", "parent v1", "child tail"], True, None)
+    assert after_retry[1][2] == "spawned-fresh"
     write_fixture_index_session(conn, replacement)
     assert _state() == after_retry
     close_fixture_index_connection(conn)

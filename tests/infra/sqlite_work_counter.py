@@ -178,15 +178,15 @@ def _is_archive_wide_derived_statement(sql: str) -> bool:
             )
         )
     if table == "action_pairs":
-        # Both tool-use branches and the result branch must be session-bound.
+        # The shared association owner's tool-use and tool-result block
+        # sources and the unpaired tool-use branch must all be session-bound.
+        blocks = r"from blocks (?:u|r)(?: indexed by idx_blocks_session_position)? where"
         return not all(
             re.search(predicate, sql)
             for predicate in (
-                rf"where u.block_type = \? and u.tool_id is not null and u.tool_id != \? "
-                rf"and u.session_id = {_BOUND_VALUE} union all ",
-                rf"where r.block_type = \? and r.tool_id is not null and r.tool_id != \? "
-                rf"and r.session_id = {_BOUND_VALUE} \), numbered_events as ",
-                rf"where u.block_type = \? and \(u.tool_id is null or u.tool_id = \?\) "
+                rf"{blocks} u.block_type=\? and u.session_id = {_BOUND_VALUE} union all ",
+                rf"{blocks} r.block_type=\? and r.session_id = {_BOUND_VALUE} \), association_events as ",
+                rf"{blocks} u.block_type = \? and \(u.tool_id is null or u.tool_id = \?\) "
                 rf"and u.session_id = {_BOUND_VALUE}$",
             )
         )

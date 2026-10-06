@@ -96,7 +96,7 @@ def test_nontransactional_composed_stream_yields_each_stored_message_once(tmp_pa
     from polylogue.storage.io_phase_metrics import connect_measured
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.archive_tiers.write import _iter_composed_rows
+    from polylogue.storage.sqlite.archive_tiers.write import _iter_composed_rows, _prefix_alignment_signature
     from tests.infra.index_writer import write_fixture_index_session
     from tests.infra.reference_sessions import reference_session
 
@@ -106,13 +106,25 @@ def test_nontransactional_composed_stream_yields_each_stored_message_once(tmp_pa
         connection.row_factory = sqlite3.Row
         initialize_archive_tier(connection, ArchiveTier.INDEX)
         session_id = write_fixture_index_session(connection, reference_session("single-composed-input"))
+        # Composed rows carry the replay-alignment digest of the role and each
+        # stored block (f7d0b64ef0), not the complete content address.
         with closing(
             connection.execute(
-                "SELECT message_id,hex(content_address) FROM messages WHERE session_id=? ORDER BY position,variant_index",
+                "SELECT message_id,role FROM messages WHERE session_id=? ORDER BY position,variant_index",
                 (session_id,),
             )
         ) as cursor:
-            expected = [(row[0], row[1].lower(), session_id) for row in cursor]
+            stored = [(str(row[0]), str(row[1] or "")) for row in cursor]
+        expected = []
+        for message_id, role in stored:
+            with closing(
+                connection.execute(
+                    "SELECT content_hash FROM blocks WHERE session_id=? AND message_id=? ORDER BY position",
+                    (session_id, message_id),
+                )
+            ) as cursor:
+                hashes = [bytes(row[0]) for row in cursor if row[0] is not None]
+            expected.append((message_id, _prefix_alignment_signature(role, hashes), session_id))
         assert len(expected) == 1
         assert not connection.in_transaction
         with closing(_iter_composed_rows(connection, session_id)) as rows:

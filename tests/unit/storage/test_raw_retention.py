@@ -205,7 +205,9 @@ def _insert_revision_raw(
     append_start_offset: int | None = None,
     append_end_offset: int | None = None,
     authority: str = "byte_proven",
+    blob_hash: bytes | None = None,
 ) -> None:
+    """Insert one revision raw; ``blob_hash`` names retained bytes when a law needs them proven."""
     conn.execute(
         """
         INSERT INTO raw_sessions (
@@ -221,7 +223,7 @@ def _insert_revision_raw(
             raw_id,
             str(source_path),
             -1 if kind == "append" else 0,
-            acquired_at_ms.to_bytes(32, "big"),
+            acquired_at_ms.to_bytes(32, "big") if blob_hash is None else blob_hash,
             blob_size,
             acquired_at_ms,
             kind,
@@ -2633,6 +2635,8 @@ def test_deferred_cursor_never_blocks_source_selection(tmp_path: Path) -> None:
     source_path = tmp_path / "deferred.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
     initialize_active_archive_root(tmp_path)
+    # Frontier inspection proves the accepted head's retained bytes.
+    head_hash, head_size = _write_blob(BlobStore(tmp_path / "blob"), b"0123456789")
     with sqlite3.connect(source_db) as conn:
         _insert_revision_raw(
             conn,
@@ -2642,7 +2646,8 @@ def test_deferred_cursor_never_blocks_source_selection(tmp_path: Path) -> None:
             kind="full",
             source_revision="revision-0",
             generation=0,
-            blob_size=10,
+            blob_size=head_size,
+            blob_hash=bytes.fromhex(head_hash),
         )
         conn.commit()
     _seed_index_authority(
@@ -2789,6 +2794,8 @@ def test_raw_frontier_integrity_projection_follows_active_index_pointer(tmp_path
         source.backup(target)
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
+    # Frontier inspection proves the accepted head's retained bytes.
+    head_hash, head_size = _write_blob(BlobStore(tmp_path / "blob"), b"0123456789")
     with sqlite3.connect(tmp_path / "source.db") as conn:
         _insert_revision_raw(
             conn,
@@ -2798,7 +2805,8 @@ def test_raw_frontier_integrity_projection_follows_active_index_pointer(tmp_path
             kind="full",
             source_revision="revision-1",
             generation=1,
-            blob_size=10,
+            blob_size=head_size,
+            blob_hash=bytes.fromhex(head_hash),
         )
         conn.commit()
     _seed_index_authority(

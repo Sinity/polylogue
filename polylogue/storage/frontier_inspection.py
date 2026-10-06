@@ -1577,7 +1577,11 @@ def inspect_prepared_raw_authority_frontier(
                         if len(broken_samples) < _FINDINGS_SAMPLE_LIMIT:
                             broken_samples.extend(cast(tuple[BrokenAppendHeadSample, ...], chain[3])[:1])
                 for cursor, comparison, retained_path in _iter_selected_cursor_proofs(source, frame.selection, ops):
-                    cursor_count += 1
+                    # Only a compared cursor is a check, as in the canonical
+                    # retention comparison: a deferred tail or an authority gap
+                    # has no comparison, and counting it makes the published
+                    # findings contradict their own comparison count.
+                    cursor_count += int(comparison.checked)
                     ahead_count += int(comparison.ahead_count > 0)
                     ahead_comparisons += comparison.ahead_count
                     cursor_comparisons += comparison.comparison_count
