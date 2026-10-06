@@ -719,7 +719,7 @@ def classify_membership_revisions(
     # differs". Applying the fallback even when its pick happens to be the
     # SAME raw_id as the existing head is still unsafe: verified directly
     # during development (a real integration-test regression) that
-    # ``apply_raw_membership_classification`` re-accepting that raw_id
+    # ``apply_prepared_membership_index`` re-accepting that raw_id
     # through MEMBERSHIP governance downgrades a byte-governed head's own
     # ``accepted_frontier_kind``/generation metadata from "byte" to
     # "semantic", even though the pointed-to raw_id never changed -- a
@@ -779,7 +779,7 @@ def _maximal_evidence_fallback(representatives: list[MembershipRevision]) -> Mem
     ``test_divergent_bundle_member_preserves_last_accepted_session`` and its
     sibling ``test_divergent_bundle_member_does_not_block_safe_members``
     exercise the DIFFERENT-raw_id case against a real, carefully-designed
-    invariant in ``archive.py``'s ``apply_raw_membership_classification``
+    invariant in ``apply_prepared_membership_index``
     write-back (polylogue-miwv, PR #3211): once a logical source has an
     accepted head, a later membership pass may not silently retire it in
     favor of an unrelated raw. A second, independently-discovered case ruled

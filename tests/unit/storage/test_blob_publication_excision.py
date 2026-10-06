@@ -17,7 +17,6 @@ from typing import Any, cast
 
 import pytest
 
-from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, ConnectionBlobPublicationRead
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import record_excised_blob_hash
@@ -544,52 +543,3 @@ def test_retained_replay_writes_hold_the_publisher_slot_through_their_commit(tmp
             monkeypatch.undo()
 
         assert seen == [False, False]
-
-
-def test_membership_classification_holds_the_publisher_slot(tmp_path: Path) -> None:
-    """Membership classification orders itself against excision by the slot.
-
-    Anti-vacuity (Codex P1, #5696): leave membership classification outside
-    the exclusion and an excision can remove the session between its checks
-    and its commit, which the replay recreates.
-    """
-    import fcntl
-
-    import pytest
-
-    import polylogue.storage.sqlite.archive_tiers.archive as archive_module
-    from polylogue.storage.blob_publication import _writer_lock_path
-
-    root = tmp_path / "archive"
-    root.mkdir()
-    with write_lease("test.blob-publication", archive_root=root):
-        with ArchiveStore(root, initialize=True, read_only=False):
-            pass
-        lock_path = _writer_lock_path(root / "source.db")
-
-        def exclusion_available() -> bool:
-            with lock_path.open("a+b") as handle:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    return False
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                return True
-
-        seen: list[bool] = []
-
-        def observed(*_args: object, **_kwargs: object) -> object:
-            seen.append(exclusion_available())
-            return ("session", "raw")
-
-        monkeypatch = pytest.MonkeyPatch()
-        monkeypatch.setattr(archive_module, "apply_raw_membership_classification", observed)
-        try:
-            with ArchiveStore(root, read_only=False) as store:
-                store.apply_raw_membership_classification(
-                    "key", MembershipClassification((), (), ()), {}, {}, acquired_at_ms=1
-                )
-        finally:
-            monkeypatch.undo()
-
-        assert seen == [False]

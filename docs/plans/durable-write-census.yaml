@@ -790,27 +790,6 @@ writes:
     classification: lifecycle_transition
     reason: "raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
   - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "apply_raw_membership_classification"
-    table: "raw_session_memberships"
-    kind: "update"
-    tier: "source"
-    classification: lifecycle_transition
-    reason: "raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "apply_raw_membership_classification"
-    table: "raw_sessions"
-    kind: "update"
-    tier: "source"
-    classification: lifecycle_transition
-    reason: "raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "apply_raw_membership_classification"
-    table: "raw_sessions"
-    kind: "update"
-    tier: "source"
-    classification: lifecycle_transition
-    reason: "Separate statement 2 of this function on raw_sessions (). raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
     function: "promote_reconstructed_legacy_append_revisions"
     table: "raw_authority_parser_census"
     kind: "delete"
@@ -852,6 +831,13 @@ writes:
     tier: "source"
     classification: row_supersession
     reason: "content-keyed derived receipt replaced wholesale by re-observing the same unchanged evidence: the key is raw_id, itself a SHA-256 over (origin, source_path, source_index, blob_hash, native_id), and the row's parser_fingerprint/cohort_fingerprint column records which generation produced it. Every column in the write comes from that one re-derivation, so no field survives from an earlier generation to be corrected"
+  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
+    function: "refine_prepared_raw_origin"
+    table: "raw_sessions"
+    kind: "update"
+    tier: "source"
+    classification: guarded_producer_refinement
+    reason: "census-time placeholder fill: the statement's WHERE carries origin = 'unknown-export', so only acquisition's placeholder converges to the origin the parsed session names; a confident origin is never overwritten (same rule as refine_raw_origin)"
   - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
     function: "_retire_prepared_full_revision_binding"
     table: "raw_sessions"

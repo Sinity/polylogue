@@ -29,7 +29,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.core.enums import ArtifactSupportStatus, Provider
-from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import parse_payload
@@ -564,7 +564,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
-from tests.infra.prepared_replay import apply_prepared_membership_classification
+from tests.infra.prepared_membership import publish_prepared_membership_classification
 
 _ARCHIVE_STORAGE_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
 
@@ -2237,14 +2237,15 @@ def test_full_ingest_unknown_invalid_utf8_records_terminal_decode_evidence(tmp_p
     assert artifact == ("terminal_unknown_json_decode", "decode_failed", 0)
 
 
-def test_full_ingest_unrecognized_unknown_export_stays_a_visible_failed_census(
+def test_full_ingest_unrecognized_unknown_export_settles_as_terminal_refusal(
     tmp_path: Path,
 ) -> None:
-    """An input no provider recognizes is retained and refused visibly, never typed terminal.
+    """An input no provider recognizes is retained and refused once, typed.
 
     Retained preparation refuses the unrecognized shape before any parser
-    runs; the refusal is a failed parser census naming the typed reason, not a
-    terminal raw-failure artifact that would close the input as explained.
+    runs. The same bytes can only be refused the same way, so the refusal
+    settles: a non-session census with typed terminal evidence and the parse
+    failure on the raw, never a failed census every pass would census again.
     """
     root = tmp_path / "unknown"
     root.mkdir()
@@ -2261,18 +2262,18 @@ def test_full_ingest_unrecognized_unknown_export_stays_a_visible_failed_census(
 
     result = run_ingest_files(processor, [path], emit_event=False)
 
-    assert result.succeeded_file_count == 0
     assert result.ingested_session_count == 0
+    assert result.failed_file_count == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact_kinds = {row[0] for row in conn.execute("SELECT artifact_kind FROM raw_artifacts")}
         retained = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
         census = conn.execute("SELECT status, detail FROM raw_membership_census").fetchall()
-        parser_census = conn.execute("SELECT status FROM raw_authority_parser_census").fetchall()
-    assert not artifact_kinds & RAW_FAILURE_EVIDENCE_KINDS
+        (parse_error,) = conn.execute("SELECT parse_error FROM raw_sessions").fetchone()
+    assert artifact_kinds == {RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION.value}
     assert retained == 1
-    assert [status for status, _detail in census] == ["failed"]
+    assert [status for status, _detail in census] == ["non_session"]
     assert "UnsupportedRetainedJsonShapeError" in census[0][1]
-    assert parser_census == [("failed",)]
+    assert isinstance(parse_error, str) and parse_error.startswith("UnsupportedRetainedJsonShapeError:")
 
 
 def test_full_ingest_defers_incomplete_jsonl_only_after_hot_prefix_proof(
@@ -5675,6 +5676,17 @@ def test_rewrite_plus_growth_before_planning_fails_closed_to_full_route(tmp_path
     assert retained is not None
     assert retained[1] == len(rewritten + appended)
     assert BlobStore(tmp_path / "blob").read_all(bytes(retained[0]).hex()) == rewritten + appended
+    # The fork leaves the byte head accepted and parsed; its converted
+    # membership row is decided, never left pending.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            """
+            SELECT m.decision, r.revision_authority, r.parsed_at_ms IS NOT NULL
+            FROM raw_session_memberships AS m
+            JOIN raw_sessions AS r USING (raw_id)
+            ORDER BY m.decision
+            """
+        ).fetchall() == [("applied", "byte_proven", 1), ("deferred", "quarantined", 0)]
 
 
 def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
@@ -6769,6 +6781,62 @@ def test_append_multi_session_payload_is_rejected_before_index_write(
         assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("append-multi",)]
 
 
+def test_full_parser_exception_settles_as_terminal_refusal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A parser that fails on retained bytes refuses them once, typed.
+
+    Parsing the same immutable bytes with the same parser can only fail the
+    same way, so a non-decode parser exception settles as a terminal refusal
+    with raw evidence. A failed census instead would be re-censused on every
+    pass without progress.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    source = root / "parser-crash.jsonl"
+    source.write_bytes(_codex_shaped_bytes("parser-crash"))
+    index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    def crash(*_args: object, **_kwargs: object) -> Generator[ParsedSession, None, None]:
+        raise RuntimeError("injected deterministic parser failure")
+        yield  # pragma: no cover - makes this a generator like the real parser
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_stream", crash)
+
+    first = run_ingest_files(processor, [source], emit_event=False)
+    second = run_ingest_files(processor, [source], emit_event=False)
+
+    assert first.failed_file_count == 0
+    assert second.failed_file_count == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT r.parsed_at_ms, r.parse_error, a.artifact_kind, c.status
+            FROM raw_sessions AS r
+            JOIN raw_artifacts AS a ON a.raw_id = r.raw_id
+            JOIN raw_membership_census AS c ON c.raw_id = r.raw_id
+            WHERE r.source_path = ?
+            """,
+            (str(source),),
+        ).fetchall()
+    assert len(rows) == 1
+    parsed_at_ms, parse_error, artifact_kind, census_status = rows[0]
+    assert parsed_at_ms is None
+    assert isinstance(parse_error, str) and parse_error.startswith("RuntimeError:")
+    assert artifact_kind == RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value
+    assert census_status == "non_session"
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
 def test_full_multi_session_failure_retries_without_success_mapping(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -7384,13 +7452,13 @@ def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_p
         # Arbitration now runs and concludes ambiguous (a decided conflict,
         # e.g. the conveyor found no unique growth chain). This is no longer
         # pending -- it must surface as a failure, not defer forever.
-        apply_prepared_membership_classification(
+        publish_prepared_membership_classification(
             archive,
             "codex-session:pending-vs-ambiguous",
             MembershipClassification((), (), (raw_id,)),
             {raw_id: session},
             {raw_id: projection},
-            acquired_at_ms=2,
+            decided_at_ms=2,
         )
         assert archive.raw_membership_authority_complete(raw_id) is False
         assert archive.raw_membership_decision_pending(raw_id) is False
@@ -7453,13 +7521,13 @@ def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_hea
         archive.commit()
     seed_membership_census(tmp_path, [(legacy_raw_id, [legacy_session])], parser_fingerprint="legacy-parser")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        apply_prepared_membership_classification(
+        publish_prepared_membership_classification(
             archive,
             "chatgpt-export:parser-drift",
             MembershipClassification((legacy_raw_id,), (), ()),
             {legacy_raw_id: legacy_session},
             {legacy_raw_id: legacy_projection},
-            acquired_at_ms=1,
+            decided_at_ms=1,
         )
 
     # Byte-level formatting changes create a new retained raw while preserving
@@ -9443,6 +9511,12 @@ def test_append_refuses_a_malformed_middle_record(tmp_path: Path) -> None:
         ).fetchall()
     assert retained_hash.lower() == sha256(malformed).hexdigest()
     assert error
+    # The append's own bytes fail to decode: the same terminal evidence the
+    # full route's census records for corrupt input.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (_raw_id,)).fetchall() == [
+            (RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value,)
+        ]
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (1,)
 

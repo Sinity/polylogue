@@ -1635,7 +1635,11 @@ def prepare_membership_replay(
                 MembershipRevision(
                     raw_id,
                     projections[raw_id],
-                    session.updated_at,
+                    # Only the producer's own time orders browser snapshots. An
+                    # acquisition fallback (the capture file's mtime) is not
+                    # provider authority: the receiver rewrites one spool file
+                    # per capture, so its mtime would order any two captures.
+                    session.updated_at if session.updated_at_provenance != "fallback" else None,
                     browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
                     # Declared capture order: the latest retained observation
                     # of these bytes, never their evidence volume.
@@ -3225,6 +3229,7 @@ def prepare_revision_source_census(
         _PreparedSourceProducer,
         prepare_raw_state_update,
         prepared_parser_census_is_current,
+        refine_prepared_raw_origin,
         replace_raw_membership_census,
     )
 
@@ -3251,43 +3256,8 @@ def prepare_revision_source_census(
             state.quarantined += 1
             return
         outcome = _prepared_retained_outcome(evidence_reader, raw_id, prepared_inputs)
-        provider, _hash, source_path, revision_kind, raw_size = evidence_reader.raw_revision_descriptor(raw_id)
+        provider, _hash, source_path, revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
         observed_at_ms = evidence_reader.raw_revision_observation_order(raw_id)[0]
-        if isinstance(outcome, UnsupportedRetainedJsonShapeError) and raw_size == 0:
-            # A zero-byte capture holds no record at all: a settled no-session
-            # observation with typed terminal evidence, never a retry. A
-            # non-empty unrecognized shape stays a visible failed census.
-            _record_raw_failure_evidence(
-                producer,
-                raw_id,
-                provider=provider,
-                source_path=source_path,
-                source_index=source_index,
-                acquired_at_ms=observed_at_ms,
-                kind=(
-                    RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION
-                    if provider is Provider.UNKNOWN
-                    else RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE
-                ),
-                manage_transaction=False,
-            )
-            _apply_source_raw_state_update(
-                producer,
-                raw_id,
-                state=_raw_parse_failure_state(provider, outcome),
-                manage_transaction=False,
-            )
-            replace_raw_membership_census(
-                seal,
-                raw_id,
-                [],
-                parser_fingerprint=raw_authority_parser_fingerprint(),
-                censused_at_ms=0,
-                detail=str(outcome),
-                retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
-                revision_authority=None,
-            )
-            return
         if isinstance(outcome, Exception):
             if _persist_terminal_raw_refusal(
                 producer,
@@ -3301,13 +3271,41 @@ def prepare_revision_source_census(
             ):
                 record_current_parser_source_census(seal, raw_id)
             else:
+                # Any other retained parser failure (an unrecognized shape, a
+                # parser exception) is this parser's settled answer for these
+                # immutable bytes: parsing them again can only fail the same
+                # way. It admits no session, so it settles as a non-session
+                # census with typed terminal evidence; a failed census would
+                # be re-censused on every pass without progress. A changed
+                # parser fingerprint re-censuses the raw.
+                _record_raw_failure_evidence(
+                    producer,
+                    raw_id,
+                    provider=provider,
+                    source_path=source_path,
+                    source_index=source_index,
+                    acquired_at_ms=observed_at_ms,
+                    kind=(
+                        RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION
+                        if provider is Provider.UNKNOWN
+                        else RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE
+                    ),
+                    manage_transaction=False,
+                )
+                _apply_source_raw_state_update(
+                    producer,
+                    raw_id,
+                    state=_raw_parse_failure_state(provider, outcome),
+                    manage_transaction=False,
+                )
                 replace_raw_membership_census(
                     seal,
                     raw_id,
-                    None,
+                    [],
                     parser_fingerprint=raw_authority_parser_fingerprint(),
                     censused_at_ms=0,
                     detail=str(outcome),
+                    retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
                     revision_authority=None,
                 )
             state.quarantined += 1
@@ -3343,6 +3341,7 @@ def prepare_revision_source_census(
             )
             if provider is Provider.UNKNOWN:
                 prepare_raw_state_update(seal, raw_id, state=RawSessionStateUpdate(payload_provider=parsed_provider))
+            refine_prepared_raw_origin(seal, raw_id, origin_from_provider(parsed_provider))
         else:
             if artifact is None or artifact.resolved_provider is None:
                 raise RetainedPreparationRetryableError(f"empty retained outcome has no captured provider: {raw_id}")
@@ -3749,8 +3748,7 @@ def prepare_retained_replay_source(
                 decisions=decisions,
                 decided_at_ms=decided_at_ms,
                 projections=plan.projections,
-                conflict=plan.head_plan.conflict,
-                conflict_fails_observation=plan.head_plan.conflict_fails_observation,
+                head_plan=plan.head_plan,
             )
             selected_membership[logical_key] = dataclasses.replace(
                 plan,

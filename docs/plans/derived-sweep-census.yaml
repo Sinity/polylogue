@@ -556,20 +556,6 @@ sites:
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
   - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "apply_raw_membership_classification"
-    subject: "raw_revision_heads"
-    kind: "state_selected_subject"
-    scope: "state_predicate"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "apply_raw_membership_classification"
-    subject: "raw_revision_heads"
-    kind: "unbound_rewrite"
-    scope: "state_predicate"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
     function: "apply_raw_revision_replay"
     subject: "raw_revision_heads"
     kind: "unbound_rewrite"

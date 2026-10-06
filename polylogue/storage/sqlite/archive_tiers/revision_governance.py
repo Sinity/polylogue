@@ -1,7 +1,7 @@
 """Raw revision & membership governance: the authority over which raw bytes win.
 
 Writer module: index, source.
-Twin-write contract: raw-membership-classification.
+Twin-write contract: raw-revision-replay.
 
 Extracted from ``archive_tiers/archive.py`` (polylogue-1r9c hotspot-map slice,
 2026-07-30 defect-concentration cut — PRs #3394/#3396/#3397/#3398/#3401 all
@@ -22,7 +22,7 @@ possibly many times), this module decides:
 - whether a parsed session is allowed to overwrite ``sessions`` at all, given
   the raw's recorded membership decision and revision-authority state
   (``_write_parsed_precedence_result``, ``apply_raw_revision_replay``,
-  ``apply_raw_membership_classification``);
+  ``apply_prepared_membership_index``);
 - how a raw's membership in a revision cohort is computed, persisted, and
   queried (``replace_raw_membership_census``, ``raw_membership_*``);
 - bookkeeping for a raw's own parse lifecycle
@@ -94,7 +94,6 @@ question makes it impossible to pass the wrong answer.)
 from __future__ import annotations
 
 import hashlib
-import itertools
 import sqlite3
 import time
 from builtins import BaseExceptionGroup
@@ -146,7 +145,6 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     apply_source_raw_state_update,
     bind_source_raw_revision,
     prepare_parser_singleton_witness,
-    write_source_blob_refs,
     write_source_raw_session,
     write_source_raw_session_blob_ref,
 )
@@ -241,8 +239,9 @@ class ActiveByteRevisionChainError(RuntimeError):
 class MembershipReplayConflictError(RawCASFrontierError):
     """Membership replay refused to move an accepted head this pass.
 
-    Raised by ``apply_raw_membership_classification`` when it cannot safely
-    retire or replace the currently accepted ``raw_revision_heads`` row for a
+    Carried by a membership head plan (``prepare_membership_head_plan``)
+    when it cannot safely retire or replace the currently accepted
+    ``raw_revision_heads`` row for a
     logical identity (an unrelated accepted head, or a head with unresolved
     byte-append evidence still hanging off it). This is a **transient,
     retry-eligible** refusal, not proof the raw is unparseable: a later pass
@@ -2436,6 +2435,41 @@ def replace_raw_membership_census(
     record_current_parser_source_census(seal, raw_id, parser_sessions=sessions)
 
 
+def refine_prepared_raw_origin(seal: PreparedIndexMutation, raw_id: str, origin: Origin) -> None:
+    """Stage the parsed origin over acquisition's ``unknown-export`` placeholder.
+
+    A file acquired before detection (a browser capture) carries the
+    placeholder until its census parses it. The parsed session names the
+    origin; the row converges to it, as ``refine_raw_origin`` does for a
+    better-informed re-acquisition. Guarded on the placeholder, so a
+    confident origin is never overwritten.
+    """
+    if origin is Origin.UNKNOWN_EXPORT:
+        return
+    check_compute_cancelled()
+    _load_parser_census_source_inputs(seal, raw_id)
+    with seal.source_rows("SELECT origin FROM raw_sessions WHERE raw_id = ?", (raw_id,)) as rows:
+        row = rows.fetchone()
+    if row is None:
+        raise RuntimeError(f"origin refinement names an absent raw: {raw_id}")
+    if str(row[0]) != Origin.UNKNOWN_EXPORT.value:
+        return
+    raw_key = seal.retain_literal_scalar(raw_id)
+    raw_expression, raw_parameters = seal.source_literal_expression(raw_key)
+    origin_expression, origin_parameters = seal.source_literal_expression(seal.retain_literal_scalar(origin.value))
+    placeholder_expression, placeholder_parameters = seal.source_literal_expression(
+        seal.retain_literal_scalar(Origin.UNKNOWN_EXPORT.value)
+    )
+    with seal.source_statement(
+        f"UPDATE raw_sessions SET origin = {origin_expression} "
+        f"WHERE raw_id = {raw_expression} AND origin = {placeholder_expression}",
+        (*origin_parameters, *raw_parameters, *placeholder_parameters),
+        table="raw_sessions",
+        writable_targets=(("raw_sessions", (raw_key,)),),
+    ):
+        pass
+
+
 def _retire_prepared_full_revision_binding(seal: PreparedIndexMutation, raw_key: KnownTierCell) -> None:
     """Stage the one shape of a full revision leaving byte governance."""
     raw_expression, raw_parameters = seal.source_literal_expression(raw_key)
@@ -3523,472 +3557,6 @@ def membership_decisions_for_classification(
     return decisions
 
 
-def require_frozen_membership_authority(
-    store: RawRevisionGovernanceHost,
-    logical_source_key: str,
-    classification: MembershipClassification,
-    decisions: dict[str, MembershipDecision] | None = None,
-) -> None:
-    """Require persisted membership authority to equal a current re-derivation."""
-    conn = store._ensure_source_conn()
-    expected_decisions = decisions or membership_decisions_for_classification(classification)
-    for raw_id, decision in expected_decisions.items():
-        expected = (
-            decision.value,
-            "quarantined" if decision in {MembershipDecision.AMBIGUOUS, MembershipDecision.DEFERRED} else "byte_proven",
-            classification.accepted_raw_ids.index(raw_id) if raw_id in classification.accepted_raw_ids else 0,
-        )
-        persisted = conn.execute(
-            """
-            SELECT decision, revision_authority, acquisition_generation
-            FROM raw_session_memberships
-            WHERE raw_id = ? AND logical_source_key = ?
-            """,
-            (raw_id, logical_source_key),
-        ).fetchone()
-        if persisted is None or tuple(persisted) != expected:
-            raise FrozenSourceRemediationRequiredError(
-                "inactive candidate re-derived different membership authority for frozen raw "
-                f"{raw_id}; complete source remediation before candidate construction"
-            )
-        complete = conn.execute(
-            """
-            SELECT c.status = 'complete'
-               AND NOT EXISTS (
-                   SELECT 1 FROM raw_session_memberships AS m
-                   WHERE m.raw_id = c.raw_id
-                     AND (m.decision IS NULL OR m.decision IN ('ambiguous', 'deferred'))
-               )
-            FROM raw_membership_census AS c WHERE c.raw_id = ?
-            """,
-            (raw_id,),
-        ).fetchone()
-        if complete is None or not bool(complete[0]):
-            raise FrozenSourceRemediationRequiredError(
-                "inactive candidate found incomplete frozen membership authority for raw "
-                f"{raw_id}; complete source remediation before candidate construction"
-            )
-
-
-# Unique per correction so a repeated or nested entry can never release or
-# roll back to an outer savepoint that merely shares its name.
-_INCOMPLETE_COHORT_CORRECTION_SAVEPOINTS = itertools.count()
-
-
-def apply_raw_membership_classification(
-    store: RawRevisionGovernanceHost,
-    logical_source_key: str,
-    classification: MembershipClassification,
-    parsed_by_raw_id: dict[str, ParsedSession],
-    projections_by_raw_id: dict[str, SessionRevisionProjection],
-    *,
-    acquired_at_ms: int,
-    stage_timings_s: dict[str, float] | None = None,
-    stage_timing_prefix: str = "membership_replay",
-    manage_transaction: bool = True,
-    bulk_fts: bool = False,
-    bulk_build: bool = False,
-    fresh_build: bool = False,
-    fresh_build_batch: set[str] | None = None,
-    preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
-    preacquired_attachment_refs: Callable[[], Iterable[ArchiveSourceBlobRef]] | None = None,
-    prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
-    prepared_required_raw_ids: frozenset[str] = frozenset(),
-    prepared_write: PreparedSessionWrite | None = None,
-) -> str | None:
-    """Apply one semantic member head and persist every membership decision.
-
-    ``manage_transaction=False`` batches this cohort's index.db head
-    write, its source.db membership-decision updates, and its terminal
-    source.db parse-state marker into the caller's open
-    transaction/pending-state instead of committing them immediately
-    (polylogue-oikv) -- see ``apply_raw_revision_replay`` for the shared
-    batch-commit invariant this mirrors.  The incomplete-cohort parse-state
-    correction is batched too, as a SAVEPOINT inside the caller's transaction
-    (polylogue-upua6), so no branch of this function commits durable source
-    authority ahead of the index write.
-
-    ``bulk_fts`` mirrors ``apply_raw_revision_replay``'s guard-gated bulk
-    FTS mode (polylogue-crd8); default ``False``. ``bulk_build`` mirrors
-    its broader bulk-generation-build lifecycle (polylogue-v6i3); default
-    ``False``.
-    """
-
-    if not manage_transaction:
-        from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
-
-        scope = current_index_mutation_scope()
-        if scope is None:
-            raise RuntimeError("batched retained replay requires the caller's live Index mutation scope")
-        scope.require_connection(store._conn)
-    conn = store._ensure_source_conn()
-    decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
-    decisions = membership_decisions_for_classification(classification)
-    # "superseded_equivalent" asserts an accepted chain superseded the
-    # member. With no accepted head, equivalence collapses back into the
-    # unresolved cohort: labeling it superseded (and, downstream,
-    # byte_proven) fabricates authority for a head that was never written
-    # -- 914 headless-but-"byte_proven" logical sources on the 2026-07-20
-    # rebuild walk came from exactly this mislabel.
-    session_id: str | None = None
-    # Ambiguous evidence is debt, not deletion authority. A later branch
-    # must not erase the last accepted session/head; a cold rebuild simply
-    # has no accepted state to preserve.
-    if classification.accepted_raw_ids:
-        accepted_raw_id = classification.accepted_raw_ids[-1]
-        accepted_session = parsed_by_raw_id[accepted_raw_id]
-        _provider, _blob_hash, source_path, _kind, _blob_size = raw_revision_descriptor(store, accepted_raw_id)
-        if preacquired_attachment_blobs is None or preacquired_attachment_refs is None:
-            raise PreparedSessionWriteRefusedError("membership replay requires sealed attachment preparation")
-        attachments = preacquired_attachment_blobs
-        with store.index_mutation_scope() if manage_transaction else nullcontext():
-            if not _is_frozen_candidate(store):
-                write_source_blob_refs(conn, accepted_raw_id, preacquired_attachment_refs)
-            existing_head = store._conn.execute(
-                """
-                SELECT accepted_raw_id, accepted_content_hash, accepted_frontier_kind, session_id,
-                       accepted_frontier
-                FROM raw_revision_heads WHERE logical_source_key = ?
-                """,
-                (logical_source_key,),
-            ).fetchone()
-            yield_to_head_raw_id: str | None = None
-            if existing_head is not None:
-                existing_raw_id = str(existing_head[0])
-                classified_raw_ids = {
-                    *classification.accepted_raw_ids,
-                    *classification.equivalent_raw_ids,
-                }
-                chain_head_authority = (
-                    _raw_revision_authority(store, existing_raw_id)
-                    if existing_raw_id not in classified_raw_ids
-                    else None
-                )
-                if existing_raw_id not in classified_raw_ids and chain_head_authority not in (
-                    None,
-                    "quarantined",
-                ):
-                    # The head is owned by chain-governed (non-quarantined)
-                    # source evidence outside this quarantined membership
-                    # cohort -- e.g. a byte-proven provider export of the
-                    # same conversation this browser capture snapshotted.
-                    # Provider-export evidence outranks quarantined capture
-                    # evidence unconditionally: a scalar semantic frontier
-                    # cannot prove the capture is a content-superset, so
-                    # the cohort always yields (receipted below); the
-                    # capture bytes stay in the source tier. Re-adopting a
-                    # genuinely content-ahead capture tail needs a real
-                    # prefix-dominance proof (follow-up bead).
-                    yield_to_head_raw_id = existing_raw_id
-                else:
-                    persisted_session = store._conn.execute(
-                        "SELECT raw_id, content_hash FROM sessions WHERE session_id = ?",
-                        (str(existing_head[3]),),
-                    ).fetchone()
-                    # A cohort may restore missing output or rederive its
-                    # own output after parser or representative drift. A
-                    # persisted row owned by a raw outside the cohort still
-                    # requires separate authority.
-                    persisted_raw = _persisted_owner_raw(persisted_session)
-                    persisted_head_authority = (
-                        _raw_revision_authority(store, persisted_raw)
-                        if persisted_raw is not None and persisted_raw not in classified_raw_ids
-                        else None
-                    )
-                    if persisted_head_authority not in (None, "quarantined"):
-                        # A resumed membership pass may have already
-                        # installed a quarantined cohort representative
-                        # into raw_revision_heads while the persisted
-                        # session still belongs to an older byte-governed
-                        # head. The persisted row is the authoritative
-                        # claim in that mixed state; yield rather than
-                        # treating its byte head as an unrelated hazard.
-                        persisted_revision = conn.execute(
-                            """
-                            SELECT source_revision, acquisition_generation,
-                                   append_end_offset, blob_size
-                            FROM raw_sessions WHERE raw_id = ?
-                            """,
-                            (persisted_raw,),
-                        ).fetchone()
-                        if persisted_revision is None or persisted_revision[0] is None:
-                            raise RuntimeError("persisted byte-governed session lacks revision evidence")
-                        store._conn.execute(
-                            """
-                            UPDATE raw_revision_heads
-                            SET accepted_raw_id = ?, accepted_source_revision = ?,
-                                accepted_content_hash = ?, accepted_frontier_kind = 'byte',
-                                accepted_frontier = ?, acquisition_generation = ?,
-                                append_end_offset = ?
-                            WHERE logical_source_key = ?
-                            """,
-                            (
-                                persisted_raw,
-                                str(persisted_revision[0]),
-                                persisted_session[1],
-                                int(persisted_revision[2] or persisted_revision[3]),
-                                int(persisted_revision[1] or 0),
-                                persisted_revision[2],
-                                logical_source_key,
-                            ),
-                        )
-                        yield_to_head_raw_id = persisted_raw
-                    if yield_to_head_raw_id is None and (
-                        existing_raw_id not in classified_raw_ids
-                        or (
-                            persisted_raw is not None
-                            and persisted_raw != existing_raw_id
-                            and persisted_raw not in classified_raw_ids
-                        )
-                    ):
-                        raise MembershipReplayConflictError(
-                            "membership replay cannot retire an unrelated accepted head: "
-                            f"logical_source_key={logical_source_key!r} "
-                            f"existing_head(raw_id={existing_raw_id!r}, session_id={str(existing_head[3])!r}, "
-                            f"authority={chain_head_authority!r}) "
-                            f"cohort(accepted={classification.accepted_raw_ids!r}, "
-                            f"equivalent={classification.equivalent_raw_ids!r}, "
-                            f"ambiguous={classification.ambiguous_raw_ids!r}) "
-                            f"persisted_session_raw={persisted_raw!r}"
-                        )
-                    # polylogue-miwv: #3211 removed a byte-governance
-                    # refusal here on the theory that this branch is only
-                    # reachable after a real governance conversion (a
-                    # still-set logical_source_key being interrupted-pass
-                    # drift, not live evidence). That premise is false for
-                    # the accepted head specifically: ``_apply_membership_
-                    # sessions`` (sources/live/batch.py) unconditionally
-                    # injects the current ``raw_revision_heads`` accepted
-                    # raw into the comparison cohort even when it has
-                    # NEVER been through a membership conversion -- the
-                    # #2718 scenario this whole code path exists for
-                    # (a byte-governed head being compared against
-                    # membership-discovered content for the first time).
-                    # Content-prefix growth alone cannot prove the older
-                    # bundle raw supersedes a head that still has live,
-                    # unresolved byte-append evidence hanging off it (a
-                    # quarantined/pending append raw whose
-                    # ``predecessor_source_revision`` chains to the head's
-                    # own ``source_revision``) that this classification
-                    # pass never saw. Only matters when replay is about to
-                    # CHANGE the accepted raw (mirrors #2718's original
-                    # ``accepted_raw_id != existing_raw_id`` guard
-                    # condition) -- a classification that keeps the same
-                    # existing_raw_id as the accepted member (e.g. the
-                    # head's own content already dominates every other
-                    # cohort member) is a no-op re-affirmation, not a
-                    # replacement, regardless of dangling evidence.
-                    # Narrower than #2718's original blanket
-                    # ``logical_source_key IS NOT NULL`` check so #3211's
-                    # own interrupted-pass-drift resumption (no dangling
-                    # append descendant, just a stale un-nulled key) is
-                    # unaffected.
-                    if yield_to_head_raw_id is None and accepted_raw_id != existing_raw_id:
-                        classified_placeholders = ", ".join("?" for _ in classified_raw_ids) or "NULL"
-                        dangling_append = conn.execute(
-                            f"""
-                            SELECT 1
-                            FROM raw_sessions AS child
-                            WHERE child.logical_source_key = ?
-                              AND child.raw_id != ?
-                              AND child.raw_id NOT IN ({classified_placeholders})
-                              AND child.predecessor_source_revision IS NOT NULL
-                              AND child.predecessor_source_revision = (
-                                  SELECT source_revision FROM raw_sessions WHERE raw_id = ?
-                              )
-                            LIMIT 1
-                            """,
-                            (logical_source_key, existing_raw_id, *classified_raw_ids, existing_raw_id),
-                        ).fetchone()
-                        if dangling_append is not None:
-                            raise MembershipReplayConflictError(
-                                "membership replay cannot replace a head with unresolved byte-append "
-                                f"evidence: logical_source_key={logical_source_key!r} "
-                                f"existing_head(raw_id={existing_raw_id!r})"
-                            )
-                    if yield_to_head_raw_id is None:
-                        store._conn.execute(
-                            "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
-                            (logical_source_key,),
-                        )
-            if yield_to_head_raw_id is not None:
-                assert existing_head is not None
-                session_id = str(existing_head[3])
-                cohort_raw_ids = (
-                    *classification.accepted_raw_ids,
-                    *classification.equivalent_raw_ids,
-                    *classification.ambiguous_raw_ids,
-                )
-                for generation, raw_id in enumerate(cohort_raw_ids):
-                    projection = projections_by_raw_id[raw_id]
-                    decisions[raw_id] = MembershipDecision.SUPERSEDED_EQUIVALENT
-                    record_revision_application_sync(
-                        store._conn,
-                        RevisionApplicationReceipt(
-                            raw_id=raw_id,
-                            session_id=session_id,
-                            logical_source_key=logical_source_key,
-                            source_revision=projection.session_hash.hex(),
-                            acquisition_generation=generation,
-                            decision=ApplicationDecision.SUPERSEDED,
-                            accepted_raw_id=None,
-                            accepted_source_revision=None,
-                            accepted_content_hash=None,
-                            detail=f"membership:superseded_by_chain_governed_head:{yield_to_head_raw_id}",
-                        ),
-                        decided_at_ms=decided_at_ms,
-                    )
-            else:
-                index_started = time.perf_counter()
-                result = _index_parsed_for_retained_raw(
-                    store,
-                    accepted_session,
-                    raw_id=accepted_raw_id,
-                    source_index=0,
-                    stage_timings_s=stage_timings_s,
-                    stage_timing_prefix=stage_timing_prefix,
-                    manage_transaction=False,
-                    preacquired_attachment_blobs=attachments,
-                    finalize_raw_parse=False,
-                    revision_authoritative=True,
-                    bulk_fts=bulk_fts,
-                    bulk_build=bulk_build,
-                    fresh_build=fresh_build,
-                    fresh_build_batch=fresh_build_batch,
-                    defer_fts_rebuild=not bulk_build,
-                    prepared=(prepared_by_raw_id or {}).get(accepted_raw_id),
-                    prepared_required=accepted_raw_id in prepared_required_raw_ids or prepared_write is not None,
-                    prepared_write=prepared_write,
-                    content_hash=projections_by_raw_id[accepted_raw_id].session_hash.hex(),
-                )
-                if stage_timings_s is not None:
-                    key = f"{stage_timing_prefix}.index_parsed_write"
-                    stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
-                session_id = result.session_id
-                if not bulk_build:
-                    repair_message_fts_index_sync(store._conn, [session_id])
-                assert_session_fts_exact_sync(store._conn, session_id, bulk_build=bulk_build)
-                stored = store._conn.execute(
-                    "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
-                ).fetchone()
-                if stored is None or not isinstance(stored[0], bytes):
-                    raise RuntimeError("accepted membership did not produce a hashed session")
-                accepted_projection = projections_by_raw_id[accepted_raw_id]
-                semantic_frontier = (
-                    len(accepted_projection.message_hashes)
-                    + len(accepted_projection.event_hashes)
-                    + len(accepted_projection.attachment_identities)
-                )
-                cohort_raw_ids = (
-                    *classification.accepted_raw_ids,
-                    *classification.equivalent_raw_ids,
-                    *classification.ambiguous_raw_ids,
-                )
-                for generation, raw_id in enumerate(cohort_raw_ids):
-                    projection = projections_by_raw_id[raw_id]
-                    decision = decisions.get(raw_id, MembershipDecision.APPLIED)
-                    is_ambiguous = decision is MembershipDecision.AMBIGUOUS
-                    record_revision_application_sync(
-                        store._conn,
-                        RevisionApplicationReceipt(
-                            raw_id=raw_id,
-                            session_id=session_id,
-                            logical_source_key=logical_source_key,
-                            source_revision=projection.session_hash.hex(),
-                            acquisition_generation=generation,
-                            decision=_application_decision_for(decision),
-                            accepted_raw_id=accepted_raw_id if not is_ambiguous else None,
-                            accepted_source_revision=(
-                                accepted_projection.session_hash.hex() if not is_ambiguous else None
-                            ),
-                            accepted_content_hash=stored[0] if not is_ambiguous else None,
-                            accepted_frontier_kind="semantic" if not is_ambiguous else None,
-                            accepted_frontier=semantic_frontier if not is_ambiguous else None,
-                            detail=f"membership:{decision}",
-                        ),
-                        decided_at_ms=decided_at_ms,
-                    )
-        if yield_to_head_raw_id is None:
-            decisions[accepted_raw_id] = MembershipDecision.APPLIED
-
-    if _is_frozen_candidate(store):
-        require_frozen_membership_authority(store, logical_source_key, classification, decisions)
-        return session_id
-    with conn if manage_transaction else nullcontext():
-        for raw_id, decision in decisions.items():
-            conn.execute(
-                """
-                UPDATE raw_session_memberships
-                SET decision = ?, decided_at_ms = ?,
-                    revision_authority = ?,
-                    acquisition_generation = ?
-                WHERE raw_id = ? AND logical_source_key = ?
-                """,
-                (
-                    decision,
-                    decided_at_ms,
-                    "quarantined"
-                    if decision in {MembershipDecision.AMBIGUOUS, MembershipDecision.DEFERRED}
-                    else "byte_proven",
-                    classification.accepted_raw_ids.index(raw_id) if raw_id in classification.accepted_raw_ids else 0,
-                    raw_id,
-                    logical_source_key,
-                ),
-            )
-    for raw_id in decisions:
-        complete = conn.execute(
-            """
-            SELECT c.status = 'complete'
-               AND NOT EXISTS (
-                   SELECT 1 FROM raw_session_memberships AS m
-                   WHERE m.raw_id = c.raw_id
-                     AND (m.decision IS NULL OR m.decision IN ('ambiguous', 'deferred'))
-               )
-            FROM raw_membership_census AS c WHERE c.raw_id = ?
-            """,
-            (raw_id,),
-        ).fetchone()
-        if complete is not None and bool(complete[0]):
-            provider, _blob_hash, _source_path, _kind, _blob_size = raw_revision_descriptor(store, raw_id)
-            if manage_transaction:
-                mark_raw_parse_succeeded(store, raw_id, provider=provider)
-            else:
-                store._pending_raw_parse_states.append((raw_id, _raw_parse_success_state(provider)))
-        else:
-            # Incomplete cohort: this raw is not yet finalized (a sibling
-            # member is still undecided), so this is a correction, not a
-            # terminal marker.
-            #
-            # polylogue-upua6: under batching the membership
-            # ``revision_authority`` updates above ran in ``nullcontext()`` and
-            # are deliberately still uncommitted, pending the index head write.
-            # ``with conn:`` on this same connection at the default isolation
-            # level commits the whole open implicit transaction, so it would
-            # publish durable source authority for decisions whose index rows
-            # can still roll back -- the headless-but-authoritative shape this
-            # function's contract forbids.  The correction is therefore scoped
-            # to a SAVEPOINT inside the caller's transaction: atomic on its own
-            # failure path, and committed only when the caller commits.  When
-            # this call owns the transaction there is nothing pending to carry,
-            # and the correction commits immediately as before.
-            correction = "UPDATE raw_sessions SET parsed_at_ms = NULL, parse_error = NULL WHERE raw_id = ?"
-            if manage_transaction:
-                with conn:
-                    conn.execute(correction, (raw_id,))
-            else:
-                savepoint = f"incomplete_cohort_correction_{next(_INCOMPLETE_COHORT_CORRECTION_SAVEPOINTS)}"
-                conn.execute(f"SAVEPOINT {savepoint}")
-                try:
-                    conn.execute(correction, (raw_id,))
-                except BaseException:
-                    conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
-                    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
-                    raise
-                else:
-                    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
-    return session_id
-
-
 def finalize_raw_parse_state(store: RawRevisionGovernanceHost, raw_id: str, *, state: RawSessionStateUpdate) -> None:
     """Commit one typed source parse state after its index outcome."""
     # A generic state update is also used by the retained-raw index route when
@@ -4038,7 +3606,10 @@ def mark_raw_parse_failed(
                     ),
                     manage_transaction=False,
                 )
-        elif isinstance(error, RawCASFrontierError):
+        elif isinstance(error, RawCASFrontierError) or _terminal_decode_kind(error, provider) is not None:
+            # A CAS refusal is retryable authority evidence; a decode failure of
+            # retained bytes is terminal (``terminal_decode_evidence``), the
+            # same evidence the full route's census records.
             row = conn.execute(
                 "SELECT source_path, source_index, acquired_at_ms FROM raw_sessions WHERE raw_id = ?",
                 (raw_id,),
@@ -4052,7 +3623,7 @@ def mark_raw_parse_failed(
                     source_path=str(row[0] or raw_id),
                     source_index=int(row[1] or 0),
                     acquired_at_ms=int(row[2] or int(time.time() * 1000)),
-                    kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
+                    kind=_terminal_decode_kind(error, provider) or RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
                     manage_transaction=False,
                 )
         else:
@@ -4065,6 +3636,12 @@ def mark_raw_parse_failed(
             state=_raw_parse_failure_state(provider, error),
             manage_transaction=False,
         )
+
+
+def _terminal_decode_kind(error: BaseException, provider: Provider) -> RawFailureEvidenceKind | None:
+    from polylogue.sources.prepared_jsonl import terminal_decode_evidence
+
+    return None if isinstance(error, RawCASFrontierError) else terminal_decode_evidence(error, provider=provider)
 
 
 def record_raw_failure_evidence(
@@ -6376,16 +5953,17 @@ def prepare_membership_classification_source(
     decisions: Mapping[str, MembershipDecision],
     decided_at_ms: int,
     projections: Mapping[str, SessionRevisionProjection] | None = None,
-    conflict: MembershipReplayConflictError | None = None,
-    conflict_fails_observation: bool = True,
+    head_plan: MembershipHeadPlan | None = None,
 ) -> None:
     """Stage the canonical Source outcome after the parent resolves its head.
 
     The parent owns the original read and Source producer windows. Supplied
     decisions include the actual yield-to-existing-head outcome; this function
     neither chooses a winner nor authorizes Index publication. A head-plan
-    ``conflict`` stages its retryable evidence on every deferred member.
+    ``conflict`` stages its retryable evidence on every deferred member and
+    leaves the reaffirmed head's byte binding in place.
     """
+    conflict = head_plan.conflict if head_plan is not None else None
     producer = _PreparedSourceProducer(seal)
     for raw_id, complete in _record_membership_decisions(
         producer,
@@ -6397,16 +5975,16 @@ def prepare_membership_classification_source(
         projections=projections,
     ):
         check_compute_cancelled()
-        if conflict is not None:
+        if conflict is not None and head_plan is not None and raw_id in head_plan.deferred_raw_ids:
             _prepare_raw_parse_failure(
                 producer,
                 raw_id,
                 error=conflict,
                 kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
-                fails_observation=conflict_fails_observation,
+                fails_observation=head_plan.conflict_fails_observation,
             )
             continue
-        if decisions[raw_id] in _MEMBERSHIP_TERMINAL_DECISIONS:
+        if conflict is None and decisions[raw_id] in _MEMBERSHIP_TERMINAL_DECISIONS:
             _release_membership_decided_byte_binding(seal, raw_id, logical_source_key)
         if complete:
             provider, _, _, _, _ = _raw_revision_descriptor_from_row(
@@ -6435,7 +6013,10 @@ class MembershipHeadPlan:
     that carry the typed retry evidence instead of a decision. A refused
     replacement fails its observation (``conflict_fails_observation``); a
     member that forks from a byte-governed head completes its observation and
-    waits, deferred, for a later one that can order the revisions.
+    waits, deferred, for a later one that can order the revisions. A head the
+    cohort compared keeps its accepted content and byte binding; when it
+    carries a membership row (a converted full), that row is decided
+    ``applied`` (``reaffirmed_head_raw_id``).
     """
 
     existing_head: tuple[object, ...] | None
@@ -6444,6 +6025,7 @@ class MembershipHeadPlan:
     conflict: MembershipReplayConflictError | None = None
     deferred_raw_ids: tuple[str, ...] = ()
     conflict_fails_observation: bool = True
+    reaffirmed_head_raw_id: str | None = None
 
 
 def membership_decisions_for_head_plan(
@@ -6454,7 +6036,10 @@ def membership_decisions_for_head_plan(
 ) -> dict[str, MembershipDecision]:
     """Use the actual winner, head yield, or no-write outcome on both tiers."""
     if head_plan.conflict is not None:
-        return dict.fromkeys(head_plan.deferred_raw_ids, MembershipDecision.DEFERRED)
+        conflict_decisions = dict.fromkeys(head_plan.deferred_raw_ids, MembershipDecision.DEFERRED)
+        if head_plan.reaffirmed_head_raw_id is not None:
+            conflict_decisions[head_plan.reaffirmed_head_raw_id] = MembershipDecision.APPLIED
+        return conflict_decisions
     decisions = membership_decisions_for_classification(classification)
     if head_plan.yield_to_head_raw_id is not None:
         for raw_id in (
@@ -6582,6 +6167,7 @@ def prepare_membership_head_plan_from_inputs(
                 ),
                 deferred_raw_ids=tuple(raw_id for raw_id in classification.ambiguous_raw_ids if raw_id != head_raw_id),
                 conflict_fails_observation=False,
+                reaffirmed_head_raw_id=head_raw_id,
             )
         return MembershipHeadPlan(None, None, None)
     accepted_raw_id = classification.accepted_raw_ids[-1]
@@ -6659,6 +6245,7 @@ def prepare_membership_head_plan_from_inputs(
                 f"evidence: logical_source_key={logical_source_key!r} existing_head(raw_id={existing_raw_id!r})"
             ),
             deferred_raw_ids=deferred_raw_ids,
+            reaffirmed_head_raw_id=existing_raw_id,
         )
     return MembershipHeadPlan(existing_head, None, None)
 

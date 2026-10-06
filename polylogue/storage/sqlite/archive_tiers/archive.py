@@ -2,8 +2,7 @@
 
 Writer module: index.
 
-Raw revision/membership governance (the twin-write ``raw-membership-classification``
-contract spanning index and source) moved to
+Raw revision/membership governance (spanning index and source) moved to
 ``polylogue.storage.sqlite.archive_tiers.revision_governance`` (polylogue-1r9c);
 ``delete_sessions`` is this module's remaining direct writer, index-only
 (user-tier overlays are deliberately left in place, see its docstring).
@@ -128,7 +127,6 @@ from polylogue.archive.semantic.pricing import (
     model_cohort_key,
 )
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, credits_to_usd
-from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
@@ -150,7 +148,6 @@ from polylogue.core.sqlite_introspection import relation_exists as _relation_exi
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.types import SessionId
 from polylogue.logging import get_logger
-from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.security.excision_policy import build_excision_policy_snapshot
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, PreparedBlobPublicationClaim
@@ -221,7 +218,6 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     admit_raw_artifact_blob_ref,
     admit_raw_artifact_payload,
     admit_work_event_raw,
-    apply_raw_membership_classification,
     apply_raw_revision_replay,
     bind_raw_revision,
     blob_path_for_hash,
@@ -3132,51 +3128,6 @@ class ArchiveStore:
                 prepared_write=prepared_write,
                 prepared_aggregate_content_hash=prepared_aggregate_content_hash,
                 write_result=write_result,
-            )
-
-    @_archive_mutator
-    def apply_raw_membership_classification(
-        self,
-        logical_source_key: str,
-        classification: MembershipClassification,
-        parsed_by_raw_id: dict[str, ParsedSession],
-        projections_by_raw_id: dict[str, SessionRevisionProjection],
-        *,
-        acquired_at_ms: int,
-        stage_timings_s: dict[str, float] | None = None,
-        stage_timing_prefix: str = "membership_replay",
-        manage_transaction: bool = True,
-        bulk_fts: bool = False,
-        bulk_build: bool = False,
-        fresh_build: bool = False,
-        fresh_build_batch: set[str] | None = None,
-        preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
-        preacquired_attachment_refs: Callable[[], Iterable[ArchiveSourceBlobRef]] | None = None,
-        prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
-        prepared_required_raw_ids: frozenset[str] = frozenset(),
-        prepared_write: PreparedSessionWrite | None = None,
-    ) -> str | None:
-        self._require_writable("apply source.db membership classification")
-        with self._retained_replay_exclusion(manage_transaction=manage_transaction):
-            return apply_raw_membership_classification(
-                self,
-                logical_source_key,
-                classification,
-                parsed_by_raw_id,
-                projections_by_raw_id,
-                acquired_at_ms=acquired_at_ms,
-                stage_timings_s=stage_timings_s,
-                stage_timing_prefix=stage_timing_prefix,
-                manage_transaction=manage_transaction,
-                bulk_fts=bulk_fts,
-                bulk_build=bulk_build,
-                fresh_build=fresh_build,
-                fresh_build_batch=fresh_build_batch,
-                preacquired_attachment_blobs=preacquired_attachment_blobs,
-                preacquired_attachment_refs=preacquired_attachment_refs,
-                prepared_by_raw_id=prepared_by_raw_id,
-                prepared_required_raw_ids=prepared_required_raw_ids,
-                prepared_write=prepared_write,
             )
 
     @_archive_mutator

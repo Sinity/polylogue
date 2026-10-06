@@ -918,10 +918,15 @@ def test_unsupported_unknown_json_keeps_typed_refusal_in_prepared_publication(
             )
 
     asyncio.run(exercise())
+    # The refusal settles: a non-session census with typed terminal evidence,
+    # never a failed census the next pass would census again.
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
-            "failed",
+            "non_session",
         )
+        assert conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchall() == [
+            ("terminal_unknown_export_no_session",)
+        ]
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
@@ -1000,9 +1005,9 @@ def test_retained_blob_io_failure_retries_without_quarantine(tmp_path: Path, mon
     _run_raw_law(tmp_path, run_phase)
 
 
-def test_retained_parser_error_keeps_semantic_quarantine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_retained_parser_error_settles_as_terminal_refusal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
-        """A parser verdict from a live worker follows the canonical source census."""
+        """A parser verdict from a live worker settles through the canonical source census."""
         from polylogue.sources.prepared_jsonl import PreparedJsonl
 
         bootstrap_archive_root(tmp_path)
@@ -1025,11 +1030,16 @@ def test_retained_parser_error_keeps_semantic_quarantine(tmp_path: Path, monkeyp
         )
         replacement = adapter.compute(frame, raw_id)
         assert replacement.prepared_inputs is not None
-        assert _publish_to_valid(adapter, frame, replacement)
+        # The census settles the refusal; no replay publication follows it.
+        _publish_to_valid(adapter, frame, replacement)
+        assert adapter.inspect(frame, (raw_id,)) == {raw_id: "valid"}
         with sqlite3.connect(tmp_path / "source.db") as conn:
             assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
-                "failed",
+                "non_session",
             )
+            assert conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchall() == [
+                ("terminal_unsupported_shape",)
+            ]
 
     _run_raw_law(tmp_path, run_phase)
 

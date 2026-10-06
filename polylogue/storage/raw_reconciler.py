@@ -17,7 +17,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from polylogue.core.enums import Origin
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
@@ -267,10 +266,7 @@ def _classify_frontier_row(
             row=row,
             reason="accepted revision head and materialized session select different raw authority",
         )
-    # ``unknown-export`` is acquisition's placeholder before any parse (a
-    # browser-capture file is acquired without detection); it makes no origin
-    # claim the materialized session could contradict.
-    if row.get("raw_origin") not in (row.get("session_origin"), Origin.UNKNOWN_EXPORT.value):
+    if row.get("session_origin") != row.get("raw_origin"):
         return _item(
             state=RawAuthorityFrontierState.UNRESOLVED_PROVENANCE,
             row=row,

@@ -2833,9 +2833,24 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                 )
                 assert all(rows in ([], [(session_id,)]) for rows in observed_profiles), str(observed_profiles)
                 if browser:
-                    assert (
-                        evidence == [(MembershipDecision.AMBIGUOUS.value, RawRevisionAuthority.QUARANTINED.value)] * 2
-                    )
+                    # Intake admits the competing snapshot; its retained
+                    # publication records the decision afterwards. Read the
+                    # settled evidence, not the admission-time sample.
+                    decided = [(MembershipDecision.AMBIGUOUS.value, RawRevisionAuthority.QUARANTINED.value)] * 2
+                    for _ in range(200):
+                        with contextlib.closing(
+                            sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)
+                        ) as conn:
+                            evidence = conn.execute(
+                                "SELECT decision, revision_authority FROM raw_session_memberships "
+                                "WHERE logical_source_key = ?",
+                                (session_id,),
+                            ).fetchall()
+                        if evidence == decided:
+                            break
+                        await asyncio.sleep(0.05)
+                    assert evidence == decided
+                    assert message_count() == expected_versions
                 assert all(path.is_file() for path in carriers)
             finally:
                 task.cancel()
