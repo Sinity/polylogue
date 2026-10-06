@@ -29,7 +29,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.core.enums import ArtifactSupportStatus, Provider
-from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import parse_payload
@@ -2237,14 +2237,15 @@ def test_full_ingest_unknown_invalid_utf8_records_terminal_decode_evidence(tmp_p
     assert artifact == ("terminal_unknown_json_decode", "decode_failed", 0)
 
 
-def test_full_ingest_unrecognized_unknown_export_stays_a_visible_failed_census(
+def test_full_ingest_unrecognized_unknown_export_settles_as_terminal_refusal(
     tmp_path: Path,
 ) -> None:
-    """An input no provider recognizes is retained and refused visibly, never typed terminal.
+    """An input no provider recognizes is retained and refused once, typed.
 
     Retained preparation refuses the unrecognized shape before any parser
-    runs; the refusal is a failed parser census naming the typed reason, not a
-    terminal raw-failure artifact that would close the input as explained.
+    runs. The same bytes can only be refused the same way, so the refusal
+    settles: a non-session census with typed terminal evidence and the parse
+    failure on the raw, never a failed census every pass would census again.
     """
     root = tmp_path / "unknown"
     root.mkdir()
@@ -2261,18 +2262,18 @@ def test_full_ingest_unrecognized_unknown_export_stays_a_visible_failed_census(
 
     result = run_ingest_files(processor, [path], emit_event=False)
 
-    assert result.succeeded_file_count == 0
     assert result.ingested_session_count == 0
+    assert result.failed_file_count == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact_kinds = {row[0] for row in conn.execute("SELECT artifact_kind FROM raw_artifacts")}
         retained = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
         census = conn.execute("SELECT status, detail FROM raw_membership_census").fetchall()
-        parser_census = conn.execute("SELECT status FROM raw_authority_parser_census").fetchall()
-    assert not artifact_kinds & RAW_FAILURE_EVIDENCE_KINDS
+        (parse_error,) = conn.execute("SELECT parse_error FROM raw_sessions").fetchone()
+    assert artifact_kinds == {RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION.value}
     assert retained == 1
-    assert [status for status, _detail in census] == ["failed"]
+    assert [status for status, _detail in census] == ["non_session"]
     assert "UnsupportedRetainedJsonShapeError" in census[0][1]
-    assert parser_census == [("failed",)]
+    assert isinstance(parse_error, str) and parse_error.startswith("UnsupportedRetainedJsonShapeError:")
 
 
 def test_full_ingest_defers_incomplete_jsonl_only_after_hot_prefix_proof(
