@@ -288,6 +288,20 @@ class RawObservationReplacement:
         if failures:
             raise BaseExceptionGroup("retained preparation cleanup failed", failures)
 
+    def retire_unpublished(self) -> None:
+        """Retire a preparation that is prepared again instead of published.
+
+        Its seal settles its native SQL first and then the payload, as at
+        publication: a thread-state projection holds native handles under
+        the scratch tree the payload removes.
+        """
+        seal = self.reference_seal
+        if seal is None or seal.publication_lifetime_bound:
+            self.close()
+            return
+        seal.retain_preparation_payload(self._close_prepared_payload)
+        seal.close()
+
     def _close_prepared_payload(self) -> None:
         """Settle the carrier payload without recursing into its retained seal."""
         with retain_native_sql_lifetimes(*(() if self.scratch_owner is None else (self.scratch_owner,))):
@@ -1134,7 +1148,7 @@ class RawObservationDerivation(RawObservationInspection):
                 return replace(outcome, carried_payload=carry)
             if outcome == "restart":
                 carry.discard_payload(keep=replacement)
-                carry = _PreparationCarry()
+                carry = _PreparationCarry(committed=carry.committed)
                 continue
             if outcome == "widen":
                 carry = _PreparationCarry()
@@ -1158,15 +1172,22 @@ class RawObservationDerivation(RawObservationInspection):
             # Content decides these envelopes' identity: census all of them
             # before any of them replays, then prepare the seed's own unit.
             census_first.clear()
-            if replacement.needs_source_census and self._publish_phase_in_place(frame, replacement) is not None:
-                replacement.close()
-                return "restart"
+            committed = tuple(carry.committed)
+            if replacement.needs_source_census:
+                published = self._publish_phase_in_place(frame, replacement)
+                if isinstance(published, BaseException):
+                    return replace(replacement, committed_phase_receipts=committed, prepared_phase_failure=published)
+                if published is not None:
+                    # The next preparation reports these receipts with its own.
+                    carry.committed.extend(published)
+                    replacement.retire_unpublished()
+                    return "restart"
             if replacement.needs_source_census or replacement.needs_source_classification:
-                return replacement
-            replacement.close()
+                return replace(replacement, committed_phase_receipts=committed) if committed else replacement
+            replacement.retire_unpublished()
             return "restart"
         if any(raw_id not in widened for raw_id in replacement.lineage_parent_raw_ids):
-            replacement.close()
+            replacement.retire_unpublished()
             carry.discard_payload(keep=replacement)
             return "widen"
         committed = tuple(carry.committed)
