@@ -162,6 +162,11 @@ class StagedBlobRestorations:
         self._finalizer()
 
 
+def _replacement_phase(replacement: RawObservationReplacement) -> Literal["census", "classification"]:
+    """The Source phase a preparatory replacement would commit."""
+    return "census" if replacement.needs_source_census else "classification"
+
+
 @dataclass(slots=True)
 class _PreparationCarry:
     """One preparation's seal and parsed artifacts, continued across its Source phases.
@@ -1193,6 +1198,11 @@ class RawObservationDerivation(RawObservationInspection):
         committed = tuple(carry.committed)
         if not (replacement.needs_source_census or replacement.needs_source_classification):
             return replace(replacement, committed_phase_receipts=committed) if committed else replacement
+        if any(phase == _replacement_phase(replacement) for phase, _receipt in committed):
+            # The phase this preparation committed in place is needed again:
+            # it moved nothing the next phase depends on. Publication reports
+            # the committed receipts and decides this phase's typed outcome.
+            return replace(replacement, committed_phase_receipts=committed)
         continuation = self._continue_after_phase(frame, replacement, carry)
         if continuation is None:
             # A guard refused in-place publication: the existing publish path

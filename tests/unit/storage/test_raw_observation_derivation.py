@@ -807,13 +807,18 @@ def test_unknown_retained_json_resolves_on_prepared_route_past_cache_budget(tmp_
 def test_unsupported_unknown_json_keeps_typed_refusal_in_prepared_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: bytes, source_name: str
 ) -> None:
-    """Original unsupported bytes keep their typed refusal through real publication."""
+    """Original unsupported bytes keep their typed refusal through real publication.
+
+    Anti-vacuity: drop the typed census refusal and the raw replays as a
+    session; report no committed receipts and ``phases`` is empty.
+    """
     import asyncio
     import sys
     from builtins import BaseExceptionGroup
 
     from polylogue.core.stage_admission import admit_stage_write
     from polylogue.sources.revision_backfill import (
+        RetainedPreparationNoProgressError,
         RevisionCensusResult,
         UnsupportedRetainedJsonShapeError,
         _sealed_retained_sessions,
@@ -859,11 +864,15 @@ def test_unsupported_unknown_json_keeps_typed_refusal_in_prepared_publication(
                     def record_phase(phase: str, receipt: RevisionCensusResult | PreparedRevisionReplayResult) -> None:
                         phases.append((phase, receipt))
 
-                    published = admit_stage_write(
-                        "test.unsupported.raw-publication",
-                        lambda: adapter.publish(frame, replacement, phase_receipt=record_phase),
-                    )
-                    assert published is False
+                    # The census committed in place during preparation and left
+                    # the raw quarantined; the census it needs again changes
+                    # nothing, so publication reports the committed receipt
+                    # and refuses with the typed no-progress outcome.
+                    with pytest.raises(RetainedPreparationNoProgressError):
+                        admit_stage_write(
+                            "test.unsupported.raw-publication",
+                            lambda: adapter.publish(frame, replacement, phase_receipt=record_phase),
+                        )
                     assert len(phases) == 1
                     phase, receipt = phases[0]
                     assert phase == "census"
