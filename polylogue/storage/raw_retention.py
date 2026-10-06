@@ -599,7 +599,14 @@ def _raw_retention_scope(
     conn: sqlite3.Connection,
     source_paths: tuple[str, ...],
 ) -> tuple[frozenset[str], frozenset[str]]:
-    """Return the raw and logical identities a path-bounded cleanup can touch."""
+    """Return the raw and logical identities a path-bounded cleanup can touch.
+
+    A membership-governed raw keeps its acquisition envelope's (pending)
+    logical key, while its index heads are keyed by the session identities
+    its census recorded. Both keys are in scope; otherwise the heads of a
+    censused raw are invisible and its session row reads as an unproven
+    byte chain.
+    """
 
     raw_ids: set[str] = set()
     logical_source_keys: set[str] = set()
@@ -607,8 +614,11 @@ def _raw_retention_scope(
         paths = source_paths[start : start + _RETENTION_SCOPE_BATCH_SIZE]
         placeholders = ", ".join("?" for _ in paths)
         rows = conn.execute(
-            f"SELECT raw_id, logical_source_key FROM raw_sessions WHERE source_path IN ({placeholders})",
-            paths,
+            f"SELECT raw_id, logical_source_key FROM raw_sessions WHERE source_path IN ({placeholders}) "
+            "UNION ALL SELECT membership.raw_id, membership.logical_source_key "
+            "FROM raw_session_memberships AS membership JOIN raw_sessions AS raw ON raw.raw_id = membership.raw_id "
+            f"WHERE raw.source_path IN ({placeholders})",
+            (*paths, *paths),
         ).fetchall()
         for raw_id, logical_source_key in rows:
             raw_ids.add(str(raw_id))
