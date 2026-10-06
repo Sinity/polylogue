@@ -32,6 +32,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
 from polylogue.daemon.derivation import DerivationFrame
 from polylogue.daemon.intake import (
+    DEFAULT_INTAKE_BYTE_BUDGET,
     UNMEASURABLE_INTAKE_COST_BYTES,
     AdmissionOutcome,
     AdmissionResult,
@@ -2222,6 +2223,36 @@ async def test_default_cycle_budget_admits_ordinary_sized_payloads() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_failed_whale_is_retried_on_the_next_pass() -> None:
+    """An item many shares large takes one pass's share, not the next thousand passes'.
+
+    A 1.6 GB raw whose publication refused a stale preparation was charged its
+    whole size, so its class sat in debt for hundreds of passes while sibling
+    classes ran, and the retryable refusal was never retried. Red if an
+    oversized item is charged its full estimate again: the second pass is
+    budget-blocked and admits nothing.
+    """
+    outcomes = iter((AdmissionResult(AdmissionOutcome.RETRYABLE, reason="ReferenceSealStaleError: stale"),))
+
+    def outcome(_item: IntakeItem) -> AdmissionResult:
+        return next(outcomes, AdmissionResult(AdmissionOutcome.ADMITTED))
+
+    whale = ByteCostAdapter("raw", ["whale"], item_bytes=100 * DEFAULT_INTAKE_BYTE_BUDGET)
+    whale._outcome_for = outcome
+    sibling = ByteCostAdapter("files", ["f0"], item_bytes=1)
+    dispatcher = FairIntakeDispatcher(
+        (IntakeClassSpec(name="raw", adapter=whale), IntakeClassSpec(name="files", adapter=sibling))
+    )
+
+    first = await dispatcher.run_once()
+    second = await dispatcher.run_once()
+
+    assert first.require_report("raw").retried == 1
+    assert second.require_report("raw").admitted == 1
+    assert whale.admitted == ["whale"]
+
+
+@pytest.mark.asyncio
 async def test_discovery_page_is_bounded_by_rows_not_by_the_byte_deficit() -> None:
     """Discovery asks for ``page_size`` rows however few bytes remain.
 
@@ -2594,8 +2625,6 @@ async def test_a_deferred_retry_placeholders_zero_cost_is_not_replaced() -> None
 
         async def acknowledge(self, item: IntakeItem) -> None:
             self.acknowledged.append(item.item_id)
-
-    from polylogue.daemon.intake import DEFAULT_INTAKE_BYTE_BUDGET
 
     dispatcher = FairIntakeDispatcher(
         (IntakeClassSpec("configured_local", cast(Any, PendingRetryAdapter()), page_size=1),)

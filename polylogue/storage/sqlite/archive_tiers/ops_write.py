@@ -1070,16 +1070,15 @@ def record_daemon_lifecycle_stop(
     run_id: str,
     stopped_at_ms: int,
     exit_kind: str,
-    signal_name: str | None = None,
 ) -> None:
-    """Mark a daemon lifecycle row stopped, recording but never erasing its signal."""
+    """Mark a daemon lifecycle row stopped without erasing its signal."""
     conn.execute(
         """
         UPDATE daemon_lifecycle
-        SET stopped_at_ms = ?, last_heartbeat_at_ms = ?, exit_kind = ?, signal = COALESCE(?, signal)
+        SET stopped_at_ms = ?, last_heartbeat_at_ms = ?, exit_kind = ?
         WHERE run_id = ?
         """,
-        (stopped_at_ms, stopped_at_ms, exit_kind, signal_name, run_id),
+        (stopped_at_ms, stopped_at_ms, exit_kind, run_id),
     )
     conn.commit()
 
