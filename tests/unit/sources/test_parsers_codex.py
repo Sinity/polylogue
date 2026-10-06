@@ -4119,32 +4119,41 @@ def test_legacy_top_level_response_records_lower_exactly_like_wrapped_ones() -> 
     assert streamed.session_events == legacy_session.session_events
 
 
-def test_legacy_response_tool_outcomes_match_the_wrapped_form() -> None:
-    """The writer's outcome derivation gives the same verdicts to both generations.
+@pytest.mark.parametrize("wrapped", [False, True], ids=["legacy", "wrapped"])
+def test_legacy_response_tool_outcomes_survive_the_index_write(tmp_path: Path, wrapped: bool) -> None:
+    """Both generations publish the same tool calls and outcomes through the index writer.
 
     Red if an unwrapped output stops carrying its exit-code evidence (the
-    failed call would no longer derive ``error``).
+    failed call would no longer store ``error``), or if an id-less call and
+    its output collide on one message id at the write.
     """
-    from polylogue.core.enums import Origin, ToolOutcome
-    from polylogue.sources.tool_outcomes import derive_tool_outcomes
+    import sqlite3
+    from contextlib import closing
 
-    legacy = _codex_fixture("legacy-response-records.jsonl")
-    verdicts = []
-    for records in (legacy, _wrap_legacy_response_records(legacy)):
-        session = parse(records, "legacy-fallback")
-        derived = derive_tool_outcomes(session.messages, session.session_events, origin=Origin.CODEX_SESSION)
-        assert isinstance(derived, list)
-        verdicts.append(
-            [
-                (block.type, block.tool_id, block.tool_outcome)
-                for message in derived
-                for block in message.blocks
-                if block.type in (BlockType.TOOL_USE, BlockType.TOOL_RESULT)
-            ]
-        )
-    assert verdicts[0] == verdicts[1]
-    results = {tool_id: outcome for kind, tool_id, outcome in verdicts[0] if kind is BlockType.TOOL_RESULT}
-    assert results == {"call_sample_ok": ToolOutcome.OK, "call_sample_fail": ToolOutcome.ERROR}
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import open_connection as open_owned_connection
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    records = _codex_fixture("legacy-response-records.jsonl")
+    parsed = parse(_wrap_legacy_response_records(records) if wrapped else records, "legacy-fallback")
+    index_path = tmp_path / "index.db"
+    with write_lease("Codex legacy response fixture", archive_root=tmp_path):
+        initialize_active_archive_root(tmp_path)
+        with closing(open_owned_connection(index_path, tier=ArchiveTier.INDEX, archive_root=tmp_path)) as index:
+            index.row_factory = sqlite3.Row
+            with index:
+                session_id = write_fixture_index_session(index, parsed, content_hash=session_content_hash(parsed))
+    with closing(sqlite3.connect(index_path)) as index:
+        results = index.execute(
+            "SELECT tool_id, tool_outcome FROM blocks WHERE session_id=? AND block_type='tool_result' ORDER BY tool_id",
+            (session_id,),
+        ).fetchall()
+        uses = index.execute(
+            "SELECT tool_id FROM blocks WHERE session_id=? AND block_type='tool_use' ORDER BY tool_id", (session_id,)
+        ).fetchall()
+    assert results == [("call_sample_fail", "error"), ("call_sample_ok", "ok")]
+    assert uses == [("call_sample_fail",), ("call_sample_ok",)]
 
 
 def test_verified_answer_and_realtime_markers_become_session_events() -> None:
