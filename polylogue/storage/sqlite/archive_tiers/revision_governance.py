@@ -1046,7 +1046,10 @@ def write_raw_blob_ref(
             blob_publication_receipt_id=blob_publication_receipt_id,
             policy_snapshot=policy_snapshot,
         )
-        if admission.arm is not RawAdmissionArm.POST_PARSE_PENDING:
+        # A re-imported source member whose accepted raw already holds these
+        # exact bytes is the idempotent no-op arm: admission verified the
+        # identity and content and returns the existing raw id.
+        if admission.arm not in {RawAdmissionArm.POST_PARSE_PENDING, RawAdmissionArm.SKIP_DUPLICATE}:
             raise RuntimeError(f"unexpected post-parse blob admission arm: {admission.arm!r}")
         return admission.raw_id
     if captured_zip_coordinate is not None:
