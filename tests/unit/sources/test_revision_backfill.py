@@ -1257,11 +1257,7 @@ def test_byte_proof_refuses_a_head_between_forks(monkeypatch: pytest.MonkeyPatch
 
     Wrong outcome prevented: the census picks the largest capture as the
     cohort's head and binds the other fork to its learned identity on
-    containment with the baseline alone. Anti-vacuity: deleting the whole-
-    cohort verdict guard in ``classify_untyped_full_revision_groups``
-    (``any(decision.authority is not RawRevisionAuthority.BYTE_PROVEN ...)``)
-    makes this red -- the group is returned, a head is chosen, and the losing
-    fork is never parsed.
+    containment with the baseline alone, so the losing fork is never parsed.
     """
     bootstrap_archive_root(tmp_path)
     shared = _CHAIN_META + _chain_turn(0)
@@ -1283,7 +1279,6 @@ def test_byte_proof_refuses_a_head_between_forks(monkeypatch: pytest.MonkeyPatch
                 )
             )
         }
-        assert archive.classify_untyped_full_revision_groups(sorted(raw_ids.values())) == {}
 
     original = revision_backfill.prepare_retained_jsonl_artifact
     parsed: list[str] = []

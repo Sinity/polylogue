@@ -8738,6 +8738,30 @@ class PreparedSessionSourceRead:
 
         return prepared_raw_native_id(self._seal, raw_id)
 
+    def uncensused_identity_opaque_raw_ids(self, raw_ids: Sequence[str]) -> tuple[str, ...]:
+        """Selected raws with no native id or typed key whose parser census is not current.
+
+        Only its parsed content assigns such an envelope to a logical cohort,
+        so another envelope's replay cannot know whether it shares that cohort.
+        """
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_parser_census_is_current
+        from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
+
+        opaque: list[str] = []
+        for start in range(0, len(raw_ids), 256):
+            check_compute_cancelled()
+            chunk = tuple(raw_ids[start : start + 256])
+            marks = ",".join("?" for _ in chunk)
+            self._load_matches("raw_sessions", f"SELECT rowid FROM raw_sessions WHERE raw_id IN ({marks})", chunk)
+            with self._seal.source_rows(
+                f"SELECT raw_id FROM raw_sessions WHERE raw_id IN ({marks}) AND native_id IS NULL "
+                "AND (logical_source_key IS NULL OR substr(logical_source_key,1,?)=?) ORDER BY raw_id",
+                (*chunk, len(PENDING_RAW_LOGICAL_SOURCE_PREFIX), PENDING_RAW_LOGICAL_SOURCE_PREFIX),
+            ) as rows:
+                envelopes = tuple(str(row[0]) for row in rows)
+            opaque.extend(raw_id for raw_id in envelopes if not prepared_parser_census_is_current(self._seal, raw_id))
+        return tuple(opaque)
+
     def raw_ids_for_native_session(self, origin: str, native_id: str) -> tuple[str, ...]:
         """Retained raws acquired as one origin's native session, before or after census."""
         from polylogue.storage.sqlite.archive_tiers.revision_governance import _load_raw_observation_inputs

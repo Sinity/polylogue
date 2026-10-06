@@ -1013,6 +1013,27 @@ class PreparedJsonl:
         if self.shard_path is not None:
             discard_session_shard(self.shard_path)
 
+    def iter_provider_session_ids(self) -> Iterator[str]:
+        """Read the complete original native-ID scope without hydrating transcripts."""
+        if self.sessions_path is None:
+            raise RuntimeError("prepared cohort has no header artifact")
+        self.verify_files(full=False)
+        for (metadata_json,) in _prepared_ordinal_rows(
+            self.sessions_path,
+            table="prepared_session",
+            ordinal="ordinal",
+            session=None,
+            columns="metadata_json",
+        ):
+            check_compute_cancelled()
+            if not isinstance(metadata_json, str):
+                raise ValueError("prepared session metadata is not text")
+            identity = json.loads(metadata_json)["provider_session_id"]
+            if identity is not None and not isinstance(identity, str):
+                raise ValueError("prepared provider identity is not text")
+            if identity:
+                yield identity
+
     def iter_sessions(self) -> Generator[ParsedSession]:
         if self.sessions_path is None or self.blob_hash is None:
             raise RuntimeError(self.error or "JSONL preparation has no sealed artifact")
@@ -1824,24 +1845,7 @@ class PreparedSessionSequence(Sequence[ParsedSession]):
 
     def iter_provider_session_ids(self) -> Iterator[str]:
         """Read the complete original native-ID scope without hydrating transcripts."""
-        if self.artifact.sessions_path is None:
-            raise RuntimeError("prepared cohort has no header artifact")
-        self.artifact.verify_files(full=False)
-        for (metadata_json,) in _prepared_ordinal_rows(
-            self.artifact.sessions_path,
-            table="prepared_session",
-            ordinal="ordinal",
-            session=None,
-            columns="metadata_json",
-        ):
-            check_compute_cancelled()
-            if not isinstance(metadata_json, str):
-                raise ValueError("prepared session metadata is not text")
-            identity = json.loads(metadata_json)["provider_session_id"]
-            if identity is not None and not isinstance(identity, str):
-                raise ValueError("prepared provider identity is not text")
-            if identity:
-                yield identity
+        return self.artifact.iter_provider_session_ids()
 
     def iter_session_ids(self) -> Iterator[str]:
         """Stream every original output identity, including repeated identities."""

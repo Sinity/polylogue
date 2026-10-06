@@ -345,6 +345,10 @@ class KnownTierMutationPermit:
             raise
         else:
             owner.close()
+            # The dedicated writer is physically closed. A preparation that
+            # continues on this seal after an in-place phase must not see it
+            # as an unsettled child that retires the whole seal.
+            owner.retire_terminal_parent(self._seal)
 
     def configure_mutation_connection(self, connection: sqlite3.Connection, statements: tuple[str, ...]) -> None:
         self._seal._require_live_owner()

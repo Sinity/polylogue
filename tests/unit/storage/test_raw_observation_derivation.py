@@ -797,7 +797,12 @@ def test_unknown_retained_json_resolves_on_prepared_route_past_cache_budget(tmp_
         frame = raw_observation_frame(tmp_path)
         replacement = adapter.compute(frame, raw_id)
         assert replacement.prepared_inputs is not None
-        assert replacement.prepared_inputs[raw_id].provider is Provider.UNKNOWN
+        # The census commits in place during preparation: the raw keeps its
+        # acquired identity and records the provider its bytes resolved to.
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            assert conn.execute(
+                "SELECT origin, detected_provider FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+            ).fetchone() == ("unknown-export", "chatgpt")
         artifact = replacement.prepared_inputs[raw_id].prepared_artifact
         assert artifact is not None
         assert artifact.resolved_provider is Provider.CHATGPT
@@ -819,13 +824,18 @@ def test_unknown_retained_json_resolves_on_prepared_route_past_cache_budget(tmp_
 def test_unsupported_unknown_json_keeps_typed_refusal_in_prepared_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: bytes, source_name: str
 ) -> None:
-    """Original unsupported bytes keep their typed refusal through real publication."""
+    """Original unsupported bytes keep their typed refusal through real publication.
+
+    Anti-vacuity: drop the typed census refusal and the raw replays as a
+    session; report no committed receipts and ``phases`` is empty.
+    """
     import asyncio
     import sys
     from builtins import BaseExceptionGroup
 
     from polylogue.core.stage_admission import admit_stage_write
     from polylogue.sources.revision_backfill import (
+        RetainedPreparationNoProgressError,
         RevisionCensusResult,
         UnsupportedRetainedJsonShapeError,
         _sealed_retained_sessions,
@@ -871,11 +881,15 @@ def test_unsupported_unknown_json_keeps_typed_refusal_in_prepared_publication(
                     def record_phase(phase: str, receipt: RevisionCensusResult | PreparedRevisionReplayResult) -> None:
                         phases.append((phase, receipt))
 
-                    published = admit_stage_write(
-                        "test.unsupported.raw-publication",
-                        lambda: adapter.publish(frame, replacement, phase_receipt=record_phase),
-                    )
-                    assert published is False
+                    # The census committed in place during preparation and left
+                    # the raw quarantined; the census it needs again changes
+                    # nothing, so publication reports the committed receipt
+                    # and refuses with the typed no-progress outcome.
+                    with pytest.raises(RetainedPreparationNoProgressError):
+                        admit_stage_write(
+                            "test.unsupported.raw-publication",
+                            lambda: adapter.publish(frame, replacement, phase_receipt=record_phase),
+                        )
                     assert len(phases) == 1
                     phase, receipt = phases[0]
                     assert phase == "census"
@@ -1422,7 +1436,7 @@ def test_computed_raw_carrier_settles_at_its_actual_publication_boundary(
         The admission changes only after the production compute returned, so a
         pre-compute barrier check cannot make the cleanup assertion vacuous.
         """
-        from polylogue.storage.sqlite.archive_tiers import revision_governance
+        from polylogue.sources import revision_backfill
 
         bootstrap_archive_root(tmp_path)
         raw_id = _admit(tmp_path, ("abandoned",))
@@ -1458,7 +1472,9 @@ def test_computed_raw_carrier_settles_at_its_actual_publication_boundary(
             closes.append(replacement)
             original_close(replacement)
 
-        def fail_census(*args: object, **kwargs: object) -> None:
+        def fail_publication(*args: object, **kwargs: object) -> None:
+            # The census commits in place while compute prepares; the replay
+            # publication that publish starts is the one that fails.
             assert captured[0].reference_seal is not None
             assert captured[0].reference_seal.publication_lifetime_bound
             raise OSError("synthetic publication failure")
@@ -1476,7 +1492,7 @@ def test_computed_raw_carrier_settles_at_its_actual_publication_boundary(
 
         monkeypatch.setattr(RawObservationReplacement, "close", close)
         if admission == "publication_failure":
-            monkeypatch.setattr(revision_governance, "publish_prepared_revision_source", fail_census)
+            monkeypatch.setattr(revision_backfill, "apply_prepared_revision_replay", fail_publication)
         report = converge(
             DerivationRegistry((ObservedRaw(tmp_path, compute_adapter=compute_adapter),)),
             raw_observation_frame(tmp_path, raw_ids=(raw_id,)),

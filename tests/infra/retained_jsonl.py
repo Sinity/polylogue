@@ -19,7 +19,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
-from polylogue.core.stage_admission import admit_stage_write
+from polylogue.core.stage_admission import admit_stage_write, stage_write_admission
 from polylogue.operations.raw_observation_derivation import make_raw_observation_derivation, raw_observation_frame
 from polylogue.sources.acquisition_boundary import bound_profile_identity, bound_source_observation, open_bound_path
 from polylogue.sources.prepared_jsonl import PreparedJsonl
@@ -230,12 +230,16 @@ async def run_retained_source_phase(
         ]:
             adapter = make_raw_observation_derivation(root, compute_adapter=owner._compute_adapter)
             frame = raw_observation_frame(root, raw_ids=acquired)
-            replacement = adapter.compute(
-                frame,
-                acquired[0],
-                replay_current=replay_current,
-                select_retained_raw_ids=lambda _original_reader: acquired,
-            )
+            # A phase commits in place only under writer admission. Preparing
+            # without it hands the phase to publish, the path a refused
+            # in-place guard takes, so exactly that one phase is published.
+            with stage_write_admission(None):
+                replacement = adapter.compute(
+                    frame,
+                    acquired[0],
+                    replay_current=replay_current,
+                    select_retained_raw_ids=lambda _original_reader: acquired,
+                )
             retained.append(replacement)
             try:
                 assert replacement.needs_source_census or replacement.needs_source_classification
