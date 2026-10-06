@@ -2248,7 +2248,9 @@ def test_zero_head_unavailable_ops_semantics_and_no_direct_status_route(tmp_path
     with patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"):
         daemon_payload = _raw_frontier_integrity_info(readiness).model_dump()
 
-    assert daemon_payload["broken_head_status"] == "healthy"
+    # Status reads the inspection certificate from ops; with ops unavailable
+    # no category is measurable, so none may read as healthy.
+    assert daemon_payload["broken_head_status"] == "unknown"
     assert daemon_payload["cursor_ahead_status"] == "unknown"
     assert daemon_payload["overall_status"] == "unknown"
 
