@@ -668,7 +668,12 @@ def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypa
         label="l",
         stall_timeout_s=7200.0,
     )
-    paths = {"daemon_log": tmp_path / "daemon.log", "archive": tmp_path, "receipt": tmp_path / "receipt.json"}
+    paths = {
+        "daemon_log": tmp_path / "daemon.log",
+        "archive": tmp_path,
+        "receipt": tmp_path / "receipt.json",
+        "events": tmp_path / "events.jsonl",
+    }
 
     receipt = run._measure_and_write_receipt(
         config,
@@ -993,7 +998,12 @@ def _scripted_run(
     config = RunConfig(
         corpus=tmp_path, work=tmp_path, candidate=tmp_path, python="python", label="l", stall_timeout_s=stall_timeout_s
     )
-    paths = {"daemon_log": tmp_path / "daemon.log", "archive": tmp_path, "receipt": tmp_path / "receipt.json"}
+    paths = {
+        "daemon_log": tmp_path / "daemon.log",
+        "archive": tmp_path,
+        "receipt": tmp_path / "receipt.json",
+        "events": tmp_path / "events.jsonl",
+    }
     run._measure_and_write_receipt(
         config,
         manifest={},

@@ -154,10 +154,9 @@ class DaemonLifecycle:
     def record_signal_best_effort(self, signum: int) -> None:
         """Persist a terminating signal from a synchronous signal handler.
 
-        The daemon's handler runs on the event-loop thread, where a
-        synchronous write lease must not block the loop. There the write runs
-        on its own thread; :meth:`stop` also carries the signal name, so the
-        row stays coherent if the process ends before that thread commits.
+        On the event-loop thread a synchronous write lease must not block the
+        loop, so the handler only records the name there and :meth:`stop`
+        writes it with the stop marker.
         """
         signal_name = signal.Signals(signum).name
         self.received_signal_name = signal_name

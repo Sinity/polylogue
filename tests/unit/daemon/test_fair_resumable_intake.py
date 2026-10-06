@@ -2757,7 +2757,12 @@ async def test_unattempted_file_refunds_estimate_so_next_pass_can_discover(tmp_p
 
 @pytest.mark.asyncio
 async def test_attempted_retry_keeps_its_estimated_charge() -> None:
-    """An ordinary retry cannot claim zero cost merely because admission failed."""
+    """An ordinary retry cannot claim zero cost merely because admission failed.
+
+    The failed attempt keeps the whole share it was charged (nothing is
+    refunded), and, being larger than that share, it is offered again on the
+    next pass rather than after its full size has been repaid.
+    """
     item = IntakeItem(item_id="retry", class_name="files", estimated_cost=40)
 
     class RetryAdapter:
@@ -2778,9 +2783,10 @@ async def test_attempted_retry_keeps_its_estimated_charge() -> None:
     dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="files", adapter=adapter)])
     first_pass = await dispatcher.run_once(budget=1)
     assert first_pass.require_report("files").actual_cost == 40
+    assert dispatcher._runtime["files"].deficit == 0
     second_pass = await dispatcher.run_once(budget=1)
-    assert second_pass.require_report("files").budget_blocked
-    assert adapter.discover_calls == 1
+    assert second_pass.require_report("files").retried == 1
+    assert adapter.discover_calls == 2
 
 
 @pytest.mark.asyncio
