@@ -6,9 +6,8 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.core.enums import IngestOutcome
-from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
+from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.schemas.drift_sentinel import SchemaDriftObservation
 from polylogue.sinex.models import PublicationPayload
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -174,32 +173,6 @@ class _IngestBatchSummary:
 
 
 _SessionEntry = tuple[str, SessionWritePayload]
-
-
-@dataclass(frozen=True, slots=True)
-class _SourceSnapshot:
-    table: str
-    predicate: str
-    parameters: tuple[str, ...]
-    columns: tuple[str, ...]
-    rows: tuple[tuple[object, ...], ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _PreparedIngestUnit:
-    """Completed parser work plus the precise evidence needed to publish it."""
-
-    result: IngestRecordResult
-    source_snapshots: tuple[_SourceSnapshot, ...]
-    index_binding: tuple[str, int, int]
-    policy_binding: tuple[object, ...]
-    revision_heads: tuple[tuple[object, ...], ...]
-    logical_keys: tuple[str, ...]
-    drive_plans: dict[str, RevisionReplayPlan | None]
-    drive_revision_updates: tuple[tuple[object, ...], ...]
-    validation_mode: str
-    publication_mode: str
-    stale: bool = False
 
 
 # Re-exported from canonical source polylogue/core/common.py

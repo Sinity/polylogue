@@ -327,6 +327,10 @@ def iter_drive_raw_data(
         yield RawSessionData(
             raw_bytes=b"",
             source_path=source_path,
+            # The Drive file's local cache coordinate is its frozen canonical
+            # path: deterministic per source and file name, never a resolved
+            # filesystem path the download did not read from.
+            canonical_source_path=source_path,
             source_index=None,
             file_mtime=file_meta.modified_time,
             provider_hint=provider_hint,
