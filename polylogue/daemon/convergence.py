@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeGuard, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeGuard, TypeVar, cast, runtime_checkable
 
 from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel
@@ -41,6 +41,9 @@ from polylogue.daemon.derivation import (
     converge,
 )
 from polylogue.logging import ERROR, emit, propagate, span
+
+T = TypeVar("T")
+R = TypeVar("R")
 
 MAX_SELECTED_BINDING_RETRIES = 1
 
@@ -125,6 +128,27 @@ class _DerivationAdmission:
         ):
             return publish()
 
+    def stage_write(self, actor: str, work: Callable[[], T]) -> T:
+        """Bridge a compute-phase write section (e.g. blob reservations) to the writer.
+
+        Preparation runs off the writer; a section it marks with
+        ``admit_stage_write`` holds the delegated writer for that section only.
+        """
+        if threading.get_ident() == self._loop_thread_id:
+            raise RuntimeError("derivation stage write was invoked on the daemon event loop thread")
+        from polylogue.core.write_lease import adopt_write_lease
+
+        with self._bridge.hold(actor) as delegation, adopt_write_lease(delegation):
+            return work()
+
+
+def _run_with_stage_admission(admission: Callable[[str, Callable[[], T]], T], work: Callable[[], R]) -> R:
+    """Run ``work`` on this compute thread with stage write admission bound."""
+    from polylogue.core.stage_admission import stage_write_admission
+
+    with stage_write_admission(admission):
+        return work()
+
 
 class DerivationConvergenceOwner:
     """Run domain inspection and computation on the daemon-shared executor.
@@ -203,13 +227,17 @@ class DerivationConvergenceOwner:
         submitted = self._compute_adapter.submit(
             propagate(
                 partial(
-                    self._converger.converge_derivations,
-                    frame,
-                    budget=budget,
-                    deadline_s=deadline_s,
-                    domains=domains,
-                    resume=pass_resume,
-                    publisher=admission,
+                    _run_with_stage_admission,
+                    admission.stage_write,
+                    partial(
+                        self._converger.converge_derivations,
+                        frame,
+                        budget=budget,
+                        deadline_s=deadline_s,
+                        domains=domains,
+                        resume=pass_resume,
+                        publisher=admission,
+                    ),
                 )
             ),
             admission_class="incremental-background",

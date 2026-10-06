@@ -92,7 +92,9 @@ async def cold_rebuilt_index(archive_root: Path) -> AsyncIterator[Path]:
 
     def begin() -> ColdBuildGeneration:
         return ColdBuildGeneration.begin(
-            archive_root, reason="test-retained-rebuild", sources=(WatchSource("fixture", archive_root / "absent"),)
+            archive_root,
+            reason="test-retained-rebuild",
+            observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", archive_root / "absent"),)),
         )
 
     generation = await run_archive_fixture_write(archive_root, begin)

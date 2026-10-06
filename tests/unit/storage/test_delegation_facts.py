@@ -519,6 +519,36 @@ def test_delegation_edge_only_when_no_dispatch_action(tmp_path: Path) -> None:
     assert row["instruction_payload"] is None
 
 
+def test_child_profile_update_rebuilds_its_parent_cohort_without_colliding_with_a_sibling(tmp_path: Path) -> None:
+    """Deleting only the updated child's rows before rebuilding the whole parent
+    cohort re-inserts the sibling's ``delegation_id`` and raises
+    ``UNIQUE constraint failed: delegation_facts.delegation_id``."""
+    conn = _connect(tmp_path / "index.db")
+    parent_id = _insert_session(conn, native_id="parent")
+    children = [_insert_session(conn, native_id=f"child-{index}") for index in range(2)]
+    for child_id in children:
+        _insert_session_link(
+            conn,
+            child_session_id=child_id,
+            dst_origin="claude-code-session",
+            dst_native_id="parent",
+            parent_session_id=parent_id,
+        )
+        write_session_profile(conn, child_id)
+
+    conn.execute("UPDATE session_profiles SET session_id = session_id WHERE session_id = ?", (children[0],))
+
+    rows = conn.execute(
+        "SELECT child_session_id, mapping_state FROM delegation_facts WHERE parent_session_id = ? "
+        "ORDER BY child_session_id",
+        (parent_id,),
+    ).fetchall()
+    assert [(row["child_session_id"], row["mapping_state"]) for row in rows] == [
+        (child_id, "edge_only") for child_id in sorted(children)
+    ]
+    assert conn.execute("SELECT COUNT(*) FROM delegation_refresh_scope").fetchone()[0] == 0
+
+
 def test_delegation_quarantined_link_surfaces_as_quarantined_state(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     parent_id = _insert_session(conn, native_id="parent")

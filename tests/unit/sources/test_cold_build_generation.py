@@ -80,7 +80,9 @@ def _candidate_index_names(generation: ColdBuildGeneration) -> set[str]:
 def cold_build(tmp_path: Path) -> Iterator[ColdBuildGeneration]:
     assert active_index_generation_is_empty(tmp_path) is True
     generation = ColdBuildGeneration.begin(
-        tmp_path, reason="test", sources=(WatchSource("fixture", tmp_path / "absent-source"),)
+        tmp_path,
+        reason="test",
+        observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", tmp_path / "absent-source"),)),
     )
     register_cold_build_generation(generation)
     try:
@@ -223,7 +225,9 @@ def test_restart_completes_pointer_swapped_cold_promotion(tmp_path: Path, monkey
     member = source_root / "one.jsonl"
     member.write_bytes(_codex_session("one", "interrupted"))
     source = WatchSource("codex", source_root, suffixes=(".jsonl",), required=True)
-    generation = ColdBuildGeneration.begin(archive, reason="first", sources=(source,))
+    generation = ColdBuildGeneration.begin(
+        archive, reason="first", observed=ColdBuildGeneration.observe_source_baseline((source,))
+    )
     register_cold_build_generation(generation)
     try:
         assert asyncio.run(_ingest_paths(archive, source_root, [member])).succeeded_file_count == 1
@@ -356,7 +360,9 @@ def test_interrupted_pre_swap_with_moved_sidecars_restores_them_on_restart(
 
     archive = _fresh_archive_root(tmp_path)
     sources = (WatchSource("fixture", tmp_path / "absent-source"),)
-    abandoned = ColdBuildGeneration.begin(archive, reason="first", sources=sources)
+    abandoned = ColdBuildGeneration.begin(
+        archive, reason="first", observed=ColdBuildGeneration.observe_source_baseline(sources)
+    )
     pointer = archive / "index.db"
     prior_identity = (pointer.lstat().st_dev, pointer.lstat().st_ino)
     sidecars = tuple(pointer.with_name(pointer.name + suffix) for suffix in ("-wal", "-shm"))
@@ -388,7 +394,9 @@ def test_interrupted_pre_swap_with_moved_sidecars_restores_them_on_restart(
     finally:
         abandoned._release_ops_checkpoint_holder()
 
-    replacement = ColdBuildGeneration.begin(archive, reason="restart", sources=sources)
+    replacement = ColdBuildGeneration.begin(
+        archive, reason="restart", observed=ColdBuildGeneration.observe_source_baseline(sources)
+    )
     try:
         assert not abandoned.generation_root.exists()
         assert tuple((path.stat().st_dev, path.stat().st_ino) for path in sidecars) == sidecar_identities
@@ -482,7 +490,9 @@ def test_interrupted_pre_swap_promotion_reclaims_only_with_prior_pointer_proof(
 ) -> None:
     archive = _fresh_archive_root(tmp_path)
     sources = (WatchSource("fixture", tmp_path / "absent-source"),)
-    abandoned = ColdBuildGeneration.begin(archive, reason="first", sources=sources)
+    abandoned = ColdBuildGeneration.begin(
+        archive, reason="first", observed=ColdBuildGeneration.observe_source_baseline(sources)
+    )
     prior_pointer = (archive / "index.db").lstat()
     original_symlink_to = Path.symlink_to
     original_replace = os.replace
@@ -509,11 +519,15 @@ def test_interrupted_pre_swap_promotion_reclaims_only_with_prior_pointer_proof(
     proof_bytes = proof.read_bytes()
     proof.unlink()
     with pytest.raises(UnpublishedPromotionRecoveryError, match="proof is unavailable"):
-        ColdBuildGeneration.begin(archive, reason="restart", sources=sources)
+        ColdBuildGeneration.begin(
+            archive, reason="restart", observed=ColdBuildGeneration.observe_source_baseline(sources)
+        )
     assert abandoned.generation_root.exists()
     proof.write_bytes(proof_bytes)
 
-    replacement = ColdBuildGeneration.begin(archive, reason="restart", sources=sources)
+    replacement = ColdBuildGeneration.begin(
+        archive, reason="restart", observed=ColdBuildGeneration.observe_source_baseline(sources)
+    )
     try:
         assert replacement.generation_id != abandoned.generation_id
         assert not abandoned.generation_root.exists()
@@ -754,7 +768,9 @@ def test_a_file_intake_excludes_does_not_block_promotion(tmp_path: Path) -> None
     session.write_bytes(_codex_session("kept-session", "kept"))
     sidecar = root / "no-session.jsonl"
     sidecar.write_bytes(b'{"x":1}\n')
-    generation = ColdBuildGeneration.begin(tmp_path, reason="test", sources=(WatchSource("codex", root),))
+    generation = ColdBuildGeneration.begin(
+        tmp_path, reason="test", observed=ColdBuildGeneration.observe_source_baseline((WatchSource("codex", root),))
+    )
     register_cold_build_generation(generation)
     try:
         metrics = asyncio.run(_ingest_paths(tmp_path, root, [session, sidecar]))
@@ -896,7 +912,9 @@ def test_the_cold_build_refuses_before_it_allocates_a_generation(
 
     with pytest.raises(InsufficientCapacityError) as refusal:
         ColdBuildGeneration.begin(
-            tmp_path, reason="test", sources=(WatchSource("fixture", tmp_path / "absent-source"),)
+            tmp_path,
+            reason="test",
+            observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", tmp_path / "absent-source"),)),
         )
 
     assert refusal.value.projection.shortfall_bytes > 0
@@ -923,7 +941,9 @@ def test_a_first_daemon_start_is_not_refused_by_the_preflight(tmp_path: Path, mo
     available_bytes = 512 * 1024 * 1024
     _free_space(monkeypatch, available_bytes)
     generation = ColdBuildGeneration.begin(
-        tmp_path, reason="test", sources=(WatchSource("fixture", tmp_path / "absent-source"),)
+        tmp_path,
+        reason="test",
+        observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", tmp_path / "absent-source"),)),
     )
     try:
         receipts = read_capacity_receipts(tmp_path)
@@ -994,7 +1014,11 @@ def test_fresh_capacity_uses_sealed_material_without_a_second_source_read(
     assert active_index_generation_is_empty(large_root)
     with pytest.raises(InsufficientCapacityError):
         ColdBuildGeneration.begin(
-            large_root, reason="test", sources=(WatchSource("fixture", large_source, suffixes=(".json",)),)
+            large_root,
+            reason="test",
+            observed=ColdBuildGeneration.observe_source_baseline(
+                (WatchSource("fixture", large_source, suffixes=(".json",)),)
+            ),
         )
     assert reads == 1
     assert list((large_root / GENERATIONS_DIRNAME).glob("gen-*")) == []
@@ -1006,7 +1030,11 @@ def test_fresh_capacity_uses_sealed_material_without_a_second_source_read(
     small_root = tmp_path / "small"
     assert active_index_generation_is_empty(small_root)
     generation = ColdBuildGeneration.begin(
-        small_root, reason="test", sources=(WatchSource("fixture", large_source, suffixes=(".json",)),)
+        small_root,
+        reason="test",
+        observed=ColdBuildGeneration.observe_source_baseline(
+            (WatchSource("fixture", large_source, suffixes=(".json",)),)
+        ),
     )
     try:
         receipt = read_capacity_receipts(small_root)[0]
@@ -1063,7 +1091,9 @@ def test_cold_build_captures_effective_source_baseline(tmp_path: Path) -> None:
     archive = _fresh_archive_root(tmp_path)
     source_root = _declared_source_root(tmp_path)
     source = WatchSource(name="codex", root=source_root)
-    generation = ColdBuildGeneration.begin(archive, reason="test", sources=(source,))
+    generation = ColdBuildGeneration.begin(
+        archive, reason="test", observed=ColdBuildGeneration.observe_source_baseline((source,))
+    )
     try:
         assert len(generation.source_baseline.accepted) == 1
         assert generation.source_baseline.accepted[0].path == str(source_root / "one.jsonl")
@@ -1079,7 +1109,9 @@ def test_required_missing_source_blocks_promotion(tmp_path: Path) -> None:
 
     archive = _fresh_archive_root(tmp_path)
     source = WatchSource(name="account", root=tmp_path / "missing", suffixes=(".json",), required=True)
-    generation = ColdBuildGeneration.begin(archive, reason="test", sources=(source,))
+    generation = ColdBuildGeneration.begin(
+        archive, reason="test", observed=ColdBuildGeneration.observe_source_baseline((source,))
+    )
     try:
         assert generation.source_baseline.decisions[0].disposition == "fault"
         with pytest.raises(ProductionBaselineError, match="discovery fault"):
@@ -1101,7 +1133,9 @@ def test_faulted_baseline_refresh_retains_prior_accepted_revisions(tmp_path: Pat
         WatchSource("codex", first_root, suffixes=(".jsonl",), required=True),
         WatchSource("codex", second_root, suffixes=(".jsonl",), required=True),
     )
-    generation = ColdBuildGeneration.begin(archive, reason="test", sources=sources)
+    generation = ColdBuildGeneration.begin(
+        archive, reason="test", observed=ColdBuildGeneration.observe_source_baseline(sources)
+    )
     register_cold_build_generation(generation)
     try:
         assert any(row.disposition == "fault" for row in generation.source_baseline.decisions)
@@ -1151,7 +1185,9 @@ def test_faulted_baseline_refresh_reuses_candidate_and_retained_evidence_capacit
     archive = _fresh_archive_root(tmp_path)
     source_root = tmp_path / "later-source"
     sources = (WatchSource("codex", source_root, suffixes=(".jsonl",), required=True),)
-    generation = ColdBuildGeneration.begin(archive, reason="test", sources=sources)
+    generation = ColdBuildGeneration.begin(
+        archive, reason="test", observed=ColdBuildGeneration.observe_source_baseline(sources)
+    )
     register_cold_build_generation(generation)
     try:
         source_root.mkdir()
@@ -1205,11 +1241,15 @@ def test_faulted_baseline_refresh_reuses_candidate_and_retained_evidence_capacit
 def test_next_build_reclaims_abandoned_inactive_candidate_before_capacity(tmp_path: Path) -> None:
     archive = _fresh_archive_root(tmp_path)
     sources = (WatchSource("fixture", tmp_path / "absent-source"),)
-    abandoned = ColdBuildGeneration.begin(archive, reason="first", sources=sources)
+    abandoned = ColdBuildGeneration.begin(
+        archive, reason="first", observed=ColdBuildGeneration.observe_source_baseline(sources)
+    )
     abandoned_root = abandoned.generation_root
     assert abandoned_root.exists()
 
-    replacement = ColdBuildGeneration.begin(archive, reason="restart", sources=sources)
+    replacement = ColdBuildGeneration.begin(
+        archive, reason="restart", observed=ColdBuildGeneration.observe_source_baseline(sources)
+    )
     try:
         assert not abandoned_root.exists()
         assert replacement.generation_root.exists()
@@ -1230,7 +1270,9 @@ def test_orphan_replacement_does_not_charge_already_retained_source_again(
     member = source_root / "one.jsonl"
     member.write_bytes(_codex_session("one", "retained"))
     source = WatchSource("codex", source_root, suffixes=(".jsonl",), required=True)
-    orphan = ColdBuildGeneration.begin(archive, reason="first", sources=(source,))
+    orphan = ColdBuildGeneration.begin(
+        archive, reason="first", observed=ColdBuildGeneration.observe_source_baseline((source,))
+    )
     register_cold_build_generation(orphan)
     try:
         assert asyncio.run(_ingest_paths(archive, source_root, [member])).succeeded_file_count == 1
@@ -1248,7 +1290,9 @@ def test_orphan_replacement_does_not_charge_already_retained_source_again(
         return original_require(*args, **kwargs)
 
     monkeypatch.setattr(cold_build_module, "require_candidate_capacity", require_only_new_evidence)
-    replacement = ColdBuildGeneration.begin(archive, reason="restart", sources=(source,))
+    replacement = ColdBuildGeneration.begin(
+        archive, reason="restart", observed=ColdBuildGeneration.observe_source_baseline((source,))
+    )
     try:
         assert admissions == 1
         assert not old_root.exists()
@@ -1270,12 +1314,16 @@ def test_discarded_generation_carries_deleted_source_into_retry(tmp_path: Path) 
     member = source_root / "A.json"
     member.write_text('{"session":"A"}')
     source = WatchSource("account", source_root, suffixes=(".json",), required=True)
-    first = ColdBuildGeneration.begin(archive, reason="first", sources=(source,))
+    first = ColdBuildGeneration.begin(
+        archive, reason="first", observed=ColdBuildGeneration.observe_source_baseline((source,))
+    )
     assert [row.path for row in first.source_baseline.accepted] == [str(member)]
     first.discard()
     member.unlink()
 
-    retry = ColdBuildGeneration.begin(archive, reason="retry", sources=(source,))
+    retry = ColdBuildGeneration.begin(
+        archive, reason="retry", observed=ColdBuildGeneration.observe_source_baseline((source,))
+    )
     try:
         assert [row.path for row in retry.source_baseline.accepted] == [str(member)]
         pending = load_pending_production_baseline(archive)

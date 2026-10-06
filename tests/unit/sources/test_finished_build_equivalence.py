@@ -177,7 +177,9 @@ def _run_arm(template: Path, destination: Path, sealed: SealedRawInput, arm: _Ar
             cold_build = ColdBuildGeneration.begin(
                 archive_root,
                 reason="finished-build-equivalence",
-                sources=(WatchSource("fixture", archive_root / "absent"),),
+                observed=ColdBuildGeneration.observe_source_baseline(
+                    (WatchSource("fixture", archive_root / "absent"),)
+                ),
                 owner_id="finished-build-equivalence",
             )
         register_cold_build_generation(cold_build)

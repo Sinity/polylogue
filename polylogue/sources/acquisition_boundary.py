@@ -41,6 +41,10 @@ from ijson.backends import python as ijson_python
 
 from polylogue.archive.zip_admission import open_zip_entry
 from polylogue.core.enums import Provider
+from polylogue.core.json import JSONDecodeError as FacadeJSONDecodeError
+from polylogue.core.json import decode_provider_utf8
+from polylogue.core.json import loads as json_loads
+from polylogue.core.json_envelope import sqlite_value_limit
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
 
 from .dispatch import (
@@ -110,12 +114,28 @@ class BoundRecordValidator:
             active = not path_declaration_refuses_session(self._bound, Path(name))
         self.active = active
         self._document = _DocumentValidator(self._bound, records=False) if active and not self._is_jsonl else None
+        #: The current JSONL line, held whole up to SQLite's value length;
+        #: a longer line is push-parsed instead of being held.
+        self._pending = bytearray()
+        self._line_limit = sqlite_value_limit() if active and self._is_jsonl else 0
         self._line: _DocumentValidator | None = None
         self._finished = False
+        #: A refusal is sticky: a consumer that swallows it and reads on (an
+        #: identity pass falling back to byte identity) meets it again.
+        self._refusal: ForeignOriginContentError | None = None
 
     def feed(self, chunk: bytes) -> None:
+        if self._refusal is not None:
+            raise self._refusal
         if not self.active or not chunk:
             return
+        try:
+            self._feed(chunk)
+        except ForeignOriginContentError as refusal:
+            self._refusal = refusal
+            raise
+
+    def _feed(self, chunk: bytes) -> None:
         if self._document is not None:
             self._document.feed(chunk)
             return
@@ -124,15 +144,15 @@ class BoundRecordValidator:
             newline = chunk.find(b"\n", start)
             end = len(chunk) if newline == -1 else newline
             if end > start:
-                if self._line is None:
-                    self._line = _DocumentValidator(self._bound, records=True)
-                self._line.feed(chunk[start:end])
+                self._feed_line(chunk[start:end])
             if newline == -1:
                 return
             self._end_line()
             start = newline + 1
 
     def finish(self) -> None:
+        if self._refusal is not None:
+            raise self._refusal
         if not self.active or self._finished:
             return
         self._finished = True
@@ -141,13 +161,27 @@ class BoundRecordValidator:
                 self._document.finish()
             else:
                 self._end_line()
+        except ForeignOriginContentError as refusal:
+            self._refusal = refusal
+            raise
         finally:
             self.close()
 
     def close(self) -> None:
+        self._pending = bytearray()
         for document in (self._document, self._line):
             if document is not None:
                 document.close()
+
+    def _feed_line(self, data: bytes) -> None:
+        if self._line is None and len(self._pending) + len(data) <= self._line_limit:
+            self._pending += data
+            return
+        if self._line is None:
+            self._line = _DocumentValidator(self._bound, records=True)
+            held, self._pending = bytes(self._pending), bytearray()
+            self._line.feed(held)
+        self._line.feed(data)
 
     def _end_line(self) -> None:
         line, self._line = self._line, None
@@ -156,6 +190,53 @@ class BoundRecordValidator:
                 line.finish()
             finally:
                 line.close()
+            return
+        held, self._pending = bytes(self._pending), bytearray()
+        _validate_jsonl_record(held, self._bound)
+
+
+def _validate_jsonl_record(line: bytes, bound: Provider | None) -> None:
+    """Validate one complete JSONL line from its C-decoded value.
+
+    The registry applies each binding's declared projection to the decoded
+    record, as the event route does. A line that does not decode keeps the
+    event route, which validates the structure completed before the fault.
+    """
+    raw = line.strip(b" \t\r\n")
+    if not raw:
+        return
+    try:
+        value = json_loads(raw)
+    except FacadeJSONDecodeError:
+        try:
+            value = json.loads(decode_provider_utf8(raw), parse_constant=_refuse_constant)
+        except (UnicodeDecodeError, ValueError):
+            fallback = _DocumentValidator(bound, records=True)
+            try:
+                fallback.feed(raw)
+                fallback.finish()
+            finally:
+                fallback.close()
+            return
+    if isinstance(value, dict):
+        _validate_record_value(value, bound)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, (dict, list)):
+                _validate_record_value(item, bound)
+
+
+def _refuse_constant(_constant: str) -> object:
+    raise ValueError("non-finite JSON constant")
+
+
+def _validate_record_value(value: object, bound: Provider | None) -> None:
+    from .origin_specs import detector_registry
+
+    for sequence in (False, True):
+        provider, evidence = detector_registry().detect_record_value(value, sequence=sequence)
+        if bound is not None and provider is not None and not same_origin(provider, bound):
+            raise ForeignOriginContentError(expected=bound, found=provider, evidence=evidence or "record shape")
 
 
 @contextmanager

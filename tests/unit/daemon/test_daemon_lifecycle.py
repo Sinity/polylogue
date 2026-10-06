@@ -11,7 +11,7 @@ import signal
 import sqlite3
 import time
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -64,6 +64,61 @@ def test_lifecycle_row_records_start_heartbeat_signal_and_clean_stop(
     assert row[3] == "SIGTERM"
     assert row[4] == "signal"
     assert '"component":"test"' in row[5]
+
+
+def test_signal_received_on_the_event_loop_thread_is_persisted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Writing the signal synchronously on the loop thread makes this red.
+
+    The daemon's handler runs on the event-loop thread, where a synchronous
+    write lease refuses to block the loop; the write must happen elsewhere.
+    """
+    import asyncio
+    import threading
+
+    ops_db = _bind_ops_db(monkeypatch, tmp_path)
+    lifecycle = DaemonLifecycle.start(run_id="loop-run", archive_root_path=tmp_path, details={"component": "test"})
+    refused: list[str] = []
+    from polylogue.logging import emit as real_emit
+
+    def observing_emit(event: str, **fields: Any) -> None:
+        if event == "daemon.lifecycle.signal_not_persisted":
+            refused.append(str(fields.get("error_detail")))
+        real_emit(event, **fields)
+
+    monkeypatch.setattr(lifecycle_module, "emit", observing_emit)
+
+    async def handler_on_loop() -> None:
+        lifecycle.record_signal_best_effort(signal.SIGTERM)
+
+    asyncio.run(handler_on_loop())
+    for thread in threading.enumerate():
+        if thread.name == "daemon-lifecycle-signal":
+            thread.join()
+
+    with sqlite3.connect(ops_db) as conn:
+        row = conn.execute("SELECT signal FROM daemon_lifecycle WHERE run_id = ?", (lifecycle.run_id,)).fetchone()
+    assert refused == []
+    assert row == ("SIGTERM",)
+
+
+def test_lifecycle_stop_carries_the_received_signal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stop that drops the received signal leaves ``exit_kind='signal'`` beside a NULL signal."""
+    ops_db = _bind_ops_db(monkeypatch, tmp_path)
+    lifecycle = DaemonLifecycle.start(run_id="stop-run", archive_root_path=tmp_path, details={"component": "test"})
+    lifecycle.received_signal_name = "SIGTERM"
+    lifecycle.stop(exit_kind="error")
+
+    with sqlite3.connect(ops_db) as conn:
+        row = conn.execute(
+            "SELECT signal, exit_kind FROM daemon_lifecycle WHERE run_id = ?", (lifecycle.run_id,)
+        ).fetchone()
+    assert row == ("SIGTERM", "signal")
 
 
 def test_lifecycle_writes_under_an_archive_bound_daemon_lease(

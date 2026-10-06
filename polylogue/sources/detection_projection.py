@@ -410,6 +410,177 @@ def project_detection_input(
     raise ijson.JSONError("unsupported JSON text encoding")
 
 
+def project_detection_value(value: object, rule: DetectorProjection) -> object:
+    """Project one decoded JSON value exactly as the event projection would.
+
+    A decoded record already holds its complete value, so only the declared
+    fields and folds are visited; unselected subtrees are never walked. A root
+    array takes the same first-item wrapper a physical JSONL line receives.
+    """
+    root_rule = DetectorProjection(item=rule, array_fold="first") if isinstance(value, list) else rule
+    return project_detection_root(value, root_rule)
+
+
+def project_detection_root(value: object, root_rule: DetectorProjection) -> object:
+    """Project a decoded value under an already chosen root rule, as :func:`_project` does."""
+    return _project_object(value, root_rule, scalarish_depth=-1 if root_rule.capture_metadata_values else None)[0]
+
+
+def _object_scalarish(value: object, depth: int) -> bool:
+    """:func:`_consume_scalarish` over a decoded value."""
+    if isinstance(value, list):
+        return depth < 2 and len(value) <= 32 and all(_object_scalarish(item, depth + 1) for item in value)
+    if isinstance(value, dict):
+        return depth < 2 and len(value) <= 8 and all(_object_scalarish(item, depth + 1) for item in value.values())
+    return True
+
+
+def _project_object(
+    value: object, rule: DetectorProjection | None, *, scalarish_depth: int | None
+) -> tuple[object, bool]:
+    """:func:`_project_value` over a decoded value; keys are already unique (last value wins)."""
+    if rule is None:
+        shape: dict[str, object] | list[object] | None = (
+            {} if isinstance(value, dict) else [] if isinstance(value, list) else None
+        )
+        return shape, True if scalarish_depth is None else _object_scalarish(value, scalarish_depth)
+    child_depth = None if scalarish_depth is None or scalarish_depth >= 2 else scalarish_depth + 1
+    if isinstance(value, dict):
+        fields: dict[str, object] = {}
+        matching_key = False
+        refused = False
+        values_scalarish = True
+        for key, child in value.items():
+            child_rule = rule.item if rule.mapping_predicate is not None else (rule.fields or {}).get(key)
+            item, scalarish = _project_object(child, child_rule, scalarish_depth=child_depth)
+            values_scalarish &= scalarish
+            if rule.mapping_predicate is not None:
+                refused |= not rule.mapping_predicate(item)
+            elif rule.mapping_key_predicate is not None:
+                matching_key |= rule.mapping_key_predicate(key)
+            elif rule.fields is not None and key in rule.fields:
+                fields[key] = item
+        count = len(value)
+        mapping_scalarish = True
+        metadata_values = None
+        if scalarish_depth is not None:
+            metadata_values = values_scalarish
+            mapping_scalarish = scalarish_depth < 2 and count <= 8 and metadata_values
+        if rule.mapping_predicate is not None:
+            return ({} if not count else {"node": None if refused else rule.mapping_witness}), mapping_scalarish
+        if rule.mapping_key_predicate is not None:
+            return (rule.mapping_witness if matching_key else {}), mapping_scalarish
+        if rule.preserve_mapping_size:
+            return _ProjectedMapping(fields, count, metadata_values), mapping_scalarish
+        return fields, mapping_scalarish
+    if isinstance(value, list):
+        first: object = None
+        witness: object = None
+        matched = False
+        items_scalarish = True
+        for index, child in enumerate(value):
+            item, scalarish = _project_object(child, rule.item, scalarish_depth=child_depth)
+            items_scalarish &= scalarish
+            if index == 0:
+                first = item
+            if rule.array_predicate is not None:
+                accepts = rule.array_predicate(item)
+                if (rule.array_fold == "any" and accepts) or (rule.array_fold == "all" and not accepts):
+                    witness = item
+                    matched = True
+        count = len(value)
+        array_scalarish = scalarish_depth is None or (scalarish_depth < 2 and count <= 32 and items_scalarish)
+        if not count or rule.array_fold == "type":
+            return [], array_scalarish
+        if rule.array_fold == "first":
+            return ([first] if count == 1 else [first, None]), array_scalarish
+        return [witness if matched else first], array_scalarish
+    if isinstance(value, Decimal):
+        return float(value), True
+    return value, True
+
+
+class _CheckedInput(io.RawIOBase):
+    """A borrowed byte input whose every read first honours cancellation."""
+
+    def __init__(self, handle: IO[bytes], check_stop: Callable[[], None] | None) -> None:
+        self.handle = handle
+        self.check_stop = check_stop
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: object) -> int:
+        check_compute_cancelled()
+        if self.check_stop is not None:
+            self.check_stop()
+        view = memoryview(buffer)  # type: ignore[arg-type]
+        data = self.handle.read(len(view))
+        view[: len(data)] = data
+        return len(data)
+
+    def close(self) -> None:
+        # Closing this adapter never closes the caller's input.
+        super().close()
+
+
+def iter_decoded_jsonl_records(
+    handle: IO[bytes],
+    *,
+    check_stop: Callable[[], None] | None = None,
+    on_decode_failure: Callable[[Exception], None] | None = None,
+) -> Generator[object, None, None]:
+    """Decode each physical JSONL line as exactly one strict JSON value.
+
+    One line is held at a time, up to SQLite's value length (the physical
+    bound on a stored record; a longer line is read past and refused by
+    name), and decoded by the C JSON backend, with directly encoded provider
+    surrogates decoded exactly. A record stream is never parsed as one
+    document. A supplied failure observer permits candidacy from healthy
+    records while retaining decode-loss evidence; without one, the first
+    refused record raises. The caller owns the original handle.
+    """
+    import json
+
+    from polylogue.core.json import JSONDecodeError as FacadeDecodeError
+    from polylogue.core.json import decode_provider_utf8
+    from polylogue.core.json import loads as json_loads
+    from polylogue.core.json_envelope import OversizedRecord, bounded_lines
+
+    def refuse(_constant: str) -> object:
+        raise ValueError("non-finite JSON constant")
+
+    def refused(line_number: int, cause: BaseException | None) -> None:
+        failure = ijson.JSONError(f"malformed JSONL record at line {line_number}")
+        failure.__cause__ = cause
+        if on_decode_failure is None:
+            raise failure
+        on_decode_failure(failure)
+
+    with io.BufferedReader(_CheckedInput(handle, check_stop), buffer_size=1024 * 1024) as lines:
+        for line_number, line in enumerate(bounded_lines(lines), start=1):
+            if isinstance(line, OversizedRecord):
+                refused(line_number, None)
+                continue
+            assert isinstance(line, bytes)
+            raw = line.strip(b" \t\r\n")
+            if raw.startswith(codecs.BOM_UTF8):
+                raw = raw[len(codecs.BOM_UTF8) :].lstrip(b" \t\r\n")
+            if not raw:
+                continue
+            try:
+                value = json_loads(raw)
+            except FacadeDecodeError as exc:
+                try:
+                    value = json.loads(decode_provider_utf8(raw), parse_constant=refuse)
+                except (UnicodeDecodeError, ValueError):
+                    refused(line_number, exc)
+                    continue
+            if check_stop is not None:
+                check_stop()
+            yield value
+
+
 def iter_projected_jsonl_records(
     handle: IO[bytes],
     rule: DetectorProjection,
@@ -417,38 +588,13 @@ def iter_projected_jsonl_records(
     check_stop: Callable[[], None] | None = None,
     on_decode_failure: Callable[[Exception], None] | None = None,
 ) -> Generator[object, None, None]:
-    """Project each complete JSONL value while consuming every physical line.
-
-    The caller owns the original handle. A supplied failure observer permits
-    candidacy from healthy records while retaining decode-loss evidence;
-    canonical parsing remains responsible for the exact failure disposition.
-    """
-    from polylogue.core.json_envelope import _LineSource
-
-    lines = _LineSource(handle)
-    while (line := lines.next_line()) is not None:
-        observed = _ObservedLine(line, check_stop)
-        source = _DetectionText(observed, "utf-8", check_stop)
-        reader = io.BufferedReader(source)
-        try:
-            try:
-                value = _document_projection(reader, rule, None)
-            except (StopIteration, ijson.JSONError, JSONDecodeError, UnicodeError) as exc:
-                if source.callback_failure is not None:
-                    raise source.callback_failure from None
-                if observed.callback_failure is not None:
-                    raise observed.callback_failure from None
-                observed.drain()
-                if not observed.nonblank:
-                    continue
-                if on_decode_failure is None:
-                    raise
-                on_decode_failure(exc)
-                continue
-            observed.drain()
-            yield value
-        finally:
-            reader.close()
+    """Project each strictly decoded JSONL record in one pass over the input."""
+    records = iter_decoded_jsonl_records(handle, check_stop=check_stop, on_decode_failure=on_decode_failure)
+    try:
+        for record in records:
+            yield project_detection_value(record, rule)
+    finally:
+        records.close()
 
 
 def iter_projected_document_records(
