@@ -6769,6 +6769,62 @@ def test_append_multi_session_payload_is_rejected_before_index_write(
         assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("append-multi",)]
 
 
+def test_full_parser_exception_settles_as_terminal_refusal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A parser that fails on retained bytes refuses them once, typed.
+
+    Parsing the same immutable bytes with the same parser can only fail the
+    same way, so a non-decode parser exception settles as a terminal refusal
+    with raw evidence. A failed census instead would be re-censused on every
+    pass without progress.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    source = root / "parser-crash.jsonl"
+    source.write_bytes(_codex_shaped_bytes("parser-crash"))
+    index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    def crash(*_args: object, **_kwargs: object) -> Generator[ParsedSession, None, None]:
+        raise RuntimeError("injected deterministic parser failure")
+        yield  # pragma: no cover - makes this a generator like the real parser
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_stream", crash)
+
+    first = run_ingest_files(processor, [source], emit_event=False)
+    second = run_ingest_files(processor, [source], emit_event=False)
+
+    assert first.failed_file_count == 0
+    assert second.failed_file_count == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT r.parsed_at_ms, r.parse_error, a.artifact_kind, c.status
+            FROM raw_sessions AS r
+            JOIN raw_artifacts AS a ON a.raw_id = r.raw_id
+            JOIN raw_membership_census AS c ON c.raw_id = r.raw_id
+            WHERE r.source_path = ?
+            """,
+            (str(source),),
+        ).fetchall()
+    assert len(rows) == 1
+    parsed_at_ms, parse_error, artifact_kind, census_status = rows[0]
+    assert parsed_at_ms is None
+    assert isinstance(parse_error, str) and parse_error.startswith("RuntimeError:")
+    assert artifact_kind == RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value
+    assert census_status == "non_session"
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
 def test_full_multi_session_failure_retries_without_success_mapping(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -3220,43 +3220,8 @@ def prepare_revision_source_census(
             state.quarantined += 1
             return
         outcome = _prepared_retained_outcome(evidence_reader, raw_id, prepared_inputs)
-        provider, _hash, source_path, revision_kind, raw_size = evidence_reader.raw_revision_descriptor(raw_id)
+        provider, _hash, source_path, revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
         observed_at_ms = evidence_reader.raw_revision_observation_order(raw_id)[0]
-        if isinstance(outcome, UnsupportedRetainedJsonShapeError) and raw_size == 0:
-            # A zero-byte capture holds no record at all: a settled no-session
-            # observation with typed terminal evidence, never a retry. A
-            # non-empty unrecognized shape stays a visible failed census.
-            _record_raw_failure_evidence(
-                producer,
-                raw_id,
-                provider=provider,
-                source_path=source_path,
-                source_index=source_index,
-                acquired_at_ms=observed_at_ms,
-                kind=(
-                    RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION
-                    if provider is Provider.UNKNOWN
-                    else RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE
-                ),
-                manage_transaction=False,
-            )
-            _apply_source_raw_state_update(
-                producer,
-                raw_id,
-                state=_raw_parse_failure_state(provider, outcome),
-                manage_transaction=False,
-            )
-            replace_raw_membership_census(
-                seal,
-                raw_id,
-                [],
-                parser_fingerprint=raw_authority_parser_fingerprint(),
-                censused_at_ms=0,
-                detail=str(outcome),
-                retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
-                revision_authority=None,
-            )
-            return
         if isinstance(outcome, Exception):
             if _persist_terminal_raw_refusal(
                 producer,
@@ -3270,13 +3235,41 @@ def prepare_revision_source_census(
             ):
                 record_current_parser_source_census(seal, raw_id)
             else:
+                # Any other retained parser failure (an unrecognized shape, a
+                # parser exception) is this parser's settled answer for these
+                # immutable bytes: parsing them again can only fail the same
+                # way. It admits no session, so it settles as a non-session
+                # census with typed terminal evidence; a failed census would
+                # be re-censused on every pass without progress. A changed
+                # parser fingerprint re-censuses the raw.
+                _record_raw_failure_evidence(
+                    producer,
+                    raw_id,
+                    provider=provider,
+                    source_path=source_path,
+                    source_index=source_index,
+                    acquired_at_ms=observed_at_ms,
+                    kind=(
+                        RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION
+                        if provider is Provider.UNKNOWN
+                        else RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE
+                    ),
+                    manage_transaction=False,
+                )
+                _apply_source_raw_state_update(
+                    producer,
+                    raw_id,
+                    state=_raw_parse_failure_state(provider, outcome),
+                    manage_transaction=False,
+                )
                 replace_raw_membership_census(
                     seal,
                     raw_id,
-                    None,
+                    [],
                     parser_fingerprint=raw_authority_parser_fingerprint(),
                     censused_at_ms=0,
                     detail=str(outcome),
+                    retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
                     revision_authority=None,
                 )
             state.quarantined += 1

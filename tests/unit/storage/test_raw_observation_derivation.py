@@ -904,10 +904,15 @@ def test_unsupported_unknown_json_keeps_typed_refusal_in_prepared_publication(
             )
 
     asyncio.run(exercise())
+    # The refusal settles: a non-session census with typed terminal evidence,
+    # never a failed census the next pass would census again.
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
-            "failed",
+            "non_session",
         )
+        assert conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchall() == [
+            ("terminal_unknown_export_no_session",)
+        ]
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
