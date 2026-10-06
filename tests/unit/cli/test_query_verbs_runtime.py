@@ -1977,11 +1977,13 @@ def test_delete_dry_run_delegates_complete_selection_without_a_candidate_prefix(
     wrapped = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
     with (
-        patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb") as probe,
+        patch("polylogue.cli.session_rows.query_session_selection") as probe,
+        patch("polylogue.cli.session_rows.query_complete_session_selection") as walk,
         patch("polylogue.cli.archive_query.execute_delete_selection") as execute,
     ):
         wrapped(child, True, False, False, "json")
     probe.assert_not_called()
+    walk.assert_not_called()
     assert execute.call_args.args[1].query_terms == ("alpha",)
     assert execute.call_args.kwargs == {"mode": "single", "force": True, "dry_run": True}
 

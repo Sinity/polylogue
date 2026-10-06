@@ -163,7 +163,7 @@ def _run_dispatcher_ingest(
         if name == "ingestion_batch":
             batch_payloads.append(payload)
 
-    async def drain() -> tuple[int, int, int, int, int]:
+    async def drain() -> tuple[int, int, int, int, int, float]:
         admitted = 0
         failed = 0
         retried = 0
@@ -199,6 +199,10 @@ def _run_dispatcher_ingest(
                     (IntakeClassSpec(name="configured_local", adapter=adapter, page_size=32),),
                     frame="test:dispatcher-measure",
                 )
+                # Time the scheduled passes only, the same unit the direct arm
+                # times: archive bootstrap, owner composition and coordinator
+                # shutdown are fixture setup on both arms.
+                started = time.perf_counter()
                 try:
                     while passes < _MAX_DISPATCHER_PASSES:
                         result = await dispatcher.run_once()
@@ -216,16 +220,15 @@ def _run_dispatcher_ingest(
                             await asyncio.sleep(0.25)
                     else:
                         raise AssertionError(f"dispatcher did not drain in {_MAX_DISPATCHER_PASSES} passes")
+                    elapsed = time.perf_counter() - started
                 finally:
                     watcher.stop()
         finally:
             assert await coordinator.shutdown(timeout=float("inf"))
-        return admitted, failed, retried, deferred, passes
+        return admitted, failed, retried, deferred, passes, elapsed
 
-    started = time.perf_counter()
-    admitted, failed, retried, deferred, passes = asyncio.run(drain())
+    admitted, failed, retried, deferred, passes, elapsed = asyncio.run(drain())
     assert admitted == len(files), f"dispatcher published {admitted} of {len(files)} expected files"
-    elapsed = time.perf_counter() - started
     payload = _payload_bytes(files)
     released = [event for event in writer_events if event.phase == "released"]
     # The dispatcher no longer takes one page-wide lease.  Its ordinary batch

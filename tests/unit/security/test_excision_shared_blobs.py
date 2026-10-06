@@ -26,23 +26,22 @@ Synthetic fixtures only: invented tool output, invented paths.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
-from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.security.excision import plan_session_excision
 from polylogue.sources.live import WatchSource
-from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
@@ -56,6 +55,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from tests.infra.excision_execution import execute_excision
 from tests.infra.index_writer import fixture_index_connection, write_fixture_ingest_payload
+from tests.infra.live_batch import prepared_live_batch_processor
 from tests.infra.retained_jsonl import prepared_source_fixture
 
 _SESSION_A = "5c3d1e40-0000-4000-8000-00000000a001"
@@ -132,18 +132,37 @@ def _session_tree(root: Path, session_id: str, outputs: list[tuple[str, str]]) -
     return paths
 
 
-async def _ingest(workspace_env: dict[str, Path], root: Path, files: list[Path], *, cursor_name: str) -> None:
-    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "index.db")
-    processor = LiveBatchProcessor(
-        archive,
-        (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
-        cursor=CursorStore(workspace_env["data_root"] / cursor_name),
+async def _ingest(
+    workspace_env: dict[str, Path],
+    root: Path,
+    files: list[Path],
+    *,
+    fresh_cursor: bool = False,
+    source: WatchSource | None = None,
+) -> None:
+    """Ingest through the real live batch processor and its canonical Raw owner.
+
+    ``fresh_cursor`` forgets these files' watcher cursors first (the disposable
+    ops tier), so an unchanged file is genuinely reacquired rather than skipped
+    at end-of-file: re-ingest then depends on the excision marker, not on the
+    cursor, to keep excised content out.
+    """
+    archive_root = workspace_env["archive_root"]
+    if fresh_cursor:
+        spellings = [str(path) for path in files] + [str(path.resolve()) for path in files]
+        marks = ",".join("?" for _ in spellings)
+        with closing(sqlite3.connect(archive_root / "ops.db")) as ops:
+            ops.execute(
+                f"DELETE FROM ingest_cursor WHERE source_path IN ({marks}) OR canonical_source_path IN ({marks})",
+                (*spellings, *spellings),
+            )
+            ops.commit()
+    async with prepared_live_batch_processor(
+        archive_root,
+        (source or WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
-    )
-    try:
+    ) as processor:
         await processor.ingest_files(files, emit_event=False)
-    finally:
-        await archive.close()
 
 
 def _sha(text: str) -> bytes:
@@ -203,7 +222,6 @@ async def _ingest_a_and_b(workspace_env: dict[str, Path]) -> tuple[Path, dict[st
             tree_a["transcript"],
             tree_b["transcript"],
         ],
-        cursor_name="cursor.db",
     )
     return root, tree_a, tree_b
 
@@ -223,7 +241,9 @@ async def test_excising_a_forgets_the_tool_output_only_it_had(workspace_env: dic
 
     plan = plan_session_excision(archive_root, session_a[0])
     assert plan.source_sidecar_rows == 2
-    receipt = execute_excision(archive_root, session_a[0], reason="synthetic secret", actor="user:local")
+    receipt = await asyncio.to_thread(
+        execute_excision, archive_root, session_a[0], reason="synthetic secret", actor="user:local"
+    )
 
     assert receipt["counts"]["source_sidecar_rows"] == 2
     assert _excised(archive_root, _sha(_A_ONLY_TEXT))
@@ -286,13 +306,14 @@ async def test_excising_a_parent_keeps_its_subagents_sidecar(workspace_env: dict
         workspace_env,
         root,
         [parent_sidecar, subagent_sidecar, orphan_sidecar, parent, subagent],
-        cursor_name="cursor.db",
     )
     session = _session_row(archive_root, _SESSION_A)
     assert session is not None
     assert _raw_hash(archive_root, subagent_sidecar) == _sha(_SUBAGENT_TEXT)
 
-    receipt = execute_excision(archive_root, session[0], reason="synthetic secret", actor="user:local")
+    receipt = await asyncio.to_thread(
+        execute_excision, archive_root, session[0], reason="synthetic secret", actor="user:local"
+    )
 
     assert receipt["counts"]["source_sidecar_rows"] == 1
     assert _raw_hash(archive_root, parent_sidecar) is None
@@ -381,17 +402,12 @@ async def test_excising_a_gemini_chat_forgets_its_tool_output_sidecar(workspace_
     snapshot.parent.mkdir(parents=True)
     snapshot.write_text(json.dumps(_gemini_snapshot(sidecar)), encoding="utf-8")
 
-    archive = Polylogue(archive_root=archive_root, db_path=workspace_env["data_root"] / "index.db")
-    processor = LiveBatchProcessor(
-        archive,
-        (WatchSource(name="gemini-cli", root=root, suffixes=(".json",)),),
-        cursor=CursorStore(workspace_env["data_root"] / "cursor.db"),
-        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    await _ingest(
+        workspace_env,
+        root,
+        [sidecar, unclaimed, snapshot],
+        source=WatchSource(name="gemini-cli", root=root, suffixes=(".json",)),
     )
-    try:
-        await processor.ingest_files([sidecar, unclaimed, snapshot], emit_event=False)
-    finally:
-        await archive.close()
     with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
         [(session_id,)] = conn.execute(
             "SELECT session_id FROM sessions WHERE origin = ?", (Origin.GEMINI_CLI_SESSION.value,)
@@ -399,7 +415,9 @@ async def test_excising_a_gemini_chat_forgets_its_tool_output_sidecar(workspace_
     assert _raw_hash(archive_root, sidecar) == _sha(_GEMINI_TEXT)
     assert _raw_hash(archive_root, unclaimed) == _sha(_ORPHAN_TEXT)
 
-    receipt = execute_excision(archive_root, str(session_id), reason="synthetic secret", actor="user:local")
+    receipt = await asyncio.to_thread(
+        execute_excision, archive_root, str(session_id), reason="synthetic secret", actor="user:local"
+    )
 
     assert receipt["counts"]["source_sidecar_rows"] == 1
     assert _raw_hash(archive_root, sidecar) is None
@@ -425,9 +443,11 @@ async def test_excising_a_keeps_the_sidecar_it_shares_with_b(workspace_env: dict
     assert b_event["acquisition_status"] == "matched"
     # The stored identity is the one the archive re-derives from B's
     # retained bytes.
-    assert session_b[2] == _rederived_hash(archive_root, session_b[1])
+    assert session_b[2] == await asyncio.to_thread(_rederived_hash, archive_root, session_b[1])
 
-    receipt = execute_excision(archive_root, session_a[0], reason="synthetic secret", actor="user:local")
+    receipt = await asyncio.to_thread(
+        execute_excision, archive_root, session_a[0], reason="synthetic secret", actor="user:local"
+    )
 
     assert receipt["found"] is True
     assert _session_row(archive_root, _SESSION_A) is None
@@ -449,7 +469,7 @@ async def test_excising_a_keeps_the_sidecar_it_shares_with_b(workspace_env: dict
         workspace_env,
         root,
         [tree_c["toolu_c_shared"], tree_a["transcript"], tree_c["transcript"]],
-        cursor_name="cursor-reingest.db",
+        fresh_cursor=True,
     )
 
     assert _session_row(archive_root, _SESSION_A) is None, "re-ingesting A's export resurrected it"
@@ -460,7 +480,7 @@ async def test_excising_a_keeps_the_sidecar_it_shares_with_b(workspace_env: dict
         ("toolu_c_shared", "matched")
     ], events
     assert _raw_hash(archive_root, tree_c["toolu_c_shared"]) == _sha(_SHARED_TEXT)
-    assert stored_c[2] == _rederived_hash(archive_root, stored_c[1])
+    assert stored_c[2] == await asyncio.to_thread(_rederived_hash, archive_root, stored_c[1])
     with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
         texts = [
             str(row[0])

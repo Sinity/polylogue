@@ -93,13 +93,16 @@ def test_tied_branch_selector_compares_the_exact_accounted_link_and_message() ->
 
 
 def test_nontransactional_composed_stream_yields_each_stored_message_once(tmp_path: Path) -> None:
+    from polylogue.storage.io_phase_metrics import connect_measured
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
     from polylogue.storage.sqlite.archive_tiers.write import _iter_composed_rows
     from tests.infra.index_writer import write_fixture_index_session
     from tests.infra.reference_sessions import reference_session
 
-    with closing(sqlite3.connect(tmp_path / "index.db")) as connection:
+    # The fixture writer's owned Index transaction requires the production
+    # measured creator; a bare sqlite3 handle is refused by the seal.
+    with closing(connect_measured(tmp_path / "index.db")) as connection:
         connection.row_factory = sqlite3.Row
         initialize_archive_tier(connection, ArchiveTier.INDEX)
         session_id = write_fixture_index_session(connection, reference_session("single-composed-input"))

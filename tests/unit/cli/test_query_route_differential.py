@@ -280,7 +280,9 @@ def test_ranked_exclude_text_refuses_without_a_misleading_page(query_route_works
 @pytest.mark.parametrize(
     ("query", "reason"),
     [
-        (["--id", LONE_C, "find"], "Exact session reads do not apply --exclude-text"),
+        # ``--id X`` with --exclude-text is no longer an exact read: an extra
+        # predicate makes it a filtered page (#5941). A lone ref token is.
+        (["find", LONE_C], "Exact session reads do not apply --exclude-text"),
         (["find", "messages where role:assistant"], "Unit queries do not apply --exclude-text"),
         (["find", "from result-set:stable-set"], "Reference reads do not apply --exclude-text"),
     ],

@@ -699,12 +699,24 @@ def _explain_zip_entry(
     profile_identity: str | None = None,
 ) -> ImportExplainEntryPayload:
     """Aggregate the existing sealed parser artifact without a session list."""
+    import ijson
+
     from polylogue.sources.detection_projection import DetectorProjection, project_detection_input
     from polylogue.sources.dispatch import detect_provider_from_stream_evidence
 
-    with open_zip_entry(archive, info) as source:
-        detected, evidence = detect_provider_from_stream_evidence(source)
-        shape, mode_view = project_detection_input(source, DetectorProjection(fields={"sessions": None}))
+    try:
+        with open_zip_entry(archive, info) as source:
+            detected, evidence = detect_provider_from_stream_evidence(source)
+            shape, mode_view = project_detection_input(source, DetectorProjection(fields={"sessions": None}))
+    except (ijson.JSONError, json.JSONDecodeError, UnicodeError) as exc:
+        # A member that is not decodable JSON is that member's skip, exactly
+        # as an undecodable standalone file is; it never aborts the archive.
+        return _skipped_entry(
+            Path(source_path),
+            provider_hint=provider_hint,
+            artifact=None,
+            reason=f"decode failure: {exc}",
+        )
     provider = detected or provider_hint
     refs: list[str] = []
     session_count = messages = blocks = actions = 0

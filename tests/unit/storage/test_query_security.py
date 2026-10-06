@@ -12,6 +12,7 @@ from polylogue.storage.repository import SessionRepository
 from polylogue.storage.search import escape_fts5_query
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.adversarial_cases import FTS5_ESCAPE_SECURITY_CASES
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.storage_records import make_message, make_session, save_session_to_archive
 from tests.infra.strategies.adversarial import (
     control_char_strategy,
@@ -22,9 +23,10 @@ from tests.infra.strategies.adversarial import (
 
 @pytest.fixture
 async def temp_repo(tmp_path: Path) -> SessionRepository:
-    db_path = tmp_path / "test.db"
-    backend = SQLiteBackend(db_path=db_path)
-    return SessionRepository(backend=backend)
+    # Reads refuse an uninitialized Index; construct the empty archive first.
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
+    backend = SQLiteBackend(db_path=tmp_path / "index.db")
+    return SessionRepository(backend=backend, archive_root=tmp_path)
 
 
 async def test_session_id_sql_injection_select(temp_repo: SessionRepository) -> None:

@@ -7,14 +7,10 @@ cardinality contracts before performing mutations:
 - ``--all``: explicit opt-in to act on every matched session.
 - ``--first``: silently act on the first matched session only.
 
-:func:`check_cardinality` is the single shared enforcement point.  All three
-verbs import it so tests can verify the shared path without repeating
-assertions.
-
-:func:`probe_session_ids_for_verb` and :func:`resolve_session_ids_for_verb`
-answer through the declared ``cli.query`` operation -- the same read
-``find QUERY`` runs -- so a guard and the set it guards can never disagree with
-what the operator was shown.
+:func:`check_cardinality` is the shared enforcement point for verbs that
+resolve their own selection. The mutating verbs (``mark``, ``delete``) resolve
+their selection in the resident daemon's complete walk instead;
+:func:`ambiguous_resident_selection` renders that walk's ambiguity refusal.
 """
 
 from __future__ import annotations
@@ -32,7 +28,6 @@ from polylogue.cli.contextual_errors import (
 
 if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
-    from polylogue.cli.shared.types import AppEnv
 
 
 class CardinalityError(ContextualCliError):
@@ -170,35 +165,31 @@ def require_exact_mutation_selection(request: RootModeRequest, *, allow_all: boo
         )
 
 
-def probe_session_ids_for_verb(env: AppEnv, request: RootModeRequest, *, limit: int) -> list[str]:
-    """Resolve a bounded ID prefix for cheap zero/one/many verb guards."""
-    from polylogue.cli.session_rows import query_session_selection
+def ambiguous_resident_selection(operation: str, candidates: Sequence[str]) -> AmbiguousCardinalityError:
+    """Refuse a daemon ``selection_ambiguous`` outcome in the verb's own voice.
 
-    _reject_window_selectors(request)
-    selection = query_session_selection(env.config, request, limit=limit)
-    selection.require_authoritative()
-    return selection.ids[:limit]
-
-
-def resolve_session_ids_for_verb(env: AppEnv, request: RootModeRequest) -> list[str]:
-    """Resolve session IDs for a verb that needs to inspect the matched set.
-
-    The shared resolution path used by ``mark`` and ``delete`` for their
-    cardinality pre-check. It is the declared ``cli.query`` operation, the same
-    one ``find QUERY`` runs, so a guard can never disagree with what the
-    operator was shown. The result is the one exact full-id set the preview
-    shows and the mutation receives; nothing downstream re-runs the query.
-    ``--latest`` bounds that set to one session in the operation itself, so
-    the walk ends after its single row.
-
-    Returns IDs in the query's natural order (most-recent first by default).
+    The resident selection walk for a single-target mutation stops at its
+    second row, so *candidates* is a bounded sample, never the whole match.
+    The next actions are the verb's own: ``mark`` accepts ``--first`` and
+    ``--all``; ``delete`` accepts only ``--all``.
     """
-    from polylogue.cli.session_rows import query_complete_session_selection
-
-    _reject_window_selectors(request)
-    selection = query_complete_session_selection(env.config, request)
-    selection.require_authoritative()
-    return selection.ids
+    verb = "mark" if operation == "mutation.session.mark" else "delete"
+    refs = tuple(candidates)
+    actions = (
+        *ambiguous_selection_actions(verb, refs[0] if refs else None),
+        *(
+            (NextAction("Act on the first match only", "polylogue find <QUERY> then mark --first"),)
+            if verb == "mark"
+            else ()
+        ),
+        NextAction("Act on every match", f"polylogue find <QUERY> then {verb} --all"),
+    )
+    return AmbiguousCardinalityError(
+        f"'{verb}' matched more than one session.",
+        candidates=refs,
+        next_actions=actions,
+        bounded=True,
+    )
 
 
 __all__ = [
@@ -206,8 +197,7 @@ __all__ = [
     "CardinalityError",
     "EmptyCardinalityError",
     "WideningSelectorError",
+    "ambiguous_resident_selection",
     "check_cardinality",
-    "probe_session_ids_for_verb",
     "require_exact_mutation_selection",
-    "resolve_session_ids_for_verb",
 ]

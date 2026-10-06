@@ -846,6 +846,17 @@ class SecretScanRequest(_OperationPayload):
         return self
 
 
+class SchemaQuarantineVerdict(_OperationPayload):
+    raw_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class SchemaQuarantineRequest(_OperationPayload):
+    """Schema-verification verdicts to persist on Source ``raw_sessions`` rows."""
+
+    verdicts: list[SchemaQuarantineVerdict] = Field(min_length=1)
+
+
 class WorkEvidenceGraphReplaceRequest(_OperationPayload):
     """One whole work-evidence graph, and the stored base it was derived from.
 
@@ -2796,6 +2807,20 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=SecretScanRequest,
         result_model=MutationResult,
         handler="maintenance_secret_scan",
+    ),
+    DaemonOperationSpec(
+        "maintenance.schema.quarantine",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.schema_quarantine",
+        deadline_s=120.0,
+        request_contract="maintenance.schema.quarantine.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="SchemaQuarantineRequest",
+        result_type="MutationResult",
+        request_model=SchemaQuarantineRequest,
+        result_model=MutationResult,
+        handler="maintenance_schema_quarantine",
     ),
     DaemonOperationSpec(
         "mutation.work_evidence.graph.replace",

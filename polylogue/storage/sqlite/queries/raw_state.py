@@ -128,7 +128,7 @@ async def mark_raw_parsed(
         )
     else:
         state = RawSessionStateUpdate(
-            parse_error=error[:2000],
+            parse_error=error,
             payload_provider=provider_token,
         )
     await apply_raw_state_update(
@@ -167,7 +167,7 @@ async def mark_raw_validated(
 
     state = RawSessionStateUpdate(
         validation_status=validation_status,
-        validation_error=(error[:2000] if error else None),
+        validation_error=(error if error else None),
         validation_drift_count=drift_count,
         validation_provider=coerce_provider(provider),
         validation_mode=validation_mode,
