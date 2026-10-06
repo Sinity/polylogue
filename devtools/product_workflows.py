@@ -217,7 +217,7 @@ EXECUTABLE_WORKFLOW_GOLDEN_PATHS: tuple[ExecutableWorkflowGoldenPath, ...] = (
         output_kind="json_object",
         json_expectations=(
             JsonExpectation(("status",), "string"),
-            JsonExpectation(("session_ids",), "array"),
+            JsonExpectation(("session_ids_sample",), "array"),
             JsonExpectation(("session_count",), "integer"),
         ),
         stdout_contains=('"status": "preview"', DEMO_CLAUDE_CODE_SESSION_ID),

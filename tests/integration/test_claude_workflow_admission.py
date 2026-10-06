@@ -33,6 +33,7 @@ from polylogue.core.enums import Provider
 from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.retained_replay import replay_retained_components
 
 RUN_ID = "wf_54d4fb2e-841"
@@ -183,15 +184,20 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
 
     old_snapshot = summary.corpus_snapshot_ref
     revised_run = _run_snapshot(final_value="final result revision two")
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        revised_raw_id = archive.write_raw_payload(
-            provider=Provider.CLAUDE_CODE,
-            payload=json.dumps(revised_run, sort_keys=True).encode(),
-            source_path=str(run_path),
-            canonical_source_path=str(run_path),
-            source_index=0,
-            acquired_at_ms=2_000_000_000_000,
-        )
+
+    def write_revision() -> str:
+        # The archive's synchronous mutation lease refuses to block the loop.
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            return archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=json.dumps(revised_run, sort_keys=True).encode(),
+                source_path=str(run_path),
+                canonical_source_path=str(run_path),
+                source_index=0,
+                acquired_at_ms=2_000_000_000_000,
+            )
+
+    revised_raw_id = run_off_event_loop(write_revision)
 
     assert claude_workflow_materialization_needed(archive_root) is True
     pending = materialize_claude_workflow_archive(archive_root)
@@ -199,7 +205,8 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
     assert pending.retained_raw_revision_count == 225
     assert pending.artifact_counts.get("workflow_run_snapshot", 0) == 0
 
-    replay_retained_components(archive_root, selected_raw_ids=[revised_raw_id])
+    # The retained replay helper drives its own event loop; run it off this one.
+    run_off_event_loop(lambda: replay_retained_components(archive_root, selected_raw_ids=[revised_raw_id]))
     assert claude_workflow_materialization_needed(archive_root) is True
     revised = materialize_claude_workflow_archive(archive_root)
     assert revised.current_artifact_count == 224

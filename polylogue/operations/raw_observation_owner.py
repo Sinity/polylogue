@@ -309,8 +309,17 @@ class RawObservationArchiveWork:
                         return expanded
 
                     # The frame scope is the whole selection, so an opaque
-                    # envelope's census can cover its unreplayed siblings.
-                    frame = raw_observation_frame(archive_root, raw_ids=selected, index_db_path=index_path)
+                    # envelope's census can cover its unreplayed siblings --
+                    # except inputs this operation already settled as refused
+                    # or dependency-blocked, which a sibling's census must not
+                    # pull back in.
+                    frame = raw_observation_frame(
+                        archive_root,
+                        raw_ids=tuple(
+                            item for item in selected if item not in refused_ids and item not in dependency_blocked_ids
+                        ),
+                        index_db_path=index_path,
+                    )
                     try:
                         replacement = adapter.compute(
                             frame, raw_id, replay_current=True, select_retained_raw_ids=select_original

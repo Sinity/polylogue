@@ -5,10 +5,15 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+import pytest
+from click.testing import CliRunner
+
+from polylogue.cli.click_app import cli
 from polylogue.config import Config
 from polylogue.mcp.payloads import MCPReadinessReportPayload
 from polylogue.readiness import get_readiness
 from tests.infra.cli_subprocess import IsolatedWorkspace, run_cli, setup_isolated_workspace
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -68,7 +73,9 @@ def _load_stdout_json(result_stdout: str) -> dict[str, Any]:
     return payload
 
 
-def test_converging_archive_surfaces_share_materialization_counts(tmp_path: Path) -> None:
+def test_converging_archive_surfaces_share_materialization_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     workspace = _seed_converging_workspace(tmp_path)
     env = workspace["env"]
     archive_root = workspace["paths"]["archive_root"]
@@ -98,16 +105,19 @@ def test_converging_archive_surfaces_share_materialization_counts(tmp_path: Path
     assert status_payload["status_snapshot"]["state"] == "unavailable"
     assert "raw_materialization" not in status_payload.get("component_readiness", {})
 
-    no_results = run_cli(
-        ["--plain", "find", "absenttoken", "--format", "json"], env=env, timeout=30, entrypoint="module"
-    )
+    # Archive reads are served by the resident daemon (#5550); the in-process
+    # CLI reaches a real daemon over the archive socket.
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    with cli_daemon_archive(archive_root, monkeypatch):
+        no_results = CliRunner().invoke(cli, ["--plain", "find", "absenttoken", "--format", "json"])
+        analyze = CliRunner().invoke(cli, ["--plain", "analyze", "--format", "json"])
     assert no_results.exit_code == 2, no_results.output
     no_results_payload = _load_stdout_json(no_results.stdout)
     assert no_results_payload["archive_converging"] is True
     assert no_results_payload["convergence_warning"] == expected_warning
     assert no_results_payload["items"] == []
 
-    analyze = run_cli(["--plain", "analyze", "--format", "json"], env=env, timeout=30, entrypoint="module")
     # Converging totals are degraded, which exits 1 like every other read.
     assert analyze.exit_code == 1, analyze.output
     analyze_payload = _load_stdout_json(analyze.stdout)

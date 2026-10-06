@@ -1218,6 +1218,21 @@ def test_archive_read_cli_lists_archive_sessions(
         def __exit__(self, *args: object) -> None:
             return None
 
+        def close(self) -> None:
+            return None
+
+        def begin_read_snapshot(self) -> None:
+            return None
+
+        def end_read_snapshot(self) -> None:
+            return None
+
+        def set_read_progress_guard(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def clear_read_progress_guard(self) -> None:
+            return None
+
         def list_summaries(self, *, limit: int, origin: str | None) -> list[ArchiveSessionSummary]:
             assert limit == 2
             assert origin == "codex-session"
@@ -1289,6 +1304,21 @@ def test_archive_read_cli_searches_archive_blocks(
             return self
 
         def __exit__(self, *args: object) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+        def begin_read_snapshot(self) -> None:
+            return None
+
+        def end_read_snapshot(self) -> None:
+            return None
+
+        def set_read_progress_guard(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def clear_read_progress_guard(self) -> None:
             return None
 
         def search_summaries(self, query: str, *, limit: int, origin: str | None) -> list[ArchiveSessionSearchHit]:

@@ -287,15 +287,16 @@ async def _seed_archive_source(tmp_path: Path) -> tuple[Path, Path]:
             conn.execute(
                 """
                 INSERT INTO raw_sessions (
-                    raw_id, origin, native_id, source_path, source_index,
+                    raw_id, origin, native_id, source_path, canonical_source_path, source_index,
                     blob_hash, blob_size, acquired_at_ms,
                     parsed_at_ms, validated_at_ms, validation_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'passed')
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'passed')
                 """,
                 (
                     blob_hash_hex,
                     origin,
                     native_id,
+                    source_path,
                     source_path,
                     index,
                     blob_hash,
@@ -718,12 +719,12 @@ async def test_run_probe_can_sample_archive_file_set_subset(tmp_path: Path) -> N
         conn.execute(
             """
             INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, source_index,
+                raw_id, origin, native_id, source_path, canonical_source_path, source_index,
                 blob_hash, blob_size, acquired_at_ms, parsed_at_ms,
                 validated_at_ms, validation_status
             ) VALUES (
                 'archive-raw-session-id', 'chatgpt-export', 'chatgpt-archive-1',
-                '/tmp/chatgpt-archive.json', 0, ?, ?, 1, 2, 3, 'passed'
+                '/tmp/chatgpt-archive.json', '/tmp/chatgpt-archive.json', 0, ?, ?, 1, 2, 3, 'passed'
             )
             """,
             (bytes.fromhex(blob_hash), blob_size),

@@ -337,3 +337,35 @@ def test_an_entry_point_that_bound_a_run_id_keeps_it() -> None:
         assert daemon_run_id() == "bound-by-entry-point"
     finally:
         plog.set_run_context(**previous)
+
+
+def test_signal_during_the_event_loop_is_persisted_by_the_stop_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A SIGTERM handled on the running loop's thread still reaches the row.
+
+    The handler cannot take a synchronous write lease while the daemon's event
+    loop runs on its thread, so the signal write used to fail (logged as
+    ``daemon.lifecycle.signal_not_persisted``) and the row read
+    ``exit_kind='signal'`` beside a NULL ``signal``.
+
+    Anti-vacuity: drop the signal write from ``stop`` and ``signal`` stays NULL.
+    """
+    import asyncio
+
+    ops_db = _bind_ops_db(monkeypatch, tmp_path)
+    lifecycle = DaemonLifecycle.start(run_id="test-run", archive_root_path=tmp_path)
+    emitted: list[str] = []
+    monkeypatch.setattr(lifecycle_module, "emit", lambda event, **_fields: emitted.append(event))
+
+    async def handle_on_loop() -> None:
+        lifecycle.record_signal_best_effort(signal.SIGTERM)
+
+    asyncio.run(handle_on_loop())
+    assert "daemon.lifecycle.signal_not_persisted" not in emitted
+    lifecycle.stop(exit_kind="clean")
+
+    with sqlite3.connect(ops_db) as conn:
+        row = conn.execute("SELECT signal, exit_kind FROM daemon_lifecycle WHERE run_id = ?", ("test-run",)).fetchone()
+    assert row == ("SIGTERM", "signal")

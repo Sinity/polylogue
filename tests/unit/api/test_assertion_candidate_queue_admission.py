@@ -112,10 +112,12 @@ async def test_unreadable_user_tier_refuses_instead_of_reporting_no_candidates(t
         with pytest.raises(ArchiveTierUnavailableError) as missing:
             await archive.list_assertion_candidates(target_ref=f"session:{session_id}")
         assert missing.value.tier == "user"
+        assert missing.value.reason == "tier_missing"
 
         (tmp_path / "user.db").mkdir()
         with pytest.raises(ArchiveTierUnavailableError) as not_a_file:
             await archive.list_assertion_candidates(target_ref=f"session:{session_id}")
-        assert "not a regular file" in not_a_file.value.reason
+        # The shared tier reader refuses with a stable token, not prose.
+        assert not_a_file.value.reason == "tier_unreadable"
     finally:
         await archive.close()

@@ -343,7 +343,8 @@ Examples:
   polylogue find id:codex-session:demo-receipts then read --view summary
   polylogue find id:codex-session:demo-receipts then read --view transcript
   polylogue find id:codex-session:demo-receipts then read --view messages
-  polylogue find repo:polylogue then read --view compact --max-tokens 4000
+  polylogue find id:codex-session:demo-receipts then read --view compact
+  --max-tokens 4000
 ```
 
 ## Select Verb

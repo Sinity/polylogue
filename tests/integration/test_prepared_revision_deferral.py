@@ -137,7 +137,14 @@ async def test_original_suppressed_byte_outcome_needs_no_membership_plan(tmp_pat
         assert index.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0] == 0
         source = archive.source_connection
         assert source is not None
-        assert source.execute("SELECT COUNT(*) FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchone()[0] == 0
+        # An export raw is censused into its session memberships; the
+        # suppressed session's membership is acknowledged as deferred, so
+        # Source and Index agree that nothing was applied.
+        decisions = source.execute(
+            "SELECT decision FROM raw_session_memberships WHERE raw_id=? AND logical_source_key=?",
+            (raw_id, "chatgpt-export:suppressed-key"),
+        ).fetchall()
+        assert [row[0] for row in decisions] == ["deferred"]
         assert (
             source.execute("SELECT status FROM raw_authority_parser_census WHERE raw_id=?", (raw_id,)).fetchone()[0]
             == "complete"

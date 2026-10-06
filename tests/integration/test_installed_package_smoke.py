@@ -165,6 +165,14 @@ def _run(
     return result
 
 
+def _assert_daemon_required_refusal(result: subprocess.CompletedProcess[str]) -> None:
+    """A daemon-served read without a daemon refuses by name, not by traceback."""
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0, combined
+    assert "Traceback" not in combined, combined
+    assert "polylogued run" in combined, combined
+
+
 def _assert_no_home_leak(home: Path, before: set[Path], after: set[Path]) -> None:
     """Files newly written under ``home`` outside the XDG sub-roots fail the test."""
     new_files = after - before
@@ -210,29 +218,36 @@ def test_installed_polylogue_entrypoints_under_fresh_xdg(
     _run((str(bin_dir / "polylogued"), "--help"), env=env, cwd=home, timeout=30)
     _run((str(bin_dir / "polylogue-mcp"), "--help"), env=env, cwd=home, timeout=30)
 
-    # polylogue --plain analyze --count: forces an archive open (or first-run bootstrap)
-    # under fresh XDG paths; must not traceback.
-    _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, cwd=home, timeout=60)
+    # polylogue --plain analyze --count: archive reads are served by the
+    # resident daemon, so with none running the installed CLI must refuse by
+    # name (the daemon-required remedy), never traceback.
+    _assert_daemon_required_refusal(
+        _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, cwd=home, timeout=60, check=False)
+    )
 
-    # polylogue --plain status: the actionable first-run surface (#1263) — must
-    # exit cleanly and emit human text against a fresh archive.
+    # polylogue --plain status: the actionable first-run surface (#1263). Status
+    # is daemon-served, so with no daemon and no archive it exits non-zero with
+    # the first-run diagnostic naming the next step -- human text, no traceback.
     status = _run(
         (str(bin_dir / "polylogue"), "--plain", "status"),
         env=env,
         cwd=home,
         timeout=60,
+        check=False,
     )
     assert status.stdout.strip(), "polylogue ops status produced no output"
     assert "Traceback" not in status.stdout + status.stderr
+    assert "polylogued run" in status.stdout, status.stdout
 
     # polylogued status: daemon-side status against fresh XDG paths (#1265 AC).
-    # `polylogued status` exits non-zero when no daemon is running ("absent
-    # heartbeat"), which is the correct report here rather than a smoke
-    # failure. What this probe is for is that the entry point loads and does
-    # not traceback.
+    # `polylogued status` exits non-zero when no daemon is running (a typed
+    # `daemon_absent` report naming `polylogued run`), which is the correct
+    # report here rather than a smoke failure. What this probe is for is that
+    # the entry point loads and does not traceback.
     daemon_status = _run((str(bin_dir / "polylogued"), "status"), env=env, cwd=home, timeout=60, check=False)
     assert "Traceback" not in daemon_status.stdout + daemon_status.stderr
-    assert "heartbeat" in (daemon_status.stdout + daemon_status.stderr).lower()
+    assert "daemon_absent" in daemon_status.stdout + daemon_status.stderr
+    assert "polylogued run" in daemon_status.stdout + daemon_status.stderr
 
     # Runtime dependency-closure probe (#2307): the query-first `find` path pulls
     # in the Lark grammar, FTS/search providers, and archive storage — a strictly
@@ -257,11 +272,12 @@ def test_installed_polylogue_entrypoints_under_fresh_xdg(
         "expected --diagnose dispatch trace; query-first import closure did not "
         f"reach archive handling. stderr=\n{diagnose.stderr}"
     )
-    # Reaching archive handling (here: the missing index.db report on a fresh
-    # root) is the closure proof — dispatch ran the query path through to
-    # storage instead of dying on a missing import.
-    assert "archive" in combined.lower(), (
-        f"query-first dispatch did not reach archive handling on a fresh root; stdout+stderr=\n{combined}"
+    # Reaching the query operation's daemon boundary (archive reads are
+    # daemon-served, so with none running it refuses ``cli.query`` by name) is
+    # the closure proof -- dispatch ran the query path through to its
+    # operation instead of dying on a missing import.
+    assert "cli.query" in combined and "polylogued run" in combined, (
+        f"query-first dispatch did not reach its query operation on a fresh root; stdout+stderr=\n{combined}"
     )
 
     after = _snapshot(home)
@@ -291,8 +307,10 @@ def test_installed_polylogue_writes_only_under_xdg_roots(
     )
 
     before = _snapshot(home)
-    _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, cwd=home, timeout=60)
-    _run((str(bin_dir / "polylogue"), "--plain", "status"), env=env, cwd=home, timeout=60)
+    _assert_daemon_required_refusal(
+        _run((str(bin_dir / "polylogue"), "--plain", "analyze", "--count"), env=env, cwd=home, timeout=60, check=False)
+    )
+    _run((str(bin_dir / "polylogue"), "--plain", "status"), env=env, cwd=home, timeout=60, check=False)
     after = _snapshot(home)
 
     new_under_home = sorted(p for p in (after - before) if home in p.parents)

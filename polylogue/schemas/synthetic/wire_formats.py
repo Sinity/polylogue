@@ -1459,10 +1459,20 @@ def _parser_artifact_node_message_type(
             text="\n".join(_parser_artifact_node_content_texts(provider, node)),
         )
     if provider == "chatgpt":
-        if _parser_artifact_node_role(provider, node) is Role.TOOL:
+        role = _parser_artifact_node_role(provider, node)
+        if role is Role.TOOL:
             return MessageType.TOOL_RESULT
-        text = "\n".join(_parser_artifact_node_content_texts(provider, node))
-        return classify_text_message_type(text) or MessageType.MESSAGE
+        from polylogue.archive.message.artifacts import classify_message_type
+
+        # The ChatGPT parser classifies from role, text and the blocks it
+        # built, so a turn carrying a tool call (``metadata.command``/``args``)
+        # is a tool_use message whatever its role.
+        return classify_message_type(
+            role=role,
+            message_type=MessageType.MESSAGE,
+            text="\n".join(_parser_artifact_node_content_texts(provider, node)),
+            block_types=tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node)),
+        )
     block_types = tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
     if block_message_type := classify_block_message_type(block_types):
         return block_message_type

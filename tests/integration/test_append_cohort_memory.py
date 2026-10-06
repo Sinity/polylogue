@@ -125,6 +125,9 @@ def _seed_cohort_and_append_plan(
         payload_hash=hashlib.sha256(append_payload).hexdigest(),
         cursor_fingerprint="full-2",
         bytes_read=len(append_payload),
+        # The watcher plans an append against the session it already bound;
+        # append acquisition refuses a plan without that identity.
+        native_id_hint=session_id,
     )
 
 
@@ -165,6 +168,9 @@ def _seed_partially_classified_cohort_and_append_plan(archive_root: Path) -> _Ap
         payload_hash=hashlib.sha256(append_payload).hexdigest(),
         cursor_fingerprint="full-2",
         bytes_read=len(append_payload),
+        # The watcher plans an append against the session it already bound;
+        # append acquisition refuses a plan without that identity.
+        native_id_hint=session_id,
     )
 
 

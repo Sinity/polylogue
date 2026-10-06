@@ -650,7 +650,10 @@ def test_lazy_text_encodes_like_json_at_every_escape_level() -> None:
 def test_codex_apply_patch_calls_carry_their_touched_path() -> None:
     """Anti-vacuity: ``{"cmd": ...}`` arguments for apply_patch leave the parser no path to recover."""
     paths = 0
-    for item in generate_workload_corpus(seed=4, target_sessions=20, origins={"codex": 1.0}).iter_files():
+    # The measured codex profile is heavy-tailed: this seed's first 20 sessions
+    # render ~1.5 GB across 248 files, while the first 8 (~9 MiB) already carry
+    # 17 apply_patch calls -- enough to falsify a pathless rendering.
+    for item in generate_workload_corpus(seed=4, target_sessions=8, origins={"codex": 1.0}).iter_files():
         for session in parse_payload("codex", _records(item.data), item.relpath, source_path=item.relpath):
             for message in session.messages:
                 for block in message.blocks:

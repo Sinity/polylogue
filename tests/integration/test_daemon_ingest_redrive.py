@@ -271,11 +271,13 @@ async def test_a_transient_refusal_retries_the_claimed_run(
 
     archive_root, source = await _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
-    original = IngestExecution.archive_write
+    # The run's archive publication is ``materialize`` (the resident Raw
+    # owner); the refusal lands where publication starts.
+    original = IngestExecution.materialize
     original_compute = DaemonOperationRuntime.compute_phase
     refusals = {"left": 1, "saturated": 0}
 
-    async def refuse_once(self: IngestExecution, work: Any) -> Any:
+    async def refuse_once(self: IngestExecution, generation_id: str) -> Any:
         if refusals["left"]:
             refusals["left"] -= 1
             refusals["saturated"] = 1
@@ -284,7 +286,7 @@ async def test_a_transient_refusal_retries_the_claimed_run(
                 self.observed_identity = "a-generation-since-promoted"
                 raise IngestReprepareRequiredError("ingest publication generation changed; reprepare required")
             raise DaemonBackpressureError("control admission is full")
-        return await original(self, work)
+        return await original(self, generation_id)
 
     async def saturated(self: DaemonOperationRuntime, work: Any) -> Any:
         # Admission stays full for the next submission after a refusal.
@@ -293,7 +295,7 @@ async def test_a_transient_refusal_retries_the_claimed_run(
             raise DaemonBackpressureError("control admission is still full")
         return await original_compute(self, work)
 
-    monkeypatch.setattr(IngestExecution, "archive_write", refuse_once)
+    monkeypatch.setattr(IngestExecution, "materialize", refuse_once)
     monkeypatch.setattr(DaemonOperationRuntime, "compute_phase", saturated)
     await _restart_and_settle(archive_root)
 
@@ -533,18 +535,18 @@ async def test_a_transient_refusal_of_a_fresh_ingest_stays_redrivable(
     from polylogue.core.compute import DaemonBackpressureError
 
     archive_root, source = await _archive(tmp_path)
-    original = IngestExecution.archive_write
+    original = IngestExecution.materialize
     refusals = {"left": 1}
 
-    async def refuse_once(self: IngestExecution, work: Any) -> Any:
+    async def refuse_once(self: IngestExecution, generation_id: str) -> Any:
         if refusals["left"]:
             refusals["left"] -= 1
             raise DaemonBackpressureError("control admission is full")
-        return await original(self, work)
+        return await original(self, generation_id)
 
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     with monkeypatch.context() as patch:
-        patch.setattr(IngestExecution, "archive_write", refuse_once)
+        patch.setattr(IngestExecution, "materialize", refuse_once)
         with _serving(archive_root) as (harness, _api_server):
             try:
                 with pytest.raises(Exception):  # noqa: B017 - the surface's error type is not this contract
