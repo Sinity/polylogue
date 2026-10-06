@@ -46,7 +46,11 @@ async def _acquire(root: Path) -> tuple[str, str]:
                 ).encode()
                 ids.append(
                     archive.write_raw_payload(
-                        provider=Provider.CHATGPT, payload=payload, source_path=f"{name}.json", acquired_at_ms=1
+                        provider=Provider.CHATGPT,
+                        payload=payload,
+                        source_path=f"{name}.json",
+                        canonical_source_path=f"{name}.json",
+                        acquired_at_ms=1,
                     )
                 )
         return ids[0], ids[1]

@@ -166,6 +166,7 @@ async def _seed_acquired(root: Path) -> tuple[str, str]:
                 capture_mode=Provider.CODEX,
                 payload=source_path.read_bytes(),
                 source_path=str(source_path),
+                canonical_source_path=str(source_path),
                 acquired_at_ms=1_767_000_000_000,
                 file_mtime_ms=1_767_000_000_000,
             )

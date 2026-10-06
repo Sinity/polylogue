@@ -1400,6 +1400,7 @@ def test_reconcile_blob_publications_clears_terminal_receipts_at_startup(
             conn,
             origin=Origin.CHATGPT_EXPORT,
             source_path="startup-referenced.json",
+            canonical_source_path="startup-referenced.json",
             source_index=0,
             blob_hash=bytes.fromhex(referenced_hash),
             blob_size=referenced_size,
@@ -2542,6 +2543,12 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
     from polylogue.sources.live.watcher import LiveWatcher
 
     archive_root = tmp_path / "archive"
+    from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
+
+    # The law is intake, not first bootstrap: a fresh archive's startup
+    # applies every declared durable migration before intake begins.
+    archive_root.mkdir()
+    run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
     source_root = tmp_path / "source"
     source_root.mkdir()
     first_pass = asyncio.Event()
@@ -2788,7 +2795,10 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                         break
                     await asyncio.sleep(0.05)
                 else:
-                    pytest.fail(f"index never converged to {expected_versions} message(s): {message_count()}")
+                    pytest.fail(
+                        f"index never converged to {expected_versions} message(s): {message_count()}; "
+                        f"membership evidence={evidence}"
+                    )
                 # The active pointer exposes messages before the promotion
                 # callback has finished deriving profiles. Wait for that
                 # observable publication with its own deadline, then hold the
@@ -3002,9 +3012,19 @@ async def _await_server_readiness_or_daemon_exit(
 def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     received_signal_name: str | None,
     expected_interrupted_cleanup_calls: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Signal shutdown defers OPS recovery, while ordinary shutdown performs it."""
     from polylogue.daemon import cli as daemon_cli
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    # The law is shutdown, not first bootstrap: a fresh archive's startup
+    # applies every declared durable migration before the servers start.
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    bootstrap_archive_root(archive_root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
 
     class BlockingServer:
         shutdown_called = False
@@ -3529,6 +3549,7 @@ def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
             provider=Provider.CHATGPT,
             payload=json.dumps(payload).encode(),
             source_path="cancelled-owner.json",
+            canonical_source_path="cancelled-owner.json",
             acquired_at_ms=1,
         )
 

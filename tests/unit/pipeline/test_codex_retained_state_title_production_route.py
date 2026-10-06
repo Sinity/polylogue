@@ -106,6 +106,7 @@ async def _record_state_export_async(archive_root: Path, state_path: Path, *, ac
                 provider=Provider.CODEX,
                 payload=store.blob_path(export.blob_hash).read_bytes(),
                 source_path=str(state_path),
+                canonical_source_path=str(state_path),
                 acquired_at_ms=acquired_at_ms,
                 captured_profile_key=export.captured_profile_key,
             )
@@ -128,6 +129,7 @@ async def _record_rollout(archive_root: Path, source_path: str, *, ingest: bool)
                 provider=Provider.CODEX,
                 payload=_rollout_bytes(),
                 source_path=source_path,
+                canonical_source_path=source_path,
                 acquired_at_ms=1_767_000_000_000,
             )
             archive.commit()
@@ -206,6 +208,7 @@ def test_unknown_export_codex_raw_publishes_under_its_resolved_provider(tmp_path
                     provider=Provider.UNKNOWN,
                     payload=_rollout_bytes(),
                     source_path=str(tmp_path / "sessions" / f"rollout-{_THREAD_ID}.jsonl"),
+                    canonical_source_path=str(tmp_path / "sessions" / f"rollout-{_THREAD_ID}.jsonl"),
                     acquired_at_ms=1_767_000_000_001,
                 )
                 archive.commit()
@@ -252,6 +255,7 @@ def test_unknown_export_codex_raw_publishes_under_its_resolved_provider(tmp_path
                                 provider=Provider.CODEX,
                                 payload=store.blob_path(export.blob_hash).read_bytes(),
                                 source_path=str(state_path),
+                                canonical_source_path=str(state_path),
                                 acquired_at_ms=1_767_000_000_002,
                                 captured_profile_key=export.captured_profile_key,
                             )

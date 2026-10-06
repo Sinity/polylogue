@@ -270,6 +270,11 @@ def publish_raw_observation_once(
             replacement.close()
             retained_replacements.remove(replacement)
 
+        if replacement.prepared_key_refusals:
+            # One exact raw has no healthy sibling key to publish around: its
+            # refused member is this raw's outcome, never a silent deferral.
+            close()
+            raise replacement.prepared_key_refusals[0]
         try:
             check_compute_cancelled()
             result = admit_stage_write(

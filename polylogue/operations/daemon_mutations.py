@@ -6,7 +6,7 @@ import functools
 import json
 import tempfile
 from builtins import BaseExceptionGroup
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -411,6 +411,29 @@ def maintenance_secret_scan(
         "sequence": 1,
         "effect": effect,
         "result": detail,
+    }
+
+
+def maintenance_schema_quarantine(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Persist schema-verification quarantine verdicts under the resident writer."""
+    del audit, snapshot
+    from polylogue.schemas.validation.corpus import quarantine_raw_sessions
+
+    verdicts = cast(Sequence[Mapping[str, object]], request.payload["verdicts"])
+    marked = quarantine_raw_sessions(
+        context.archive_root, [(str(verdict["raw_id"]), str(verdict["reason"])) for verdict in verdicts]
+    )
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed" if marked else "no-effect",
+        "result": {"affected_count": marked},
     }
 
 

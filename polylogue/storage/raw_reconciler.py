@@ -17,6 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
+from polylogue.core.enums import Origin
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
@@ -266,7 +267,10 @@ def _classify_frontier_row(
             row=row,
             reason="accepted revision head and materialized session select different raw authority",
         )
-    if row.get("session_origin") != row.get("raw_origin"):
+    # ``unknown-export`` is acquisition's placeholder before any parse (a
+    # browser-capture file is acquired without detection); it makes no origin
+    # claim the materialized session could contradict.
+    if row.get("raw_origin") not in (row.get("session_origin"), Origin.UNKNOWN_EXPORT.value):
         return _item(
             state=RawAuthorityFrontierState.UNRESOLVED_PROVENANCE,
             row=row,
@@ -276,9 +280,17 @@ def _classify_frontier_row(
         from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
 
         fingerprint = raw_authority_parser_fingerprint()
+        # A decided-ambiguous cohort keeps its last accepted head (#3282). The
+        # conflict is durable membership debt on the head's own row, not a
+        # provenance gap in the head that remains materialized.
+        retained_under_debt = (
+            row.get("membership_decision") == "ambiguous" and row.get("membership_authority") == "quarantined"
+        )
         if (
-            row.get("membership_authority") != "byte_proven"
-            or row.get("membership_decision") != "applied"
+            not (
+                retained_under_debt
+                or (row.get("membership_decision") == "applied" and row.get("membership_authority") == "byte_proven")
+            )
             or row.get("membership_source_revision") != row.get("accepted_source_revision")
             or str(row.get("membership_content_hash") or "").lower()
             != str(row.get("membership_source_revision") or "").lower()
@@ -296,7 +308,11 @@ def _classify_frontier_row(
         return _item(
             state=RawAuthorityFrontierState.PROVEN_CURRENT,
             row=row,
-            reason="accepted source bytes, membership, head, and materialized session agree",
+            reason=(
+                "accepted head retained under ambiguous membership debt; source bytes and session agree"
+                if retained_under_debt
+                else "accepted source bytes, membership, head, and materialized session agree"
+            ),
         )
     if row.get("revision_authority") == "quarantined":
         return _item(

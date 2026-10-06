@@ -1013,10 +1013,14 @@ def _clone_into_reserved_destination(
             and str(path.relative_to(destination)) not in changed
             and str(path.relative_to(destination)) not in protected_names
         }
-        if actual != {path: value for path, value in expected.items() if path not in changed}:
+        unchanged_expected = {path: value for path, value in expected.items() if path not in changed}
+        if actual != unchanged_expected:
             if not protected_names:
                 clear_reserved(remove_root=True)
-            raise ValueError("immutable fixture population changed an unowned file")
+            raise ValueError(
+                "immutable fixture population changed an unowned file "
+                f"({_describe_file_set_mismatch(unchanged_expected, actual)})"
+            )
     except BaseException:
         # A failed durable population is explicit pending evidence. Ordinary
         # fixture admission refuses it; never erase that custody as copy debris.
@@ -3932,12 +3936,11 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
             retain_manifest=True,
             authenticate_copy=authenticate,
         )
+        # Pin the clone root's identity without locking it. The clone is a
+        # live archive root, and the directory flock on an archive root
+        # belongs to the audit writer (``audit_leaf``); a shared hold here
+        # refuses every daemon that serves the clone.
         integrity_fd = _open_pinned_dir(destination)
-        try:
-            fcntl.flock(integrity_fd, fcntl.LOCK_SH)
-        except BaseException:
-            os.close(integrity_fd)
-            raise
         return SeededArchiveClone(
             root=destination,
             source_manifest_id=result.source_manifest_id,

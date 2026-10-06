@@ -96,6 +96,19 @@ def _process_start_ticks(pid: int, *, proc: Path) -> int | None:
         return None
 
 
+def _parent_pid(pid: int, *, proc: Path) -> int | None:
+    """The parent of ``pid`` (``/proc/<pid>/stat`` field 4), or None if it is gone."""
+    try:
+        text = (proc / str(pid) / "stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    fields = text.rpartition(")")[2].split()
+    try:
+        return int(fields[1])
+    except (IndexError, ValueError):
+        return None
+
+
 class AdmissionLedger:
     """The reservation files of one pool, read and written under one lock."""
 
@@ -116,6 +129,15 @@ class AdmissionLedger:
 
     def _path(self, pid: int) -> Path:
         return self.directory / f"{pid}.json"
+
+    def enclosing_pids(self) -> frozenset[int]:
+        """Every ancestor of this process: the runs it executes inside."""
+        ancestors: set[int] = set()
+        current = _parent_pid(self.pid, proc=self.proc)
+        while current is not None and current > 1 and current not in ancestors:
+            ancestors.add(current)
+            current = _parent_pid(current, proc=self.proc)
+        return frozenset(ancestors)
 
     def live_reservations(self) -> list[Reservation]:
         """Every reservation whose process still runs; the rest are removed. Caller holds the lock."""
@@ -209,9 +231,32 @@ def admit_width(
     started = clock()
     ticket: int | None = None
     reported_at: float | None = None
+    # A run nested inside an admitted slot (a test that runs ``devtools test``)
+    # charges the enclosing run's cgroup, which that run's reservation already
+    # covers. It runs within that reservation: waiting on the pool -- the
+    # enclosing reservation included -- would wait for memory only the
+    # enclosing run's completion can release.
+    enclosing = ledger.enclosing_pids()
+    with ledger.locked():
+        within_enclosing = any(
+            item.pid in enclosing and item.state == "admitted" for item in ledger.live_reservations()
+        )
+    if within_enclosing:
+        command, sizing = size(list(argv), profile=profile, max_workers=max_workers)
+        if sizing is not None:
+            sizing["admission_ledger"] = {
+                "waited_s": 0.0,
+                "holders": 0,
+                "waiting_ahead": 0,
+                "reserved_by_other_jobs_mib": 0.0,
+                "within_enclosing_reservation": True,
+            }
+        return command, sizing
     while True:
         with ledger.locked():
-            others = [item for item in ledger.live_reservations() if item.pid != ledger.pid]
+            others = [
+                item for item in ledger.live_reservations() if item.pid != ledger.pid and item.pid not in enclosing
+            ]
             if ticket is None:
                 ticket = 1 + max((item.ticket for item in others), default=0)
             command, sizing = size(

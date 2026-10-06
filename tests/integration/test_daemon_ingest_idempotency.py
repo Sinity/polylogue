@@ -75,6 +75,7 @@ async def _ingest_corpus(archive_root: Path, corpus_dir: Path, db_path: Path) ->
                     raw_id=raw_id,
                     source_name=provider,
                     source_path=str(file_path),
+                    canonical_source_path=str(file_path),
                     blob_size=len(raw_bytes),
                     acquired_at="2024-01-15T10:00:00+00:00",
                 ),

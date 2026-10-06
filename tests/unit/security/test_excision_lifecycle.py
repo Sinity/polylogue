@@ -254,6 +254,7 @@ class TestPrimaryInvalidatesOnlyAfterConfirmation:
                 source_conn,
                 origin="codex-session",
                 source_path="/fake/x.jsonl",
+                canonical_source_path="/fake/x.jsonl",
                 source_index=0,
                 payload=b"hello",
                 acquired_at_ms=1,
@@ -277,6 +278,9 @@ class TestPrimaryInvalidatesOnlyAfterConfirmation:
             index_conn.close()
 
         conn = sqlite3.connect(user_db)
+        # The resident writer profile keeps user.db in WAL, so a stale reader
+        # snapshot does not block the confirming commit.
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             with conn:
                 assertion_id = submit_lifecycle_request(

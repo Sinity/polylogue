@@ -34,6 +34,7 @@ def _populated_template(root: Path) -> str:
             origin=Origin.CODEX_SESSION,
             capture_mode=Provider.CODEX,
             source_path="/synthetic/exact",
+            canonical_source_path="/synthetic/exact",
             native_id="native\x00suffix",
             source_index=0,
             payload=payload,

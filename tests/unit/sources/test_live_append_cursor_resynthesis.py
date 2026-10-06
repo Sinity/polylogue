@@ -91,6 +91,7 @@ def test_append_plan_resynthesizes_lost_cursor_from_durable_full_head(tmp_path: 
             provider=Provider.CODEX,
             payload=baseline,
             source_path=str(source),
+            canonical_source_path=str(source),
             acquired_at_ms=1,
             revision=RawRevisionEnvelope(
                 logical_source_key=f"codex:{session_id}",
@@ -199,6 +200,7 @@ def test_append_plan_resynthesizes_an_append_kind_head(tmp_path: Path) -> None:
             provider=Provider.CODEX,
             payload=baseline,
             source_path=str(source),
+            canonical_source_path=str(source),
             acquired_at_ms=1,
             revision=RawRevisionEnvelope(
                 logical_source_key=f"codex:{session_id}",
@@ -219,6 +221,7 @@ def test_append_plan_resynthesizes_an_append_kind_head(tmp_path: Path) -> None:
             # bytes of window over 185 bytes of blob and can never verify.
             payload=first_append_delta,
             source_path=str(source),
+            canonical_source_path=str(source),
             acquired_at_ms=2,
             revision=RawRevisionEnvelope(
                 logical_source_key=f"codex:{session_id}",
@@ -270,6 +273,7 @@ def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) 
             provider=Provider.CODEX,
             payload=baseline,
             source_path=str(source),
+            canonical_source_path=str(source),
             acquired_at_ms=1,
             revision=RawRevisionEnvelope(
                 logical_source_key=f"codex-session:{session_id}",
@@ -298,6 +302,7 @@ def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) 
             provider=Provider.CODEX,
             payload=recovery_snapshot,
             source_path=str(source),
+            canonical_source_path=str(source),
             acquired_at_ms=2,
             revision=RawRevisionEnvelope(
                 logical_source_key=f"codex-session:{session_id}",
@@ -365,6 +370,7 @@ def test_append_plan_reconstructs_pre_offset_append_chain_after_ops_reset(
             provider=Provider.CODEX,
             payload=baseline,
             source_path=str(source),
+            canonical_source_path=str(source),
             acquired_at_ms=1,
             revision=RawRevisionEnvelope(
                 f"codex:{session_id}",
@@ -378,6 +384,7 @@ def test_append_plan_reconstructs_pre_offset_append_chain_after_ops_reset(
             provider=Provider.CODEX,
             payload=delta,
             source_path=str(source),
+            canonical_source_path=str(source),
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -385,6 +392,7 @@ def test_append_plan_reconstructs_pre_offset_append_chain_after_ops_reset(
             provider=Provider.CODEX,
             payload=next_delta,
             source_path=str(source),
+            canonical_source_path=str(source),
             source_index=-1,
             acquired_at_ms=3,
         )
@@ -452,6 +460,7 @@ def test_resynthesis_composes_claude_frontier_from_legacy_append_chain(tmp_path:
             provider=Provider.CLAUDE_CODE,
             payload=header + baseline_body,
             source_path=str(source),
+            canonical_source_path=str(source),
             acquired_at_ms=1,
             revision=RawRevisionEnvelope(
                 f"claude-code:{session_id}",
@@ -465,6 +474,7 @@ def test_resynthesis_composes_claude_frontier_from_legacy_append_chain(tmp_path:
             provider=Provider.CLAUDE_CODE,
             payload=delta,
             source_path=str(source),
+            canonical_source_path=str(source),
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -520,6 +530,7 @@ def test_append_plan_declines_legacy_reconstruction_when_final_prefix_proof_chan
             provider=Provider.CODEX,
             payload=baseline,
             source_path=str(source),
+            canonical_source_path=str(source),
             acquired_at_ms=1,
             revision=RawRevisionEnvelope(
                 f"codex:{session_id}",
@@ -533,6 +544,7 @@ def test_append_plan_declines_legacy_reconstruction_when_final_prefix_proof_chan
             provider=Provider.CODEX,
             payload=delta,
             source_path=str(source),
+            canonical_source_path=str(source),
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -576,6 +588,7 @@ def test_append_plan_declines_legacy_reconstruction_when_append_never_materializ
             provider=Provider.CODEX,
             payload=baseline,
             source_path=str(source),
+            canonical_source_path=str(source),
             acquired_at_ms=1,
             revision=RawRevisionEnvelope(
                 f"codex:{session_id}",
@@ -589,6 +602,7 @@ def test_append_plan_declines_legacy_reconstruction_when_append_never_materializ
             provider=Provider.CODEX,
             payload=delta,
             source_path=str(source),
+            canonical_source_path=str(source),
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -622,6 +636,7 @@ def test_append_plan_declines_legacy_reconstruction_after_prefix_rewrite(tmp_pat
             provider=Provider.CODEX,
             payload=baseline,
             source_path=str(source),
+            canonical_source_path=str(source),
             acquired_at_ms=1,
             revision=RawRevisionEnvelope(
                 f"codex:{session_id}",
@@ -635,6 +650,7 @@ def test_append_plan_declines_legacy_reconstruction_after_prefix_rewrite(tmp_pat
             provider=Provider.CODEX,
             payload=delta,
             source_path=str(source),
+            canonical_source_path=str(source),
             source_index=-1,
             acquired_at_ms=2,
         )
@@ -681,6 +697,7 @@ def test_full_head_claude_frontier_requires_the_retained_prefix(tmp_path: Path) 
             provider=Provider.CLAUDE_CODE,
             payload=header + body,
             source_path=str(source),
+            canonical_source_path=str(source),
             acquired_at_ms=1,
             revision=RawRevisionEnvelope(
                 f"claude-code:{session_id}",
@@ -782,6 +799,7 @@ def test_deferred_planning_leaves_the_legacy_chain_unpromoted(tmp_path: Path) ->
             provider=Provider.CODEX,
             payload=baseline,
             source_path=str(source),
+            canonical_source_path=str(source),
             acquired_at_ms=1,
             revision=RawRevisionEnvelope(
                 f"codex:{session_id}",
@@ -795,6 +813,7 @@ def test_deferred_planning_leaves_the_legacy_chain_unpromoted(tmp_path: Path) ->
             provider=Provider.CODEX,
             payload=delta,
             source_path=str(source),
+            canonical_source_path=str(source),
             source_index=-1,
             acquired_at_ms=2,
         )

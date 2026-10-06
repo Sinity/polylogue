@@ -71,6 +71,7 @@ def _run_convergence_probe(
                 (WatchSource(name="benchmark", root=corpus_root),),
                 parser_fingerprint="benchmark-multi-v1",
                 converger=converger,
+                compute_adapter=compute,
             ) as processor:
                 started = time.perf_counter()
                 result = await processor.ingest_files(files, emit_event=False)

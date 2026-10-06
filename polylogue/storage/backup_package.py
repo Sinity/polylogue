@@ -328,7 +328,18 @@ def _open_backup_readonly_connection(
 
 
 def _sqlite_user_version(path: Path) -> int:
-    with closing(_open_backup_readonly_connection(path, immutable=True, timeout_class="offline-bulk")) as conn:
+    # A live WAL-mode tier can hold committed frames its main file does not;
+    # an immutable open refuses such a file, so it is read through the WAL.
+    # Package artifacts and checkpointed copies carry no frames and stay
+    # immutable, which creates no sidecar beside them.
+    wal = path.with_name(f"{path.name}-wal")
+    try:
+        has_frames = wal.stat().st_size > 0
+    except FileNotFoundError:
+        has_frames = False
+    with closing(
+        _open_backup_readonly_connection(path, immutable=not has_frames, timeout_class="offline-bulk")
+    ) as conn:
         return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
 
 

@@ -77,6 +77,7 @@ def _ingest_drive_cohort(
                     provider=Provider.GEMINI,
                     payload=json.dumps(_drive_revision_payload(revision, filler=filler)).encode("utf-8"),
                     source_path="Google AI Studio/chat.json",
+                    canonical_source_path="Google AI Studio/chat.json",
                     acquired_at_ms=1_767_000_000_000 + revision,
                 )
             )

@@ -254,6 +254,7 @@ def test_archived_cursor_reconciliation_rejects_parsed_raw_without_index_materia
             provider=Provider.CLAUDE_CODE,
             payload=source_path.read_bytes(),
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             source_index=0,
             acquired_at_ms=1,
         )

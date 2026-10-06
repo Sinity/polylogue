@@ -287,6 +287,7 @@ def ingest_composed_sources(
                         origin="codex-session",
                         capture_mode=Provider.CODEX,
                         source_path=str(source_path),
+                        canonical_source_path=str(source_path),
                         source_index=-1 if append_only else index,
                         payload=payload,
                         acquired_at_ms=_acquired_at_ms(index),

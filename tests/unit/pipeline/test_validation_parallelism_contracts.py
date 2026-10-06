@@ -102,6 +102,7 @@ def _make_record(raw_id: str, *, payload: bytes) -> RawSessionRecord:
         raw_id=raw_id,
         source_name=Provider.CLAUDE_AI.value,
         source_path=f"/synthetic/{raw_id}.json",
+        canonical_source_path=f"/synthetic/{raw_id}.json",
         blob_size=len(payload),
         acquired_at="2026-01-01T00:00:00Z",
     )
@@ -271,6 +272,7 @@ class TestValidateRecordSyncDeterminism:
             blob_hash=blob_hash,
             source_name=Provider.HERMES.value,
             source_path=str(source),
+            canonical_source_path=str(source),
             payload_provider=Provider.HERMES,
             source_index=None,
             blob_size=blob_size,

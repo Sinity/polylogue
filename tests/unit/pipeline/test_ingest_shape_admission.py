@@ -27,6 +27,7 @@ def _ingest(tmp_path: Path, provider: Provider, source_path: str, content: bytes
         source_name=provider.value,
         payload_provider=provider,
         source_path=source_path,
+        canonical_source_path=source_path,
         source_index=0,
         blob_size=blob_size,
         blob_hash=blob_hash,

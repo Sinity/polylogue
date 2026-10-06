@@ -38,6 +38,13 @@ def _fts_readiness_fingerprint(dbf: Path) -> str:
             try:
                 stat = candidate.stat()
             except OSError:
+                stat = None
+            if candidate != path and (stat is None or stat.st_size == 0):
+                # A missing and an empty WAL both hold no frames. A reader's
+                # own open of a WAL-mode index creates the empty one, which
+                # must not read as the index changing under the collection.
+                parts.append(f"{candidate.resolve(strict=False)}:no-frames")
+            elif stat is None:
                 parts.append(f"{candidate.resolve(strict=False)}:missing")
             else:
                 parts.append(f"{candidate.resolve(strict=False)}:{stat.st_size}:{stat.st_mtime_ns}")

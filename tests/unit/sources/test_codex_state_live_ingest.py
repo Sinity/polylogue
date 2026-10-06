@@ -756,6 +756,7 @@ def test_historical_codex_page_image_is_not_finalized_as_current_state(
             provider=Provider.CODEX,
             payload=state_path.read_bytes(),
             source_path=str(state_path),
+            canonical_source_path=str(state_path),
             acquired_at_ms=1_767_000_000_000,
         )
         archive.commit()

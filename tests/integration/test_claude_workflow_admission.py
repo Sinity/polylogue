@@ -188,6 +188,7 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
             provider=Provider.CLAUDE_CODE,
             payload=json.dumps(revised_run, sort_keys=True).encode(),
             source_path=str(run_path),
+            canonical_source_path=str(run_path),
             source_index=0,
             acquired_at_ms=2_000_000_000_000,
         )
@@ -287,6 +288,7 @@ def test_materializer_does_not_repair_pending_source_artifact_inventory(
             provider=Provider.CLAUDE_CODE,
             payload=fact_payload,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             source_index=0,
             acquired_at_ms=2_000_000_000_000,
             classification=classification,
@@ -295,6 +297,7 @@ def test_materializer_does_not_repair_pending_source_artifact_inventory(
             provider=Provider.CLAUDE_CODE,
             payload=pending_payload,
             source_path=str(source_path),
+            canonical_source_path=str(source_path),
             source_index=0,
             acquired_at_ms=2_000_000_000_001,
             post_parse=True,

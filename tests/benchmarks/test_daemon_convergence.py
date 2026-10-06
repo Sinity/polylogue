@@ -129,9 +129,10 @@ def _run_convergence_probe(
             # Source bodies and retained publication on the daemon owners.
             async with prepared_live_batch_processor(
                 tmp_path,
-                (WatchSource(name="benchmark", root=corpus_root),),
+                (WatchSource(name="claude-code", root=corpus_root),),
                 parser_fingerprint="benchmark-v1",
                 converger=converger,
+                compute_adapter=compute,
             ) as processor:
                 started = time.perf_counter()
                 result = await processor.ingest_files(files, emit_event=False)
@@ -266,9 +267,10 @@ def _run_convergence_memory_probe(
             # Source bodies and retained publication on the daemon owners.
             async with prepared_live_batch_processor(
                 tmp_path,
-                (WatchSource(name="benchmark", root=corpus_root),),
+                (WatchSource(name="claude-code", root=corpus_root),),
                 parser_fingerprint="benchmark-memory-v1",
                 converger=converger,
+                compute_adapter=compute,
             ) as processor:
                 started = time.perf_counter()
                 result = await processor.ingest_files(files, emit_event=False)

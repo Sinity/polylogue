@@ -369,6 +369,7 @@ def test_survivor_detects_naive_duplicate_id_join_mutation(
                 r.tool_result_is_error AS is_error,
                 r.tool_result_exit_code AS exit_code,
                 r.block_id AS tool_result_block_id,
+                r.tool_result_outcome_unknown_reason AS outcome_unknown_reason,
                 CASE
                     WHEN r.block_id IS NULL THEN 'no_result'
                     WHEN r.tool_result_is_error IS NULL AND r.tool_result_exit_code IS NULL THEN 'outcome_unknown'

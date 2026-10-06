@@ -22,6 +22,7 @@ import pytest
 from polylogue.api import Polylogue
 from polylogue.core.user_state_targets import identity_key
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.daemon_operations import async_daemon_serving_archive
 from tests.infra.session_delete import delete_session_with_preview
 from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -104,8 +105,9 @@ async def test_add_mark_records_native_session_target(workspace_env: dict[str, P
     builder.save()
     session_id = builder.native_session_id()
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        assert await poly.add_mark(session_id, "star") is True
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert await poly.add_mark(session_id, "star") is True
 
     target_type, target_id, mark_type, metadata = _mark_row(_user_db_path(workspace_env))
     # The user tier stores session marks under the 'session' target
@@ -131,9 +133,10 @@ async def test_list_marks_projects_session_vocabulary(workspace_env: dict[str, P
     builder.save()
     session_id = builder.native_session_id()
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        assert await poly.add_mark(session_id, "star") is True
-        rows = await poly.list_marks(session_id=None, mark_type="star")
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert await poly.add_mark(session_id, "star") is True
+            rows = await poly.list_marks(session_id=None, mark_type="star")
 
     assert {(row["target_type"], row["target_id"]) for row in rows} == {("session", session_id)}
 
@@ -158,50 +161,51 @@ async def test_message_user_state_projects_owner_for_opaque_session_native_ids(
     session_id = builder.native_session_id()
     message_id = f"{session_id}:n:message-native"
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        assert (
-            await poly.add_mark(
-                session_id,
-                "pin",
-                target_type="message",
-                message_id=message_id,
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert (
+                await poly.add_mark(
+                    session_id,
+                    "pin",
+                    target_type="message",
+                    message_id=message_id,
+                )
+                is True
             )
-            is True
-        )
-        assert (
-            await poly.save_annotation(
-                "opaque-session-message-note",
-                session_id,
-                "important",
-                target_type="message",
-                message_id=message_id,
+            assert (
+                await poly.save_annotation(
+                    "opaque-session-message-note",
+                    session_id,
+                    "important",
+                    target_type="message",
+                    message_id=message_id,
+                )
+                is True
             )
-            is True
-        )
-        marks = await poly.list_marks(mark_type="pin")
-        annotations = await poly.list_annotations()
+            marks = await poly.list_marks(mark_type="pin")
+            annotations = await poly.list_annotations()
 
-        with sqlite3.connect(_user_db_path(workspace_env)) as conn:
-            durable_scopes = conn.execute(
-                """
-                SELECT kind, scope_ref
-                FROM assertions
-                WHERE target_ref = ?
-                ORDER BY kind
-                """,
-                (f"message:{message_id}",),
-            ).fetchall()
-        assert durable_scopes == [
-            ("annotation", f"session:{session_id}"),
-            ("mark", f"session:{session_id}"),
-        ]
+            with sqlite3.connect(_user_db_path(workspace_env)) as conn:
+                durable_scopes = conn.execute(
+                    """
+                    SELECT kind, scope_ref
+                    FROM assertions
+                    WHERE target_ref = ?
+                    ORDER BY kind
+                    """,
+                    (f"message:{message_id}",),
+                ).fetchall()
+            assert durable_scopes == [
+                ("annotation", f"session:{session_id}"),
+                ("mark", f"session:{session_id}"),
+            ]
 
-        assert await delete_session_with_preview(poly, session_id) is True
-        with sqlite3.connect(db_path) as conn:
-            assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is None
-            assert conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (message_id,)).fetchone() is None
-        filtered_marks = await poly.list_marks(session_id=session_id, mark_type="pin")
-        filtered_annotations = await poly.list_annotations(session_id=session_id)
+            assert await delete_session_with_preview(poly, session_id) is True
+            with sqlite3.connect(db_path) as conn:
+                assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is None
+                assert conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (message_id,)).fetchone() is None
+            filtered_marks = await poly.list_marks(session_id=session_id, mark_type="pin")
+            filtered_annotations = await poly.list_annotations(session_id=session_id)
 
     assert marks[0]["target_id"] == message_id
     assert marks[0]["session_id"] == session_id
@@ -235,22 +239,23 @@ async def test_message_user_state_resolves_durable_alias_after_index_row_disappe
     }[alias_kind]
     message_id = f"{session_id}:n:message-native"
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        assert await poly.add_mark(session_id, "pin", target_type="message", message_id=message_id) is True
-        assert (
-            await poly.save_annotation(
-                "durable-alias-note",
-                session_id,
-                "important",
-                target_type="message",
-                message_id=message_id,
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert await poly.add_mark(session_id, "pin", target_type="message", message_id=message_id) is True
+            assert (
+                await poly.save_annotation(
+                    "durable-alias-note",
+                    session_id,
+                    "important",
+                    target_type="message",
+                    message_id=message_id,
+                )
+                is True
             )
-            is True
-        )
-        assert await delete_session_with_preview(poly, session_id) is True
+            assert await delete_session_with_preview(poly, session_id) is True
 
-        marks = await poly.list_marks(session_id=alias, mark_type="pin")
-        annotations = await poly.list_annotations(session_id=alias)
+            marks = await poly.list_marks(session_id=alias, mark_type="pin")
+            annotations = await poly.list_annotations(session_id=alias)
 
     assert marks[0]["session_id"] == session_id
     assert annotations[0]["session_id"] == session_id
@@ -272,12 +277,13 @@ async def test_durable_session_alias_matching_fails_closed_when_ambiguous(
         builder.save()
     session_ids = [builder.native_session_id() for builder in builders]
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        for session_id in session_ids:
-            assert await poly.add_mark(session_id, "pin") is True
-            assert await delete_session_with_preview(poly, session_id) is True
-        with pytest.raises(ValueError, match="ambiguous"):
-            await poly.list_marks(session_id="ext-ambiguous", mark_type="pin")
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            for session_id in session_ids:
+                assert await poly.add_mark(session_id, "pin") is True
+                assert await delete_session_with_preview(poly, session_id) is True
+            with pytest.raises(ValueError, match="ambiguous"):
+                await poly.list_marks(session_id="ext-ambiguous", mark_type="pin")
 
 
 # ---------------------------------------------------------------------------
@@ -302,17 +308,18 @@ async def test_marks_survive_session_delete_and_rebind_on_reimport(
     builder.save()
     session_id = builder.native_session_id()
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        assert await poly.add_mark(session_id, "star") is True
-        assert await poly.save_annotation("ann-1", session_id, "important") is True
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert await poly.add_mark(session_id, "star") is True
+            assert await poly.save_annotation("ann-1", session_id, "important") is True
 
-        # Hard-delete the session; user state must remain.
-        assert await delete_session_with_preview(poly, session_id) is True
+            # Hard-delete the session; user state must remain.
+            assert await delete_session_with_preview(poly, session_id) is True
 
-        marks_after_delete = await poly.list_marks(session_id=None, mark_type="star")
-        annotations_after_delete = await poly.list_annotations()
-        assert {row["target_id"] for row in marks_after_delete} == {session_id}
-        assert {row["annotation_id"] for row in annotations_after_delete} == {"ann-1"}
+            marks_after_delete = await poly.list_marks(session_id=None, mark_type="star")
+            annotations_after_delete = await poly.list_annotations()
+            assert {row["target_id"] for row in marks_after_delete} == {session_id}
+            assert {row["annotation_id"] for row in annotations_after_delete} == {"ann-1"}
 
     # The stored assertions persist through delete (no orphaning, no repoint needed).
     target_type, target_id, _, metadata = _mark_row(_user_db_path(workspace_env))
@@ -354,17 +361,18 @@ async def test_message_target_marks_survive_reimport(workspace_env: dict[str, Pa
     session_id = builder.native_session_id()
     message_id = f"{session_id}:n:msg-id"
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        assert (
-            await poly.add_mark(
-                session_id,
-                "pin",
-                target_type="message",
-                message_id=message_id,
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert (
+                await poly.add_mark(
+                    session_id,
+                    "pin",
+                    target_type="message",
+                    message_id=message_id,
+                )
+                is True
             )
-            is True
-        )
-        assert await delete_session_with_preview(poly, session_id) is True
+            assert await delete_session_with_preview(poly, session_id) is True
 
     # Reimport the same session with the same message.
     SessionBuilder(db_path, "conv-id").provider("claude-code").add_message(
@@ -388,27 +396,28 @@ async def test_legacy_message_owner_reads_batch_index_lookup(workspace_env: dict
     builder.save()
     session_id = builder.native_session_id()
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        for index in range(1, 4):
-            assert (
-                await poly.add_mark(
-                    session_id,
-                    "pin",
-                    target_type="message",
-                    message_id=f"{session_id}:n:msg-{index}",
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            for index in range(1, 4):
+                assert (
+                    await poly.add_mark(
+                        session_id,
+                        "pin",
+                        target_type="message",
+                        message_id=f"{session_id}:n:msg-{index}",
+                    )
+                    is True
                 )
-                is True
-            )
-            assert (
-                await poly.save_annotation(
-                    f"annotation-{index}",
-                    session_id,
-                    f"note {index}",
-                    target_type="message",
-                    message_id=f"{session_id}:n:msg-{index}",
+                assert (
+                    await poly.save_annotation(
+                        f"annotation-{index}",
+                        session_id,
+                        f"note {index}",
+                        target_type="message",
+                        message_id=f"{session_id}:n:msg-{index}",
+                    )
+                    is True
                 )
-                is True
-            )
 
     with sqlite3.connect(_user_db_path(workspace_env)) as conn:
         conn.execute("UPDATE assertions SET scope_ref = NULL WHERE target_ref LIKE 'message:%'")
@@ -449,17 +458,18 @@ async def test_message_target_mark_survives_when_message_disappears(
     session_id = builder.native_session_id()
     message_id = f"{session_id}:n:msg-id"
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        assert (
-            await poly.add_mark(
-                session_id,
-                "pin",
-                target_type="message",
-                message_id=message_id,
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert (
+                await poly.add_mark(
+                    session_id,
+                    "pin",
+                    target_type="message",
+                    message_id=message_id,
+                )
+                is True
             )
-            is True
-        )
-        assert await delete_session_with_preview(poly, session_id) is True
+            assert await delete_session_with_preview(poly, session_id) is True
 
     # Reimport WITHOUT the original message — the mark is keyed by the stable
     # public message id and is not deleted just because the message is gone.
@@ -488,8 +498,9 @@ async def test_reimport_is_idempotent_for_user_state(workspace_env: dict[str, Pa
     builder.save()
     session_id = builder.native_session_id()
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        assert await poly.add_mark(session_id, "star") is True
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert await poly.add_mark(session_id, "star") is True
 
     user_db = _user_db_path(workspace_env)
     before = _mark_row(user_db)
@@ -529,9 +540,10 @@ async def test_user_state_does_not_affect_session_content_hash(
 
     before_hash = _session_hash()
 
-    async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-        assert await poly.add_mark(session_id, "star") is True
-        assert await poly.save_annotation("ann-x", session_id, "note") is True
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
+        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+            assert await poly.add_mark(session_id, "star") is True
+            assert await poly.save_annotation("ann-x", session_id, "note") is True
 
     after_hash = _session_hash()
 

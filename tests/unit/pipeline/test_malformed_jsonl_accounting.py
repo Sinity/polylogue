@@ -55,6 +55,7 @@ def _make_record(store: BlobStore, content: bytes, *, source_path: str) -> RawSe
         raw_id=raw_id,
         source_name="claude-code",
         source_path=source_path,
+        canonical_source_path=source_path,
         payload_provider=Provider.CLAUDE_CODE,
         source_index=None,
         blob_size=blob_size,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import time
 from itertools import permutations
 from typing import Literal
@@ -1579,3 +1580,30 @@ def test_message_axis_relation_matches_reference_over_shared_identities() -> Non
         seen.add(expected)
         assert _message_axis_relation(a, b, mutable_identities=mutable) == expected
     assert seen == {"equal", "a_contains_b", "b_contains_a", "conflict"}
+
+
+def _captured(revision: MembershipRevision, capture_order: tuple[int, int]) -> MembershipRevision:
+    return dataclasses.replace(revision, capture_order=capture_order)
+
+
+def test_latest_declared_capture_wins_a_direct_conflict_over_evidence_volume() -> None:
+    """A replacement of a session's file is its current state, however short.
+
+    The grown revision carries more evidence; the replacement was captured
+    later. Anti-vacuity: drop the capture-order rule and the maximal-evidence
+    fallback accepts ``raw-grown`` instead.
+    """
+    grown = _captured(_revision("raw-grown", "one", "two", "three"), (2, 0))
+    replacement = _captured(_revision("raw-replacement", "uno"), (3, 0))
+    first = _captured(_revision("raw-first", "one"), (1, 0))
+    for ordering in permutations([first, grown, replacement]):
+        classified = classify_membership_revisions(list(ordering))
+        assert classified.accepted_raw_ids == ("raw-replacement",)
+        assert {"raw-first", "raw-grown"} <= set(classified.ambiguous_raw_ids) | set(classified.equivalent_raw_ids)
+
+
+def test_tied_or_undeclared_capture_order_keeps_the_existing_fallback() -> None:
+    tied = [_captured(_revision("raw-a", "one"), (5, 1)), _captured(_revision("raw-b", "uno", "left"), (5, 1))]
+    assert classify_membership_revisions(tied).accepted_raw_ids == ("raw-b",)
+    undeclared = [_revision("raw-a", "one", "two"), _captured(_revision("raw-b", "uno"), (9, 0))]
+    assert classify_membership_revisions(undeclared).accepted_raw_ids == ("raw-a",)

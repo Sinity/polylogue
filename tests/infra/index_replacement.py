@@ -30,6 +30,7 @@ def source_baseline(path: Path) -> tuple[sqlite3.Connection, tuple[str, str]]:
                 origin=Origin.CODEX_SESSION,
                 capture_mode=Provider.CODEX,
                 source_path="/synthetic/windowless.jsonl",
+                canonical_source_path="/synthetic/windowless.jsonl",
                 source_index=-1,
                 payload=payload,
                 acquired_at_ms=1,

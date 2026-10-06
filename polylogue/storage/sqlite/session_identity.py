@@ -32,7 +32,7 @@ def _session_matches(
     *,
     limit: int,
     before_input: Callable[[str, tuple[str, ...], str, tuple[object, ...]], None] | None,
-) -> list[tuple[object, ...]]:
+) -> list[sqlite3.Row]:
     # Select physical identities once. Prefix/suffix ambiguity has no stable
     # representative beyond its declared ORDER BY; payload hydration uses
     # these exact selected rows, never an independent competing LIMIT query.
@@ -40,7 +40,9 @@ def _session_matches(
         conn, f"SELECT rowid FROM sessions WHERE {predicate} ORDER BY session_id LIMIT ?", (*parameters, limit)
     ) as cursor:
         rowids = [row[0] for row in cursor]
-    result: list[tuple[object, ...]] = []
+    # Each selected row holds only ``session_id``; callers read it by position
+    # so a seal observer without a Row factory resolves the same identity.
+    result: list[sqlite3.Row] = []
     for rowid in rowids:
         if before_input is not None:
             before_input("sessions", ("session_id",), "SELECT rowid FROM sessions WHERE rowid=?", (rowid,))
@@ -48,7 +50,7 @@ def _session_matches(
             row = cursor.fetchone()
         if row is None:
             raise KeyError("selected session identity disappeared during its owned read")
-        result.append(tuple(row))
+        result.append(row)
     return result
 
 

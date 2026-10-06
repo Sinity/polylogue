@@ -51,6 +51,7 @@ def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_so
         provider=Provider.CODEX,
         payload=payload,
         source_path="session.jsonl",
+        canonical_source_path="session.jsonl",
         acquired_at_ms=1,
         raw_id=raw_id,
     )
@@ -101,6 +102,7 @@ def test_blob_gc_protects_every_verdict_value_while_the_raw_row_survives(tmp_pat
             provider=Provider.CODEX,
             payload=b"not yet classified",
             source_path="session.jsonl",
+            canonical_source_path="session.jsonl",
             acquired_at_ms=1,
             raw_id="pending",
         )

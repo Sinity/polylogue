@@ -68,6 +68,7 @@ def _record(store: BlobStore, path: Path, *, source_path: str) -> RawSessionReco
         payload_provider=Provider.GEMINI,
         source_name=Provider.GEMINI.value,
         source_path=source_path,
+        canonical_source_path=source_path,
         blob_size=blob_size,
         acquired_at="2026-09-05T00:00:00+00:00",
     )

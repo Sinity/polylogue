@@ -66,6 +66,7 @@ def test_membership_keyed_child_replays_after_its_parent(tmp_path: Path) -> None
             provider=Provider.CLAUDE_CODE,
             payload=_bundle(),
             source_path="projects/bundle/two-sessions.jsonl",
+            canonical_source_path="projects/bundle/two-sessions.jsonl",
             acquired_at_ms=1,
         )
         archive.commit()
