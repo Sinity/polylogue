@@ -51,6 +51,7 @@ async def test_original_refused_dependency_does_not_claim_subject_decode_failure
                 provider=Provider.UNKNOWN,
                 payload=b"not json",
                 source_path="shared.json",
+                canonical_source_path="shared.json",
                 acquired_at_ms=1,
             )
 
@@ -66,12 +67,14 @@ async def test_original_refused_dependency_does_not_claim_subject_decode_failure
                     provider=Provider.CHATGPT,
                     payload=_payload("dependent"),
                     source_path="shared.json",
+                    canonical_source_path="shared.json",
                     acquired_at_ms=2,
                 )
                 independent = archive.write_raw_payload(
                     provider=Provider.CHATGPT,
                     payload=_payload("independent"),
                     source_path="independent.json",
+                    canonical_source_path="independent.json",
                     acquired_at_ms=3,
                 )
                 return dependent, independent
@@ -121,6 +124,7 @@ async def test_original_per_key_output_refusal_preserves_independent_publication
                     provider=Provider.CODEX,
                     payload=(json.dumps({"type": "session_meta", "payload": {"id": key}}) + "\n").encode(),
                     source_path=f"{key}.jsonl",
+                    canonical_source_path=f"{key}.jsonl",
                     acquired_at_ms=1,
                 )
                 for key in ("selected", "independent")

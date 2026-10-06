@@ -73,6 +73,7 @@ def _seed_archive(tmp_path: Path) -> tuple[str, str]:
                 conn,
                 origin="chatgpt-export",
                 source_path="/exports/conversations.json",
+                canonical_source_path="/exports/conversations.json",
                 source_index=index,
                 payload=payload,
                 acquired_at_ms=1_000 + index,

@@ -58,6 +58,9 @@ from tests.infra.session_profiles import write_session_profile
 
 
 def _connect(path: Path) -> sqlite3.Connection:
+    # Each Index is its archive root's active index.db; laws that compare
+    # archives give each its own root.
+    path.parent.mkdir(parents=True, exist_ok=True)
     conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -207,8 +210,8 @@ def test_appended_tool_result_leaves_the_use_hash_a_full_replay_computes(
         blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="tool-1", text="output", is_error=False)],
     )
     first = ParsedSession(source_name=Provider.CLAUDE_CODE, provider_session_id="append-extras", messages=[use])
-    appended = _connect(tmp_path / "appended.db")
-    replayed = _connect(tmp_path / "replayed.db")
+    appended = _connect(tmp_path / "appended" / "index.db")
+    replayed = _connect(tmp_path / "replayed" / "index.db")
     try:
         session_id = write_fixture_index_session(appended, first)
         write_fixture_index_session(appended, first.model_copy(update={"messages": [result]}), merge_append=True)
@@ -4573,7 +4576,7 @@ def test_read_archive_session_page_bounds_sql_work_for_a_lineage_child(tmp_path:
     """
 
     def _chain(name: str, *, links: int, per_link: int) -> tuple[sqlite3.Connection, str, int]:
-        conn = _connect(tmp_path / f"{name}.db")
+        conn = _connect(tmp_path / name / "index.db")
         session_id, composed_total = _lineage_chain(conn, name, links=links, per_link=per_link)
         return conn, session_id, composed_total
 
@@ -4675,7 +4678,7 @@ def test_locate_bounds_sql_work_for_a_lineage_child(tmp_path: Path) -> None:
     """
 
     def _chain(name: str, *, links: int, per_link: int) -> tuple[sqlite3.Connection, str, int]:
-        conn = _connect(tmp_path / f"{name}.db")
+        conn = _connect(tmp_path / name / "index.db")
         session_id, composed_total = _lineage_chain(conn, name, links=links, per_link=per_link)
         return conn, session_id, composed_total
 

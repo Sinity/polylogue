@@ -59,6 +59,7 @@ def _make_raw_record(
         raw_id=actual_raw_id,  # Use the actual hash as raw_id
         source_name="test",
         source_path=path,
+        canonical_source_path=path,
         source_index=None,
         blob_size=blob_size,
         acquired_at=now,

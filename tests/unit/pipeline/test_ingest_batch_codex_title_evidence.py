@@ -47,6 +47,7 @@ def _record(
         raw_id=raw_id,
         source_name="codex",
         source_path=source_path,
+        canonical_source_path=source_path,
         payload_provider=Provider.CODEX,
         blob_size=blob_size,
         acquired_at="2026-01-01T00:00:00+00:00",

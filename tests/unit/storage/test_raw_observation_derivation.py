@@ -178,6 +178,7 @@ def _admit(root: Path, names: tuple[str, ...], *, path: str = "bundle.json") -> 
             provider=Provider.CHATGPT,
             payload=_chatgpt_payload(names),
             source_path=path,
+            canonical_source_path=path,
             acquired_at_ms=1,
         )
 
@@ -268,6 +269,7 @@ def test_non_json_retained_worker_replays_past_old_payload_limit(tmp_path: Path)
                 provider=Provider.CHATGPT,
                 payload=payload,
                 source_path="bundle.txt",
+                canonical_source_path="bundle.txt",
                 acquired_at_ms=1,
             )
         del payload
@@ -326,6 +328,7 @@ def test_sqlite_page_image_uses_worker_without_materializing_a_session(tmp_path:
                 provider=Provider.ANTIGRAVITY,
                 payload=source.read_bytes(),
                 source_path=str(source),
+                canonical_source_path=str(source),
                 acquired_at_ms=1,
             )
         adapter = make_raw_observation_derivation(tmp_path, compute_adapter=compute_adapter)
@@ -373,6 +376,7 @@ def test_logical_sqlite_export_uses_worker_and_replays_session(tmp_path: Path, r
                 provider=Provider.HERMES,
                 payload=logical_export_bytes(source, scope=member_export_scope(source)),
                 source_path=str(source.with_name(retained_name)),
+                canonical_source_path=str(source.with_name(retained_name)),
                 acquired_at_ms=1,
             )
         adapter = make_raw_observation_derivation(tmp_path, compute_adapter=compute_adapter)
@@ -436,6 +440,7 @@ def test_one_pass_replays_a_shared_raw_component_once(tmp_path: Path, monkeypatc
                     provider=Provider.CHATGPT,
                     payload=b"[]",
                     source_path="shared-component.json",
+                    canonical_source_path="shared-component.json",
                     source_index=index,
                     acquired_at_ms=1,
                 )
@@ -550,6 +555,7 @@ def test_duplicate_raws_share_preparation_but_keep_distinct_census(
                     provider=Provider.CHATGPT,
                     payload=b"[]",
                     source_path="duplicate-component.json",
+                    canonical_source_path="duplicate-component.json",
                     source_index=index,
                     acquired_at_ms=1,
                 )
@@ -683,7 +689,11 @@ def test_retained_jsonl_replay_consumes_worker_carrier_without_inline_parse(
         )
         with _fixture_archive(tmp_path) as archive:
             raw_id = archive.write_raw_payload(
-                provider=Provider.CODEX, payload=payload, source_path="prepared-session.jsonl", acquired_at_ms=1
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path="prepared-session.jsonl",
+                canonical_source_path="prepared-session.jsonl",
+                acquired_at_ms=1,
             )
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
         frame = raw_observation_frame(tmp_path)
@@ -736,6 +746,7 @@ def test_retained_fact_json_is_terminal_without_a_session(tmp_path: Path) -> Non
                 provider=Provider.CLAUDE_CODE,
                 payload=b'{"agentId":"synthetic-agent","toolUseId":"synthetic-tool"}',
                 source_path="subagents/agent-synthetic.meta.json",
+                canonical_source_path="subagents/agent-synthetic.meta.json",
                 acquired_at_ms=1,
             )
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
@@ -779,6 +790,7 @@ def test_unknown_retained_json_resolves_on_prepared_route_past_cache_budget(tmp_
                 provider=Provider.UNKNOWN,
                 payload=json.dumps([payload]).encode(),
                 source_path="unknown-capture.json",
+                canonical_source_path="unknown-capture.json",
                 acquired_at_ms=1,
             )
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
@@ -925,7 +937,11 @@ def test_retained_compute_refusal_keeps_raw_retryable(
         )
         with _fixture_archive(tmp_path) as archive:
             raw_id = archive.write_raw_payload(
-                provider=Provider.CODEX, payload=payload, source_path=source_path, acquired_at_ms=1
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=source_path,
+                canonical_source_path=source_path,
+                acquired_at_ms=1,
             )
 
         def refuse_compute(*args: object, **kwargs: object) -> object:
@@ -956,6 +972,7 @@ def test_retained_blob_io_failure_retries_without_quarantine(tmp_path: Path, mon
                 provider=Provider.CODEX,
                 payload=b'{"type":"session_meta","payload":{"id":"io-retry"}}\n',
                 source_path="io-retry.jsonl",
+                canonical_source_path="io-retry.jsonl",
                 acquired_at_ms=1,
             )
 
@@ -986,7 +1003,11 @@ def test_retained_parser_error_keeps_semantic_quarantine(tmp_path: Path, monkeyp
         bootstrap_archive_root(tmp_path)
         with _fixture_archive(tmp_path) as archive:
             raw_id = archive.write_raw_payload(
-                provider=Provider.CODEX, payload=b"{bad json}\n", source_path="bad-session.jsonl", acquired_at_ms=1
+                provider=Provider.CODEX,
+                payload=b"{bad json}\n",
+                source_path="bad-session.jsonl",
+                canonical_source_path="bad-session.jsonl",
+                acquired_at_ms=1,
             )
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
         frame = raw_observation_frame(tmp_path)
@@ -1047,6 +1068,7 @@ def test_poison_observation_does_not_suppress_healthy_sibling(tmp_path: Path, mo
                 provider=Provider.CHATGPT,
                 payload=b"not json",
                 source_path="poison.json",
+                canonical_source_path="poison.json",
                 acquired_at_ms=1,
             )
         report = _run(tmp_path, compute_adapter=compute_adapter)
@@ -1096,6 +1118,7 @@ def test_every_raw_discovery_lane_preserves_terminal_receipt_authority(tmp_path:
                 provider=Provider.CHATGPT,
                 payload=b"not json\n",
                 source_path="/synthetic/project/poison.jsonl",
+                canonical_source_path="/synthetic/project/poison.jsonl",
                 acquired_at_ms=1,
             )
         assert _run(tmp_path, compute_adapter=compute_adapter).failed == 1
@@ -1340,6 +1363,7 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
                     provider=Provider.CHATGPT,
                     payload=b"[]",
                     source_path=str(source / "prefix.json"),
+                    canonical_source_path=str(source / "prefix.json"),
                     source_index=index,
                     acquired_at_ms=1,
                 )

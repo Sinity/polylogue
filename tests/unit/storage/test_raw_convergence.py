@@ -115,6 +115,7 @@ def _admit(
             provider=provider,
             payload=_chatgpt_payload(names) if payload is None else payload,
             source_path=path,
+            canonical_source_path=path,
             acquired_at_ms=acquired_at_ms,
         )
 
@@ -781,12 +782,14 @@ def test_canonical_replay_refreshes_only_the_touched_derived_component(
             provider=Provider.CODEX,
             payload=tool_call_payload("unrelated-existing"),
             source_path="unrelated-existing.jsonl",
+            canonical_source_path="unrelated-existing.jsonl",
             acquired_at_ms=1,
         )
         touched_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=tool_call_payload("touched-new"),
             source_path="touched-new.jsonl",
+            canonical_source_path="touched-new.jsonl",
             acquired_at_ms=2,
         )
 
@@ -1022,6 +1025,7 @@ def test_canonical_append_fragment_does_not_livelock_component_discovery(tmp_pat
             provider=Provider.CODEX,
             payload=baseline,
             source_path="rollout.jsonl",
+            canonical_source_path="rollout.jsonl",
             acquired_at_ms=1,
         )
         store.bind_raw_revision(
@@ -1038,6 +1042,7 @@ def test_canonical_append_fragment_does_not_livelock_component_discovery(tmp_pat
             provider=Provider.CODEX,
             payload=tail,
             source_path="rollout.jsonl",
+            canonical_source_path="rollout.jsonl",
             source_index=-1,
             native_id="growing-rollout",
             acquired_at_ms=3,
@@ -1095,6 +1100,7 @@ def test_canonical_quarantined_append_reconciles_from_retained_full_revisions(tm
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path="quarantined-rollout.jsonl",
+                canonical_source_path="quarantined-rollout.jsonl",
                 acquired_at_ms=index,
             )
             store.bind_raw_revision(
@@ -1112,6 +1118,7 @@ def test_canonical_quarantined_append_reconciles_from_retained_full_revisions(tm
             provider=Provider.CODEX,
             payload=tail,
             source_path="quarantined-rollout.jsonl",
+            canonical_source_path="quarantined-rollout.jsonl",
             source_index=-1,
             acquired_at_ms=3,
         )
@@ -1163,6 +1170,7 @@ def test_non_codex_cas_frontier_failure_persists_provider_neutral_evidence(tmp_p
             provider=Provider.CLAUDE_CODE,
             payload=_codex_conversation_bytes("cas-frontier"),
             source_path="rollout.jsonl",
+            canonical_source_path="rollout.jsonl",
             acquired_at_ms=1,
         )
         archive.mark_raw_parse_failed(
@@ -1185,6 +1193,7 @@ def test_generic_parse_state_failure_retires_prior_failure_authority(tmp_path: P
             provider=Provider.CODEX,
             payload=_codex_conversation_bytes("stale-authority"),
             source_path="stale-authority.jsonl",
+            canonical_source_path="stale-authority.jsonl",
             acquired_at_ms=1,
         )
         archive.mark_raw_parse_failed(raw_id, provider=Provider.CODEX, error=RawCASFrontierError("first frontier"))
@@ -1219,6 +1228,7 @@ def test_failed_raw_lifecycle_preserves_exact_evidence_for_same_coordinate(tmp_p
             provider=Provider.CODEX,
             payload=b'{"revision":"old"}',
             source_path="same-coordinate.jsonl",
+            canonical_source_path="same-coordinate.jsonl",
             source_index=0,
             acquired_at_ms=1,
         )
@@ -1226,6 +1236,7 @@ def test_failed_raw_lifecycle_preserves_exact_evidence_for_same_coordinate(tmp_p
             provider=Provider.CODEX,
             payload=b'{"revision":"new"}',
             source_path="same-coordinate.jsonl",
+            canonical_source_path="same-coordinate.jsonl",
             source_index=0,
             acquired_at_ms=2,
         )
@@ -1256,6 +1267,7 @@ def test_failed_raw_lifecycle_ignores_newer_ordinary_artifact_at_same_coordinate
             conn,
             origin=Origin.CODEX_SESSION,
             source_path="coexisting.jsonl",
+            canonical_source_path="coexisting.jsonl",
             source_index=4,
             payload=b"unsupported",
             acquired_at_ms=1,
@@ -1309,6 +1321,7 @@ def test_cas_failure_evidence_rolls_back_with_parse_state(tmp_path: Path, monkey
             provider=Provider.CODEX,
             payload=b'{"revision":"atomic"}',
             source_path="atomic.jsonl",
+            canonical_source_path="atomic.jsonl",
             acquired_at_ms=1,
         )
 
@@ -1335,12 +1348,14 @@ def test_deferred_cas_evidence_is_superseded_after_resolution_and_non_cas_failur
             provider=Provider.CODEX,
             payload=b'{"name":"success"}',
             source_path="success.jsonl",
+            canonical_source_path="success.jsonl",
             acquired_at_ms=1,
         )
         raw_failure = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=b'{"name":"failure"}',
             source_path="failure.jsonl",
+            canonical_source_path="failure.jsonl",
             acquired_at_ms=2,
         )
     with sqlite3.connect(tmp_path / "source.db") as conn:

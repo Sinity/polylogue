@@ -57,6 +57,7 @@ async def test_parent_and_fork_retained_together_publish_parent_then_tail(tmp_pa
                     provider=Provider.CODEX,
                     payload=_rollout(native_id, texts, forked_from_id=parent),
                     source_path=f"{native_id}.jsonl",
+                    canonical_source_path=f"{native_id}.jsonl",
                     acquired_at_ms=1,
                     native_id=native_id,
                 )

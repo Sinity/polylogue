@@ -98,6 +98,7 @@ def _acquire_and_index(archive: ArchiveStore, tmp_path: Path, session: ParsedSes
         provider=provider,
         payload=payload,
         source_path=str(path),
+        canonical_source_path=str(path),
         native_id=native_id,
         acquired_at_ms=_ACQUIRED_AT_MS + order,
         revision=RawRevisionEnvelope(
@@ -151,6 +152,7 @@ def _acquire_only(
         provider=provider,
         payload=payload,
         source_path=str(path),
+        canonical_source_path=str(path),
         acquired_at_ms=_ACQUIRED_AT_MS + order,
         native_id=native_id,
     )

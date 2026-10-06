@@ -13,6 +13,7 @@ import json
 import sqlite3
 import sys
 import tempfile
+import time
 import weakref
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -31,6 +32,7 @@ from polylogue.archive.revision_authority import (
     raw_authority_parser_fingerprint,
 )
 from polylogue.archive.revision_replay import RevisionReplayPlan
+from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.core.compute import (
     BoundedComputeAdapter,
     DaemonBackpressureError,
@@ -275,6 +277,9 @@ class RawObservationReplacement:
     already_valid: bool = False
     blob_restorations: StagedBlobRestorations | None = None
     reference_seal: PreparedIndexMutation | None = None
+    # Wall time this compute spent in the provider parsers that sealed its
+    # carriers. Publication reports it beside its own writer timings.
+    provider_parse_seconds: float = 0.0
 
     def close(self) -> None:
         """Drain this prepared carrier when publication is cancelled or ends."""
@@ -1571,6 +1576,7 @@ class RawObservationDerivation(RawObservationInspection):
                     # A continued preparation keeps the artifacts parsed under
                     # this seal; each is reused only under its unchanged key.
                     prepared_artifacts = carry.artifacts
+                    provider_parse_seconds = 0.0
                     try:
                         for raw_id in raw_ids:
                             provider, blob_hash, path, kind, size = descriptors[raw_id]
@@ -1638,6 +1644,7 @@ class RawObservationDerivation(RawObservationInspection):
                                             reference_seal,
                                             blob_store=blob_store,
                                         )
+                                        parse_started = time.perf_counter()
                                         # Each artifact owns its directory, so a stale
                                         # one is discarded without its siblings.
                                         artifact = worker(
@@ -1645,6 +1652,7 @@ class RawObservationDerivation(RawObservationInspection):
                                             raw_id,
                                             directory=Path(tempfile.mkdtemp(prefix="artifact-", dir=scratch)),
                                         )
+                                        provider_parse_seconds += time.perf_counter() - parse_started
                                     check_compute_cancelled()
                                 except DaemonOperationCancelled:
                                     raise
@@ -2113,6 +2121,12 @@ class RawObservationDerivation(RawObservationInspection):
                                             persisted_session=preceding_byte.effective_session_revision,
                                         )
                                     membership_plan = replace(membership_plan, head_plan=head_plan)
+                                    if head_plan.conflict is not None:
+                                        # A refused cohort publishes nothing this pass;
+                                        # its members carry the retryable evidence.
+                                        membership_plan = replace(
+                                            membership_plan, classification=MembershipClassification((), (), ())
+                                        )
                                     accepted_members = membership_plan.classification.accepted_raw_ids
                                     if accepted_members:
                                         prepared_replay_adoption[(logical_key, accepted_members)] = (
@@ -2260,6 +2274,7 @@ class RawObservationDerivation(RawObservationInspection):
                         lineage_deferred_raw_ids=tuple(sorted(lineage_deferred_raw_ids)),
                         scratch_directory=scratch,
                         scratch_owner=scratch_owner,
+                        provider_parse_seconds=provider_parse_seconds,
                     )
             # An empty raw selection has no parse payload; the canonical replay
             # owner remains responsible for its final authority verdict.
@@ -2579,6 +2594,9 @@ class RawObservationDerivation(RawObservationInspection):
                     if publication_failure is not None:
                         publication_failure(failure)
                     return False
+                replay_receipt.stage_timings_s["provider_parse"] = (
+                    replay_receipt.stage_timings_s.get("provider_parse", 0.0) + replacement.provider_parse_seconds
+                )
                 if phase_receipt is not None:
                     phase_receipt("replay", replay_receipt)
                 if replay_receipt.changed_session_ids:

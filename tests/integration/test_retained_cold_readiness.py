@@ -41,7 +41,11 @@ async def test_owned_empty_generation_uses_cold_build_policy_and_finishes_ready(
         bootstrap_archive_root(root)
         with ArchiveStore.open_existing(root, read_only=False) as archive:
             return archive.write_raw_payload(
-                provider=Provider.CHATGPT, payload=payload, source_path="conversations.json", acquired_at_ms=1
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path="conversations.json",
+                canonical_source_path="conversations.json",
+                acquired_at_ms=1,
             )
 
     raw_id = await run_archive_fixture_write(root, acquire)
@@ -106,7 +110,11 @@ async def test_retained_replay_terminal_fts_verifies_nonempty_membership(tmp_pat
         bootstrap_archive_root(tmp_path)
         with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
             return archive.write_raw_payload(
-                provider=Provider.CHATGPT, payload=payload, source_path="conversations.json", acquired_at_ms=1
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path="conversations.json",
+                canonical_source_path="conversations.json",
+                acquired_at_ms=1,
             )
 
     raw_id = await run_archive_fixture_write(tmp_path, acquire)
@@ -146,6 +154,7 @@ async def test_backfill_resumes_after_index_receipt_commits_before_source_termin
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path="session.jsonl",
+                canonical_source_path="session.jsonl",
                 acquired_at_ms=1,
             )
         return raw_id

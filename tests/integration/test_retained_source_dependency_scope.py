@@ -141,6 +141,7 @@ async def test_source_census_codex_artifact_enrolls_original_projected_titles(tm
                 provider=Provider.CODEX,
                 payload=blobs.blob_path(snapshot.blob_hash).read_bytes(),
                 source_path=str(state_path),
+                canonical_source_path=str(state_path),
                 captured_profile_key=snapshot.captured_profile_key,
                 acquired_at_ms=1,
             )

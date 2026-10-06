@@ -20,6 +20,7 @@ from polylogue.storage.blob_integrity import (
     scan_blob_reference_debt,
 )
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_archive_database,
     initialize_archive_tier,
@@ -277,7 +278,7 @@ def test_scan_attachment_coverage_never_counts_unfetched_as_missing(
     index_db = tmp_path / "index.db"
     store = BlobStore(tmp_path / "blob")
     monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: store)
-    conn = sqlite3.connect(index_db)
+    conn = connect_measured(index_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -312,7 +313,7 @@ def test_scan_attachment_coverage_uses_read_profile_that_rejects_mutations(
     """The production scan opener permits reads and refuses every write class."""
 
     index_db = tmp_path / "index.db"
-    conn = sqlite3.connect(index_db)
+    conn = connect_measured(index_db)
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     conn.close()
 
@@ -353,7 +354,7 @@ def test_scan_attachment_coverage_flags_acquired_row_with_missing_blob_file(
     store = BlobStore(tmp_path / "blob")
     monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: store)
     payload = b"attachment bytes that will be deleted from disk"
-    conn = sqlite3.connect(index_db)
+    conn = connect_measured(index_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -407,7 +408,7 @@ def test_scan_attachment_coverage_flags_acquired_row_with_no_attachment_ref(tmp_
     payload = b"orphaned but genuinely fetched bytes"
     blob_hash, blob_size = store.write_from_bytes(payload)
 
-    conn = sqlite3.connect(index_db)
+    conn = connect_measured(index_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -502,7 +503,7 @@ def test_acquired_coverage_partitioned_by_stored_bytes(tmp_path: Path, monkeypat
         preacquired[id(attachment)] = (bytes.fromhex(blob_hash), size, "acquired")
         hashes[attachment.provider_attachment_id] = blob_hash
 
-    conn = sqlite3.connect(index_db)
+    conn = connect_measured(index_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -547,7 +548,7 @@ def test_unverifiable_acquired_row_alone_is_not_ok(tmp_path: Path) -> None:
 
     index_db = tmp_path / "index.db"
     store = BlobStore(tmp_path / "blob")
-    conn = sqlite3.connect(index_db)
+    conn = connect_measured(index_db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)

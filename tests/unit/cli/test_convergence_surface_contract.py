@@ -83,13 +83,14 @@ def test_converging_archive_surfaces_share_materialization_counts(tmp_path: Path
         "1 raw/index join gap(s) found; results may be partial until daemon convergence classifies them."
     )
 
-    status = run_cli(["--plain", "status", "--format", "json"], env=env, timeout=30)
+    status = run_cli(["--plain", "status", "--format", "json"], env=env, timeout=30, entrypoint="module")
     # A converging archive read with no daemon is degraded, which
     # OUTCOME_EXIT_CODES maps to 1 (polylogue-1fu1a). This asserted 0 only
     # because standalone_mode discarded the refusal. The subject of this test
     # is that every surface reports the same counts, not the status code, so
     # the payload assertions below are unchanged.
     assert status.exit_code == 1, status.output
+    assert status.stdout.strip(), status.output
     status_payload = _load_stdout_json(status.stdout)
     # ``status`` is served by the daemon (#5550). With none running it
     # reports the read as unavailable and must not fabricate materialization
@@ -97,14 +98,16 @@ def test_converging_archive_surfaces_share_materialization_counts(tmp_path: Path
     assert status_payload["status_snapshot"]["state"] == "unavailable"
     assert "raw_materialization" not in status_payload.get("component_readiness", {})
 
-    no_results = run_cli(["--plain", "find", "absenttoken", "--format", "json"], env=env, timeout=30)
+    no_results = run_cli(
+        ["--plain", "find", "absenttoken", "--format", "json"], env=env, timeout=30, entrypoint="module"
+    )
     assert no_results.exit_code == 2, no_results.output
     no_results_payload = _load_stdout_json(no_results.stdout)
     assert no_results_payload["archive_converging"] is True
     assert no_results_payload["convergence_warning"] == expected_warning
     assert no_results_payload["items"] == []
 
-    analyze = run_cli(["--plain", "analyze", "--format", "json"], env=env, timeout=30)
+    analyze = run_cli(["--plain", "analyze", "--format", "json"], env=env, timeout=30, entrypoint="module")
     # Converging totals are degraded, which exits 1 like every other read.
     assert analyze.exit_code == 1, analyze.output
     analyze_payload = _load_stdout_json(analyze.stdout)

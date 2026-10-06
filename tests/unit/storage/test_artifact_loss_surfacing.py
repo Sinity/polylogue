@@ -51,6 +51,7 @@ def _write_record(
         raw_id=raw_id,
         source_name=source_name,
         source_path=source_path,
+        canonical_source_path=source_path,
         payload_provider=provider,
         source_index=None,
         blob_size=blob_size,
@@ -235,7 +236,9 @@ def test_single_oversized_provider_record_under_weak_path_remains_parse_candidat
     record = _write_record(
         blob_store,
         content=content,
-        source_path=f"{source_name}/analysis/re-homed-session.jsonl",
+        # A weak path names no session layout; analysis/ is a declared
+        # side-output directory and is excluded on its own.
+        source_path=f"{source_name}/re-homed/re-homed-session.jsonl",
         source_name=source_name,
         provider=provider,
     )

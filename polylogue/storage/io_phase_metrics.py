@@ -166,14 +166,23 @@ class _MeasuredCursor(sqlite3.Cursor):
         phase = _transaction_phase(sql)
         connection = cast(_MeasuredConnection, self.connection)
         tier = getattr(connection, "_metric_tier", None)
-        if phase is None:
-            return super().execute(sql, parameters)
-        connection._metric_statement_phase = phase
+        # One epoch per statement compile: an authorizer may verify facts
+        # that cannot vary across one compile once per epoch instead of once
+        # per callback. Nested execution gets its own epoch.
+        connection._compile_epoch_counter += 1
+        enclosing = connection._compile_epoch
+        connection._compile_epoch = connection._compile_epoch_counter
         try:
-            with timed_io_phase(tier, phase):
+            if phase is None:
                 return super().execute(sql, parameters)
+            connection._metric_statement_phase = phase
+            try:
+                with timed_io_phase(tier, phase):
+                    return super().execute(sql, parameters)
+            finally:
+                connection._metric_statement_phase = None
         finally:
-            connection._metric_statement_phase = None
+            connection._compile_epoch = enclosing
 
 
 class _MeasuredConnection(sqlite3.Connection):
@@ -181,6 +190,10 @@ class _MeasuredConnection(sqlite3.Connection):
     _metric_tier: Tier | None = None
     _metric_context_exit = False
     _metric_statement_phase: Phase | None = None
+    #: The statement compile in progress on this connection, or ``None``
+    #: outside a measured ``execute`` (executemany, executescript, Blob opens).
+    _compile_epoch: int | None = None
+    _compile_epoch_counter = 0
     _native_closed = False
     _incremental_blobs_readonly = False
     _incremental_blob_register: Callable[[sqlite3.Blob], None] | None = None

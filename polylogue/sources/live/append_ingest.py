@@ -31,7 +31,7 @@ from polylogue.core.storage_faults import (
 )
 from polylogue.logging import get_logger
 from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
-from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
+from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult, hook_carrier_logical_source_key
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.storage.archive_identity import resolve_active_index_path
@@ -90,34 +90,6 @@ def _bind_append_revision(
         ),
     )
     return logical_source_key, authority
-
-
-def hook_carrier_logical_source_key(*, provider: Provider, source_path: str) -> str:
-    """Return the physical-carrier revision key under its acquisition origin."""
-    return f"{origin_from_provider(provider).value}:{source_path}"
-
-
-def bind_hook_carrier_baseline_revision(
-    archive: Any,
-    raw_id: str,
-    *,
-    provider: Provider,
-    source_path: str,
-    source_revision: str,
-) -> str:
-    """Bind an initially acquired carrier to its physical append chain."""
-    logical_source_key = hook_carrier_logical_source_key(provider=provider, source_path=source_path)
-    archive.bind_raw_revision(
-        raw_id,
-        RawRevisionEnvelope(
-            logical_source_key=logical_source_key,
-            kind=RawRevisionKind.FULL,
-            source_revision=source_revision,
-            acquisition_generation=0,
-            authority=RawRevisionAuthority.ASSERTED,
-        ),
-    )
-    return logical_source_key
 
 
 def _bind_hook_carrier_append_revision(
@@ -277,7 +249,7 @@ def ingest_append_plans(
                 or row[7] != plan.last_complete_newline
                 or row[8] != plan.acquisition_native_id_hint
                 or row[9] != bytes.fromhex(plan.payload_hash)
-                or row[10] != (plan.canonical_source_path or str(plan.path.resolve()))
+                or row[10] != plan.canonical_source_path
                 or row[11] is not None
             ):
                 return False, None

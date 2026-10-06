@@ -154,7 +154,11 @@ async def test_real_retained_head_records_blob_proof_and_current_coverage(
         bootstrap_archive_root(root)
         with ArchiveStore.open_existing(root, read_only=False) as archive:
             raw_id: str = archive.write_raw_payload(
-                provider=Provider.CHATGPT, payload=payload, source_path="neutral.json", acquired_at_ms=1
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path="neutral.json",
+                canonical_source_path="neutral.json",
+                acquired_at_ms=1,
             )
             return raw_id
 

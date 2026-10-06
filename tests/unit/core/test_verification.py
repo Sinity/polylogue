@@ -77,6 +77,7 @@ def _insert_raw_record(
             conn,
             origin=origin,
             source_path=source_path,
+            canonical_source_path=source_path,
             source_index=0,
             blob_hash=bytes.fromhex(raw_id),
             blob_size=blob_size,

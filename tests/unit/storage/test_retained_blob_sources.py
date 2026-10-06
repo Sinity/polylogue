@@ -230,6 +230,7 @@ def test_windowless_append_uses_receipt_order_despite_inverted_clocks(tmp_path: 
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path=source_path,
+                canonical_source_path=source_path,
                 acquired_at_ms=clock,
                 source_index=source_index,
             )

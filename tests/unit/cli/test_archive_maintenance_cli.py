@@ -61,6 +61,7 @@ def _seed_raw_authority_blocker(
                 provider=Provider.CODEX,
                 payload=payload,
                 source_path=f"{blocker_id}.jsonl",
+                canonical_source_path=f"{blocker_id}.jsonl",
                 acquired_at_ms=1000,
                 raw_id=raw_id,
             )
@@ -260,7 +261,7 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
             ["--plain", "ops", "maintenance", "raw-authority-blockers", "--output-format", "json"],
             catch_exceptions=False,
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)
         by_id = {row["blocker_id"]: row for row in payload["blockers"]}
         assert by_id["blocker-stale"]["kind"] == "stale_plan"
@@ -286,7 +287,7 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
             ],
             catch_exceptions=False,
         )
-        assert resolve.exit_code == 0
+        assert resolve.exit_code == 0, resolve.output
         after = cli_runner.invoke(
             cli,
             ["--plain", "ops", "maintenance", "raw-authority-blockers", "--output-format", "json"],
@@ -423,6 +424,7 @@ def _seed_blob_reference_debt(archive_root: Path, source: Path) -> None:
             conn,
             origin="chatgpt-export",
             source_path=str(source),
+            canonical_source_path=str(source),
             source_index=0,
             blob_hash=missing_raw_hash,
             blob_size=source.stat().st_size,
@@ -449,7 +451,7 @@ def test_backup_plan_cli_reports_backup_profiles_and_tier_boundaries(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["mode"] == "backup_plan"
@@ -491,7 +493,7 @@ def test_backup_plan_cli_surfaces_missing_tiers_and_wal_checkpoint_warning(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     tiers = {tier["tier"]: tier for tier in payload["tiers"]}
     assert tiers["index"]["present"] is False
@@ -510,7 +512,7 @@ def test_backup_plan_cli_renders_plain_summary(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "Archive backup plan" in result.output
     assert "source.db: critical policy=back_up present" in result.output
     assert "full_evidence:" in result.output
@@ -528,7 +530,7 @@ def test_assertion_export_cli_emits_all_assertions_as_jsonl(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     rows = [json.loads(line) for line in result.stdout.splitlines()]
     assert [row["assertion_id"] for row in rows] == ["export-mark", "export-deleted-note"]
     assert rows[0]["kind"] == "mark"
@@ -563,7 +565,7 @@ def test_assertion_export_cli_filters_and_writes_json_file(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert result.stdout == f"Exported 1 assertions to {out_path}\n"
     payload = json.loads(out_path.read_text(encoding="utf-8"))
     assert payload["mode"] == "assertion_export"
@@ -584,7 +586,7 @@ def test_blob_gc_cli_dry_run_reports_without_deleting(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["mode"] == "blob_gc"
@@ -611,7 +613,7 @@ def test_blob_gc_cli_plain_preview_names_skip_counts(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "Blob GC dry-run" in result.output
     assert "Candidates: 1" in result.output
     assert "Result:     would delete 1 blob(s)" in result.output
@@ -666,13 +668,16 @@ def test_blob_gc_cli_has_no_mutate_flag(
 
 
 def _seed_unreferenced_publication_receipt(archive_root: Path) -> str:
-    publisher = ArchiveBlobPublisher(
-        archive_root / "source.db",
-        archive_root / "blob",
-    )
-    blob_hash, _ = publisher.write_from_bytes(b"operator-adjudicated receipt")
-    receipt_id = publisher.receipt_id(blob_hash)
-    publisher.flush()
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    with write_lease("test.blob-publication-receipt", archive_root=archive_root):
+        publisher = ArchiveBlobPublisher(
+            archive_root / "source.db",
+            archive_root / "blob",
+        )
+        blob_hash, _ = publisher.write_from_bytes(b"operator-adjudicated receipt")
+        receipt_id = publisher.receipt_id(blob_hash)
+        publisher.flush()
     assert receipt_id is not None
     return receipt_id
 
@@ -849,7 +854,7 @@ def test_blob_reference_debt_cli_classifies_missing_refs(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["mode"] == "blob_reference_debt"
     assert payload["mutates"] is False
@@ -881,7 +886,7 @@ def test_blob_reference_debt_cli_plain_output_names_read_only_debt(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "Blob reference debt" in result.output
     assert "Status:       debt-present" in result.output
     assert "Source paths: recoverable_source_path_exists=1, source_path_missing=1" in result.output
@@ -1007,7 +1012,7 @@ def test_embedding_orphan_reconcile_cli_dry_run_keeps_rows(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["mode"] == "embedding_orphan_reconcile"
     assert payload["mutates"] is False
@@ -1044,7 +1049,7 @@ def test_embedding_orphan_reconcile_cli_plain_dry_run_reports_would_remove_count
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "Would remove:  1 message ref(s), 1 status row(s)" in result.output
     assert "Removed:" not in result.output
     with sqlite3.connect(cli_workspace["archive_root"] / "embeddings.db") as conn:
@@ -1076,7 +1081,7 @@ def test_embedding_orphan_reconcile_cli_has_no_mutate_flag(
 def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(cli, ["--plain", "ops", "maintenance", "--help"], catch_exceptions=False)
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert "archive-read" in result.output
     for removed in (
         "archive-copy-raw",
@@ -1232,7 +1237,7 @@ def test_archive_read_cli_lists_archive_sessions(
 
     monkeypatch.setattr(
         "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
+        classmethod(lambda cls, root, **_options: FakeArchiveStore()),
     )
 
     result = cli_runner.invoke(
@@ -1252,7 +1257,7 @@ def test_archive_read_cli_lists_archive_sessions(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["mode"] == "list"
     assert payload["sessions"] == [
@@ -1304,7 +1309,7 @@ def test_archive_read_cli_searches_archive_blocks(
 
     monkeypatch.setattr(
         "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        classmethod(lambda cls, root: FakeArchiveStore()),
+        classmethod(lambda cls, root, **_options: FakeArchiveStore()),
     )
 
     result = cli_runner.invoke(
@@ -1324,7 +1329,7 @@ def test_archive_read_cli_searches_archive_blocks(
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["mode"] == "search"
     assert payload["hits"][0]["block_id"] == "codex-session:native-1:m1:0"

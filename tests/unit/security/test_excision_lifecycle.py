@@ -254,6 +254,7 @@ class TestPrimaryInvalidatesOnlyAfterConfirmation:
                 source_conn,
                 origin="codex-session",
                 source_path="/fake/x.jsonl",
+                canonical_source_path="/fake/x.jsonl",
                 source_index=0,
                 payload=b"hello",
                 acquired_at_ms=1,

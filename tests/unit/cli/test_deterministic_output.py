@@ -19,6 +19,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
 from polylogue.core.json import JSONDocument
+from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
 from tests.infra.json_contracts import envelope_result, extract_json_object
 
 # ANSI escape code pattern: ESC[ ... final-byte
@@ -185,7 +186,7 @@ class TestJsonOutputValidity:
         """polylogue judge --list --format json produces parseable JSON."""
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", "judge", "--list", "--format", "json"], catch_exceptions=False)
-        assert result.exit_code == 0
+        assert result.exit_code == OUTCOME_EXIT_CODES["empty"], result.output
         parsed = _extract_json(result.output)
         assert isinstance(parsed, dict)
         assert "items" in parsed
@@ -227,10 +228,12 @@ class TestJsonEnvelopeParametrized:
             assert result_key in result_payload, f"Expected key {result_key!r} in result, got {list(result_payload)}"
 
     @pytest.mark.parametrize(
-        "cmd_args",
+        ("cmd_args", "expected_exit"),
         [
-            ["ops", "doctor", "--format", "json"],
-            ["judge", "--list", "--format", "json"],
+            (["ops", "doctor", "--format", "json"], 0),
+            # An empty archive's candidate listing is an ``empty`` terminal
+            # outcome, and the CLI exit follows that outcome.
+            (["judge", "--list", "--format", "json"], OUTCOME_EXIT_CODES["empty"]),
         ],
         ids=["ops-doctor", "candidate-assertions"],
     )
@@ -238,18 +241,21 @@ class TestJsonEnvelopeParametrized:
         self: object,
         cli_workspace: dict[str, Path],
         cmd_args: list[str],
+        expected_exit: int,
     ) -> None:
         """--format json output must not contain ANSI escape codes."""
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", *cmd_args], catch_exceptions=False)
-        assert result.exit_code == 0
+        assert result.exit_code == expected_exit, result.output
         assert not _has_ansi(result.output), f"ANSI codes in --format json output for {cmd_args!r}"
 
     @pytest.mark.parametrize(
-        "cmd_args",
+        ("cmd_args", "expected_exit"),
         [
-            ["ops", "doctor", "--format", "json"],
-            ["judge", "--list", "--format", "json"],
+            (["ops", "doctor", "--format", "json"], 0),
+            # An empty archive's candidate listing is an ``empty`` terminal
+            # outcome, and the CLI exit follows that outcome.
+            (["judge", "--list", "--format", "json"], OUTCOME_EXIT_CODES["empty"]),
         ],
         ids=["ops-doctor", "candidate-assertions"],
     )
@@ -257,11 +263,12 @@ class TestJsonEnvelopeParametrized:
         self: object,
         cli_workspace: dict[str, Path],
         cmd_args: list[str],
+        expected_exit: int,
     ) -> None:
         """--format json output can be serialized and deserialized without loss."""
         runner = CliRunner()
         result = runner.invoke(cli, ["--plain", *cmd_args], catch_exceptions=False)
-        assert result.exit_code == 0
+        assert result.exit_code == expected_exit, result.output
 
         parsed = _extract_json(result.output)
         # Round-trip through json.dumps/loads must be lossless
@@ -341,7 +348,7 @@ class TestJsonDeterminism:
                 ["--plain", "judge", "--list", "--format", "json"],
                 catch_exceptions=False,
             )
-            assert result.exit_code == 0
+            assert result.exit_code == OUTCOME_EXIT_CODES["empty"], result.output
             outputs.append(result.output)
 
         assert outputs[0] == outputs[1]

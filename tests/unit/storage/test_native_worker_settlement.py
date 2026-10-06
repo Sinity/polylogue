@@ -580,7 +580,11 @@ async def test_actual_raw_publication_keeps_exclusion_and_physical_reservation_u
         with write_lease("synthetic-raw-lifetime-admission", archive_root=tmp_path):
             with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
                 raw_id = archive.write_raw_payload(
-                    provider=Provider.CHATGPT, payload=payload, source_path="raw-lifetime.json", acquired_at_ms=1
+                    provider=Provider.CHATGPT,
+                    payload=payload,
+                    source_path="raw-lifetime.json",
+                    canonical_source_path="raw-lifetime.json",
+                    acquired_at_ms=1,
                 )
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
         frame = raw_observation_frame(tmp_path, raw_ids=(raw_id,))

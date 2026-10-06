@@ -41,6 +41,7 @@ def _seed_target(root: Path) -> None:
                 provider=Provider.CODEX,
                 payload=data,
                 source_path="neutral/receipt-target.jsonl",
+                canonical_source_path="neutral/receipt-target.jsonl",
                 acquired_at_ms=1,
                 native_id="receipt-target",
             )

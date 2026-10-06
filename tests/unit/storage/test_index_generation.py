@@ -1456,6 +1456,7 @@ def test_outer_lease_retirement_keeps_store_sql_until_actual_commit(tmp_path: Pa
                 provider=Provider.CLAUDE_CODE,
                 payload=b"{}",
                 source_path="synthetic/retired-owner.jsonl",
+                canonical_source_path="synthetic/retired-owner.jsonl",
                 acquired_at_ms=1,
             )
         archive.commit()

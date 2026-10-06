@@ -53,6 +53,10 @@ class MembershipRevision:
     projection: SessionRevisionProjection
     provider_updated_at: str | None = None
     observed_at_ms: int | None = None
+    #: Declared capture order of the retained bytes: (acquisition time of
+    #: their latest observation receipt, receipt order). Re-acquiring earlier
+    #: bytes makes them the latest capture again.
+    capture_order: tuple[int, int] | None = None
     browser_snapshot_fidelity: Literal["dom", "native"] | None = None
     provider_message_ids: Set[str | None] = frozenset()
     provider_attachment_ids: frozenset[str] = frozenset()
@@ -698,6 +702,17 @@ def classify_membership_revisions(
             tuple(sorted((*equivalents, *browser_capture_raw_ids))),
             (),
         )
+    latest = _latest_direct_capture(representatives)
+    if latest is not None and existing_accepted_raw_id is None:
+        # Conflicting direct (non-browser) captures of one session are
+        # successive full revisions: the latest declared capture is the
+        # session's current state, whatever its evidence volume. The same
+        # no-existing-head guard as the fallback below applies.
+        return MembershipClassification(
+            (latest.raw_id,),
+            tuple(sorted(equivalents)),
+            tuple(sorted(item.raw_id for item in representatives if item.raw_id != latest.raw_id)),
+        )
     # Presence-guarantee fallback, guarded against ANY interference with an
     # already-established head -- see this function's own docstring for why
     # this is deliberately narrower than "only refuse when the raw_id
@@ -722,6 +737,21 @@ def classify_membership_revisions(
         tuple(sorted(equivalents)),
         tuple(sorted(item.raw_id for item in representatives)),
     )
+
+
+def _latest_direct_capture(representatives: list[MembershipRevision]) -> MembershipRevision | None:
+    """The uniquely latest declared capture of an all-direct conflict, if any.
+
+    Applies only when every representative is a direct capture (no browser
+    snapshot) with a declared capture order, and one capture is strictly
+    latest. Otherwise the caller's existing rules decide.
+    """
+    if any(item.browser_snapshot_fidelity is not None or item.capture_order is None for item in representatives):
+        return None
+    ordered = sorted(representatives, key=lambda item: item.capture_order or (0, 0))
+    if len(ordered) > 1 and ordered[-1].capture_order == ordered[-2].capture_order:
+        return None
+    return ordered[-1]
 
 
 def _maximal_evidence_fallback(representatives: list[MembershipRevision]) -> MembershipRevision:

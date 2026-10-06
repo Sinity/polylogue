@@ -33,6 +33,7 @@ def _observe(conn: sqlite3.Connection, *, origin: str, source_path: str, payload
         conn,
         origin=origin,
         source_path=source_path,
+        canonical_source_path=source_path,
         source_index=0,
         payload=payload,
         acquired_at_ms=acquired_at_ms,
@@ -56,18 +57,36 @@ def test_retained_state_scopes_follow_receipt_order_across_a_clock_rollback(
         for scope in scope_order:
             if scope == "left":
                 raw_a = archive.write_raw_payload(
-                    provider=Provider.CODEX, payload=a, source_path=str(left), acquired_at_ms=200
+                    provider=Provider.CODEX,
+                    payload=a,
+                    source_path=str(left),
+                    canonical_source_path=str(left),
+                    acquired_at_ms=200,
                 )
-                archive.write_raw_payload(provider=Provider.CODEX, payload=b, source_path=str(left), acquired_at_ms=300)
+                archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    payload=b,
+                    source_path=str(left),
+                    canonical_source_path=str(left),
+                    acquired_at_ms=300,
+                )
                 assert (
                     archive.write_raw_payload(
-                        provider=Provider.CODEX, payload=a, source_path=str(left), acquired_at_ms=250
+                        provider=Provider.CODEX,
+                        payload=a,
+                        source_path=str(left),
+                        canonical_source_path=str(left),
+                        acquired_at_ms=250,
                     )
                     == raw_a
                 )
             else:
                 archive.write_raw_payload(
-                    provider=Provider.CODEX, payload=c, source_path=str(right), acquired_at_ms=100
+                    provider=Provider.CODEX,
+                    payload=c,
+                    source_path=str(right),
+                    canonical_source_path=str(right),
+                    acquired_at_ms=100,
                 )
         archive.commit()
     replay_retained_components(tmp_path)
