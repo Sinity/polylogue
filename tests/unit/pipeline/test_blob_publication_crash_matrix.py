@@ -310,6 +310,12 @@ async def test_crash_during_durable_reference_consumption_keeps_a_classified_rec
     present. If the Index reference committed first, the receipt lands in the
     referenced bucket and its bytes survive; otherwise it is unresolved. Either
     way nothing is deleted without exclusion and a retry converges.
+
+    The claim identity is derived from the retained raw, the attachment
+    coordinate and the blob, so the retry re-adopts the crashed attempt's
+    exact reservations and its reference transaction consumes them.
+    Anti-vacuity: a random per-attempt identity leaves the crashed receipts
+    behind the retry's own, and the converged reservation set is not empty.
     """
     root, raw_id, expected = await _acquire_inline_attachment_capture(tmp_path)
 
@@ -326,6 +332,8 @@ async def test_crash_during_durable_reference_consumption_keeps_a_classified_rec
         assert store.exists(blob_hash.hex())
         assert len(_reservation_rows(root / "source.db", blob_hash)) == 1
     _assert_crash_consistent(root, expected)
+    crashed_receipts = _all_reservations(root / "source.db")
+    assert crashed_receipts and all(publication.startswith("claim-") for publication, _hash in crashed_receipts)
     referenced = _attachment_hashes(root / "index.db") & set(expected)
     outcome = _reconcile_excluded(root)
     assert outcome.cleared_missing == 0
