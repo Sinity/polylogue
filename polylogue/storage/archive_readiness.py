@@ -1322,6 +1322,12 @@ def _raw_gap_current_typed_non_session(
                   SELECT 1 FROM {source_schema}.raw_artifacts AS failure
                   WHERE failure.raw_id=p.raw_id
                     AND (failure.artifact_kind, failure.support_status) IN ({terminal_placeholders})
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM {source_schema}.raw_artifacts AS sibling
+                  WHERE sibling.raw_id=p.raw_id
+                    AND (sibling.parse_as_session<>0 OR sibling.schema_eligible<>0
+                         OR sibling.decode_error IS NOT NULL OR sibling.malformed_jsonl_lines<>0)
               )""",
         (
             raw_id,

@@ -1271,6 +1271,43 @@ def test_raw_materialization_snapshot_accepts_currently_censused_typed_empty_cla
     assert _category_counts(snapshot)["parsed-non-session-artifact"] == 1
     assert raw_materialization_ready(snapshot) is True
 
+    # The zero-member census proves the parser's session set, but every raw
+    # artifact in the cohort must agree with that non-session reading.
+    siblings = (
+        ("session-sibling", 1, 1, None, 0),
+        ("schema-eligible-sibling", 0, 1, None, 0),
+        ("decode-error-sibling", 0, 0, "synthetic decode refusal", 0),
+        ("malformed-sibling", 0, 0, None, 1),
+    )
+    for artifact_id, parse_as_session, schema_eligible, decode_error, malformed_lines in siblings:
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute(
+                """INSERT INTO raw_artifacts (
+                    artifact_id, raw_id, origin, source_path, source_index,
+                    artifact_kind, support_status, classification_reason,
+                    parse_as_session, schema_eligible, malformed_jsonl_lines,
+                    decode_error, first_observed_at_ms, last_observed_at_ms
+                ) VALUES (?, ?, 'claude-code-session', ?, 1, 'session_record_stream',
+                          'supported_parseable', 'synthetic mixed cohort', ?, ?, ?, ?, 1, 1)""",
+                (
+                    f"mixed-{artifact_id}",
+                    raw_id,
+                    f"{artifact_id}.jsonl",
+                    parse_as_session,
+                    schema_eligible,
+                    malformed_lines,
+                    decode_error,
+                ),
+            )
+            conn.commit()
+        mixed = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=True)
+        assert mixed["classified"] == 0
+        assert mixed["affected_unchecked"] == 1
+        assert raw_materialization_ready(mixed) is False
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute("DELETE FROM raw_artifacts WHERE artifact_id=?", (f"mixed-{artifact_id}",))
+            conn.commit()
+
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute(
             "UPDATE raw_artifacts SET artifact_kind='terminal_unsupported_shape', "
