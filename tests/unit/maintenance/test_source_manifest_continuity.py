@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -129,6 +130,36 @@ def test_configured_frontier_keeps_a_disappeared_source_in_its_denominator(
     assert [item.source_id for item in frontier.declarations] == ["configured:browser-capture"]
     assert frontier.root_states["configured:browser-capture"] is FrontierState.UNAVAILABLE
     assert any(blocker.startswith("unavailable:configured:browser-capture:") for blocker in frontier.blockers)
+
+
+@pytest.mark.parametrize("payload", [b"", b'{"display":"prompt"}\n'], ids=["empty", "nonempty"])
+def test_configured_frontier_observes_optional_claude_history_file_as_append_jsonl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: bytes
+) -> None:
+    from polylogue import config, paths
+    from polylogue.maintenance import source_manifest_continuity as continuity
+
+    archive = tmp_path / "archive"
+    history = tmp_path / "home" / ".claude" / "history.jsonl"
+    history.parent.mkdir(parents=True)
+    history.write_bytes(payload)
+    monkeypatch.setattr(
+        config,
+        "resolve_runtime_config",
+        lambda: SimpleNamespace(sources=(SimpleNamespace(name="claude-code-history", path=history),)),
+    )
+    monkeypatch.setattr(paths, "archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.sources.hooks.hook_spool_sources", lambda: ())
+
+    frontier = continuity.configured_source_frontier(archive)
+
+    declaration = next(item for item in frontier.declarations if item.source_id == "configured:claude-code-history")
+    assert declaration.role is SourceRole.APPEND_JSONL
+    assert declaration.layout_name is None
+    assert frontier.complete
+    assert [(item.coordinate, item.content_sha256, item.size) for item in frontier.members] == [
+        ("history.jsonl", hashlib.sha256(payload).hexdigest(), len(payload))
+    ]
 
 
 def test_duplicate_roots_and_symlinks_fail_closed(tmp_path: Path) -> None:

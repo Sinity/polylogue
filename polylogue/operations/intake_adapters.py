@@ -937,12 +937,10 @@ class FileIntakeAdapter(IntakeAdapter):
             return outcomes
 
         stale_cursor_writes = int(getattr(metrics, "stale_cursor_write_count", 0) or 0)
-        if stale_cursor_writes:
-            # A stale cursor write means this batch raced another authority
-            # for the same source rows; the whole page is retried rather than
-            # acknowledged, even where some files reported success, because a
-            # cursor advanced under a losing write is not evidence about any
-            # item in the page.
+        stale_cursor_paths = {str(path) for path in (getattr(metrics, "stale_cursor_paths", ()) or ())}
+        if stale_cursor_writes and (not stale_cursor_paths or len(stale_cursor_paths) > stale_cursor_writes):
+            # An incomplete per-path report cannot establish which rows lost
+            # freshness, so retain the old fail-closed page result.
             for item in batch:
                 outcomes[item.item_id] = AdmissionResult(
                     AdmissionOutcome.RETRYABLE, reason="source cursor write was stale"
@@ -981,7 +979,11 @@ class FileIntakeAdapter(IntakeAdapter):
             key = str(Path(cast(Any, item.payload)))
             item_estimate = max(1, int(item.estimated_cost))
             actual_cost = max(1, round(read_bytes * item_estimate / estimated_total)) if read_bytes else item_estimate
-            if key in settled:
+            if key in stale_cursor_paths:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.RETRYABLE, reason="source cursor write was stale"
+                )
+            elif key in settled:
                 # Acquired, but nothing admissible came of it (no session, or
                 # corrupt input): the raw carries the typed terminal outcome,
                 # and reporting ADMITTED counted a file that produced nothing
