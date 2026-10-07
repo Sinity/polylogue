@@ -50,6 +50,13 @@ from polylogue.sources.parsers.base_models import SINK_JSON_CONTEXT
 from polylogue.sources.parsers.claude.common import _ClaudeMessageEvidence
 from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope
+from polylogue.sources.streamed_event_payload import (
+    StreamedJsonArray,
+    ensure_streamed_json_array_table,
+)
+from polylogue.sources.streamed_event_payload import (
+    _open_reader as _open_streamed_array_reader,
+)
 from polylogue.sources.value_bounds import require_storable_string
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
@@ -339,10 +346,59 @@ def _message_json(value: ParsedMessage) -> str:
 
 
 def _event_json(value: ParsedSessionEvent) -> str:
-    payload = value.model_dump(mode="json")
+    streamed_arrays = {key: item.array_id for key, item in value.payload.items() if isinstance(item, StreamedJsonArray)}
+    ordinary_payload = {key: item for key, item in value.payload.items() if key not in streamed_arrays}
+    payload = value.model_dump(mode="json", exclude={"payload"})
+    payload["payload"] = ordinary_payload
     payload["boundary_message_position"] = value.boundary_message_position
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
+    if streamed_arrays:
+        payload = {
+            "$polylogue_prepared_event": 1,
+            "event": payload,
+            "streamed_arrays": streamed_arrays,
+        }
     return require_storable_string(_text_json(payload), kind="serialized event")
+
+
+def _event_from_json(encoded: str, path: Path, connection: sqlite3.Connection | None = None) -> ParsedSessionEvent:
+    """Restore explicitly tagged streamed payload arrays from the prepared store."""
+    payload = json.loads(encoded)
+    if not isinstance(payload, dict) or payload.get("$polylogue_prepared_event") != 1:
+        return ParsedSessionEvent.model_validate(payload)
+    event = payload.get("event")
+    arrays = payload.get("streamed_arrays")
+    if not isinstance(event, dict) or not isinstance(arrays, dict):
+        raise ValueError("invalid streamed prepared event envelope")
+    owner = connection
+    if owner is None:
+        with _open_streamed_array_reader(path) as reader:
+            _restore_streamed_arrays(event, arrays, path, reader, marker_connection=None)
+    else:
+        _restore_streamed_arrays(event, arrays, path, owner, marker_connection=owner)
+    return ParsedSessionEvent.model_validate(event)
+
+
+def _restore_streamed_arrays(
+    event: dict[str, object],
+    arrays: dict[str, object],
+    path: Path,
+    connection: sqlite3.Connection,
+    *,
+    marker_connection: sqlite3.Connection | None,
+) -> None:
+    event_payload = event.get("payload")
+    if not isinstance(event_payload, dict):
+        raise ValueError("streamed prepared event payload is not an object")
+    for key, raw_array_id in arrays.items():
+        if not isinstance(key, str) or not isinstance(raw_array_id, str):
+            raise ValueError("streamed prepared event array reference is malformed")
+        row = connection.execute(
+            "SELECT item_count FROM prepared_streamed_json_array WHERE array_id = ?", (raw_array_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("streamed prepared event array disappeared")
+        event_payload[key] = StreamedJsonArray(marker_connection, path, raw_array_id, int(row[0]))
 
 
 def _attachment_json(value: ParsedAttachment) -> str:
@@ -1356,7 +1412,7 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
             ).fetchone()
         if row is None:
             raise ValueError("prepared event row disappeared")
-        return _from_text_json(ParsedSessionEvent, row[0])
+        return _event_from_json(row[0], self.path, self._writer)
 
     @overload
     def __setitem__(self, index: int, value: ParsedSessionEvent) -> None: ...
@@ -1473,7 +1529,7 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
                 "SELECT event_json FROM prepared_event WHERE session_ordinal = ? ORDER BY event_ordinal",
                 (self.session_ordinal,),
             ):
-                yield _from_text_json(ParsedSessionEvent, row[0])
+                yield _event_from_json(row[0], self.path, self._writer)
             return
         for (encoded,) in _prepared_ordinal_rows(
             self.path,
@@ -1482,7 +1538,7 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
             columns="event_json",
             session=self.session_ordinal,
         ):
-            yield _from_text_json(ParsedSessionEvent, cast(str, encoded))
+            yield _event_from_json(cast(str, encoded), self.path)
 
     def iter_ordered(self, type_order_tier: Mapping[str, int]) -> Iterator[ParsedSessionEvent]:
         clauses = " ".join("WHEN ? THEN ?" for _ in type_order_tier)
@@ -1498,7 +1554,7 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
             for row in self._writer.execute(
                 base_sql + " ORDER BY stamp, tier, event_ordinal", (*parameters, self.session_ordinal)
             ):
-                yield _from_text_json(ParsedSessionEvent, row[0])
+                yield _event_from_json(row[0], self.path, self._writer)
             return
         after: tuple[str, int, int] | None = None
         while True:
@@ -1512,7 +1568,7 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
                 return
             after = (str(rows[-1][1]), int(rows[-1][2]), int(rows[-1][3]))
             for row in rows:
-                yield _from_text_json(ParsedSessionEvent, row[0])
+                yield _event_from_json(row[0], self.path, self._writer)
 
     def sort_in_place(self, type_order_tier: Mapping[str, int]) -> None:
         if self._writer is None:
@@ -1631,6 +1687,7 @@ class SqliteMessageStore:
             # prepared artifact, before any row was spooled.
             self.conn.execute("PRAGMA temp_store = FILE")
             self.conn.execute("BEGIN IMMEDIATE")
+            ensure_streamed_json_array_table(self.conn)
             self.conn.execute(
                 "CREATE TABLE prepared_message (session_ordinal INTEGER NOT NULL, message_ordinal INTEGER NOT NULL, message_json TEXT NOT NULL, provider_id TEXT, parent_id TEXT, active_leaf INTEGER NOT NULL, PRIMARY KEY (session_ordinal, message_ordinal)) WITHOUT ROWID"
             )

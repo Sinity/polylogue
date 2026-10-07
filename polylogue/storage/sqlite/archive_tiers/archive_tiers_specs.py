@@ -1269,6 +1269,21 @@ SESSION_EVENTS_SPEC = _make_table_spec(
     table_constraints=("""PRIMARY KEY(session_id, position)""",),
 )
 
+SESSION_EVENT_ARRAY_ITEMS_SPEC = _make_table_spec(
+    "session_event_array_items",
+    (
+        _raw_column("session_id", "session_id TEXT NOT NULL"),
+        _raw_column("event_position", "event_position INTEGER NOT NULL"),
+        _raw_column("payload_key", "payload_key TEXT NOT NULL"),
+        _raw_column("item_ordinal", "item_ordinal INTEGER NOT NULL CHECK(item_ordinal >= 0)"),
+        _raw_column("value_json", "value_json TEXT NOT NULL CHECK(json_valid(value_json))"),
+    ),
+    table_constraints=(
+        "PRIMARY KEY(session_id, event_position, payload_key, item_ordinal)",
+        "FOREIGN KEY(session_id, event_position) REFERENCES session_events(session_id, position) ON DELETE CASCADE",
+    ),
+)
+
 SESSION_AGENT_POLICIES_SPEC = _make_table_spec(
     "session_agent_policies",
     (
@@ -2328,6 +2343,7 @@ INDEX_TABLE_SPECS = {
     "session_refs": SESSION_REFS_SPEC,
     "action_pairs": ACTION_PAIRS_SPEC,
     "session_events": SESSION_EVENTS_SPEC,
+    "session_event_array_items": SESSION_EVENT_ARRAY_ITEMS_SPEC,
     "session_agent_policies": SESSION_AGENT_POLICIES_SPEC,
     "session_links": SESSION_LINKS_SPEC,
     "session_working_dirs": SESSION_WORKING_DIRS_SPEC,
