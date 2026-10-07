@@ -188,9 +188,10 @@ class ParseAccounting(BaseModel):
                 add([int(start), int(end)])
         outcomes = self.outcomes
         if isinstance(outcomes, list):
-            # Preserve parser order for in-memory outcomes. Each record carries
-            # its unit and ordinal, so the witness remains unambiguous.
-            for outcome in outcomes:
+            # Outcome order is not semantic; replay addresses them by unit and
+            # ordinal. Sorting the existing resident list makes inline and
+            # spilled representations share one identity.
+            for outcome in sorted(outcomes, key=lambda item: (item.unit.value, item.ordinal)):
                 add(outcome.model_dump(mode="json"))
         else:
             # Spilled storage is ordered by unit and ordinal and does not expose

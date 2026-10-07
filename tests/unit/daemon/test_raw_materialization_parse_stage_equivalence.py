@@ -11,10 +11,11 @@ import pytest
 
 from polylogue.config import Config
 from polylogue.core.compute import BoundedComputeAdapter
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.daemon import cli as daemon_cli
 from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+from polylogue.schemas import RetainedValidationVerdict
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.raw_owner_routes import converge_pending_raws_with_owner
@@ -120,6 +121,80 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
 
 
 @pytest.mark.asyncio
+async def test_strict_retained_validation_refusal_does_not_publish_marker_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = tmp_path / "archive"
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
+    from tests.infra.retained_jsonl import acquire_full_revision
+
+    source_path = tmp_path / "strict-marker.jsonl"
+    payload = _codex_session("strict-marker", (("user", "question"), ("assistant", "::note: retained note")))
+
+    def acquire() -> str:
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            return acquire_full_revision(
+                archive,
+                provider=Provider.CODEX,
+                source_path=source_path,
+                payload=payload,
+                native_id="strict-marker",
+                generation=0,
+                acquired_at_ms=1,
+            )
+
+    raw_id = await asyncio.to_thread(acquire)
+
+    validations: list[tuple[str, str, ValidationMode]] = []
+
+    def refuse_retained_document(
+        _provider: Provider,
+        _path: Path,
+        *,
+        mode: ValidationMode,
+        raw_id: str,
+        revision_sha256: str,
+        evidence_id: str,
+        **_kwargs: object,
+    ) -> RetainedValidationVerdict:
+        validations.append((raw_id, revision_sha256, mode))
+        return RetainedValidationVerdict(
+            raw_id=raw_id,
+            revision_sha256=revision_sha256,
+            evidence_id=evidence_id,
+            mode=mode,
+            status=ValidationStatus.FAILED,
+            sample_count=1,
+            invalid_count=1,
+            error_count=0,
+            drift_count=0,
+            first_diagnostic="synthetic strict schema refusal",
+            schema_resolution=None,
+            drift_observation=None,
+            strict_refusal=True,
+        )
+
+    monkeypatch.setattr("polylogue.schemas.validate_retained_document", refuse_retained_document)
+    await asyncio.to_thread(
+        converge_pending_raws_with_owner,
+        archive_root,
+        limit=1,
+        validation_mode=ValidationMode.STRICT,
+    )
+
+    assert len(validations) == 1
+    assert validations[0][0] == raw_id
+    assert validations[0][2] is ValidationMode.STRICT
+    with sqlite3.connect(archive_root / "source.db") as source:
+        assert source.execute(
+            "SELECT validation_status,validation_mode,parse_error FROM raw_sessions WHERE raw_id=?", (raw_id,)
+        ).fetchone() == ("failed", "strict", None)
+        assert source.execute("SELECT COUNT(*) FROM accepted_marker_inputs WHERE raw_id=?", (raw_id,)).fetchone() == (
+            0,
+        )
+
+
+@pytest.mark.asyncio
 async def test_two_accepted_revisions_survive_one_periodic_profile_pass(tmp_path: Path) -> None:
     """Accepted R1/R2 marker inputs survive a coalesced profile publication.
 
@@ -154,6 +229,7 @@ async def test_two_accepted_revisions_survive_one_periodic_profile_pass(tmp_path
             converge_pending_raws_with_owner,
             archive_root,
             limit=revision,
+            validation_mode=ValidationMode.ADVISORY,
         )
         assert result.done == 1 and result.failed == 0, result
 
@@ -161,6 +237,9 @@ async def test_two_accepted_revisions_survive_one_periodic_profile_pass(tmp_path
         retained = source.execute("SELECT sequence, raw_id FROM accepted_marker_inputs ORDER BY sequence").fetchall()
         assert len(retained) == 2
         assert retained[0][0] < retained[1][0]
+        assert source.execute(
+            "SELECT DISTINCT validation_mode FROM raw_sessions WHERE source_path=?", (str(source_path),)
+        ).fetchall() == [(ValidationMode.ADVISORY.value,)]
 
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator(archive_root=archive_root)

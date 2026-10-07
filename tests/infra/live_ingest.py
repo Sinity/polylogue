@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.core.enums import ValidationMode
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.io_phase_metrics import connect_measured
@@ -207,6 +208,7 @@ async def prepared_live_convergence_owner(
     *,
     compute_adapter: BoundedComputeAdapter | None = None,
     write_coordinator: DaemonWriteCoordinator | None = None,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
 ) -> AsyncIterator[RawObservationConvergenceOwner]:
     """Borrow the actual daemon preparation owner for a complete live pass."""
     import sys
@@ -225,6 +227,7 @@ async def prepared_live_convergence_owner(
             compute_adapter=compute,
             write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
             write_coordinator=coordinator,
+            validation_mode=validation_mode,
         )
         yield owner
     finally:

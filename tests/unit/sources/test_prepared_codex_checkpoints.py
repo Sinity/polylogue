@@ -4,6 +4,7 @@ import hashlib
 import json
 import tempfile
 from contextlib import contextmanager
+from dataclasses import replace
 from io import BytesIO
 
 import pytest
@@ -242,7 +243,7 @@ def test_each_prefix_keeps_its_own_fallback_timestamp_provenance() -> None:
     assert observed[0][4] == observed[1][4] == [None, None]
 
 
-def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path) -> None:
+def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path, monkeypatch) -> None:
     records = _records(3)
     records[0]["payload"].pop("timestamp")
     payloads = []
@@ -263,19 +264,29 @@ def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path) -> None:
         resolved_provider=Provider.CODEX,
         captured_profile_key="captured-profile",
     )
+    head_artifact = replace(
+        head_artifact,
+        parser_stage_artifact=replace(head_artifact, attempt_directory=None),
+    )
     interior_dir = tmp_path / "interior-artifacts"
     interior_dir.mkdir()
 
-    preparation = prepare_codex_prefix_checkpoints(
-        source_read,
-        raw_ids,
-        head_artifact=head_artifact,
-        artifact_directory=interior_dir,
-        publication_publisher=None,
-        publication_source_read=None,
-        prepare_sessions=lambda _raw_id, sessions: sessions,
-        artifact_options=lambda _raw_id: CodexCheckpointArtifactOptions(captured_profile_key="captured-profile"),
-    )
+    with monkeypatch.context() as context:
+        context.setattr(
+            PreparedJsonl,
+            "iter_sessions",
+            lambda _self: (_ for _ in ()).throw(AssertionError("checkpoint head must use its paged session sequence")),
+        )
+        preparation = prepare_codex_prefix_checkpoints(
+            source_read,
+            raw_ids,
+            head_artifact=head_artifact,
+            artifact_directory=interior_dir,
+            publication_publisher=None,
+            publication_source_read=None,
+            prepare_sessions=lambda _raw_id, sessions: sessions,
+            artifact_options=lambda _raw_id: CodexCheckpointArtifactOptions(captured_profile_key="captured-profile"),
+        )
     assert preparation.disposition is CodexCheckpointDisposition.READY
     artifacts = list(preparation.iter_artifacts())
     assert len(artifacts) == 1
@@ -317,6 +328,10 @@ def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path) -> None:
         publication_publisher=None,
         resolved_provider=Provider.CODEX,
         captured_profile_key="captured-profile",
+    )
+    normalized_head_artifact = replace(
+        normalized_head_artifact,
+        parser_stage_artifact=replace(normalized_head_artifact, attempt_directory=None),
     )
     try:
         rejected = prepare_codex_prefix_checkpoints(
