@@ -77,7 +77,7 @@ async def test_validation_api_persists_malformed_jsonl_quarantine_without_payloa
     ],
 )
 def test_zero_length_retained_raw_is_terminal_for_every_provider_and_validation_mode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: Provider, suffix: str
+    tmp_path: Path, mode: str, provider: Provider, suffix: str
 ) -> None:
     """Empty acquired bytes are terminal decoder evidence, regardless of schema mode or provider."""
     from polylogue.core.raw_failure_evidence import RAW_FAILURE_VALIDATION_FAILURE_KINDS
@@ -86,7 +86,6 @@ def test_zero_length_retained_raw_is_terminal_for_every_provider_and_validation_
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
     blob_hash, _size = BlobStore(root / "blob").write_from_bytes(b"")
-    monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", mode)
     with retained_raw_fixture(
         root=root,
         provider=provider,
@@ -97,7 +96,7 @@ def test_zero_length_retained_raw_is_terminal_for_every_provider_and_validation_
 
     async def replay() -> tuple[object, list[str]]:
         refused: list[str] = []
-        async with prepared_live_convergence_owner(root) as owner:
+        async with prepared_live_convergence_owner(root, validation_mode=ValidationMode.from_string(mode)) as owner:
             receipts = (
                 await owner.replay_retained_raw_ids(
                     (raw_id,), on_terminal_refusal=lambda _keys, refusal: refused.append(refusal.raw_id)
@@ -132,7 +131,7 @@ def test_zero_length_retained_raw_is_terminal_for_every_provider_and_validation_
 
 @pytest.mark.parametrize("mode", ["off", "advisory", "strict"])
 def test_complete_malformed_jsonl_is_terminal_without_publishing_a_session_in_every_mode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+    tmp_path: Path, mode: str
 ) -> None:
     """Schema mode changes validation only; it never makes complete malformed JSONL publishable."""
     from polylogue.core.raw_failure_evidence import RAW_FAILURE_VALIDATION_FAILURE_KINDS
@@ -147,7 +146,6 @@ def test_complete_malformed_jsonl_is_terminal_without_publishing_a_session_in_ev
         b'"uuid":"m2","timestamp":"2025-01-01T00:00:01Z"}\n'
     )
     blob_hash, _size = BlobStore(root / "blob").write_from_bytes(payload)
-    monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", mode)
     with retained_raw_fixture(
         root=root,
         provider=Provider.CLAUDE_CODE,
@@ -158,7 +156,7 @@ def test_complete_malformed_jsonl_is_terminal_without_publishing_a_session_in_ev
 
     async def replay() -> tuple[object, list[str]]:
         refused: list[str] = []
-        async with prepared_live_convergence_owner(root) as owner:
+        async with prepared_live_convergence_owner(root, validation_mode=ValidationMode.from_string(mode)) as owner:
             receipts = (
                 await owner.replay_retained_raw_ids(
                     (raw_id,), on_terminal_refusal=lambda _keys, refusal: refused.append(refusal.raw_id)
