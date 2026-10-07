@@ -614,6 +614,26 @@ def test_spool_handoff_leaves_a_new_empty_active_generation(tmp_path: Path, role
     assert (result.candidate_root / "spool" / "event.json").read_text(encoding="utf-8") == "event"
 
 
+def test_spool_handoff_preserves_declared_coordinate_exclusions(tmp_path: Path) -> None:
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    (spool / "event.json").write_text("event", encoding="utf-8")
+    (spool / "excluded.json").write_text("excluded", encoding="utf-8")
+
+    declaration = SourceDeclaration(
+        "spool",
+        SourceRole.SPOOL,
+        spool,
+        mutable=True,
+        exclude_coordinates=("excluded.json",),
+    )
+    result = execute_source_cut(preflight_source_cut([declaration]), tmp_path / "cut")
+
+    assert {item.coordinate for item in result.candidate_manifest.items} == {"event.json"}
+    assert (result.candidate_root / "spool" / "event.json").read_text(encoding="utf-8") == "event"
+    assert not (result.candidate_root / "spool" / "excluded.json").exists()
+
+
 @pytest.mark.parametrize("role", [SourceRole.SPOOL, SourceRole.QUEUE])
 @pytest.mark.parametrize("replace_active", [False, True])
 def test_handoff_observes_only_the_producer_bound_active_generation(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 import re
@@ -104,6 +105,147 @@ def test_one_appended_line_materializes_one_hook_event(
         assert conn.execute("SELECT origin, session_native_id, event_type FROM raw_hook_events").fetchall() == [
             (expected_origin, session_id, event_type)
         ]
+
+
+@pytest.mark.asyncio
+async def test_hook_derivation_publication_uses_the_daemon_writer_bridge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daemon's production hook callback bridges only the publisher write.
+
+    Anti-vacuity: omitting its stage admission makes the source-tier write
+    fail the daemon's enforced writer lease instead of materializing the event.
+    """
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.core.stage_admission import stage_write_admission
+    from polylogue.daemon.convergence import _DerivationAdmission
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+    from polylogue.logging import propagate
+    from polylogue.operations.hook_event_derivation import converge_hook_carriers, discover_pending_hook_carriers
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    append_hook_event(
+        event_type="PostToolUse",
+        session_id="coordinator-session",
+        provider="codex",
+        timestamp=_TIMESTAMP,
+        payload={"tool_name": "exec"},
+        root=spool_root,
+        event_id="f" * 32,
+    )
+    assert acquire_hook_carriers(archive_root) == 1
+    pending = discover_pending_hook_carriers(archive_root, 1)
+    assert len(pending) == 1
+
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
+    admission = _DerivationAdmission(
+        DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+        loop_thread_id=threading.get_ident(),
+    )
+    try:
+        with stage_write_admission(admission.stage_write):
+            submitted = compute.submit(
+                propagate(
+                    functools.partial(
+                        converge_hook_carriers,
+                        archive_root,
+                        raw_ids=(pending[0][0],),
+                        limit=1,
+                    )
+                ),
+                admission_class="incremental-background",
+            )
+        report = await asyncio.wrap_future(submitted.future)
+        assert report.done == 1
+        with sqlite3.connect(archive_root / "source.db") as conn:
+            assert conn.execute(
+                "SELECT session_native_id FROM raw_hook_events WHERE session_native_id = ?",
+                ("coordinator-session",),
+            ).fetchone() == ("coordinator-session",)
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_hook_derivation_rechecks_binding_after_writer_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A competing publication while queued makes the stale replacement a no-op."""
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.core.stage_admission import stage_write_admission
+    from polylogue.daemon.convergence import _DerivationAdmission
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+    from polylogue.logging import propagate
+    from polylogue.operations.hook_event_derivation import HookEventsDerivation, discover_pending_hook_carriers
+    from polylogue.sources.live.archive_open import _open_archive_for_live_write
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    append_hook_event(
+        event_type="PostToolUse",
+        session_id="binding-race-session",
+        provider="codex",
+        timestamp=_TIMESTAMP,
+        payload={"tool_name": "exec"},
+        root=spool_root,
+        event_id="e" * 32,
+    )
+    assert acquire_hook_carriers(archive_root) == 1
+    pending = discover_pending_hook_carriers(archive_root, 1)
+    assert len(pending) == 1
+
+    derivation = HookEventsDerivation(archive_root)
+    frame = SimpleNamespace(
+        archive_root=archive_root,
+        recipe_version=lambda domain: derivation.recipe_version if domain == derivation.domain else None,
+    )
+    replacement = derivation.compute(frame, pending[0][0])
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
+    loop = asyncio.get_running_loop()
+    writer_admission = _DerivationAdmission(
+        DaemonWriteThreadBridge(coordinator, loop),
+        loop_thread_id=threading.get_ident(),
+    )
+    archive_open_count = 0
+
+    def admit_after_competing_publication(actor: str, work: Any) -> Any:
+        def publish_competitor() -> bool:
+            nonlocal archive_open_count
+            archive_open_count += 1
+            store = _open_archive_for_live_write(archive_root)
+            with store as archive:
+                archive.write_hook_events_from_carrier(
+                    carrier_source_id=replacement.identity.source_id,
+                    carrier_relative_path=replacement.identity.relative_path,
+                    carrier_role=replacement.identity.role,
+                    carrier_blob_hash=bytes.fromhex(replacement.blob_hash),
+                    carrier_source_path=replacement.source_path,
+                    events=replacement.payload,
+                    acquired_at_ms=replacement.acquired_at_ms,
+                )
+                archive.commit()
+            return work()
+
+        return writer_admission.stage_write(actor, publish_competitor)
+
+    try:
+        with stage_write_admission(admit_after_competing_publication):
+            submitted = compute.submit(
+                propagate(functools.partial(derivation.publish, frame, replacement)),
+                admission_class="incremental-background",
+            )
+        assert await asyncio.wrap_future(submitted.future) is False
+        assert archive_open_count == 1
+        with sqlite3.connect(archive_root / "source.db") as conn:
+            assert conn.execute(
+                "SELECT session_native_id FROM raw_hook_events WHERE session_native_id = ?",
+                ("binding-race-session",),
+            ).fetchall() == [("binding-race-session",)]
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
 
 
 def test_a_carrier_never_mints_a_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

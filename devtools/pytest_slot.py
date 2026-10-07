@@ -35,6 +35,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -141,6 +142,7 @@ INHERITED_ENVIRONMENT_KEYS: Final[tuple[str, ...]] = (
 )
 
 LAUNCH_DIR: Final = Path(".cache/verify")
+ISOLATED_ARCHIVE_PARENT: Final = Path("/realm/tmp/work/polylogue-pytest-archives")
 
 REFUSAL = (
     "pytest could not acquire the host's pytest slot: {reason}. "
@@ -697,11 +699,15 @@ def _write_launch(
     log_path: Path,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    worker_environment = dict(env)
+    # The queue snapshot must not serialize an operator archive path. The
+    # receiving worker installs a private scratch root before running pytest.
+    worker_environment.pop("POLYLOGUE_ARCHIVE_ROOT", None)
     document = {
         "kind": "polylogue.pytest-slot-launch",
         "argv": list(argv),
         "working_directory": cwd,
-        "environment": dict(env),
+        "environment": worker_environment,
         "log_path": str(log_path),
     }
     # The launch file carries the resolved environment; keep it off other users.
@@ -1562,6 +1568,9 @@ def _run_launch(launch_path: Path) -> int:
     # run that consumes it.
     launch_path.unlink(missing_ok=True)
     environment = dict(launch["environment"])
+    ISOLATED_ARCHIVE_PARENT.mkdir(parents=True, exist_ok=True)
+    archive_root = Path(tempfile.mkdtemp(prefix="pytest-", dir=ISOLATED_ARCHIVE_PARENT))
+    environment["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
     environment[SLOT_ESCAPE_ENV] = SLOT_HELD
     worktree_provenance = None
     log_path = Path(launch["log_path"])
@@ -1736,6 +1745,8 @@ def _run_launch(launch_path: Path) -> int:
         finish_execution(guard, environment)
         if ledger is not None:
             ledger.release()
+        if archive_root.parent == ISOLATED_ARCHIVE_PARENT:
+            remove_temp_tree(archive_root)
         for number, handler in previous.items():
             with contextlib.suppress(ValueError, OSError):
                 signal.signal(number, handler)
@@ -1762,7 +1773,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     from devtools.run_tests import main as run_focused_tests
 
-    return run_focused_tests(arguments)
+    ISOLATED_ARCHIVE_PARENT.mkdir(parents=True, exist_ok=True)
+    archive_root = Path(tempfile.mkdtemp(prefix="pytest-", dir=ISOLATED_ARCHIVE_PARENT))
+    os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
+    try:
+        return run_focused_tests(arguments)
+    finally:
+        remove_temp_tree(archive_root)
 
 
 if __name__ == "__main__":  # pragma: no cover - console entry point

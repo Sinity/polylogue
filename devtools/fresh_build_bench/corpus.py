@@ -23,6 +23,7 @@ import json
 import os
 import random
 import shutil
+import stat
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -459,6 +460,8 @@ def corpus_from_files(
     *,
     home: Path,
     exports: Sequence[tuple[str, Path]] = (),
+    hooks: Path | None = None,
+    hooks_fraction: float = 1.0,
 ) -> dict[str, Any]:
     """Seal a private corpus of the named real transcripts and their units.
 
@@ -533,4 +536,74 @@ def corpus_from_files(
             raise ValueError(f"two --export files share the name {resolved.name!r}; rename one")
         staged.add(resolved.name)
         _copy_private(resolved, out / "exports" / origin / resolved.name)
-    return seal(out, kind="files", parameters={"selection": "explicit", "files": len(files), "exports": len(exports)})
+    if not 0 < hooks_fraction <= 1:
+        raise ValueError("hooks_fraction must be in (0, 1]")
+    hook_count = 0
+    if hooks is not None:
+        source_argument = Path(hooks).expanduser()
+        if source_argument.is_symlink():
+            raise ValueError("hook spool root is a symbolic link")
+        source_root = source_argument.resolve(strict=True)
+        if not source_root.is_dir():
+            raise ValueError(f"hook spool is not a directory: {hooks}")
+        destination_root = out / "home" / ".polylogue-hook-spool"
+        _copy_hook_tree(source_root, destination_root, fraction=hooks_fraction)
+        hook_count = sum(1 for path in destination_root.rglob("*") if path.is_file())
+    return seal(
+        out,
+        kind="files",
+        parameters={
+            "selection": "explicit",
+            "files": len(files),
+            "exports": len(exports),
+            "hook_files": hook_count,
+            "hook_fraction": hooks_fraction,
+        },
+    )
+
+
+def _copy_hook_tree(source_root: Path, destination_root: Path, *, fraction: float) -> None:
+    """Copy a deterministic file sample with per-file identity checks."""
+    stack = [(source_root, destination_root, "")]
+    while stack:
+        source_dir, destination_dir, relative_dir = stack.pop()
+        if source_dir.is_symlink() or not source_dir.is_dir():
+            raise ValueError("hook spool contains a non-directory member")
+        before = source_dir.stat()
+        destination_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        with os.scandir(source_dir) as entries:
+            members = sorted(entries, key=lambda entry: entry.name)
+        observed = []
+        directories = []
+        for entry in members:
+            path = Path(entry.path)
+            status = entry.stat(follow_symlinks=False)
+            observed.append((entry.name, status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns))
+            target = destination_dir / entry.name
+            if stat.S_ISDIR(status.st_mode):
+                directories.append((path, target, f"{relative_dir}/{entry.name}".strip("/")))
+            elif stat.S_ISREG(status.st_mode):
+                relative = f"{relative_dir}/{entry.name}".strip("/")
+                selector = int.from_bytes(hashlib.sha256(relative.encode()).digest()[:8], "big") / 2**64
+                if fraction == 1 or selector < fraction:
+                    _copy_private(path, target)
+            else:
+                raise ValueError("hook spool contains a symlink or special file")
+        if fraction == 1:
+            with os.scandir(source_dir) as entries:
+                after = sorted(
+                    (
+                        entry.name,
+                        entry.stat(follow_symlinks=False).st_dev,
+                        entry.stat(follow_symlinks=False).st_ino,
+                        entry.stat(follow_symlinks=False).st_size,
+                        entry.stat(follow_symlinks=False).st_mtime_ns,
+                    )
+                    for entry in entries
+                )
+            if observed != after or (source_dir.stat().st_dev, source_dir.stat().st_ino) != (
+                before.st_dev,
+                before.st_ino,
+            ):
+                raise ValueError("hook spool changed while staging; retry from a quiescent snapshot")
+        stack.extend(reversed(directories))
