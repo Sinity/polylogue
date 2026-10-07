@@ -173,6 +173,76 @@ def test_merge_append_reconciles_tool_use_from_prior_batch(
         conn.close()
 
 
+def test_duplicate_append_reports_only_auxiliary_changes(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    try:
+        original = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="duplicate-append-outcome",
+            messages=[ParsedMessage(provider_message_id="same", role=Role.USER, text="kept")],
+        )
+        session_id = write_fixture_index_session(conn, original)
+
+        duplicate_outcomes: list[ArchiveWriteOutcome] = []
+        write_fixture_index_session(
+            conn,
+            original,
+            merge_append=True,
+            write_outcome=duplicate_outcomes,
+        )
+        assert duplicate_outcomes[-1] == ArchiveWriteOutcome(session_id=session_id, wrote=False)
+
+        with_auxiliary_event = original.model_copy(
+            update={"session_events": [ParsedSessionEvent(event_type="new-capture", payload={"capture": 2})]}
+        )
+        auxiliary_outcomes: list[ArchiveWriteOutcome] = []
+        write_fixture_index_session(
+            conn,
+            with_auxiliary_event,
+            merge_append=True,
+            write_outcome=auxiliary_outcomes,
+        )
+        assert auxiliary_outcomes[-1].wrote is True
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM session_events WHERE session_id = ? AND event_type = 'new-capture'", (session_id,)
+            ).fetchone()[0]
+            == 1
+        )
+    finally:
+        conn.close()
+
+
+def test_append_flushes_a_single_message_with_8193_blocks(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    try:
+        original = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="append-large-block-tail",
+            messages=[ParsedMessage(provider_message_id="first", role=Role.USER, text="first")],
+        )
+        session_id = write_fixture_index_session(conn, original)
+        appended = original.model_copy(
+            update={
+                "messages": [
+                    ParsedMessage(
+                        provider_message_id="large-block-message",
+                        role=Role.ASSISTANT,
+                        blocks=[
+                            ParsedContentBlock(type=BlockType.TEXT, text=f"block {index}") for index in range(8193)
+                        ],
+                    )
+                ]
+            }
+        )
+
+        write_fixture_index_session(conn, appended, merge_append=True)
+
+        assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (session_id,)).fetchone()[0] == 8193
+    finally:
+        conn.close()
+
+
 def _tool_use_hash(conn: sqlite3.Connection, session_id: str) -> bytes:
     row = conn.execute(
         "SELECT content_hash FROM blocks WHERE session_id = ? AND block_type = 'tool_use'", (session_id,)
