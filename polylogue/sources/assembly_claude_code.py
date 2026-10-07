@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import MutableSequence
+from collections.abc import Callable
 from contextlib import closing
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import cast
 
 from polylogue.core.enums import PasteBoundary
 from polylogue.logging import get_logger
+from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.storage.blob_store import BlobStore
 
 from .assembly import (
@@ -85,6 +85,8 @@ class ClaudeCodeAssemblySpec:
         self,
         conv: ParsedSession,
         sidecar_data: SidecarData,
+        *,
+        message_sink_factory: Callable[[], SqliteMessageSink] | None = None,
     ) -> ParsedSession:
         """Enrich a Claude Code session from session-index + history sidecars."""
         idx: ClaudeCodeSessionIndex = sidecar_data.get("session_index", {})
@@ -93,13 +95,19 @@ class ClaudeCodeAssemblySpec:
         history_index: ClaudeCodeHistoryPasteIndex = sidecar_data.get("history_paste_index", {})
         paste_entries = history_index.get(conv.provider_session_id, [])
         if paste_entries:
-            conv = _annotate_messages_with_history_paste(conv, paste_entries)
+            conv = _annotate_messages_with_history_paste(
+                conv,
+                paste_entries,
+                message_sink_factory=message_sink_factory,
+            )
         return conv
 
 
 def _annotate_messages_with_history_paste(
     conv: ParsedSession,
     paste_entries: list[HistoryEntry],
+    *,
+    message_sink_factory: Callable[[], SqliteMessageSink] | None = None,
 ) -> ParsedSession:
     """Mark user messages whose timestamps match a paste-bearing history row.
 
@@ -194,13 +202,28 @@ def _annotate_messages_with_history_paste(
         if db.execute("SELECT 1 FROM marked LIMIT 1").fetchone() is None:
             return conv
 
-        message_sequence = cast(MutableSequence[ParsedMessage], conv.messages)
-        messages = list(message_sequence) if isinstance(message_sequence, list) else message_sequence
-        for position, entry_index in db.execute("SELECT position, entry_index FROM marked ORDER BY position"):
-            message = messages[position]
-            messages[position] = message.model_copy(
-                update={"paste_spans": _history_paste_spans(message, paste_entries[entry_index])}
-            )
+        messages: list[ParsedMessage] | SqliteMessageSink
+        if isinstance(conv.messages, SqliteMessageSink):
+            if message_sink_factory is None:
+                raise TypeError("prepared Claude Code history-paste enrichment requires an owned output message sink")
+            messages = message_sink_factory()
+            marked = iter(db.execute("SELECT position, entry_index FROM marked ORDER BY position"))
+            current = next(marked, None)
+            for position, message in enumerate(conv.messages):
+                if current is not None and int(current[0]) == position:
+                    message = message.model_copy(
+                        update={"paste_spans": _history_paste_spans(message, paste_entries[int(current[1])])}
+                    )
+                    current = next(marked, None)
+                messages.append(message)
+        else:
+            message_list = list(conv.messages)
+            for position, entry_index in db.execute("SELECT position, entry_index FROM marked ORDER BY position"):
+                message = message_list[position]
+                message_list[position] = message.model_copy(
+                    update={"paste_spans": _history_paste_spans(message, paste_entries[entry_index])}
+                )
+            messages = message_list
         return conv.model_copy(update={"messages": messages})
 
 

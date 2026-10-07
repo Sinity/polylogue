@@ -4162,7 +4162,37 @@ def iter_enriched_sessions_from_retained_read(
             check_compute_cancelled()
             if normalize_session is not None:
                 session = normalize_session(session)
-            yield stamp_enrichment_evidence(provider, sidecar_data, spec.enrich_session(session, sidecar_data))
+            if (
+                provider is Provider.CLAUDE_CODE
+                and isinstance(session.messages, SqliteMessageSink)
+                and sidecar_data.get("history_paste_index", {}).get(session.provider_session_id)
+            ):
+                # `_finalize_prepared_cohort` restores the original sealed
+                # message sink without its parser writer. Keep this cloned
+                # sink's owner alive across the yield: the downstream hash and
+                # `PreparedJsonl.from_sessions` copy both consume it before
+                # requesting the next enriched session.
+                from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
+                from polylogue.sources.prepared_message_sink import SqliteMessageStore
+
+                if not isinstance(spec, ClaudeCodeAssemblySpec):
+                    raise RuntimeError("Claude Code provider resolved to a different assembly spec")
+                scratch_root = Path("/realm/tmp/work")
+                with (
+                    tempfile.TemporaryDirectory(
+                        prefix="polylogue-history-paste-output-",
+                        dir=scratch_root if scratch_root.is_dir() else None,
+                    ) as scratch_dir,
+                    closing(SqliteMessageStore(Path(scratch_dir) / "messages.sqlite")) as output_store,
+                ):
+                    enriched = spec.enrich_session(
+                        session,
+                        sidecar_data,
+                        message_sink_factory=output_store.new_sink,
+                    )
+                    yield stamp_enrichment_evidence(provider, sidecar_data, enriched)
+            else:
+                yield stamp_enrichment_evidence(provider, sidecar_data, spec.enrich_session(session, sidecar_data))
     finally:
         primary = sys.exception()
         try:
