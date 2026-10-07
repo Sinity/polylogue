@@ -62,6 +62,9 @@ class CodexCheckpointArtifactOptions:
     parsed_prefix_size: int | None = None
     captured_profile_key: str | None = None
     preparation_dependency: Callable[[], tuple[str | None, str | None]] | None = None
+    artifact_directory: Path | None = None
+    source_path: str | None = None
+    fallback_timestamp: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,12 +175,14 @@ def _plain_text_message(record: object) -> tuple[str, str, str] | None:
 
 def _hash_and_compare_prefix(source_read: _CodexCheckpointRead, raw_id: str, prefix_file: BinaryIO) -> tuple[str, int]:
     provider, blob_hash, _source_path, kind, declared_size = source_read.raw_revision_descriptor(raw_id)
-    if provider is not Provider.CODEX or kind is not RawRevisionKind.FULL:
+    allowed_kind = kind in {RawRevisionKind.FULL, RawRevisionKind.UNKNOWN}
+    if provider is not Provider.CODEX or not allowed_kind:
         raise ValueError("checkpoint cohort contains a non-full Codex raw")
     digest = hashlib.sha256()
     actual_size = 0
     with source_read.open_raw_revision_material(raw_id) as (opened_provider, payload, _path, opened_kind):
-        if opened_provider is not Provider.CODEX or opened_kind is not RawRevisionKind.FULL:
+        opened_kind_allowed = opened_kind in {RawRevisionKind.FULL, RawRevisionKind.UNKNOWN}
+        if opened_provider is not Provider.CODEX or not opened_kind_allowed:
             raise ValueError("checkpoint raw changed while its original source witness was open")
         position = 0
         prefix_file.seek(0)
@@ -212,8 +217,10 @@ def _read_head_and_prove(
     descriptors = [source_read.raw_revision_descriptor(raw_id) for raw_id in raw_ids]
     first = descriptors[0]
     if any(
-        descriptor[0] is not Provider.CODEX or descriptor[3] is not RawRevisionKind.FULL or descriptor[2] != first[2]
-        for descriptor in descriptors
+        descriptor[0] is not Provider.CODEX
+        or descriptor[3] not in {RawRevisionKind.FULL, RawRevisionKind.UNKNOWN}
+        or descriptor[2] != first[2]
+        for index, descriptor in enumerate(descriptors)
     ):
         raise ValueError("checkpoint cohort does not share one full Codex source path")
     profile_keys = [source_read.raw_profile_identity(raw_id) for raw_id in raw_ids]
@@ -227,7 +234,7 @@ def _read_head_and_prove(
         digest = hashlib.sha256()
         size = 0
         with source_read.open_raw_revision_material(raw_id) as (provider, payload, _path, kind):
-            if provider is not Provider.CODEX or kind is not RawRevisionKind.FULL:
+            if provider is not Provider.CODEX or kind not in {RawRevisionKind.FULL, RawRevisionKind.UNKNOWN}:
                 raise ValueError("retained Codex revision changed kind")
             while chunk := payload.read(1024 * 1024):
                 check_compute_cancelled()
@@ -348,7 +355,7 @@ def prepare_codex_prefix_checkpoints(
     publication_publisher: ArchiveBlobPublisher | None,
     publication_source_read: BlobPublicationSourceRead | None,
     prepare_sessions: Callable[[str, Iterable[ParsedSession]], Iterable[ParsedSession]],
-    artifact_options: Callable[[str], CodexCheckpointArtifactOptions],
+    artifact_options: Callable[[str, int], CodexCheckpointArtifactOptions],
 ) -> CodexPrefixPreparation:
     """Prove the whole cohort, then lazily seal one exact interior at a time.
 
@@ -389,8 +396,9 @@ def prepare_codex_prefix_checkpoints(
             raise ValueError("canonical head artifact message timestamps exceed the proved message grammar")
         if head.session_events:
             raise ValueError("canonical head artifact includes non-prefix-local Codex events")
-        for raw_id in raw_ids[2:-1]:
-            options = artifact_options(raw_id)
+        for index in range(2, len(raw_ids) - 1):
+            raw_id = raw_ids[index]
+            options = artifact_options(raw_id, prefix_record_counts[index])
             if options.captured_profile_key != source_read.raw_profile_identity(raw_id):
                 raise ValueError("checkpoint artifact profile differs from its captured source witness")
     except (DaemonBackpressureError, DaemonOperationCancelled):
@@ -410,7 +418,7 @@ def prepare_codex_prefix_checkpoints(
             for index in range(2, len(raw_ids) - 1):
                 check_compute_cancelled()
                 message_count = prefix_record_counts[index] - 1
-                options = artifact_options(raw_ids[index])
+                options = artifact_options(raw_ids[index], prefix_record_counts[index])
                 for message_index in range(last_count, message_count):
                     timestamp_pair = codex._newer_timestamp_pair(
                         timestamp_pair,
@@ -426,9 +434,17 @@ def prepare_codex_prefix_checkpoints(
                 )
                 canonical = normalize_session_timestamps(
                     canonical,
-                    fallback_timestamp=source_read.raw_revision_file_mtime(raw_ids[index]),
+                    fallback_timestamp=(
+                        options.fallback_timestamp
+                        if options.source_path is not None
+                        else source_read.raw_revision_file_mtime(raw_ids[index])
+                    ),
                 )
-                source_path = source_read.raw_revision_descriptor(raw_ids[index])[2]
+                source_path = (
+                    options.source_path
+                    if options.source_path is not None
+                    else source_read.raw_revision_descriptor(raw_ids[index])[2]
+                )
                 finalized = iter(prepare_sessions(raw_ids[index], iter((canonical,))))
 
                 def prepared_sessions(
@@ -447,7 +463,7 @@ def prepare_codex_prefix_checkpoints(
                 prepared = PreparedJsonl.from_sessions(
                     prepared_sessions(finalized),
                     blob_hash=hashes[index],
-                    artifact_directory=artifact_directory,
+                    artifact_directory=options.artifact_directory or artifact_directory,
                     publication_publisher=publication_publisher,
                     publication_source_read=publication_source_read,
                     classification=options.classification,

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from polylogue.core.compute_cancel import check_compute_cancelled
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, ValidationMode
 from polylogue.operations.raw_observation_derivation import make_raw_observation_derivation, raw_observation_frame
 from polylogue.sources.revision_backfill import (
     PreparedRevisionReplayResult,
@@ -16,7 +16,6 @@ from polylogue.sources.revision_backfill import (
     RevisionCensusResult,
 )
 from polylogue.storage.archive_identity import ArchiveLocation
-from polylogue.storage.index_generation import IndexGeneration
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.connection_profile import readonly_connection_context
 from polylogue.storage.sqlite.write_lease import write_lease
@@ -27,6 +26,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.storage.index_generation import IndexGeneration
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
 
 
@@ -78,14 +78,21 @@ def _replay_on_creator(
     seeds: tuple[str, ...],
     active_index_path: Path | None,
     owned_generation: IndexGeneration | None,
+    validation_mode: ValidationMode,
 ) -> RetainedReplayRun:
     adapter = make_raw_observation_derivation(
         archive_root,
         compute_adapter=compute_adapter,
         index_db_path=active_index_path,
         owned_generation=owned_generation,
+        validation_mode=validation_mode,
     )
-    frame = raw_observation_frame(archive_root, raw_ids=seeds, index_db_path=active_index_path)
+    frame = raw_observation_frame(
+        archive_root,
+        raw_ids=seeds,
+        index_db_path=active_index_path,
+        validation_mode=validation_mode,
+    )
     receipts: list[PreparedRevisionReplayResult | RevisionCensusResult] = []
     components: list[tuple[str, ...]] = []
     visited: set[str] = set()
@@ -140,6 +147,7 @@ async def replay_retained_components_async(
     selected_raw_ids: Sequence[str] | None = None,
     active_index_path: Path | None = None,
     owned_generation: IndexGeneration | None = None,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
 ) -> RetainedReplayRun:
     """Run the real captured preparation/publication route without fallback.
 
@@ -169,7 +177,7 @@ async def replay_retained_components_async(
         )
         if active_index_path.resolve() != expected.resolve():
             raise ValueError("retained fixture Index is not the owner's actual destination")
-    async with prepared_live_convergence_owner(archive_root) as owner:
+    async with prepared_live_convergence_owner(archive_root, validation_mode=validation_mode) as owner:
         return await owner.run_convergence_sync(
             "test.retained-replay",
             _replay_on_creator,
@@ -178,6 +186,7 @@ async def replay_retained_components_async(
             seeds,
             active_index_path,
             owned_generation,
+            validation_mode,
         )
 
 
@@ -187,6 +196,7 @@ def replay_retained_components(
     selected_raw_ids: Sequence[str] | None = None,
     active_index_path: Path | None = None,
     owned_generation: IndexGeneration | None = None,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
 ) -> RetainedReplayRun:
     """Synchronous form of :func:`replay_retained_components_async`."""
     return asyncio.run(
@@ -195,6 +205,7 @@ def replay_retained_components(
             selected_raw_ids=selected_raw_ids,
             active_index_path=active_index_path,
             owned_generation=owned_generation,
+            validation_mode=validation_mode,
         )
     )
 

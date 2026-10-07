@@ -8,6 +8,7 @@ per-logical-key transactions. This is not an observation-wide atomic publisher.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import hashlib
 import sqlite3
 import sys
@@ -1666,6 +1667,207 @@ class RawObservationDerivation(RawObservationInspection):
                     prepared_artifacts = carry.artifacts
                     provider_parse_seconds = 0.0
                     try:
+                        # A Codex JSONL revision chain can share one proven
+                        # plain-message prefix. Prepare the three canonical
+                        # witnesses independently, then derive only its
+                        # interior artifacts from the typed per-prefix reducer.
+                        from polylogue.archive.artifact_taxonomy import ArtifactStreamClassification
+                        from polylogue.archive.revision_authority import RawRevisionKind
+                        from polylogue.core.timestamp_authority import normalize_session_timestamps
+                        from polylogue.sources.prepared_codex_checkpoints import (
+                            CodexCheckpointArtifactOptions,
+                            CodexCheckpointDisposition,
+                            prepare_codex_prefix_checkpoints,
+                        )
+
+                        codex_groups: dict[str, list[str]] = {}
+                        for candidate_raw_id in raw_ids:
+                            candidate_provider, _hash, candidate_path, candidate_kind, _size = descriptors[
+                                candidate_raw_id
+                            ]
+                            if (
+                                candidate_provider is Provider.CODEX
+                                and candidate_kind in {RawRevisionKind.FULL, RawRevisionKind.UNKNOWN}
+                                and is_jsonl_source_path(candidate_path)
+                                and not looks_like_logical_source_path(Path(candidate_path))
+                            ):
+                                codex_groups.setdefault(candidate_path, []).append(candidate_raw_id)
+
+                        def checkpoint_key(raw_id: str) -> tuple[object, ...]:
+                            provider, blob_hash, path, kind, _size = descriptors[raw_id]
+                            with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                                read = PreparedSessionSourceRead(reference_seal, blob_store=material_store)
+                                native_id = read.raw_native_id(raw_id) if kind.value == "append" else None
+                                fallback = read.raw_revision_file_mtime(raw_id)
+                                profile = read.raw_profile_identity(raw_id)
+                                carry.zip_coordinates[raw_id] = read.raw_captured_zip_coordinate(raw_id)
+                            return (
+                                raw_id,
+                                provider,
+                                blob_hash,
+                                path,
+                                kind.value == "append",
+                                native_id,
+                                fallback,
+                                profile,
+                                self._validation_mode,
+                            )
+
+                        def prepare_checkpoint_endpoint(raw_id: str) -> PreparedJsonl:
+                            nonlocal provider_parse_seconds
+                            _provider, blob_hash, path, _kind, raw_size = descriptors[raw_id]
+                            with reference_seal.original_read_snapshot():
+                                input_hash, input_size = reference_seal.retain_original_blob_input(raw_id)
+                                if input_hash != bytes.fromhex(blob_hash) or input_size != raw_size:
+                                    raise RetainedPreparationRetryableError(
+                                        f"retained checkpoint input identity changed for raw {raw_id}"
+                                    )
+                            endpoint_blob_store = BlobStore(self.archive_root / "blob")
+                            if not endpoint_blob_store.verify(blob_hash, stop=compute_cancel_requested):
+                                raise RetainedPreparationRetryableError(
+                                    f"retained checkpoint blob changed for raw {raw_id}"
+                                )
+                            artifact_key = checkpoint_key(raw_id)
+                            artifact = prepared_artifacts.get(artifact_key)
+                            if artifact is None:
+                                with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                                    read = PreparedSessionSourceRead(reference_seal, blob_store=material_store)
+                                    parse_started = time.perf_counter()
+                                    artifact = prepare_retained_jsonl_artifact(
+                                        read,
+                                        raw_id,
+                                        directory=Path(tempfile.mkdtemp(prefix="codex-endpoint-", dir=scratch)),
+                                        validation_mode=self._validation_mode,
+                                    )
+                                    provider_parse_seconds += time.perf_counter() - parse_started
+                                prepared_artifacts[artifact_key] = artifact
+                            if artifact.error is None and artifact.blob_hash != blob_hash:
+                                raise RetainedPreparationRetryableError(
+                                    f"retained checkpoint endpoint hash changed for raw {raw_id}"
+                                )
+                            if artifact.error is None:
+                                artifact.verify_files(full=True, stop=compute_cancel_requested)
+                            return artifact
+
+                        for candidate_ids in codex_groups.values():
+                            if len(candidate_ids) < 4:
+                                continue
+                            candidate_ids.sort(key=lambda raw_id: descriptors[raw_id][4])
+                            try:
+                                first = prepare_checkpoint_endpoint(candidate_ids[0])
+                                smallest_match = prepare_checkpoint_endpoint(candidate_ids[1])
+                                head = prepare_checkpoint_endpoint(candidate_ids[-1])
+                                if (
+                                    first.error is not None
+                                    or smallest_match.error is not None
+                                    or head.error is not None
+                                ):
+                                    continue
+                                head_classification = head.stream_classification()
+                                if not isinstance(head_classification, ArtifactStreamClassification):
+                                    continue
+
+                                checkpoint_keys: dict[str, tuple[object, ...]] = {
+                                    candidate_raw_id: checkpoint_key(candidate_raw_id)
+                                    for candidate_raw_id in candidate_ids
+                                }
+                                if all(
+                                    prepared_artifacts.get(checkpoint_keys[candidate_raw_id]) is not None
+                                    for candidate_raw_id in candidate_ids
+                                ):
+                                    # A prior Source phase already proved this
+                                    # exact cohort and cached every per-raw
+                                    # verdict. _continue_after_phase retains
+                                    # those artifacts only while their source
+                                    # dependencies remain current.
+                                    continue
+                                checkpoint_options_by_raw: dict[str, CodexCheckpointArtifactOptions] = {}
+
+                                def checkpoint_options(
+                                    raw_id: str,
+                                    record_count: int,
+                                    head_taxonomy: ArtifactStreamClassification = head_classification,
+                                    keys_by_raw: dict[str, tuple[object, ...]] = checkpoint_keys,
+                                    options_by_raw: dict[
+                                        str, CodexCheckpointArtifactOptions
+                                    ] = checkpoint_options_by_raw,
+                                ) -> CodexCheckpointArtifactOptions:
+                                    existing = options_by_raw.get(raw_id)
+                                    if existing is not None:
+                                        return existing
+                                    _provider, _blob_hash, _path, _kind, raw_size = descriptors[raw_id]
+                                    artifact_key = keys_by_raw[raw_id]
+                                    profile = artifact_key[-2]
+                                    options = CodexCheckpointArtifactOptions(
+                                        classification=dataclasses.replace(head_taxonomy, record_count=record_count),
+                                        parsed_prefix_size=raw_size,
+                                        captured_profile_key=profile,
+                                        artifact_directory=Path(
+                                            tempfile.mkdtemp(prefix="codex-interior-", dir=scratch)
+                                        ),
+                                        source_path=_path,
+                                        fallback_timestamp=artifact_key[-3],
+                                    )
+                                    options_by_raw[raw_id] = options
+                                    return options
+
+                                def checkpoint_sessions(
+                                    raw_id: str, sessions: Iterable[ParsedSession]
+                                ) -> Iterable[ParsedSession]:
+                                    _provider, _blob_hash, source_path, _kind, _size = descriptors[raw_id]
+                                    with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                                        read = PreparedSessionSourceRead(reference_seal, blob_store=material_store)
+                                        captured_zip = read.raw_captured_zip_coordinate(raw_id)
+                                        fallback = read.raw_revision_file_mtime(raw_id)
+                                        from polylogue.sources.revision_backfill import (
+                                            iter_enriched_sessions_from_retained_read,
+                                        )
+
+                                        session_rows = tuple(sessions)
+                                        return tuple(
+                                            iter_enriched_sessions_from_retained_read(
+                                                read,
+                                                Provider.CODEX,
+                                                source_path,
+                                                session_rows,
+                                                captured_zip_coordinate=captured_zip,
+                                                provider_session_ids=tuple(
+                                                    session.provider_session_id for session in session_rows
+                                                ),
+                                                normalize_session=lambda session: normalize_session_timestamps(
+                                                    session, fallback_timestamp=fallback
+                                                ),
+                                            )
+                                        )
+
+                                with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                                    retained_read = PreparedSessionSourceRead(reference_seal, blob_store=material_store)
+                                    checkpoint = prepare_codex_prefix_checkpoints(
+                                        retained_read,
+                                        candidate_ids,
+                                        head_artifact=head,
+                                        artifact_directory=Path(
+                                            tempfile.mkdtemp(prefix="codex-validation-", dir=scratch)
+                                        ),
+                                        validation_mode=self._validation_mode,
+                                        publication_publisher=None,
+                                        publication_source_read=None,
+                                        prepare_sessions=checkpoint_sessions,
+                                        artifact_options=checkpoint_options,
+                                    )
+                                with checkpoint:
+                                    if checkpoint.disposition is not CodexCheckpointDisposition.READY:
+                                        continue
+                                    for checkpoint_raw_id, checkpoint_artifact in checkpoint.iter_artifacts():
+                                        prepared_artifacts[checkpoint_keys[checkpoint_raw_id]] = checkpoint_artifact
+                            except (DaemonOperationCancelled, DaemonBackpressureError):
+                                raise
+                            except (OSError, ValueError, RetainedPreparationRetryableError):
+                                # An unproved chain uses the ordinary complete
+                                # parser path below; no partial checkpoint is
+                                # allowed to become source evidence.
+                                continue
+
                         for raw_id in raw_ids:
                             provider, blob_hash, path, kind, size = descriptors[raw_id]
                             blob_store = BlobStore(self.archive_root / "blob")
@@ -1699,6 +1901,7 @@ class RawObservationDerivation(RawObservationInspection):
                             # so a census that types an unknown revision as full
                             # keeps the artifact.
                             artifact_key = (
+                                raw_id,
                                 provider,
                                 blob_hash,
                                 path,
