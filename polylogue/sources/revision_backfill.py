@@ -3996,8 +3996,8 @@ def prepare_retained_replay_source(
 
         def stage_accepted_marker_history(raw_id: str) -> None:
             artifact = prepared_inputs[raw_id].prepared_artifact
-            verdict = None if artifact is None else getattr(artifact, "validation_verdict", None)
-            if verdict is not None and bool(getattr(verdict, "strict_refusal", False)):
+            verdict = artifact.validation_verdict if artifact is not None else None
+            if verdict is not None and verdict.strict_refusal:
                 return
             request_sessions = request_sessions_for(raw_id)
             facts = accepted_marker_facts(raw_id)
@@ -4401,6 +4401,7 @@ class RetainedArtifactPreparer(Protocol):
         raw_id: str,
         *,
         directory: Path,
+        validation_mode: ValidationMode,
     ) -> PreparedJsonl: ...
 
 
