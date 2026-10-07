@@ -313,7 +313,11 @@ def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path: Path, mon
             publication_publisher=None,
             publication_source_read=None,
             prepare_sessions=lambda _raw_id, sessions: sessions,
-            artifact_options=lambda _raw_id: CodexCheckpointArtifactOptions(captured_profile_key="captured-profile"),
+            artifact_options=lambda raw_id, _record_count: CodexCheckpointArtifactOptions(
+                captured_profile_key="captured-profile",
+                source_path="same/path.jsonl",
+                fallback_timestamp=source_read.raw_revision_file_mtime(raw_id),
+            ),
         )
     assert preparation.disposition is CodexCheckpointDisposition.READY
     artifacts = list(preparation.iter_artifacts())
@@ -376,7 +380,11 @@ def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path: Path, mon
             publication_publisher=None,
             publication_source_read=None,
             prepare_sessions=lambda _raw_id, sessions: sessions,
-            artifact_options=lambda _raw_id: CodexCheckpointArtifactOptions(captured_profile_key="captured-profile"),
+            artifact_options=lambda raw_id, _record_count: CodexCheckpointArtifactOptions(
+                captured_profile_key="captured-profile",
+                source_path="same/path.jsonl",
+                fallback_timestamp=source_read.raw_revision_file_mtime(raw_id),
+            ),
         )
         assert rejected.disposition is CodexCheckpointDisposition.ORDINARY_FALLBACK
         assert list(rejected.iter_artifacts()) == []

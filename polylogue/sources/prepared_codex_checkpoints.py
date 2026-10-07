@@ -56,15 +56,16 @@ class CodexCheckpointDisposition(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class CodexCheckpointArtifactOptions:
+    source_path: str
+    fallback_timestamp: str | None
     classification: ArtifactStreamClassification | None = None
     enrichment_digest: str | None = None
     enrichment_index_path: str | None = None
     parsed_prefix_size: int | None = None
     captured_profile_key: str | None = None
     preparation_dependency: Callable[[], tuple[str | None, str | None]] | None = None
+    # When supplied, this must be a uniquely owned workspace for this artifact.
     artifact_directory: Path | None = None
-    source_path: str | None = None
-    fallback_timestamp: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,17 +435,9 @@ def prepare_codex_prefix_checkpoints(
                 )
                 canonical = normalize_session_timestamps(
                     canonical,
-                    fallback_timestamp=(
-                        options.fallback_timestamp
-                        if options.source_path is not None
-                        else source_read.raw_revision_file_mtime(raw_ids[index])
-                    ),
+                    fallback_timestamp=options.fallback_timestamp,
                 )
-                source_path = (
-                    options.source_path
-                    if options.source_path is not None
-                    else source_read.raw_revision_descriptor(raw_ids[index])[2]
-                )
+                source_path = options.source_path
                 finalized = iter(prepare_sessions(raw_ids[index], iter((canonical,))))
 
                 def prepared_sessions(
