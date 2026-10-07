@@ -100,6 +100,22 @@ def test_minimal_snapshot_does_not_invent_raw_failure_warning_count() -> None:
     assert payload["raw_failure_lifecycle_available"] is False
 
 
+def test_minimal_snapshot_names_the_archive_it_answers_for(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """While the rich snapshot refreshes, the envelope still names its archive.
+
+    Anti-vacuity: dropping ``archive_root`` from ``_minimal_status_payload``
+    leaves ``polylogue status --format json`` without the archive identity
+    during every refresh, so a reader cannot tell which archive answered.
+    """
+    from polylogue.daemon.status_snapshot import _minimal_status_payload
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    payload = _minimal_status_payload(refresh_in_progress=True)
+
+    assert payload["archive_root"] == str(tmp_path)
+    assert payload["active_archive_root_matches_configured"] is True
+
+
 def test_unreadable_archive_tier_count_is_explicitly_unavailable(tmp_path: Path) -> None:
     """A corrupt tier is present, but its table count is not a measured zero."""
     from polylogue.daemon.status import _archive_tier_status
