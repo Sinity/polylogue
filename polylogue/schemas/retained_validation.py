@@ -27,6 +27,7 @@ from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.provider_identity import normalize_provider_token
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.work_progress import advance_work_progress, reports_work_progress
 from polylogue.schemas.drift_sentinel import (
     FIELD_CHANGED,
     KNOWN_FIELD_UNREAD,
@@ -510,6 +511,7 @@ _DRIFT_STRENGTH: dict[DriftClassification, int] = {
 }
 
 
+@reports_work_progress("source_preparation")
 def validate_retained_document(
     provider: str | Provider,
     path: Path,
@@ -658,6 +660,7 @@ def _validation_samples(
         granularity = "record" if provider in {Provider.CLAUDE_CODE, Provider.CODEX} else "document"
     if isinstance(payload, Mapping):
         if granularity == "document" or is_record_candidate(cast(JSONDocument, payload)):
+            advance_work_progress(messages=1)
             yield payload
         return
     if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes, bytearray)):
@@ -666,6 +669,7 @@ def _validation_samples(
             if isinstance(value, Mapping) and (
                 granularity == "document" or is_record_candidate(cast(JSONDocument, value))
             ):
+                advance_work_progress(messages=1)
                 yield value
 
 
@@ -673,6 +677,19 @@ def _diagnostic(error: ValidationError) -> str:
     path = ".".join(str(part) for part in error.absolute_path) or "root"
     keyword = str(error.validator or "schema")
     return f"{path}: {keyword} validation failed"
+
+
+def _validation_value_size(value: object) -> int:
+    """Count the scalar JSON content actually reached by schema traversal."""
+    if isinstance(value, str):
+        return len(value.encode("utf-8", "surrogatepass"))
+    if value is None:
+        return 4
+    if isinstance(value, bool):
+        return 4 if value else 5
+    if isinstance(value, (int, float, Decimal)):
+        return len(str(value).encode("ascii"))
+    return 0
 
 
 def _schema_accepts_document(
@@ -723,6 +740,7 @@ class _NormalizedObject(dict[str, object]):
     def __iter__(self) -> Iterator[str]:
         for key in self._value:
             check_compute_cancelled()
+            advance_work_progress(bytes=len(key.encode("utf-8", "surrogatepass")))
             yield key
 
     def __len__(self) -> int:
@@ -743,6 +761,9 @@ class _NormalizedObject(dict[str, object]):
 
     def __getitem__(self, key: str) -> object:
         check_compute_cancelled()
+        advance_work_progress(
+            bytes=len(key.encode("utf-8", "surrogatepass")) + _validation_value_size(self._value[key])
+        )
         from polylogue.schemas.validator import _schema_for_property
 
         value = self._value[key]
@@ -758,11 +779,13 @@ class _NormalizedObject(dict[str, object]):
     def items(self) -> Iterator[tuple[str, object]]:  # type: ignore[override]
         for key in self._value:
             check_compute_cancelled()
+            advance_work_progress(bytes=len(key.encode("utf-8", "surrogatepass")))
             yield key, self[key]
 
     def values(self) -> Iterator[object]:  # type: ignore[override]
         for key in self._value:
             check_compute_cancelled()
+            advance_work_progress(bytes=len(key.encode("utf-8", "surrogatepass")))
             yield self[key]
 
     def __eq__(self, other: object) -> bool:
@@ -807,6 +830,7 @@ class _NormalizedArray(list[object]):
         if isinstance(index, slice):
             return [self[position] for position in range(*index.indices(len(self)))]
         value = self._value[int(index)]
+        advance_work_progress(bytes=_validation_value_size(value))
         return _normalized(value, _schema_for_items(self._schema, value, self._root), self._root, self._connection)
 
     def __eq__(self, other: object) -> bool:

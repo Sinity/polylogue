@@ -481,9 +481,19 @@ class StreamedJSONDocument(AbstractContextManager[JSONValue]):
         stack: list[_Frame],
         add_node: Callable[[str, object], int],
     ) -> int | None:
+        from polylogue.core.work_progress import advance_work_progress
+
         root_id = None
         for event, value in events:
             check_compute_cancelled()
+            # Count decoded JSON content, not parser tokens as messages.
+            # Whitespace is intentionally excluded from this work counter.
+            if isinstance(value, str):
+                advance_work_progress(bytes=len(value.encode("utf-8", "surrogatepass")))
+            elif event == "number":
+                advance_work_progress(bytes=len(str(value).encode("ascii")))
+            elif event in {"boolean", "null"}:
+                advance_work_progress(bytes=4 if event == "null" else 5 if value else 4)
             if event == "map_key":
                 if not stack or stack[-1].kind != "object":
                     raise ValueError("streamed JSON key is outside an object")

@@ -203,6 +203,43 @@ def test_retained_strict_counts_late_failure_and_advisory_accepts(tmp_path: Path
     )
 
 
+def test_retained_validation_reports_real_nested_schema_traversal_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue import logging as polylogue_logging
+    from polylogue.core import work_progress
+
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(work_progress, "PROGRESS_INTERVAL_S", 0)
+    monkeypatch.setattr(polylogue_logging, "emit", lambda event, **fields: events.append((event, fields)))
+
+    path = tmp_path / "raw.jsonl"
+    record = {"type": "record", "kind": "session", **{f"field-{i}": "payload" * 12 for i in range(40)}}
+    _write_jsonl(path, [record])
+    schema = _schema({"type": "string"})
+    schema["additionalProperties"] = {"type": "string"}
+    registry = _registry(tmp_path, schema)
+
+    verdict = validate_retained_document(
+        "claude-code",
+        path,
+        mode=ValidationMode.ADVISORY,
+        raw_id="raw-progress",
+        revision_sha256="b" * 64,
+        evidence_id="raw-progress",
+        jsonl=True,
+        schema_resolution=_resolution("v2"),
+        schema_resolution_is_explicit=True,
+        registry=registry,
+    )
+
+    assert verdict.sample_count == 1
+    progress = [fields for event, fields in events if event == "daemon.work.progress"]
+    assert len(progress) > 3
+    assert [int(fields["bytes"]) for fields in progress] == sorted(int(fields["bytes"]) for fields in progress)
+    assert progress[-1]["bytes"] > 40 * len("payload" * 12)
+
+
 def test_spilled_object_membership_checks_only_the_key_index(tmp_path: Path) -> None:
     from polylogue.schemas.observation_spill import SpilledObject, StreamedJSONDocument
 
