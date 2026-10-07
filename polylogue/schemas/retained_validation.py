@@ -9,6 +9,7 @@ view before it is closed.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import sqlite3
 from collections.abc import Iterator, KeysView, Mapping, Sequence
@@ -57,6 +58,48 @@ _ACTIVE_VALIDATION_CONNECTION: ContextVar[sqlite3.Connection | None] = ContextVa
     "retained_validation_connection", default=None
 )
 _BOUNDED_VALIDATOR_CLASS: Any = None
+
+
+def _retained_validation_productive_identity(
+    provider: str | Provider,
+    path: Path,
+    *,
+    mode: ValidationMode,
+    raw_id: str,
+    revision_sha256: str,
+    evidence_id: str,
+    source_path: str | None = None,
+    jsonl: bool = False,
+    schema_resolution: SchemaResolution | None = None,
+    schema_resolution_is_explicit: bool = False,
+    registry: SchemaRegistry | None = None,
+) -> str:
+    """Identify validation work by its retained source recipe, never scratch path."""
+    del path, registry
+    resolution = None
+    if schema_resolution is not None:
+        resolution = (
+            schema_resolution.provider,
+            schema_resolution.package_version,
+            schema_resolution.element_kind,
+            schema_resolution.exact_structure_id,
+            schema_resolution.bundle_scope,
+            schema_resolution.reason,
+            schema_resolution.profile_score,
+        )
+    recipe = (
+        normalize_provider_token(provider),
+        raw_id,
+        revision_sha256,
+        evidence_id,
+        source_path,
+        jsonl,
+        ValidationMode.from_string(mode).value,
+        resolution,
+        schema_resolution_is_explicit,
+    )
+    encoded = json.dumps(recipe, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class _ConnectionBoundValidator:
@@ -511,7 +554,7 @@ _DRIFT_STRENGTH: dict[DriftClassification, int] = {
 }
 
 
-@reports_work_progress("source_preparation")
+@reports_work_progress("source_preparation", productive_identity=_retained_validation_productive_identity)
 def validate_retained_document(
     provider: str | Provider,
     path: Path,

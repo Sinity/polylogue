@@ -402,16 +402,16 @@ def _useful_progress(previous: Observation | None, current: Observation) -> bool
 class WorkProgressTail:
     """Count advancing ``daemon.work.progress`` events appended to the event log.
 
-    Reads only the bytes appended since the previous call. An event counts
-    when its counters differ from the previous progress event of the same
-    phase, so a unit that stops advancing stops counting.
+    Reads only the bytes appended since the previous call. Counter high-water
+    marks are scoped by productive identity, so a retry that resets its local
+    counters cannot masquerade as new work.
     """
 
     def __init__(self, events: Path) -> None:
         self._events = events
         self._offset = 0
         self._pending = b""
-        self._last: dict[str, tuple[int, int]] = {}
+        self._high_water: dict[tuple[str, str], tuple[int, int]] = {}
         self.advancing = 0
 
     def poll(self) -> int:
@@ -434,10 +434,16 @@ class WorkProgressTail:
             if event.get("event") != "daemon.work.progress":
                 continue
             phase = str(event.get("phase"))
+            productive_id = event.get("productive_id")
+            unit_id = event.get("unit_id")
+            if not isinstance(productive_id, str) or not productive_id or not isinstance(unit_id, str) or not unit_id:
+                continue
             counters = (int(event.get("messages") or 0), int(event.get("bytes") or 0))
-            if counters != self._last.get(phase, (0, 0)):
+            key = (phase, productive_id)
+            previous = self._high_water.get(key, (0, 0))
+            if counters[0] >= previous[0] and counters[1] >= previous[1] and counters != previous:
                 self.advancing += 1
-            self._last[phase] = counters
+                self._high_water[key] = counters
         return self.advancing
 
 

@@ -2251,22 +2251,29 @@ def test_advancing_work_progress_events_are_useful_progress_and_a_frozen_unit_is
             for record in records:
                 handle.write(json.dumps(record) + "\n")
 
-    def progress(unit_id: str, messages: int, byte_count: int = 0) -> dict[str, object]:
+    def progress(
+        unit_id: str,
+        messages: int,
+        byte_count: int = 0,
+        *,
+        productive_id: str = "raw-a:revision-1:advisory",
+    ) -> dict[str, object]:
         return {
             "event": "daemon.work.progress",
             "phase": "source_preparation",
             "unit_id": unit_id,
+            "productive_id": productive_id,
             "messages": messages,
             "bytes": byte_count,
         }
 
     tail = WorkProgressTail(events)
-    append({"event": "daemon.started"}, progress("attempt-a", 10))
+    append({"event": "daemon.started"}, progress("attempt-a", 100))
     before = Observation(0.0, work_progress=0)
     advanced = Observation(1.0, work_progress=tail.poll())
     assert _useful_progress(before, advanced)
 
-    append(progress("attempt-a", 10))
+    append(progress("attempt-a", 100))
     frozen = Observation(2.0, work_progress=tail.poll())
     assert not _useful_progress(advanced, frozen)
 
@@ -2277,23 +2284,28 @@ def test_advancing_work_progress_events_are_useful_progress_and_a_frozen_unit_is
     assert not _useful_progress(frozen, reset)
 
     # Once the new unit reports real work, its own counters advance normally.
-    append(progress("attempt-b", 1))
+    append(progress("attempt-b", 10))
     retry_advanced = Observation(4.0, work_progress=tail.poll())
-    assert _useful_progress(reset, retry_advanced)
+    assert not _useful_progress(reset, retry_advanced)
 
-    # A decrease inside one unit is a reset, not evidence of new traversal.
-    append(progress("attempt-b", 0))
+    # Distinct parser work gets its own baseline even when its counters are lower.
+    append(progress("attempt-c", 10, productive_id="raw-b:revision-1:advisory"))
     repeated_reset = Observation(5.0, work_progress=tail.poll())
-    assert not _useful_progress(retry_advanced, repeated_reset)
+    assert _useful_progress(retry_advanced, repeated_reset)
+
+    # The same productive work counts again only after exceeding its prior high-water.
+    append(progress("attempt-d", 101))
+    same_work_advanced = Observation(6.0, work_progress=tail.poll())
+    assert _useful_progress(repeated_reset, same_work_advanced)
 
     # A record split across two writes is read once it is complete.
-    line = json.dumps(progress("attempt-b", 25, 64)) + "\n"
+    line = json.dumps(progress("attempt-d", 102, 64)) + "\n"
     with events.open("a", encoding="utf-8") as handle:
         handle.write(line[:10])
-    assert tail.poll() == repeated_reset.work_progress
+    assert tail.poll() == same_work_advanced.work_progress
     with events.open("a", encoding="utf-8") as handle:
         handle.write(line[10:])
-    assert _useful_progress(repeated_reset, Observation(6.0, work_progress=tail.poll()))
+    assert _useful_progress(same_work_advanced, Observation(7.0, work_progress=tail.poll()))
 
 
 @pytest.mark.parametrize("with_debt", [False, True])

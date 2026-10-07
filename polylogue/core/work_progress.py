@@ -20,6 +20,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Final, ParamSpec, TypeVar
+from uuid import uuid4
 
 from polylogue.logging import emit
 
@@ -35,10 +36,12 @@ WORK_PROGRESS_EVENT: Final = "daemon.work.progress"
 class WorkProgress:
     """Cumulative counters of one unit of work and its event throttle."""
 
-    __slots__ = ("phase", "messages", "bytes", "_started", "_last_emitted")
+    __slots__ = ("phase", "unit_id", "productive_id", "messages", "bytes", "_started", "_last_emitted")
 
-    def __init__(self, phase: str) -> None:
+    def __init__(self, phase: str, productive_id: str | None) -> None:
         self.phase = phase
+        self.unit_id = uuid4().hex
+        self.productive_id = productive_id or self.unit_id
         self.messages = 0
         self.bytes = 0
         self._started = time.monotonic()
@@ -57,6 +60,8 @@ class WorkProgress:
             WORK_PROGRESS_EVENT,
             outcome=outcome,
             phase=self.phase,
+            unit_id=self.unit_id,
+            productive_id=self.productive_id,
             messages=self.messages,
             bytes=self.bytes,
             duration_ms=round((now - self._started) * 1000, 3),
@@ -67,7 +72,7 @@ _CURRENT: ContextVar[WorkProgress | None] = ContextVar("polylogue_work_progress"
 
 
 @contextmanager
-def work_progress(phase: str) -> Iterator[WorkProgress]:
+def work_progress(phase: str, *, productive_id: str | None = None) -> Iterator[WorkProgress]:
     """Declare one unit of work whose progress is reported while it runs.
 
     A unit nested in another reports through the outer one, so one piece of
@@ -77,7 +82,7 @@ def work_progress(phase: str) -> Iterator[WorkProgress]:
     if current is not None:
         yield current
         return
-    progress = WorkProgress(phase)
+    progress = WorkProgress(phase, productive_id)
     token = _CURRENT.set(progress)
     try:
         yield progress
@@ -86,13 +91,18 @@ def work_progress(phase: str) -> Iterator[WorkProgress]:
         progress._emit(time.monotonic(), outcome="ok")
 
 
-def reports_work_progress(phase: str) -> Callable[[Callable[P, T]], Callable[P, T]]:
+def reports_work_progress(
+    phase: str,
+    *,
+    productive_identity: Callable[P, str] | None = None,
+) -> Callable[[Callable[P, T]], Callable[P, T]]:
     """Run the decorated function as one declared unit of work."""
 
     def decorate(function: Callable[P, T]) -> Callable[P, T]:
         @functools.wraps(function)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-            with work_progress(phase):
+            identity = productive_identity(*args, **kwargs) if productive_identity is not None else None
+            with work_progress(phase, productive_id=identity):
                 return function(*args, **kwargs)
 
         return wrapper

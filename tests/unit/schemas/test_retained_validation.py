@@ -242,6 +242,8 @@ def test_retained_validation_reports_real_nested_schema_traversal_progress(
     assert verdict.sample_count == 1
     progress = [fields for event, fields in events if event == "daemon.work.progress"]
     assert len(progress) > 3
+    assert len({fields["unit_id"] for fields in progress}) == 1
+    assert len({fields["productive_id"] for fields in progress}) == 1
 
     def bytes_count(fields: dict[str, object]) -> int:
         value = fields["bytes"]
@@ -252,6 +254,29 @@ def test_retained_validation_reports_real_nested_schema_traversal_progress(
     assert progress_bytes == sorted(progress_bytes)
     assert progress_bytes[-1] > 40 * len("payload" * 12)
     assert progress_bytes[-1] >= 2 * 4
+
+
+def test_retained_validation_productive_identity_uses_source_recipe_not_attempt_path(tmp_path: Path) -> None:
+    from polylogue.schemas.retained_validation import _retained_validation_productive_identity
+
+    def identity(*, path: Path, revision_sha256: str = "a" * 64, mode: ValidationMode = ValidationMode.ADVISORY) -> str:
+        return _retained_validation_productive_identity(
+            "claude-code",
+            path,
+            mode=mode,
+            raw_id="raw-a",
+            revision_sha256=revision_sha256,
+            evidence_id="raw-a",
+            source_path="/configured/source.jsonl",
+            jsonl=True,
+            schema_resolution=_resolution("v2"),
+            schema_resolution_is_explicit=True,
+        )
+
+    original = identity(path=tmp_path / "attempt-a.jsonl")
+    assert identity(path=tmp_path / "attempt-b.jsonl") == original
+    assert identity(path=tmp_path / "attempt-a.jsonl", revision_sha256="b" * 64) != original
+    assert identity(path=tmp_path / "attempt-a.jsonl", mode=ValidationMode.STRICT) != original
 
 
 def test_spilled_object_membership_checks_only_the_key_index(tmp_path: Path) -> None:
