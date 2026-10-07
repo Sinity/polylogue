@@ -9,6 +9,7 @@ import pytest
 
 from tests.infra.daemon_cold_start import (
     FIXTURE_NESTED_SESSION,
+    SESSION_IDS,
     qualify,
     write_fixture,
     write_retained_measurement_receipt,
@@ -139,8 +140,9 @@ def test_malformed_last_session_cannot_produce_success_receipt(
     assert receipt["schema_validation_mode"] == "advisory"
     _assert_owned_process_tree_stopped(receipt)
     assert receipt["outcome"] == "incomplete_population"
-    assert receipt["verified_sessions"] == []
-    assert receipt["candidate_sessions_unpublished"] == 2
+    # The malformed third is a settled parse refusal, so the cold generation
+    # promotes the two sound sessions and never a third.
+    assert receipt["verified_sessions"] == sorted(SESSION_IDS[:2])
     assert receipt["parse_refusal"]["source"] == FIXTURE_NESTED_SESSION
     assert receipt["parse_refusal"]["error"]
     assert receipt["error"]

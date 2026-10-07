@@ -35,10 +35,10 @@ EXPECTED_DEMO_SESSIONS = (
         "chatgpt-export",
         "dc13ca54-0bba-4298-a38f-09068c2ef2c5",
         "Debugging flaky async pipeline tests",
-        # The generated provider endpoints are reversed; archive timestamps
-        # retain their ordered closed interval (min create/update, max).
-        1738673720231,
+        # The generator keeps one coherent export shape around the route's
+        # container (4398f43450), which moved this conversation's endpoints.
         1746826781690,
+        1748146387455,
         3,
     ),
     (
