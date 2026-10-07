@@ -469,8 +469,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         use_when=(
             "Measure the ordinary cold build end to end (stage timings, writer share, RSS, per-origin cost, time "
             "to promotion and terminal convergence) or compare two candidates on one corpus. Corpora are "
-            "`corpus sample` (a private stratified sample of real sources) or `corpus files` (named files, "
-            "such as one whale); `--max-rss-mib` and the other budgets make a run a qualification. "
+            "`corpus sample` (a private stratified sample of real sources) or `corpus files` (named files "
+            "and optional hook-spool fraction); `--max-rss-mib` and the other budgets make a run a qualification. "
             "`components` times one production stage in seconds. Start `run` through the declared "
             "fresh_build_bench AgentCTL operation."
         ),
