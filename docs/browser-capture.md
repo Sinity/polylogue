@@ -87,8 +87,9 @@ known byte evidence guard replacement: an absent size or acquired byte carrier
 may be enriched, while unequal known sizes or different known bytes for the
 same occurrence remain a conflict. Native-plan acquisition outcomes, content
 hashes, and raw-revision ordinal coordinates remain in the accepted envelope
-but do not redefine the provider attachment across snapshots. Repeated
-attachment IDs on different owner messages remain separate occurrences.
+but do not redefine the provider attachment across snapshots when a stable
+native message owner is available. Attachments without that owner retain
+their declared ordinal constraints. Repeated attachment IDs on different owner messages remain separate occurrences.
 
 Every receiver response carries `X-Request-ID`. If the extension or a local
 debug probe sends a safe `X-Request-ID` header, the receiver echoes its
