@@ -16,7 +16,7 @@ from unittest.mock import Mock
 import pytest
 
 from polylogue.core.compute import BoundedComputeAdapter
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, ValidationMode
 from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, converge
 from polylogue.operations.raw_observation_derivation import (
     make_raw_observation_derivation,
@@ -1053,6 +1053,66 @@ def test_retained_parser_error_settles_as_terminal_refusal(tmp_path: Path, monke
             assert conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchall() == [
                 ("terminal_unsupported_shape",)
             ]
+
+    _run_raw_law(tmp_path, run_phase)
+
+
+def test_empty_claude_history_remains_non_session_when_validation_mode_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
+        """Configured history is raw-only evidence and has no schema policy."""
+        from types import SimpleNamespace
+
+        import polylogue.paths as polylogue_paths
+        import polylogue.sources.live.watcher as live_watcher
+        from polylogue.sources.live.batch import LiveBatchProcessor
+        from polylogue.sources.live.cursor import CursorStore
+        from polylogue.sources.live.watcher import default_sources
+        from tests.infra.raw_owner_routes import run_ingest_files
+
+        bootstrap_archive_root(tmp_path)
+        claude_root = tmp_path / "neutral-home" / ".claude"
+        claude_root.mkdir(parents=True)
+        source_path = claude_root / "history.jsonl"
+        source_path.write_bytes(b"")
+        monkeypatch.setattr(polylogue_paths, "claude_code_path", lambda: claude_root / "projects")
+        history_source = next(source for source in default_sources() if source.name == "claude-code-history")
+        polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))
+        processor = LiveBatchProcessor(
+            polylogue,
+            (history_source,),
+            cursor=CursorStore(tmp_path / "ops.db"),
+            parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        )
+        metrics = run_ingest_files(processor, [source_path], emit_event=False)
+        assert metrics.excluded_file_count == 1 and metrics.failed_file_count == 0, metrics
+
+        frame = raw_observation_frame(tmp_path)
+        advisory = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            raw_id = str(conn.execute("SELECT raw_id FROM raw_sessions").fetchone()[0])
+            assert conn.execute(
+                "SELECT artifact_kind, parse_as_session, schema_eligible FROM raw_artifacts WHERE raw_id=?",
+                (raw_id,),
+            ).fetchall() == [("prompt_history_log", 0, 0)]
+            assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchone() == (
+                "non_session",
+            )
+            # Non-session sources deliberately have no schema-validation stamp.
+        assert advisory.inspect(frame, (raw_id,)) == {raw_id: "valid"}
+
+        strict = RawObservationDerivation(
+            tmp_path, compute_adapter=compute_adapter, validation_mode=ValidationMode.STRICT
+        )
+        strict_frame = raw_observation_frame(tmp_path, validation_mode=ValidationMode.STRICT)
+        assert strict.inspect(strict_frame, (raw_id,)) == {raw_id: "valid"}
+        repeated = strict.compute(strict_frame, raw_id)
+        try:
+            assert repeated.already_valid
+        finally:
+            repeated.close()
+        assert advisory.inspect(frame, (raw_id,)) == {raw_id: "valid"}
 
     _run_raw_law(tmp_path, run_phase)
 

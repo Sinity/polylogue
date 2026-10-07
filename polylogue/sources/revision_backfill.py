@@ -859,7 +859,7 @@ def prepare_retained_jsonl_artifact(
 
     try:
         parse_prefix_size: int | None = None
-        if is_jsonl_source_path(source_path):
+        if is_jsonl_source_path(source_path) and not path_declaration_refuses_session(provider, source_path):
             with evidence_reader.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
                 parse_prefix_size = jsonl_parse_prefix_size_of_handle(payload)
         artifact = prepare_jsonl_blob(
@@ -902,7 +902,11 @@ def prepare_retained_jsonl_artifact(
                 "retained JSON refusal and artifact cleanup failed", [blob_refusal, cleanup]
             ) from None
         raise blob_refusal
-    if artifact.error is None and artifact.resolved_provider is not None:
+    if (
+        artifact.error is None
+        and artifact.resolved_provider is not None
+        and not path_declaration_refuses_session(provider, source_path)
+    ):
         from polylogue.schemas import validate_retained_document
 
         validation_jsonl = is_jsonl_source_path(source_path)
@@ -2752,6 +2756,13 @@ def parse_retained_raw_sessions(archive: RetainedRawRead, raw_id: str) -> list[P
     for Codex/Claude JSONL evidence.
     """
     provider, blob_hash, source_path, kind, _payload_size = archive.raw_revision_descriptor(raw_id)
+    if (
+        not is_work_event_raw_id(raw_id)
+        and declared_evidence_classification(source_path, provider=provider) is not None
+    ):
+        # A raw-only declaration is terminal even when the retained payload is
+        # empty. Do not send zero bytes through a provider JSON decoder.
+        return []
     profile_identity = archive.raw_profile_identity(raw_id)
     fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
     sidecar_resolver = archive.retained_sidecar_resolver()
