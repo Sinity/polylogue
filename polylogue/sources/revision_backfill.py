@@ -3196,6 +3196,42 @@ def _persist_codex_state_artifact(
     )
 
 
+def _persist_legacy_page_image_artifact(
+    producer: SourceRawOutcomeProducer,
+    raw_id: str,
+    *,
+    provider: Provider,
+    source_path: str,
+    source_index: int,
+    observed_at_ms: int,
+    manage_transaction: bool,
+) -> None:
+    """Type an obsolete SQLite page image as recognized non-session evidence."""
+    origin = origin_from_provider(provider)
+    _upsert_raw_artifact(
+        producer,
+        raw_id,
+        ArchiveSourceArtifact(
+            artifact_id=artifact_observation_id(
+                source_name=origin.value,
+                source_path=source_path,
+                source_index=source_index,
+            ),
+            origin=origin,
+            source_path=source_path,
+            source_index=source_index,
+            artifact_kind=ArtifactKind.BINARY_DATABASE.value,
+            classification_reason="legacy SQLite page image",
+            support_status=ArtifactSupportStatus.RECOGNIZED_UNPARSED,
+            parse_as_session=False,
+            schema_eligible=False,
+            first_observed_at_ms=observed_at_ms,
+            last_observed_at_ms=observed_at_ms,
+        ),
+        manage_transaction=manage_transaction,
+    )
+
+
 def _parse_one(
     provider: Provider,
     payload: bytes,
@@ -3680,6 +3716,29 @@ def prepare_revision_source_census(
 
     def stage_current_parser_followup(raw_id: str, source_index: int) -> bool:
         """Finish Source obligations not represented by a current parser receipt."""
+        if source_index >= 0 and _retained_page_image_raw(evidence_reader, raw_id):
+            provider, _blob_hash, source_path, revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
+            observed_at_ms = evidence_reader.raw_revision_observation_order(raw_id)[0]
+            _persist_legacy_page_image_artifact(
+                producer,
+                raw_id,
+                provider=provider,
+                source_path=source_path,
+                source_index=source_index,
+                observed_at_ms=observed_at_ms,
+                manage_transaction=False,
+            )
+            replace_raw_membership_census(
+                seal,
+                raw_id,
+                [],
+                parser_fingerprint=raw_authority_parser_fingerprint(),
+                censused_at_ms=0,
+                detail=LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
+                retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
+                revision_authority=None,
+            )
+            return True
         prepared = prepared_inputs.get(raw_id)
         artifact = prepared.prepared_artifact if prepared is not None else None
         if artifact is None:
@@ -3777,6 +3836,32 @@ def prepare_revision_source_census(
                 observed_at_ms=observed_at_ms,
                 manage_transaction=False,
             ):
+                # Some legacy page images reach a parser-specific terminal
+                # refusal (for example, a Hermes database without profile
+                # identity) before the ordinary empty-result path. Preserve
+                # both facts: the refusal explains the parser outcome, while
+                # the binary artifact prevents the same SQLite bytes from
+                # being reconsidered as session input on the next census.
+                if _retained_page_image_raw(evidence_reader, raw_id):
+                    _persist_legacy_page_image_artifact(
+                        producer,
+                        raw_id,
+                        provider=provider,
+                        source_path=source_path,
+                        source_index=source_index,
+                        observed_at_ms=observed_at_ms,
+                        manage_transaction=False,
+                    )
+                    replace_raw_membership_census(
+                        seal,
+                        raw_id,
+                        [],
+                        parser_fingerprint=raw_authority_parser_fingerprint(),
+                        censused_at_ms=0,
+                        detail=LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
+                        retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
+                        revision_authority=None,
+                    )
                 record_current_parser_source_census(seal, raw_id)
             else:
                 # Any other retained parser failure (an unrecognized shape, a
@@ -3904,16 +3989,28 @@ def prepare_revision_source_census(
                 # the placeholder and records only its detected provider.
                 refine_prepared_raw_origin(seal, raw_id, origin_from_provider(resolved_provider))
             stream_classification = artifact.stream_classification()
-            terminalized = _persist_terminal_non_session_artifact(
-                producer,
-                raw_id,
-                provider=resolved_provider,
-                observed_at_ms=observed_at_ms,
-                source_path=source_path,
-                source_index=source_index,
-                stream_classification=stream_classification,
-                manage_transaction=False,
-            )
+            if _retained_page_image_raw(evidence_reader, raw_id):
+                _persist_legacy_page_image_artifact(
+                    producer,
+                    raw_id,
+                    provider=resolved_provider,
+                    source_path=source_path,
+                    source_index=source_index,
+                    observed_at_ms=observed_at_ms,
+                    manage_transaction=False,
+                )
+                terminalized = True
+            else:
+                terminalized = _persist_terminal_non_session_artifact(
+                    producer,
+                    raw_id,
+                    provider=resolved_provider,
+                    observed_at_ms=observed_at_ms,
+                    source_path=source_path,
+                    source_index=source_index,
+                    stream_classification=stream_classification,
+                    manage_transaction=False,
+                )
             # A hook-event carrier is a physical append chain: its full
             # baseline keeps that binding for the tails grown onto it, so its
             # census never retires it to membership governance.

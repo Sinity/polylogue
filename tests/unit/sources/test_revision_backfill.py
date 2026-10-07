@@ -1517,15 +1517,18 @@ def test_census_quarantines_legacy_hermes_sqlite_page_images(tmp_path: Path) -> 
     Two independent raws still exercise the parallel census boundary.
     """
     bootstrap_archive_root(tmp_path)
+    raw_ids: list[str] = []
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         for index in range(2):
             payload = _state_db_bytes_for_session(tmp_path, session_id=f"hermes-{index}", message_text=f"hi {index}")
-            archive.write_raw_payload(
-                provider=Provider.HERMES,
-                payload=payload,
-                source_path=str(tmp_path / f"hermes-home-{index}" / "state.db"),
-                canonical_source_path=str(tmp_path / f"hermes-home-{index}" / "state.db"),
-                acquired_at_ms=index,
+            raw_ids.append(
+                archive.write_raw_payload(
+                    provider=Provider.HERMES,
+                    payload=payload,
+                    source_path=str(tmp_path / f"hermes-home-{index}" / "state.db"),
+                    canonical_source_path=str(tmp_path / f"hermes-home-{index}" / "state.db"),
+                    acquired_at_ms=index,
+                )
             )
 
     result = replay_retained_components(tmp_path)
@@ -1536,6 +1539,19 @@ def test_census_quarantines_legacy_hermes_sqlite_page_images(tmp_path: Path) -> 
     with sqlite3.connect(tmp_path / "index.db") as conn:
         rows = conn.execute("SELECT native_id, message_count FROM sessions ORDER BY native_id").fetchall()
     assert rows == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        page_images = conn.execute(
+            "SELECT raw_id FROM raw_artifacts WHERE raw_id IN (?, ?) AND artifact_kind='binary_database' "
+            "AND support_status='recognized_unparsed' AND classification_reason='legacy SQLite page image' "
+            "ORDER BY raw_id",
+            raw_ids,
+        ).fetchall()
+        memberships = conn.execute(
+            "SELECT raw_id, status, member_count FROM raw_membership_census WHERE raw_id IN (?, ?) ORDER BY raw_id",
+            raw_ids,
+        ).fetchall()
+    assert [row[0] for row in page_images] == sorted(raw_ids)
+    assert memberships == [(raw_id, "non_session", 0) for raw_id in sorted(raw_ids)]
 
 
 def test_independent_raw_corpus_fixture_backfills_cleanly(tmp_path: Path) -> None:
