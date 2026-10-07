@@ -9,8 +9,9 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Provider, ValidationMode
+from polylogue.daemon.derivation import DerivationReport
 from polylogue.schemas.drift_sentinel import SchemaDriftObservation
-from polylogue.schemas.packages import SchemaResolution
+from polylogue.schemas.packages import SchemaResolution, SchemaResolutionReason
 from polylogue.schemas.retained_validation import RetainedValidationVerdict
 from polylogue.schemas.validator_resolution import canonical_provider
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
@@ -52,6 +53,7 @@ def test_retained_schema_drift_telemetry_follows_replay_and_never_changes_outcom
 
     observations: list[SchemaDriftObservation] = []
     verdicts: list[RetainedValidationVerdict] = []
+    resolution_reason: SchemaResolutionReason = "exact_structure"
     # Use the real spill-backed validator and verdict emitter against a
     # controlled exact schema. Its required `kind` is missing from both
     # records, while the raw also carries a value under an unknown field.
@@ -79,7 +81,7 @@ def test_retained_schema_drift_telemetry_follows_replay_and_never_changes_outcom
         element_kind="session_record_stream",
         exact_structure_id="codex-record-v1",
         bundle_scope=None,
-        reason="exact_structure",  # type: ignore[arg-type]
+        reason=resolution_reason,
     )
     real_validate = retained_validation.validate_retained_document
 
@@ -137,12 +139,15 @@ def test_retained_schema_drift_telemetry_follows_replay_and_never_changes_outcom
             record_observations,
         )
 
-    async def settle() -> object:
+    async def settle() -> DerivationReport:
         raw_id = await run_archive_fixture_write(archive_root, acquire)
         async with prepared_live_convergence_owner(archive_root) as owner:
             owner._validation_mode = mode
             owner._archive._validation_mode = mode
-            return await owner.converge_raw_id(raw_id)
+            result = await owner.converge_raw_id(raw_id)
+            if mode is ValidationMode.STRICT:
+                await owner.converge_raw_id(raw_id)
+            return result
 
     result = asyncio.run(settle())
     assert len(observations) == int(mode is not ValidationMode.OFF)
@@ -159,7 +164,7 @@ def test_retained_schema_drift_telemetry_follows_replay_and_never_changes_outcom
                WHERE session.native_id = 'drift-route'"""
         ).fetchone()[0]
     if mode is ValidationMode.OFF:
-        assert result.failed == 0  # type: ignore[attr-defined]
+        assert result.failed == 0
         assert recorder_calls == []
         assert session_row is not None and message_count > 0
         return
@@ -171,11 +176,13 @@ def test_retained_schema_drift_telemetry_follows_replay_and_never_changes_outcom
         assert routed_archive_root == archive_root
     else:
         with sqlite3.connect(archive_root / "ops.db") as conn:
+            count = conn.execute("SELECT COUNT(*) FROM schema_drift_samples").fetchone()[0]
             row = conn.execute(
                 """SELECT origin, element_kind, classification, unseen_key_signature,
                           native_id_example, raw_id
                    FROM schema_drift_samples"""
             ).fetchone()
+        assert count == 1
         assert row == (
             "codex-session",
             observations[0].element_kind,
@@ -196,7 +203,7 @@ def test_retained_schema_drift_telemetry_follows_replay_and_never_changes_outcom
         assert session_row is None
         assert message_count == 0
     else:
-        assert result.failed == 0  # type: ignore[attr-defined]
+        assert result.failed == 0
         assert session_row is not None
         assert session_row[0] == observations[0].raw_id
         assert message_count > 0
