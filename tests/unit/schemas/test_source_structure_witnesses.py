@@ -29,7 +29,7 @@ from polylogue.schemas.generation.workflow import (
 )
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.registry import SchemaRegistry
-from polylogue.schemas.runtime_registry import _ObservedPayload
+from polylogue.schemas.runtime_registry import SchemaObservation, _structure_witnesses
 from polylogue.schemas.source_inference import SchemaSourceInput, SourceObservation
 from polylogue.schemas.source_recipe import SourceEvidenceRecipe
 
@@ -205,12 +205,12 @@ def test_legacy_structure_ids_do_not_trigger_source_shape_hashing(monkeypatch: p
         registry,
         "_observed_payloads",
         lambda _provider, _payload, source_path=None: [
-            _ObservedPayload(
+            SchemaObservation(
                 artifact_kind="session_document",
                 bundle_scope=None,
                 exact_structure_id="0123456789abcdef",
                 profile_tokens=(),
-                schema_samples=({"unneeded": "shape"},),
+                source_witnesses=(),
             )
         ],
     )
@@ -269,7 +269,7 @@ def test_source_exact_matching_covers_every_sample_and_shipped_digest_alias() ->
 
     old_resolution = registry._resolve_observation(
         [old, new],
-        _ObservedPayload("session_record_stream", None, None, (), (shared_header, old_body)),
+        SchemaObservation("session_record_stream", None, None, (), _structure_witnesses((shared_header, old_body))),
         package_rank={"v1": 0, "v2": 1},
         observation_index=0,
     )
@@ -279,13 +279,15 @@ def test_source_exact_matching_covers_every_sample_and_shipped_digest_alias() ->
 
     uncovered = registry._resolve_observation(
         [old, new],
-        _ObservedPayload("session_record_stream", None, None, (), (shared_header, old_body, {"type": "extra"})),
+        SchemaObservation(
+            "session_record_stream", None, None, (), _structure_witnesses((shared_header, old_body, {"type": "extra"}))
+        ),
         package_rank={"v1": 0, "v2": 1},
         observation_index=0,
     )
     empty = registry._resolve_observation(
         [old, new],
-        _ObservedPayload("session_record_stream", None, None, (), ()),
+        SchemaObservation("session_record_stream", None, None, (), ()),
         package_rank={"v1": 0, "v2": 1},
         observation_index=0,
     )
@@ -298,7 +300,7 @@ def test_source_exact_matching_covers_every_sample_and_shipped_digest_alias() ->
     legacy_64 = _package(provider, "v3", [old_digest], family="legacy")
     legacy_resolution = registry._resolve_observation(
         [legacy_64],
-        _ObservedPayload("session_record_stream", None, None, (), (shipped_sample,)),
+        SchemaObservation("session_record_stream", None, None, (), _structure_witnesses((shipped_sample,))),
         package_rank={"v3": 0},
         observation_index=0,
     )

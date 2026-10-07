@@ -74,7 +74,7 @@ def _record(store: BlobStore, path: Path, *, source_path: str) -> RawSessionReco
     )
 
 
-def test_large_valid_drive_export_classifies_as_a_session_document(
+def test_large_valid_drive_export_retains_complete_schema_evidence(
     blob_store: BlobStore,
     tmp_path: Path,
 ) -> None:
@@ -84,9 +84,9 @@ def test_large_valid_drive_export_classifies_as_a_session_document(
     observation = inspect_raw_artifact(_record(blob_store, export, source_path=f"/drive-cache/gemini/{export.name}"))
 
     assert observation.artifact_kind == "session_document"
-    assert observation.support_status is ArtifactSupportStatus.RECOGNIZED_UNPARSED
+    assert observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE
     assert observation.parse_as_session
-    assert not observation.schema_eligible
+    assert observation.schema_eligible
     assert observation.decode_error is None
 
 

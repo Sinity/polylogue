@@ -13,8 +13,8 @@ from polylogue.core.json import JSONDocument
 from polylogue.schemas.observation_identity import bundle_scope_identity
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import (
+    SchemaObservation,
     SchemaRegistry,
-    _ObservedPayload,
     _read_gzip_json_dict,
     _read_json_dict,
     _resolved_package_version,
@@ -194,13 +194,13 @@ def test_resolve_payload_prefers_exact_structure_then_profile_then_default(monke
     monkeypatch.setattr(registry, "load_package_catalog", lambda _provider: catalog)
 
     exact_then_profile = (
-        _ObservedPayload(
+        SchemaObservation(
             artifact_kind="session_document",
             bundle_scope="session",
             exact_structure_id=None,
             profile_tokens=("field:messages",),
         ),
-        _ObservedPayload(
+        SchemaObservation(
             artifact_kind="session_document",
             bundle_scope="document",
             exact_structure_id="exact-1",
@@ -219,7 +219,7 @@ def test_resolve_payload_prefers_exact_structure_then_profile_then_default(monke
     assert exact.reason == "exact_structure"
 
     profile_only = (
-        _ObservedPayload(
+        SchemaObservation(
             artifact_kind="session_document",
             bundle_scope=None,
             exact_structure_id=None,
@@ -239,7 +239,7 @@ def test_resolve_payload_prefers_exact_structure_then_profile_then_default(monke
     assert profile.profile_score is not None
 
     default_only = (
-        _ObservedPayload(
+        SchemaObservation(
             artifact_kind="session_document",
             bundle_scope="unmatched",
             exact_structure_id=None,
