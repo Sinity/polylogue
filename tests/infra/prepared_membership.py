@@ -140,7 +140,8 @@ def write_prepared_retained_session(
 
     The write is prepared on an original seal and published under that seal's
     Index mutation scope, as retained work-event publication does; the
-    precedence and membership guards run on that canonical route.
+    precedence and membership guards run on that canonical route. The optional
+    attachment map is the upstream acquisition result keyed by carrier identity.
     """
     from polylogue.storage.sqlite.archive_tiers.revision_governance import (
         _index_parsed_for_retained_raw,

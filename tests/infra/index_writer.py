@@ -126,7 +126,9 @@ def write_fixture_retained_session(
     Preparation on an original seal and the guarded write under that seal
     are the ones retained publication runs. This starts at a ParsedSession and
     claims no provider-byte fidelity. Returns the writer's ``content_changed``
-    decision and its counts.
+    decision and its counts. ``preacquired_attachment_blobs`` is the actual
+    acquisition result keyed by each attachment's current carrier identity;
+    callers that publish bytes must carry this mapping with their Source refs.
     """
     import json
 
