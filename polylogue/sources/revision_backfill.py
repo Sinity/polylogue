@@ -107,7 +107,8 @@ from polylogue.sources.prepared_jsonl import (
     prepare_jsonl_blob,
     terminal_decode_evidence,
 )
-from polylogue.sources.prepared_message_sink import SqliteMessageSink
+from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
+from polylogue.sources.retained_sqlite import collect_sqlite_sessions, iter_sqlite_sessions
 from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.sqlite_export import looks_like_logical_source_bytes
 from polylogue.sources.sqlite_snapshot import (
@@ -1031,6 +1032,75 @@ def prepare_retained_non_json_artifact(
                 semantic_source_path=source_path,
                 enrichment_digest=None,
                 enrichment_index_path=None,
+                publication_publisher=publisher,
+                captured_profile_key=evidence_reader.raw_profile_identity(raw_id),
+            )
+            sealed = True
+            return artifact
+        # Retained SQLite sessions are parsed while their output store owns
+        # every sink, array, and accounting stream through publication.
+        sqlite_path = evidence_reader.raw_revision_blob_path(raw_id)
+        from polylogue.sources.sqlite_export import looks_like_logical_source_path
+
+        if (
+            provider in {Provider.HERMES, Provider.ANTIGRAVITY}
+            and sqlite_path is not None
+            and looks_like_logical_source_path(sqlite_path)
+            and not path_declaration_refuses_session(provider, source_path)
+        ):
+            from polylogue.storage.sqlite.archive_tiers.write import append_session_to_shard
+            from polylogue.storage.sqlite.session_shard import SessionShardBuilder
+
+            store = SqliteMessageStore(sessions_path)
+            with closing(SessionShardBuilder(Path(directory) / f"shard-{uuid.uuid4().hex}.db")) as builder:
+
+                def prepared_sessions() -> Iterator[ParsedSession]:
+                    assert store is not None
+                    with closing(
+                        _iter_sqlite_path(
+                            provider,
+                            sqlite_path,
+                            source_path,
+                            store,
+                            fallback_id=fallback_session_id(source_path, raw_id),
+                            profile_identity=evidence_reader.raw_profile_identity(raw_id),
+                        )
+                    ) as source_sessions:
+                        for session in source_sessions:
+                            check_compute_cancelled()
+                            session = normalize_session_timestamps(
+                                session, fallback_timestamp=evidence_reader.raw_revision_file_mtime(raw_id)
+                            )
+                            with closing(
+                                iter_enriched_sessions_from_retained_read(
+                                    evidence_reader,
+                                    provider,
+                                    source_path,
+                                    [session],
+                                    captured_zip_coordinate=evidence_reader.raw_captured_zip_coordinate(raw_id),
+                                )
+                            ) as enriched_sessions:
+                                for enriched in enriched_sessions:
+                                    enriched.content_hash = session_content_hash(enriched)
+                                    append_session_to_shard(builder, enriched)
+                                    yield enriched
+
+                _write_artifact(
+                    store, blob_hash, prepared_sessions(), enrichment_digest=None, enrichment_index_path=None
+                )
+                shard_path = builder.seal().path
+            parsed = True
+            _prepare_attachment_publications(store, publisher, Path(directory))
+            _prepare_sidecar_publications(store, publisher, Path(directory))
+            store.close()
+            store = None
+            artifact = PreparedJsonl.seal(
+                blob_hash,
+                sessions_path,
+                shard_path,
+                enrichment_digest=None,
+                enrichment_index_path=None,
+                resolved_provider=provider,
                 publication_publisher=publisher,
                 captured_profile_key=evidence_reader.raw_profile_identity(raw_id),
             )
@@ -3091,11 +3161,11 @@ def _parse_one_raw(
                 raise RuntimeError(f"retained Hermes SQLite material is not a logical export: {source_path}")
             if hermes_state.looks_like_state_db_path(sqlite_path, immutable=True):
                 return admit_parsed_sessions_for_publication(
-                    hermes_state.parse_state_db(
+                    collect_sqlite_sessions(
+                        provider,
                         sqlite_path,
                         fallback_id=fallback_id,
                         profile_identity=profile_identity,
-                        immutable=True,
                     ),
                     provider=provider,
                     source_path=source_path,
@@ -3122,7 +3192,7 @@ def _parse_one_raw(
                 return []
             if antigravity.looks_like_trajectory_db_path(sqlite_path, immutable=True):
                 return admit_parsed_sessions_for_publication(
-                    list(antigravity.parse_trajectory_db(sqlite_path, fallback_id=fallback_id, immutable=True)),
+                    collect_sqlite_sessions(provider, sqlite_path, fallback_id=fallback_id),
                     provider=provider,
                     source_path=source_path,
                 )
@@ -3176,6 +3246,49 @@ def _parse_one_raw(
     )
 
 
+def _iter_sqlite_path(
+    provider: Provider,
+    path: Path,
+    source_path: str,
+    store: SqliteMessageStore,
+    *,
+    fallback_id: str,
+    profile_identity: str | None,
+) -> Iterator[ParsedSession]:
+    """Replay logical SQLite material through the preparation owner's sinks."""
+    if provider is Provider.HERMES:
+        if profile_identity is None:
+            raise MissingProfileIdentityError("retained Hermes input has no captured profile identity receipt")
+        if not (is_declared_logical_export(path, source_path) or is_undeclared_logical_export(path, source_path)):
+            raise RuntimeError(f"retained Hermes SQLite material is not a logical export: {source_path}")
+        if hermes_state.looks_like_state_db_path(path, immutable=True):
+            sessions = iter_sqlite_sessions(
+                provider, path, store, fallback_id=fallback_id, profile_identity=profile_identity
+            )
+        elif hermes_verification.looks_like_verification_evidence_db_path(path, immutable=True):
+            sessions = iter(
+                hermes_verification.parse_verification_evidence_db(
+                    path,
+                    fallback_id=fallback_id,
+                    profile_identity=profile_identity,
+                    immutable=True,
+                )
+            )
+        else:
+            return
+    elif provider is Provider.ANTIGRAVITY:
+        if is_sqlite_page_image(path) or not antigravity.looks_like_trajectory_db_path(path, immutable=True):
+            return
+        sessions = iter_sqlite_sessions(provider, path, store, fallback_id=fallback_id)
+    else:
+        raise ValueError(f"SQLite replay is not supported for {provider}")
+    with closing(sessions) as selected_sessions:
+        for session in selected_sessions:
+            check_compute_cancelled()
+            if admit_parsed_sessions_for_publication([session], provider=provider, source_path=source_path):
+                yield session
+
+
 def _parse_sqlite_path(
     provider: Provider,
     path: Path,
@@ -3191,11 +3304,11 @@ def _parse_sqlite_path(
         if not (is_declared_logical_export(path, source_path) or is_undeclared_logical_export(path, source_path)):
             raise RuntimeError(f"retained Hermes SQLite material is not a logical export: {source_path}")
         if hermes_state.looks_like_state_db_path(path, immutable=True):
-            sessions = hermes_state.parse_state_db(
+            sessions = collect_sqlite_sessions(
+                provider,
                 path,
                 fallback_id=fallback_id,
                 profile_identity=profile_identity,
-                immutable=True,
             )
         elif hermes_verification.looks_like_verification_evidence_db_path(path, immutable=True):
             sessions = hermes_verification.parse_verification_evidence_db(
@@ -3210,7 +3323,7 @@ def _parse_sqlite_path(
         if is_sqlite_page_image(path):
             return []
         sessions = (
-            list(antigravity.parse_trajectory_db(path, fallback_id=fallback_id, immutable=True))
+            collect_sqlite_sessions(provider, path, fallback_id=fallback_id)
             if antigravity.looks_like_trajectory_db_path(path, immutable=True)
             else []
         )

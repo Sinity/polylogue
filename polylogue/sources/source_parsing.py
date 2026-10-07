@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import tempfile
 import zipfile
 from collections.abc import Callable, Iterable
+from contextlib import closing
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
@@ -38,6 +40,8 @@ from .emitter import _SessionEmitter
 from .origin_specs import SourceClassRecognition, artifact_rule_for_path, recognize_source_class
 from .parsers import antigravity, hermes_state, hermes_verification
 from .parsers.base import ParsedSession, RawSessionData
+from .prepared_message_sink import SqliteMessageStore
+from .retained_sqlite import iter_sqlite_sessions
 from .source_staging import SourceInputBinding, bind_source_input
 from .source_walk import _setup_source_walk
 from .sqlite_snapshot import is_sqlite_path, snapshot_sqlite_to_blob
@@ -401,9 +405,13 @@ def _parse_one_source_path_bound(
                 blob_size=snapshot.blob_size,
                 blob_publication_receipt_id=snapshot.blob_publication_receipt_id,
             )
-        for session in antigravity.parse_trajectory_db(retained_path, fallback_id=path.stem, immutable=True):
-            check_compute_cancelled()
-            yield (raw_data, session)
+        with (
+            tempfile.TemporaryDirectory(prefix="polylogue-source-sqlite-") as directory,
+            closing(SqliteMessageStore(Path(directory) / "sessions.db")) as store,
+        ):
+            for session in iter_sqlite_sessions(provider_hint, retained_path, store, fallback_id=path.stem):
+                check_compute_cancelled()
+                yield (raw_data, session)
         return
     source_class = recognize_source_class(provider_hint, path)
     if (
@@ -474,15 +482,20 @@ def _parse_one_source_path_bound(
                 blob_size=snapshot.blob_size,
                 blob_publication_receipt_id=snapshot.blob_publication_receipt_id,
             )
-        for session in hermes_state.parse_state_db(
-            retained_path,
-            fallback_id=path.stem,
-            profile_root=profile_root_for_artifact(snapshot.source_path),
-            profile_identity=snapshot.captured_profile_key,
-            immutable=True,
+        with (
+            tempfile.TemporaryDirectory(prefix="polylogue-source-sqlite-") as directory,
+            closing(SqliteMessageStore(Path(directory) / "sessions.db")) as store,
         ):
-            check_compute_cancelled()
-            yield (raw_data, session)
+            for session in iter_sqlite_sessions(
+                Provider.HERMES,
+                retained_path,
+                store,
+                fallback_id=path.stem,
+                profile_root=profile_root_for_artifact(snapshot.source_path),
+                profile_identity=snapshot.captured_profile_key,
+            ):
+                check_compute_cancelled()
+                yield (raw_data, session)
         return
 
     if (
