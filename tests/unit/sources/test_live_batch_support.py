@@ -5174,7 +5174,7 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
     monkeypatch.setattr(
         watcher,
         "_reconcile_archived_cursor_outcome",
-        lambda _path, *, stat: live_watcher._ArchivedCursorReconciliation.UNAVAILABLE,
+        lambda _path, *, stat, expected: live_watcher._ArchivedCursorReconciliation.UNAVAILABLE,
     )
     monkeypatch.setattr(live_watcher, "_retry_due", lambda _retry_at: True)
     for _ in range(5):
