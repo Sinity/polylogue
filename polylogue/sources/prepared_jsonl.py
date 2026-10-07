@@ -982,7 +982,7 @@ class PreparedJsonl:
                 self.parser_stage_artifact.discard()
             except BaseException as exc:
                 failures.append(exc)
-            self.parser_stage_artifact = None
+            object.__setattr__(self, "parser_stage_artifact", None)
         for prepared in self.prepared_writes:
             try:
                 prepared.close()
