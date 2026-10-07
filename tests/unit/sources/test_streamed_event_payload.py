@@ -53,6 +53,16 @@ def test_streamed_event_payload_replays_hashes_and_prepared_event_round_trips(tm
         assert _event_payload_hash(restored.event_type, restored.payload) == _event_payload_hash(
             event.event_type, event.payload
         )
+        empty_writer = SqliteJsonArrayWriter(store.conn)
+        empty = empty_writer.finish()
+        empty_event = ParsedSessionEvent(event_type="antigravity_parent_reference", payload={"references": empty})
+        events.append(empty_event)
+        empty_restored = events[1]
+        assert isinstance(empty_restored.payload["references"], StreamedJsonArray)
+        assert len(empty_restored.payload["references"]) == 0
+        assert _event_payload_hash(empty_event.event_type, empty_event.payload) == _event_payload_hash(
+            empty_event.event_type, {"references": []}
+        )
     finally:
         store.close()
 
@@ -113,6 +123,10 @@ def test_session_event_reads_restore_streamed_payload_keys(tmp_path: Path) -> No
         connection.execute(
             "INSERT INTO session_events VALUES ('s-1:4', 's-1', NULL, NULL, 4, "
             "'antigravity_parent_reference', '{\"parent_observed\":true}', NULL, NULL, NULL, NULL)"
+        )
+        connection.executemany(
+            "INSERT INTO session_events VALUES (?, 's-1', NULL, NULL, ?, 'ordinary', '{}', NULL, NULL, NULL, NULL)",
+            ((f"s-1:{position}", position) for position in range(5, 1005)),
         )
         connection.executemany(
             "INSERT INTO session_event_array_items VALUES ('s-1', 4, ?, ?, ?)",
@@ -183,6 +197,31 @@ def test_archive_writer_stores_streamed_event_arrays_and_reader_restores_them(tm
 
         orchestration_event = next(iter_orchestration_events(destination, "s-1"))
         assert orchestration_event.payload["references"] == restored["references"]
+
+        _write_session_events(
+            destination,
+            "s-1",
+            [],
+            [ParsedSessionEvent(event_type="antigravity_parent_reference", payload={"ordinary": True})],
+            owner_resolution=empty_owners,
+            content_identities=[],
+        )
+        assert read_session_events(destination, "s-1")[0].payload == {"ordinary": True}
+        assert destination.execute("SELECT COUNT(*) FROM session_event_array_items").fetchone()[0] == 0
+
+        empty_writer = SqliteJsonArrayWriter(store.conn)
+        empty = empty_writer.finish()
+        _write_session_events(
+            destination,
+            "s-1",
+            [],
+            [ParsedSessionEvent(event_type="antigravity_parent_reference", payload={"references": empty})],
+            owner_resolution=empty_owners,
+            content_identities=[],
+        )
+        empty_payload = read_session_events(destination, "s-1")[0].payload
+        assert empty_payload == {"references": []}
+        assert destination.execute("SELECT COUNT(*) FROM session_event_array_items").fetchone()[0] == 0
     finally:
         destination.close()
         store.close()
