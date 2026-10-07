@@ -865,9 +865,7 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     assert report.failed == 0, report.outcomes
     assert report.done == 1
     assert parse_calls == 1
-    # The selected Claude cohort validates the owner and its retained sibling
-    # once each; a raw-level count of two is not duplicate head validation.
-    assert sorted(validation_raw_ids) == sorted((target, sibling_raw)), validation_raw_ids
+    assert validation_raw_ids == [target], validation_raw_ids
     assert len(inserted) == 1
     with sqlite3.connect(tmp_path / "index.db") as conn:
         rows = conn.execute(

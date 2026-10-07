@@ -1787,10 +1787,10 @@ class RawObservationDerivation(RawObservationInspection):
             descriptor, profile, fallback_timestamp, native_id, _zip_coordinate, _append_key, _staged_blob = captures[
                 raw_id
             ]
-            _provider, blob_hash, source_path, _kind, _raw_size = descriptor
+            provider, blob_hash, source_path, _kind, _raw_size = descriptor
             artifact_key = (
                 raw_id,
-                Provider.CODEX,
+                provider,
                 blob_hash,
                 source_path,
                 descriptor[3].value == "append",
@@ -1798,8 +1798,9 @@ class RawObservationDerivation(RawObservationInspection):
                 fallback_timestamp,
                 profile,
                 self._validation_mode,
-                sidecar_signature(raw_id),
             )
+            if provider is Provider.CLAUDE_CODE:
+                artifact_key = (*artifact_key, sidecar_signature(raw_id))
             neutral_keys[raw_id] = artifact_key
 
         # Preserve the exact three canonical parses and typed one-pass prefix
@@ -2411,6 +2412,10 @@ class RawObservationDerivation(RawObservationInspection):
                                 fallback_timestamp = retained_read.raw_revision_file_mtime(raw_id)
                                 profile_identity = retained_read.raw_profile_identity(raw_id)
                                 carry.zip_coordinates[raw_id] = retained_read.raw_captured_zip_coordinate(raw_id)
+                                sidecar_signature = None
+                                if provider is Provider.CLAUDE_CODE:
+                                    scope = retained_read.retained_sidecar_resolver().claude_code_scope(path)
+                                    sidecar_signature = (scope.scope_key, scope.available, scope.witness)
                             # Everything a worker reads to parse and enrich these
                             # bytes. Parsing distinguishes only an append revision,
                             # so a census that types an unknown revision as full
@@ -2426,6 +2431,8 @@ class RawObservationDerivation(RawObservationInspection):
                                 profile_identity,
                                 self._validation_mode,
                             )
+                            if provider is Provider.CLAUDE_CODE:
+                                artifact_key = (*artifact_key, sidecar_signature)
                             artifact = prepared_artifacts.get(artifact_key)
                             if artifact is None:
                                 try:
