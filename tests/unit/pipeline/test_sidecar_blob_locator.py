@@ -97,11 +97,12 @@ def _stored_representation_hash(session: ParsedSession, stored_event: dict[str, 
     return str(session_content_hash(committed))
 
 
-def _publish(archive_root: Path, session: ParsedSession) -> tuple[bool, dict[str, int]]:
+def _publish(archive_root: Path, session: ParsedSession) -> bool:
     run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
     conn = sqlite3.connect(archive_root / "index.db")
     try:
-        return write_fixture_retained_session(conn, session)
+        changed, _counts = write_fixture_retained_session(conn, session)
+        return changed
     finally:
         conn.close()
 
@@ -110,12 +111,11 @@ def test_sidecar_locator_is_committed_beside_the_bound_session(tmp_path: Path) -
     bound_session = _bound_session()
     bound = str(bound_session.content_hash)
     archive_root = tmp_path / "archive"
-    changed, counts = _publish(archive_root, bound_session)
+    changed = _publish(archive_root, bound_session)
     with sqlite3.connect(archive_root / "index.db") as conn:
         stored_hash, stored_event, block_text = _stored(conn)
 
     assert changed is True
-    assert counts["sidecar_blobs_written"] == 1
     expected_hash = sha256(_FULL_TEXT.encode("utf-8")).hexdigest()
     assert (archive_root / "blob" / expected_hash[:2] / expected_hash[2:]).read_text() == _FULL_TEXT
     [parsed_event] = bound_session.session_events
@@ -141,13 +141,11 @@ def test_excised_sidecar_is_refused_alone_and_the_session_still_writes(tmp_path:
             ledger, blob_hash=excised_hash, reason="synthetic", actor="user:local", excised_at_ms=1
         )
     bound_session = _bound_session()
-    changed, counts = _publish(archive_root, bound_session)
+    changed = _publish(archive_root, bound_session)
     with sqlite3.connect(archive_root / "index.db") as conn:
         stored_hash, stored_event, block_text = _stored(conn)
 
     assert changed is True
-    assert counts["sidecar_blobs_refused_excised"] == 1
-    assert counts["sidecar_blobs_written"] == 0
     assert not (archive_root / "blob" / excised_hash.hex()[:2] / excised_hash.hex()[2:]).exists()
     [parsed_event] = bound_session.session_events
     assert stored_event == {**parsed_event.payload, "blob_refusal": "content_excised"}

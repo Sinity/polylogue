@@ -212,7 +212,7 @@ async def test_a_suppressed_replay_hands_its_blob_receipts_to_the_batch(
     from tests.infra.live_provider_proof import native_proof_artifact
 
     envelope, _expected_messages, expected_attachments = native_proof_artifact(
-        tmp_path, "suppressed-native-attachment.json", Provider.GROK
+        tmp_path, "native-inline-attachment-v1.json", Provider.GROK
     )
     attachment_bytes = [base64.b64decode(entry["content_base64"]) for entry in envelope["session"]["attachments"]]
     expected_hashes = {hashlib.sha256(content).digest() for content in attachment_bytes}
