@@ -157,7 +157,8 @@ def test_configure_logging_supports_console_and_json_modes_and_get_logger() -> N
         logging_mod.configure_logging(verbose=True, json_logs=False)
         console_processors = configure.call_args.kwargs["processors"]
         assert console_processors[-1] == "console-renderer"
-        console_renderer.assert_called_once_with(colors=True)
+        console_renderer.assert_called_once()
+        assert console_renderer.call_args.kwargs["colors"] is True
 
         logging_mod.configure_logging(verbose=False, json_logs=True)
         json_processors = configure.call_args.kwargs["processors"]
@@ -180,7 +181,50 @@ def test_configure_logging_accepts_typed_force_plain_config() -> None:
     ):
         logging_mod.configure_logging(verbose=False, json_logs=False)
 
-    console_renderer.assert_called_once_with(colors=False)
+    console_renderer.assert_called_once()
+    assert console_renderer.call_args.kwargs["colors"] is False
+
+
+def test_console_traceback_never_reads_frame_locals(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A logged exception renders without touching the failing frame's locals.
+
+    Anti-vacuity: the default ``ConsoleRenderer`` formatter shows locals, so
+    the ``len()`` below raises out of ``logger.error`` and the secret local
+    reaches stderr.
+    """
+    import structlog
+
+    class _ClosedIndex(frozenset[str]):
+        def __len__(self) -> int:
+            raise RuntimeError("closed")
+
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            raise RuntimeError("closed")
+
+    previous = structlog.get_config()
+    monkeypatch.setattr(logging_mod, "_structlog_configured", logging_mod._structlog_configured)
+    monkeypatch.setattr(logging_mod, "_log_level", logging_mod._log_level)
+    try:
+        with patch("sys.stderr.isatty", return_value=False):
+            logging_mod.configure_logging(verbose=False, json_logs=False)
+        logger = structlog.get_logger("polylogue.tests.locals")
+
+        def fail(closed: frozenset[str], secret: str) -> None:
+            raise ValueError("boom")
+
+        try:
+            # Joined at run time so the rendered source lines never hold it.
+            fail(_ClosedIndex(), "-".join(("private", "transcript", "text")))
+        except ValueError:
+            logger.error("failed", exc_info=True)
+    finally:
+        structlog.configure(**previous)
+    captured = capsys.readouterr()
+    rendered = captured.out + captured.err
+    assert "ValueError" in rendered
+    assert "private-transcript-text" not in rendered
 
 
 def test_stdlib_bound_logger_forwards_exc_info_before_structlog_configured(
