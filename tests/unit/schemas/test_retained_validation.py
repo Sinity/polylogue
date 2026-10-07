@@ -206,12 +206,11 @@ def test_retained_strict_counts_late_failure_and_advisory_accepts(tmp_path: Path
 def test_retained_validation_reports_real_nested_schema_traversal_progress(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue import logging as polylogue_logging
     from polylogue.core import work_progress
 
     events: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setattr(work_progress, "PROGRESS_INTERVAL_S", 0)
-    monkeypatch.setattr(polylogue_logging, "emit", lambda event, **fields: events.append((event, fields)))
+    monkeypatch.setattr(work_progress, "emit", lambda event, **fields: events.append((event, fields)))
 
     path = tmp_path / "raw.jsonl"
     record = {"type": "record", "kind": "session", **{f"field-{i}": "payload" * 12 for i in range(40)}}
