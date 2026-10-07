@@ -339,6 +339,7 @@ class AttachmentFact:
     carrier_valid: bool
     scope: str
     attachment_id: str
+    message_provider_id: str | None
     #: Digest of the ``inline_base64``/``data`` bytes an attachment already
     #: carries (``None`` when neither is present; an empty string is present).
     inline_carrier: bytes | None = None
@@ -427,6 +428,7 @@ def _attachment_fact(attachment: BrowserCaptureAttachment, *, scope: str) -> Att
         carrier_valid=valid,
         scope=scope,
         attachment_id=attachment.provider_attachment_id,
+        message_provider_id=attachment.message_provider_id,
         inline_carrier=inline_carrier,
         inline_valid=inline_valid,
     )
@@ -438,10 +440,11 @@ def _attachment_comparison_payload(attachment: BrowserCaptureAttachment) -> dict
     Size is retained as compatible evidence: absence may be enriched, while
     two known unequal sizes conflict. Inline and content carriers are compared
     by decoded bytes in ``AttachmentFact``. The explicit acquisition and
-    raw-coordinate fields stay in the envelope but do not change the observed
-    provider attachment's identity across retained revisions.
+    raw-coordinate fields stay in the envelope. They do not change identity
+    across retained revisions when a nonempty provider message owner is
+    present; id-less attachments retain those ordinal constraints.
     """
-    stable_owner = attachment.message_provider_id is not None
+    stable_owner = bool(attachment.message_provider_id)
     provider_meta = {
         key: value
         for key, value in attachment.provider_meta.items()

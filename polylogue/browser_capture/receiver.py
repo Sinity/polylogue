@@ -390,9 +390,9 @@ def _capture_carrier_conflicts(
 ) -> bool:
     """Reject carrier bytes that contradict an existing attachment identity.
 
-    Attachments pair by their scope and provider attachment ID, in observed
-    order within that group, so an attachment inserted into another turn or
-    ahead of an existing one is not compared against an unrelated object.
+    Attachments pair by their scope, provider attachment ID, and nonempty
+    provider message owner, in observed order within that group. Ownerless
+    occurrences retain their declared order within the scope and ID group.
     """
     incoming_groups = _scoped_attachment_facts(incoming)
     for key, previous_group in _scoped_attachment_facts(existing).items():
@@ -417,10 +417,11 @@ def _capture_carrier_conflicts(
     return False
 
 
-def _scoped_attachment_facts(summary: CaptureSummary) -> dict[tuple[str, str], list[AttachmentFact]]:
-    groups: dict[tuple[str, str], list[AttachmentFact]] = {}
+def _scoped_attachment_facts(summary: CaptureSummary) -> dict[tuple[str, str, str | None], list[AttachmentFact]]:
+    groups: dict[tuple[str, str, str | None], list[AttachmentFact]] = {}
     for fact in summary.attachments:
-        groups.setdefault((fact.scope, fact.attachment_id), []).append(fact)
+        owner = fact.message_provider_id or None
+        groups.setdefault((fact.scope, fact.attachment_id, owner), []).append(fact)
     return groups
 
 

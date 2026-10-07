@@ -472,3 +472,49 @@ def test_newer_metadata_only_attachment_revision_keeps_freshness_admission(tmp_p
     result = _write(incoming, tmp_path)
 
     assert result.convergence is CaptureConvergence.PUBLISH
+
+
+def test_session_attachment_owner_insertion_does_not_shift_existing_carriers(tmp_path: Path) -> None:
+    """A new owner's repeated ID does not re-pair other session-level occurrences."""
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1", "t2"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    resident["session"]["attachments"] = [
+        {"provider_attachment_id": "shared", "message_provider_id": owner, "content_base64": "YQ=="}
+        for owner in ("m1", "m2")
+    ]
+    incoming = copy.deepcopy(resident)
+    incoming["provenance"]["captured_at"] = "2026-04-24T00:01:00Z"
+    incoming["session"]["updated_at"] = "2026-04-24T00:01:00Z"
+    incoming["session"]["attachments"].insert(
+        0,
+        {"provider_attachment_id": "shared", "message_provider_id": "m0", "content_base64": "Yg=="},
+    )
+    incoming["session"]["turns"].append(_turn("t3", ordinal=2))
+
+    _write(resident, tmp_path)
+    result = _write(incoming, tmp_path)
+
+    assert result.convergence is CaptureConvergence.PUBLISH
+
+
+def test_empty_message_owner_keeps_declared_ordinal_identity(tmp_path: Path) -> None:
+    """An empty owner ID is id-less; changing its ordinal cannot enrich bytes."""
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    resident["session"]["attachments"] = [
+        {
+            "provider_attachment_id": "shared",
+            "message_provider_id": "",
+            "provider_meta": {"native_attachment_ordinal": 0, "native_turn_ordinal": 0},
+        }
+    ]
+    incoming = copy.deepcopy(resident)
+    incoming["session"]["attachments"][0]["provider_meta"]["native_attachment_ordinal"] = 1
+    incoming["session"]["attachments"][0]["content_base64"] = "YQ=="
+
+    _write(resident, tmp_path)
+    result = _write(incoming, tmp_path)
+
+    assert result.convergence is CaptureConvergence.SUPERSEDED
