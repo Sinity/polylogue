@@ -101,6 +101,11 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
 from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
 from polylogue.storage.sqlite.population_admission import assert_population_admitted
+from polylogue.storage.sqlite.reference_seal import (
+    IndexMutationDestination,
+    ReferenceSealStaleError,
+    index_path_for_connection,
+)
 
 _T = TypeVar("_T")
 
@@ -181,7 +186,7 @@ class IngestReprepareRequiredError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class SourceReceiptSpool:
-    """One pinned source/index projection reduced on disk by raw and logical ID."""
+    """One pinned Source projection reduced on disk by raw and logical ID."""
 
     path: Path
     source_generation_id: str
@@ -190,6 +195,7 @@ class SourceReceiptSpool:
     complete: bool
     confirmed_raw_count: int
     unresolved_raw_count: int
+    index_destination: IndexMutationDestination | None = None
 
     def close(self) -> None:
         unlink_spool(self.path)
@@ -239,6 +245,7 @@ def _spool_source_receipt(
     path: Path,
     *,
     check_stop: Callable[[], None] | None = None,
+    index_destination: IndexMutationDestination | None = None,
 ) -> SourceReceiptSpool:
     """Project all witnesses under one pinned pair without an unbounded result."""
     generation = source_conn.execute(
@@ -349,7 +356,7 @@ def _spool_source_receipt(
         confirmed = int(spool.execute("SELECT COUNT(*) FROM raws WHERE complete=1").fetchone()[0])
         unresolved = int(spool.execute("SELECT COUNT(*) FROM raws WHERE complete=0").fetchone()[0])
     return SourceReceiptSpool(
-        path, generation_id, observed_count, enumeration_complete, complete, confirmed, unresolved
+        path, generation_id, observed_count, enumeration_complete, complete, confirmed, unresolved, index_destination
     )
 
 
@@ -415,6 +422,8 @@ class IngestExecution:
         self.unchanged_publications = 0
         self.refused_count = 0
         self.source_items_sealable = False
+        self._materialization_index_destination: IndexMutationDestination | None = None
+        self._materialization_destination_bound = False
         self.inline_refusals: list[IngestRefusedMembershipHistorical] = []
         self.refusal_pages_ref: str | None = None
         self.refusal_page_count = 0
@@ -437,6 +446,21 @@ class IngestExecution:
                 "INSERT OR IGNORE INTO refusals(logical_key, raw_id, reason) VALUES (?, ?, ?)",
                 (logical_key, refusal.raw_id, refusal.kind.value),
             )
+
+    @staticmethod
+    def _validate_index_destination(destination: IndexMutationDestination) -> None:
+        try:
+            destination.validate()
+        except (FileNotFoundError, ReferenceSealStaleError) as exc:
+            raise IngestReprepareRequiredError("retained replay Index destination changed; retry required") from exc
+
+    @staticmethod
+    def _require_materialization_destination(
+        receipt: SourceReceiptSpool,
+        expected: IndexMutationDestination | None,
+    ) -> None:
+        if receipt.index_destination != expected:
+            raise IngestReprepareRequiredError("materialization receipt Index destination changed")
 
     def record_membership_refusal(self, logical_key: str, raw_id: str, reason: str) -> None:
         with spool_connection(self.state_path) as state:
@@ -574,6 +598,9 @@ class IngestExecution:
             # The active generation may move while the callback waits for the
             # single writer. Recheck immediately before Source mutations.
             self.require_publication_identity(identity)
+            self._require_materialization_destination(receipt, self._materialization_index_destination)
+            if receipt.index_destination is not None:
+                self._validate_index_destination(receipt.index_destination)
             changed = settle_materialized_source_items(
                 connection,
                 source_generation_id=generation.source_generation_id,
@@ -581,6 +608,8 @@ class IngestExecution:
                 observed_at_ms=int(time() * 1000),
                 check_stop=self.check_stop,
             )
+            if receipt.index_destination is not None:
+                self._validate_index_destination(receipt.index_destination)
             census = connection.execute(
                 "SELECT sealable FROM source_item_reconciliation WHERE source_generation_id=?",
                 (generation.source_generation_id,),
@@ -977,22 +1006,60 @@ class IngestExecution:
         if admitted_raw_ids:
             self.record_admitted_raws(admitted_raw_ids)
 
-    async def receipt(self, generation_id: str) -> SourceReceiptSpool:
+    async def receipt(
+        self,
+        generation_id: str,
+        *,
+        index_destination: IndexMutationDestination | None = None,
+    ) -> SourceReceiptSpool:
         fd, name = tempfile.mkstemp(prefix="polylogue-source-receipt-", suffix=".sqlite", dir=os.environ.get("TMPDIR"))
         os.close(fd)
         path = Path(name)
 
         def read_receipt(pinned: PinnedOperationRead) -> SourceReceiptSpool:
-            index_connection = pinned.archive.index_connection
-            if index_connection is None:
-                raise RuntimeError("accepted ingest requires the pinned index tier")
-            return _spool_source_receipt(
-                pinned.archive.source_connection,
-                index_connection,
-                generation_id,
-                path,
-                check_stop=self.check_stop,
-            )
+            if index_destination is None:
+                index_connection = pinned.archive.index_connection
+                if index_connection is None:
+                    raise RuntimeError("accepted ingest requires the pinned active index tier")
+                return _spool_source_receipt(
+                    pinned.archive.source_connection,
+                    index_connection,
+                    generation_id,
+                    path,
+                    check_stop=self.check_stop,
+                )
+
+            self._validate_index_destination(index_destination)
+            if index_destination.kind != "owned_inactive" or index_destination.index_path is None:
+                raise ValueError("receipt Index destination is not the owned inactive generation")
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+            assert index_destination.generation is not None
+            try:
+                candidate = ArchiveStore.open_owned_inactive_read(index_destination.generation)
+            except FileNotFoundError as exc:
+                raise IngestReprepareRequiredError("owned cold Index disappeared before receipt read") from exc
+            try:
+                index_connection = candidate.index_connection
+                if index_connection is None:
+                    raise RuntimeError("owned cold Index reader has no Index connection")
+                if index_path_for_connection(index_connection).resolve(strict=True) != index_destination.index_path:
+                    raise IngestReprepareRequiredError("receipt Index connection differs from its owned destination")
+                index_connection.execute("BEGIN")
+                index_connection.execute("SELECT rootpage FROM main.sqlite_schema LIMIT 1").fetchone()
+                self._validate_index_destination(index_destination)
+                receipt = _spool_source_receipt(
+                    pinned.archive.source_connection,
+                    index_connection,
+                    generation_id,
+                    path,
+                    check_stop=self.check_stop,
+                    index_destination=index_destination,
+                )
+                self._validate_index_destination(index_destination)
+                return receipt
+            finally:
+                candidate.close()
 
         try:
             return await self.read(read_receipt)
@@ -1048,13 +1115,20 @@ class IngestExecution:
             cursor: str | None = None
             while raw_page := initial.raw_page(cursor):
                 self.check_stop()
-                replay = await self.runtime.materialize_retained_raw_ids(
+                materialization = await self.runtime.materialize_retained_raw_ids(
                     raw_page,
                     on_terminal_refusal=refused,
                     on_dependency_refusal=dependency_refused,
                     on_membership_refusal=membership_refused,
                     before_publication=partial(self.require_publication_identity, expected),
                 )
+                if self._materialization_destination_bound:
+                    if self._materialization_index_destination != materialization.index_destination:
+                        raise ReferenceSealStaleError("retained raws used different Index destinations")
+                else:
+                    self._materialization_index_destination = materialization.index_destination
+                    self._materialization_destination_bound = True
+                replay = materialization.outcome
                 for publication in replay.receipts:
                     for logical_key, raw_id, decision in publication.membership_refusals:
                         self.record_membership_refusal(logical_key, raw_id, decision.value)
@@ -1069,7 +1143,12 @@ class IngestExecution:
                 cursor = raw_page[-1]
         finally:
             initial.close()
-        settled = await self.receipt(generation_id)
+        settled = await self.receipt(
+            generation_id,
+            index_destination=(
+                self._materialization_index_destination if self._materialization_destination_bound else None
+            ),
+        )
         try:
             await self._attribute_converged_sessions(settled)
         except BaseException:

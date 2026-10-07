@@ -11,6 +11,7 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.core.errors import SchemaVersionMismatchError
+from polylogue.operations.daemon_ingest import IngestExecution, IngestReprepareRequiredError, SourceReceiptSpool
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
@@ -19,6 +20,7 @@ from polylogue.sources.live.cold_build import (
 )
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.live_ingest import prepared_live_convergence_owner
 from tests.infra.source_builders import ChatGPTExportBuilder
@@ -133,3 +135,35 @@ async def test_owned_cold_read_admits_only_deferred_indexes_and_restores_reader_
                 assert "idx_blocks_type" in names
     finally:
         await run_archive_fixture_write(root, generation.discard)
+
+
+@pytest.mark.asyncio
+async def test_ingest_refuses_wrong_and_stale_owned_cold_receipt_destinations(tmp_path: Path) -> None:
+    roots = (tmp_path / "first", tmp_path / "second")
+
+    def begin(root: Path, reason: str) -> ColdBuildGeneration:
+        bootstrap_archive_root(root)
+        return ColdBuildGeneration.begin(
+            root,
+            reason=reason,
+            observed=ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", root / "absent"),)),
+        )
+
+    first = await run_archive_fixture_write(roots[0], lambda: begin(roots[0], "first-candidate"))
+    second = await run_archive_fixture_write(roots[1], lambda: begin(roots[1], "second-candidate"))
+    first_destination = IndexMutationDestination.owned_inactive(first.generation)
+    second_destination = IndexMutationDestination.owned_inactive(second.generation)
+    wrong_receipt = SourceReceiptSpool(
+        tmp_path / "unused-receipt.sqlite", "source-generation", 0, True, False, 0, 0, second_destination
+    )
+    try:
+        with pytest.raises(IngestReprepareRequiredError, match="destination changed"):
+            IngestExecution._require_materialization_destination(wrong_receipt, first_destination)
+
+        await run_archive_fixture_write(roots[0], first.discard)
+        with pytest.raises(IngestReprepareRequiredError, match="retry required"):
+            IngestExecution._validate_index_destination(first_destination)
+    finally:
+        if not first.settled:
+            await run_archive_fixture_write(roots[0], first.discard)
+        await run_archive_fixture_write(roots[1], second.discard)

@@ -25,9 +25,17 @@ from polylogue.operations.ingest_acceptance import INGEST_OPERATION
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.machine_receipts import IngestHistoricalReceiptV2
 from polylogue.operations.operation_context import PinnedOperationRead
+from polylogue.operations.raw_observation_owner import RetainedMaterializationResult
+from polylogue.sources.live import WatchSource
+from polylogue.sources.live.cold_build import (
+    ColdBuildGeneration,
+    clear_cold_build_generation,
+    register_cold_build_generation,
+)
 from polylogue.sources.prepared_jsonl import PreparedJsonl
 from polylogue.sources.revision_backfill import RetainedSessionRead
 from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.daemon_service_harness import ServiceHarness
 
@@ -1009,6 +1017,81 @@ async def test_ingest_counts_sessions_convergence_published_before_its_materiali
         ).fetchone()
     assert settled == [("admitted", "success", "materialization")]
     assert census == (0, 1, 0, 0, 1)
+
+
+@pytest.mark.timeout(300)
+async def test_ingest_settles_source_item_from_owned_cold_candidate_before_promotion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The receipt reads candidate rows while the active Index stays empty."""
+    from polylogue.storage.archive_identity import resolve_active_index_path
+
+    archive_root, source = await _archive(tmp_path)
+
+    def begin_candidate() -> ColdBuildGeneration:
+        return ColdBuildGeneration.begin(
+            archive_root,
+            reason="test-ingest-source-receipt",
+            observed=ColdBuildGeneration.observe_source_baseline(
+                (WatchSource("fixture", archive_root / "absent-source"),)
+            ),
+        )
+
+    candidate = await run_archive_fixture_write(archive_root, begin_candidate)
+    active_path = resolve_active_index_path(archive_root)
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    materializations: list[RetainedMaterializationResult] = []
+    original_materialize = DaemonOperationRuntime.materialize_retained_raw_ids
+
+    async def capture_destination(
+        self: DaemonOperationRuntime, *args: Any, **kwargs: Any
+    ) -> RetainedMaterializationResult:
+        result = await original_materialize(self, *args, **kwargs)
+        materializations.append(result)
+        return result
+
+    monkeypatch.setattr(DaemonOperationRuntime, "materialize_retained_raw_ids", capture_destination)
+    try:
+        with _serving(archive_root) as (harness, _server):
+            try:
+                register_cold_build_generation(candidate)
+                await archive.parse_file(source, source_name="neutral-cold-receipt")
+            finally:
+                await harness.close()
+
+        _operation_id, record = _only_request(archive_root)
+        generation_id = str(record["artifact_ref"])
+        with sqlite3.connect(archive_root / "source.db") as source_db:
+            items = source_db.execute(
+                "SELECT disposition, outcome_code, stage FROM source_items WHERE source_generation_id=?",
+                (generation_id,),
+            ).fetchall()
+            census = source_db.execute(
+                "SELECT pending, admitted, deliberate, unknown_blocking, sealable "
+                "FROM source_item_reconciliation WHERE source_generation_id=?",
+                (generation_id,),
+            ).fetchone()
+        assert items == [("admitted", "success", "materialization")]
+        assert census == (0, 1, 0, 0, 1)
+        assert materializations and materializations[0].index_destination is not None
+        assert materializations[0].index_destination.index_path == Path(candidate.generation.index_path)
+        assert materializations[0].outcome.receipts
+        assert any(receipt.written_session_ids for receipt in materializations[0].outcome.receipts)
+        assert resolve_active_index_path(archive_root) == active_path
+        with sqlite3.connect(active_path) as active:
+            assert active.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+        with ArchiveStore.open_owned_inactive_read(candidate.generation) as reader:
+            candidate_sessions = reader._conn.execute("SELECT session_id FROM sessions").fetchall()
+        candidate_session_ids = {str(row[0]) for row in candidate_sessions}
+        written_session_ids = {
+            session_id for receipt in materializations[0].outcome.receipts for session_id in receipt.written_session_ids
+        }
+        assert written_session_ids and written_session_ids <= candidate_session_ids
+    finally:
+        await archive.close()
+        clear_cold_build_generation()
+        await run_archive_fixture_write(archive_root, candidate.discard)
 
 
 @pytest.mark.asyncio

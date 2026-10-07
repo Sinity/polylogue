@@ -50,8 +50,10 @@ if TYPE_CHECKING:
         PreparedSessionSourceRead,
         RawObservationDerivation,
         RawObservationReplacement,
+        RetainedMaterializationResult,
         RetainedReplayOutcome,
     )
+    from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
 
 T = TypeVar("T")
 P = ParamSpec("P")
@@ -179,7 +181,7 @@ class RawObservationConvergenceOwner:
                 raise RuntimeError("raw observation convergence must start after the daemon writer lease is released")
             self._require_source_frontier_authority(raw_id)
             await self._prepare_cold_destination()
-            adapter, index_path = self._destination_adapter()
+            adapter, index_path, _index_destination = self._destination_adapter()
             owner = DerivationConvergenceOwner(
                 DaemonConverger((), derivations=(adapter,)),
                 compute_adapter=self._compute_adapter,
@@ -210,7 +212,9 @@ class RawObservationConvergenceOwner:
         if establish is not None:
             await self._write_coordinator.run_sync("retained.cold.destination", establish)
 
-    def _destination_adapter(self) -> tuple[RawObservationDerivation, Path | None]:
+    def _destination_adapter(
+        self,
+    ) -> tuple[RawObservationDerivation, Path | None, IndexMutationDestination | None]:
         """Bind preparation and its frame to the actual registered destination."""
         return self._archive.destination_adapter()
 
@@ -227,16 +231,42 @@ class RawObservationConvergenceOwner:
         before_publication: Callable[[], None] | None = None,
     ) -> RetainedReplayOutcome:
         acquired = tuple(raw_ids)
+        return (
+            await self.materialize_retained_raw_ids(
+                acquired,
+                on_terminal_refusal=on_terminal_refusal,
+                on_dependency_refusal=on_dependency_refusal,
+                on_membership_refusal=on_membership_refusal,
+                before_publication=before_publication,
+                select_retained_raw_ids=self._archive.sidecar_owner_selector(acquired),
+            )
+        ).outcome
+
+    async def materialize_retained_raw_ids(
+        self,
+        raw_ids: Sequence[str],
+        *,
+        select_retained_raw_ids: Callable[[PreparedSessionSourceRead], Sequence[str]] | None = None,
+        on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
+        on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None] | None = None,
+        on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None = None,
+        before_publication: Callable[[], None] | None = None,
+    ) -> RetainedMaterializationResult:
+        acquired = tuple(raw_ids)
         await self._write_coordinator.run_sync(
             "live.retained.destination", self._archive.retained_destination(before_publication)
         )
-        return await self.replay_retained_raw_ids(
+        return await self._materialize_retained_raw_ids(
             acquired,
+            select_retained_raw_ids=(
+                select_retained_raw_ids
+                if select_retained_raw_ids is not None
+                else self._archive.sidecar_owner_selector(acquired)
+            ),
             on_terminal_refusal=on_terminal_refusal,
             on_dependency_refusal=on_dependency_refusal,
             on_membership_refusal=on_membership_refusal,
             before_publication=before_publication,
-            select_retained_raw_ids=self._archive.sidecar_owner_selector(acquired),
         )
 
     async def replay_retained_raw_ids(
@@ -249,6 +279,27 @@ class RawObservationConvergenceOwner:
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None = None,
         before_publication: Callable[[], None] | None = None,
     ) -> RetainedReplayOutcome:
+        return (
+            await self._materialize_retained_raw_ids(
+                raw_ids,
+                select_retained_raw_ids=select_retained_raw_ids,
+                on_terminal_refusal=on_terminal_refusal,
+                on_dependency_refusal=on_dependency_refusal,
+                on_membership_refusal=on_membership_refusal,
+                before_publication=before_publication,
+            )
+        ).outcome
+
+    async def _materialize_retained_raw_ids(
+        self,
+        raw_ids: Sequence[str],
+        *,
+        select_retained_raw_ids: Callable[[PreparedSessionSourceRead], Sequence[str]] | None = None,
+        on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
+        on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None] | None = None,
+        on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None = None,
+        before_publication: Callable[[], None] | None = None,
+    ) -> RetainedMaterializationResult:
         """Settle real selected replay receipts, including preparatory Source phases."""
         selected = tuple(dict.fromkeys(raw_ids))
         if any(not raw_id for raw_id in selected):

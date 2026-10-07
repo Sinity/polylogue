@@ -72,7 +72,7 @@ if TYPE_CHECKING:
     from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance
     from polylogue.operations.audit import CanonicalAuditLiteral
     from polylogue.operations.insight_acceptance import AcceptedInsightPart, SessionInsightPartReceipt
-    from polylogue.operations.raw_observation_owner import RetainedReplayOutcome
+    from polylogue.operations.raw_observation_owner import RetainedMaterializationResult
 
 _T = TypeVar("_T")
 
@@ -188,7 +188,7 @@ class DaemonOperationRuntime:
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None],
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None],
         before_publication: Callable[[], None],
-    ) -> RetainedReplayOutcome:
+    ) -> RetainedMaterializationResult:
         owner = self.raw_observation_owner
         if (
             owner._archive_root.resolve() != self.archive_root
@@ -196,7 +196,7 @@ class DaemonOperationRuntime:
             or owner._write_coordinator is not self._bridge.coordinator
         ):
             raise ValueError("operation materialization requires its original supplied resident owner")
-        return await owner.ingest_retained_raw_ids(
+        return await owner.materialize_retained_raw_ids(
             raw_ids,
             on_terminal_refusal=on_terminal_refusal,
             on_dependency_refusal=on_dependency_refusal,

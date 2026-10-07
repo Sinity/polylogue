@@ -499,7 +499,7 @@ async def facade_record_work_event(
         on_membership_refusal=refuse_one,
         before_publication=lambda: None,
     )
-    receipts = replay.require_complete()
+    receipts = replay.outcome.require_complete()
     result = _daemon_writer_result(
         request,
         {

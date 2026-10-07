@@ -36,7 +36,6 @@ from polylogue.operations.operation_context import (
     open_operation_read,
 )
 from polylogue.operations.operation_context_types import OperationContext
-from polylogue.sources.revision_backfill import RetainedReplayOutcome
 from polylogue.storage.embeddings.generations import EmbeddingGenerationBusyError
 from polylogue.version import POLYLOGUE_VERSION
 
@@ -46,6 +45,7 @@ if TYPE_CHECKING:
     from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.operations.audit import CanonicalAuditLiteral
     from polylogue.operations.insight_acceptance import AcceptedInsightPart, SessionInsightPartReceipt
+    from polylogue.operations.raw_observation_owner import RetainedMaterializationResult
 
 
 class OperationRuntime(Protocol):
@@ -67,7 +67,7 @@ class OperationRuntime(Protocol):
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None],
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None],
         before_publication: Callable[[], None],
-    ) -> RetainedReplayOutcome: ...
+    ) -> RetainedMaterializationResult: ...
 
     async def compute_phase(self, work: Callable[[], _T]) -> _T: ...
 

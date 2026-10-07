@@ -13,6 +13,7 @@ import pickle
 import sqlite3
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
@@ -41,6 +42,7 @@ if TYPE_CHECKING:
     )
     from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+    from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
 
     #: Public annotation names for the daemon owner, which may not reach the
     #: source or storage packages directly.
@@ -49,7 +51,19 @@ if TYPE_CHECKING:
     AppendResult: TypeAlias = _AppendResult
 
 ReplayPhase = Literal["census", "classification", "replay"]
-DestinationAdapter = Callable[[], "tuple[RawObservationDerivation, Path | None]"]
+DestinationAdapter = Callable[[], "tuple[RawObservationDerivation, Path | None, IndexMutationDestination | None]"]
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedMaterializationResult:
+    """Replay receipts plus the exact Index destination used by the Raw owner.
+
+    ``None`` names the operation's already-pinned active Index. An inactive
+    candidate is carried by its existing ``IndexMutationDestination`` owner.
+    """
+
+    outcome: RetainedReplayOutcome
+    index_destination: IndexMutationDestination | None
 
 
 def retained_settlement_owners(retained: Sequence[RawObservationReplacement]) -> tuple[SQLCustodyOwner, ...]:
@@ -174,13 +188,17 @@ class RawObservationArchiveWork:
 
         return prepare
 
-    def destination_adapter(self) -> tuple[RawObservationDerivation, Path | None]:
-        """Bind preparation and its frame to the actual registered destination."""
+    def destination_adapter(
+        self,
+    ) -> tuple[RawObservationDerivation, Path | None, IndexMutationDestination | None]:
+        """Bind preparation, frame and receipt to the actual registered destination."""
         from polylogue.sources.live.cold_build import active_cold_build_generation
+        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
 
         cold_build = active_cold_build_generation(self._archive_root)
         generation = None if cold_build is None else cold_build.generation
         index_path = None if generation is None else Path(generation.index_path)
+        index_destination = None if generation is None else IndexMutationDestination.owned_inactive(generation)
         return (
             make_raw_observation_derivation(
                 self._archive_root,
@@ -190,6 +208,7 @@ class RawObservationArchiveWork:
                 validation_mode=self._validation_mode,
             ),
             index_path,
+            index_destination,
         )
 
     def append_plans_operation(
@@ -243,7 +262,7 @@ class RawObservationArchiveWork:
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None] | None,
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None,
         before_publication: Callable[[], None] | None,
-    ) -> Callable[[], RetainedReplayOutcome]:
+    ) -> Callable[[], RetainedMaterializationResult]:
         """Settle real selected replay receipts, including preparatory Source phases.
 
         The selector borrows each canonical Raw preparation's original reader;
@@ -260,7 +279,7 @@ class RawObservationArchiveWork:
         """
         archive_root = self._archive_root
 
-        def replay() -> RetainedReplayOutcome:
+        def replay() -> RetainedMaterializationResult:
             from polylogue.core.compute_cancel import check_compute_cancelled
             from polylogue.core.stage_admission import admit_stage_write
             from polylogue.sources.revision_backfill import (
@@ -270,7 +289,7 @@ class RawObservationArchiveWork:
                 RetainedReplayOutcome,
             )
 
-            adapter, index_path = destination()
+            adapter, index_path, index_destination = destination()
 
             def retire_original(current: RawObservationReplacement, primary: BaseException | None = None) -> None:
                 try:
@@ -528,7 +547,9 @@ class RawObservationArchiveWork:
                             "retained publication deferred without accepted Source progress"
                         )
                     previous_progress = progress_operand
-            return RetainedReplayOutcome(tuple(results), tuple(failures))
+            return RetainedMaterializationResult(
+                RetainedReplayOutcome(tuple(results), tuple(failures)), index_destination
+            )
 
         return replay
 
@@ -542,6 +563,7 @@ __all__ = [
     "RawObservationArchiveWork",
     "RawObservationDerivation",
     "RawObservationReplacement",
+    "RetainedMaterializationResult",
     "RetainedReplayOutcome",
     "retained_settlement_owners",
 ]
