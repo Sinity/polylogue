@@ -54,7 +54,13 @@ def lower_markers(
     license to replace a human's assertion or judgment at that id.  Existing
     non-agent rows and every terminal agent judgment are therefore preserved.
     """
-    ids: list[str] = []
+    return tuple(iter_lower_markers(conn, candidates, now_ms=now_ms))
+
+
+def iter_lower_markers(
+    conn: sqlite3.Connection, candidates: Iterable[MarkerCandidate], *, now_ms: int | None = None
+) -> Iterator[str]:
+    """Lower candidates incrementally without retaining every assertion ID."""
     for candidate in candidates:
         assertion_kind = candidate.assertion_kind
         if assertion_kind is None:
@@ -80,7 +86,7 @@ def lower_markers(
                 AssertionStatus.DELETED.value,
             }
         ):
-            ids.append(assertion_id)
+            yield assertion_id
             continue
         match = candidate.match
         upsert_assertion(
@@ -98,8 +104,7 @@ def lower_markers(
             visibility=AssertionVisibility.PRIVATE,
             now_ms=now_ms,
         )
-        ids.append(assertion_id)
-    return tuple(ids)
+        yield assertion_id
 
 
 def retire_marker_assertions(
@@ -112,10 +117,16 @@ def retire_marker_assertions(
     untouched agent ``candidate`` is superseded; a human's assertion or any
     judgment already made at that id is preserved.
     """
+    return tuple(iter_retire_marker_assertions(conn, assertion_ids, now_ms=now_ms))
+
+
+def iter_retire_marker_assertions(
+    conn: sqlite3.Connection, assertion_ids: Iterable[str], *, now_ms: int | None = None
+) -> Iterator[str]:
+    """Record retirements incrementally without collecting changed IDs."""
     from polylogue.storage.sqlite.archive_tiers.user_write import _now_ms
 
     timestamp = _now_ms() if now_ms is None else now_ms
-    retired: list[str] = []
     for assertion_id in assertion_ids:
         record_retired_marker_assertion(conn, assertion_id, now_ms=timestamp)
         existing = conn.execute(
@@ -127,8 +138,14 @@ def retire_marker_assertions(
         if existing[1] is not None and str(existing[1]) != AssertionStatus.CANDIDATE.value:
             continue
         if mark_assertion_status(conn, assertion_id, AssertionStatus.SUPERSEDED, now_ms=timestamp):
-            retired.append(assertion_id)
-    return tuple(retired)
+            yield assertion_id
 
 
-__all__ = ["assertion_id_for_marker", "candidates_for_block", "lower_markers", "retire_marker_assertions"]
+__all__ = [
+    "assertion_id_for_marker",
+    "candidates_for_block",
+    "iter_lower_markers",
+    "iter_retire_marker_assertions",
+    "lower_markers",
+    "retire_marker_assertions",
+]
