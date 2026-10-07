@@ -39,6 +39,16 @@ selected path without inspecting every source row
 `polylogue/storage/sqlite/archive_tiers/source.py:525-531`;
 `polylogue/storage/sqlite/archive_tiers/ops.py:218-225`).
 
+Raw/index materialization readiness may settle an unmatched raw as a valid
+non-session only from a complete typed, non-terminal artifact
+(`parse_as_session=0`, not schema-eligible, without decode errors or malformed
+JSONL), a current complete parser receipt, and a current zero-member
+`raw_membership_census.status='non_session'` receipt whose exact identities
+match. A path or payload that merely resembles a sidecar does not settle an
+unreceipted raw; decode failures, unsupported/refused artifacts, validation
+refusals, mixed session cohorts, and missing or stale receipts remain visible
+gaps (`storage/archive_readiness.py`).
+
 Prepared frontier inspection uses the resident preparation owner and the same
 original Source, Index and Ops inputs through publication. Source migration
 005 and the derived-tier DDL journal changes to the dependencies of accepted

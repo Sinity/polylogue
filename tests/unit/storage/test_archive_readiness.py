@@ -1170,7 +1170,7 @@ def test_raw_materialization_snapshot_classifies_source_path_aliases(tmp_path: P
     assert _category_counts(snapshot)["materialized-alias"] == 1
 
 
-def test_raw_materialization_snapshot_classifies_parsed_non_session_artifacts(tmp_path: Path) -> None:
+def test_raw_materialization_snapshot_keeps_unreceipted_non_session_shaped_raw_unchecked(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     blob = tmp_path / "blob" / "dd" / ("dd" * 31)
@@ -1210,12 +1210,106 @@ def test_raw_materialization_snapshot_classifies_parsed_non_session_artifacts(tm
     _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
-    assert snapshot["classification"] == "cheap_projection"
-    assert snapshot["classified"] == 1
-    assert snapshot["unchecked"] == 0
+    assert snapshot["classified"] == 0
+    assert snapshot["unchecked"] == 1
     counts = _category_counts(snapshot)
-    assert counts["parsed-non-session-artifact"] == 1
-    assert counts["raw_id_join_gap"] == 0
+    assert counts["raw_id_join_gap"] == 1
+
+
+def test_raw_materialization_snapshot_accepts_currently_censused_typed_empty_claude_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real raw-only intake is complete by typed artifact and current parser receipts."""
+    from types import SimpleNamespace
+
+    import polylogue.paths as polylogue_paths
+    import polylogue.sources.live.watcher as live_watcher
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.sources.live.cursor import CursorStore
+    from polylogue.sources.live.watcher import default_sources
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.raw_owner_routes import run_ingest_files
+
+    bootstrap_archive_root(tmp_path)
+    claude_root = tmp_path / "neutral-home" / ".claude"
+    claude_root.mkdir(parents=True)
+    source_path = claude_root / "history.jsonl"
+    source_path.write_bytes(b"")
+    monkeypatch.setattr(polylogue_paths, "claude_code_path", lambda: claude_root / "projects")
+
+    source = next(item for item in default_sources() if item.name == "claude-code-history")
+    processor = LiveBatchProcessor(
+        SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db")),
+        (source,),
+        cursor=CursorStore(tmp_path / "ops.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    metrics = run_ingest_files(processor, [source_path], emit_event=False)
+    assert metrics.excluded_file_count == 1 and metrics.failed_file_count == 0, metrics
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        raw_id = str(conn.execute("SELECT raw_id FROM raw_sessions").fetchone()[0])
+        assert conn.execute(
+            "SELECT artifact_kind, parse_as_session, schema_eligible, support_status, decode_error, "
+            "malformed_jsonl_lines FROM raw_artifacts WHERE raw_id=?",
+            (raw_id,),
+        ).fetchall() == [("prompt_history_log", 0, 0, "unknown", None, 0)]
+        assert conn.execute(
+            "SELECT status, member_count, parser_fingerprint FROM raw_membership_census WHERE raw_id=?", (raw_id,)
+        ).fetchone() == ("non_session", 0, raw_authority_parser_fingerprint())
+        assert conn.execute(
+            "SELECT parser_fingerprint, status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id=?",
+            (raw_id,),
+        ).fetchone() == (raw_authority_parser_fingerprint(), "complete", "[]")
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=True)
+    assert snapshot["raw_artifact_count"] == 1
+    assert snapshot["materialized_raw_artifact_count"] == 0
+    assert snapshot["join_gap_count"] == 1
+    assert snapshot["classified"] == 1
+    assert snapshot["affected_unchecked"] == 0
+    assert _category_counts(snapshot)["parsed-non-session-artifact"] == 1
+    assert raw_materialization_ready(snapshot) is True
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_artifacts SET artifact_kind='terminal_unsupported_shape', "
+            "support_status='unsupported_parseable' WHERE raw_id=?",
+            (raw_id,),
+        )
+        conn.commit()
+    unsupported = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=True)
+    assert unsupported["classified"] == 0
+    assert unsupported["affected_unchecked"] == 1
+    assert raw_materialization_ready(unsupported) is False
+
+    # Durable parser receipts cannot erase a later validation refusal or
+    # retained decode failure for the same typed artifact.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_artifacts SET artifact_kind='prompt_history_log', support_status='unknown' WHERE raw_id=?",
+            (raw_id,),
+        )
+        conn.execute("UPDATE raw_sessions SET validation_status='failed' WHERE raw_id=?", (raw_id,))
+        conn.commit()
+    refused = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=True)
+    assert refused["classified"] == 0
+    assert refused["affected_actionable"] == 1
+    assert _category_counts(refused)["parse_failed"] == 1
+    assert raw_materialization_ready(refused) is False
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET validation_status=NULL, parse_error='decode: malformed retained bytes' "
+            "WHERE raw_id=?",
+            (raw_id,),
+        )
+        conn.commit()
+    decode_failed = raw_materialization_readiness_snapshot(tmp_path, classify_gaps=True)
+    assert decode_failed["classified"] == 0
+    assert decode_failed["affected_actionable"] == 1
+    assert _category_counts(decode_failed)["parse_failed"] == 1
+    assert raw_materialization_ready(decode_failed) is False
 
 
 def test_raw_materialization_snapshot_keeps_unexplained_gaps_unchecked(tmp_path: Path) -> None:
@@ -1280,12 +1374,12 @@ def test_raw_materialization_snapshot_keeps_unexplained_gaps_unchecked(tmp_path:
 
     assert snapshot["raw_artifact_count"] == 2
     assert snapshot["total"] == 2
-    assert snapshot["classified"] == 1
-    assert snapshot["unchecked"] == 1
-    assert snapshot["affected_unchecked"] == 1
+    assert snapshot["classified"] == 0
+    assert snapshot["unchecked"] == 2
+    assert snapshot["affected_unchecked"] == 2
     counts = _category_counts(snapshot)
-    assert counts["parsed-non-session-artifact"] == 1
-    assert counts["raw_id_join_gap"] == 1
+    assert "parsed-non-session-artifact" not in counts
+    assert counts["raw_id_join_gap"] == 2
 
 
 def test_raw_materialization_snapshot_classifies_same_native_lost_source_evidence(

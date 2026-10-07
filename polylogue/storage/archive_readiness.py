@@ -12,15 +12,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from polylogue.archive.raw_materialization import (
-    parsed_non_session_artifact_reason,
-    source_path_native_id_candidates,
-)
+from polylogue.archive.raw_materialization import source_path_native_id_candidates
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     parser_census_identity_measurement,
 )
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.raw_failure_evidence import RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.sqlite_introspection import view_exists
 from polylogue.logging import get_logger
@@ -1166,6 +1164,8 @@ def _raw_gap_select_columns() -> str:
         "validation_status",
         "parse_error",
         "parsed_at_ms",
+        "logical_source_key",
+        "revision_kind",
     )
     return ",\n                        ".join(f"r.{name}" for name in names)
 
@@ -1255,10 +1255,18 @@ def _raw_gap_category(
         source_schema=source_schema,
     ):
         return "lost-source-evidence-alias"
-    if _raw_gap_parsed_non_session_artifact(archive_root, row):
-        return "parsed-non-session-artifact"
-    if row["parse_error"]:
+    # Parser failures and explicit validation refusals remain visible even if
+    # their bytes or path would otherwise look like a non-session artifact.
+    if row["parse_error"] or row["validation_status"] == "failed":
         return "parse-failed"
+    if _raw_gap_current_typed_non_session(
+        conn,
+        row,
+        source_schema=source_schema,
+        has_membership_census=has_membership_census,
+        has_session_memberships=has_session_memberships,
+    ):
+        return "parsed-non-session-artifact"
     authority_category = _raw_gap_authority_category(
         conn,
         row,
@@ -1270,6 +1278,99 @@ def _raw_gap_category(
     if authority_category is not None:
         return authority_category
     return None
+
+
+def _raw_gap_current_typed_non_session(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    source_schema: str,
+    has_membership_census: bool,
+    has_session_memberships: bool,
+) -> bool:
+    """Use current typed artifact and parser receipts to settle a non-session gap.
+
+    The parser receipt and exact identity measurement are the same authority
+    used by the archive's parser-census projection. A filename or a second
+    content classifier cannot turn an unmeasured raw into a completed input.
+    """
+    if (
+        not has_membership_census
+        or not has_session_memberships
+        or not _table_exists(conn, "raw_authority_parser_census", schema=source_schema)
+        or not _table_exists(conn, "raw_artifacts", schema=source_schema)
+    ):
+        return False
+    raw_id = str(row["raw_id"])
+    fingerprint = raw_authority_parser_fingerprint()
+    terminal_pairs = RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS
+    terminal_placeholders = ", ".join("(?, ?)" for _ in terminal_pairs)
+    receipt = conn.execute(
+        f"""SELECT p.parser_fingerprint, p.status, p.logical_keys_json,
+                   c.parser_fingerprint, c.status, c.member_count
+            FROM {source_schema}.raw_authority_parser_census AS p
+            JOIN {source_schema}.raw_membership_census AS c ON c.raw_id=p.raw_id
+            WHERE p.raw_id=?
+              AND EXISTS (
+                  SELECT 1 FROM {source_schema}.raw_artifacts AS a
+                  WHERE a.raw_id=p.raw_id AND a.parse_as_session=0
+                    AND a.schema_eligible=0 AND a.decode_error IS NULL
+                    AND a.malformed_jsonl_lines=0
+                    AND (a.artifact_kind, a.support_status) NOT IN ({terminal_placeholders})
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM {source_schema}.raw_artifacts AS failure
+                  WHERE failure.raw_id=p.raw_id
+                    AND (failure.artifact_kind, failure.support_status) IN ({terminal_placeholders})
+              )""",
+        (
+            raw_id,
+            *(value for pair in terminal_pairs for value in pair),
+            *(value for pair in terminal_pairs for value in pair),
+        ),
+    ).fetchone()
+    if receipt is None:
+        return False
+    (
+        parser_fingerprint,
+        parser_status,
+        logical_keys_json,
+        membership_fingerprint,
+        membership_status,
+        member_count,
+    ) = receipt
+    if (
+        str(parser_fingerprint) != fingerprint
+        or str(parser_status) != "complete"
+        or str(membership_fingerprint) != fingerprint
+        or str(membership_status) != "non_session"
+        or int(member_count) != 0
+    ):
+        return False
+
+    def membership_keys() -> Any:
+        with closing(
+            conn.execute(
+                f"SELECT logical_source_key FROM {source_schema}.raw_session_memberships "
+                "WHERE raw_id=? ORDER BY logical_source_key",
+                (raw_id,),
+            )
+        ) as memberships:
+            for membership in memberships:
+                yield membership[0]
+
+    with parser_census_identity_measurement(
+        raw_logical_key=row["logical_source_key"],
+        revision_kind=row["revision_kind"],
+        membership_logical_keys=membership_keys(),
+        observed_logical_keys=iter_parser_census_logical_keys(logical_keys_json),
+        observed_are_receipt=True,
+    ) as measured:
+        return measured.complete(
+            typed_non_session=True,
+            parser_confirmed_non_session=True,
+            byte_governed_fragment=False,
+        )
 
 
 def _raw_gap_authority_category(
@@ -1417,23 +1518,6 @@ def _raw_gap_matches_missing_index_raw_link(
         if existing is not None:
             return True
     return False
-
-
-def _raw_gap_parsed_non_session_artifact(
-    archive_root: Path,
-    row: sqlite3.Row,
-) -> bool:
-    if row["parse_error"] or row["parsed_at_ms"] is None:
-        return False
-    return (
-        parsed_non_session_artifact_reason(
-            archive_root=archive_root,
-            origin=str(row["origin"] or ""),
-            source_path=str(row["source_path"] or ""),
-            blob_hash=row["blob_hash"],
-        )
-        is not None
-    )
 
 
 # ---------------------------------------------------------------------------
