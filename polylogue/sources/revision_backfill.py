@@ -4354,7 +4354,7 @@ def _prepared_accepted_marker_sessions(
     selected_session_ids: set[str],
     prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
     marker_write_factory: Callable[[str, ParsedSession], PreparedSessionWrite],
-) -> Iterator[tuple[str, PreparedSessionWrite, tuple[object, ...]]]:
+) -> Generator[tuple[str, PreparedSessionWrite, tuple[object, ...]], None, None]:
     """Stream canonical marker writes, closing each owned temporary after use."""
     from polylogue.sources.parsers.base_models import ParsedSession as ParsedSessionModel
 

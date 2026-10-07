@@ -4,35 +4,32 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import re
 import sqlite3
 import uuid
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
-from polylogue.config import Config
 from polylogue.core.enums import Provider, Role
 from polylogue.markers.preparation import marker_candidates_for_prepared_write, marker_recipe_fingerprint
-from polylogue.pipeline.services.ingest_batch import _core as ingest_batch_core
-from polylogue.pipeline.services.parsing import ParsingService
-from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.sources.revision_backfill import RetainedReplayOutcome
 from polylogue.storage.accepted_marker_inputs import (
     AcceptedMarkerInputRefusedError,
     append_accepted_marker_input,
     finalize_pending_accepted_marker_input,
     prepare_accepted_marker_input,
 )
-from polylogue.storage.repository import SessionRepository
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write
-from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.index_writer import fixture_index_mutation_scope, write_fixture_index_session
+from tests.infra.raw_owner_routes import replay_retained_raws
+from tests.infra.retained_jsonl import acquire_full_revision
 from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
 
 
@@ -373,37 +370,70 @@ def test_request_identity_uses_full_parse_while_carrier_keeps_selected_delta() -
     assert changed_recipe.identity != original.identity
 
 
-@pytest.mark.asyncio
-async def test_source_required_mode_refuses_before_retained_publication(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_retained_owner_publishes_marker_carrier_from_the_accepted_raw(
+    tmp_path: Path, workspace_env: dict[str, Path]
 ) -> None:
-    """A required durable acceptance cannot begin as an index-only write.
-
-    No canonical accepted-marker/outbox producer exists on the retained route,
-    so any non-off Sinex mode refuses before the retained owner runs. Calling
-    the runner first, or accepting a non-off mode, makes this red.
-    """
-    from polylogue.sinex.material_adapter import PublicationEncodingError
-
-    calls: list[tuple[str, ...]] = []
-
-    async def retained_runner(raw_ids: object, **_refusal_handlers: object) -> RetainedReplayOutcome:
-        calls.append(tuple(cast(Any, raw_ids)))
-        return RetainedReplayOutcome()
-
-    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"))
-    service = ParsingService(
-        repository=repository,
-        archive_root=tmp_path,
-        config=Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[]),
-        retained_runner=retained_runner,
-    )
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "primary"})(),
-    )
-    with pytest.raises(PublicationEncodingError, match="accepted-marker and outbox producer"):
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, ["required-source"], ParseResult(), None
+    """The production retained owner binds marker content and custody to its accepted raw."""
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "retained-marker.jsonl"
+    native_id = "retained-marker"
+    payload = (
+        b"\n".join(
+            (
+                json.dumps(
+                    {"type": "session_meta", "payload": {"id": native_id, "timestamp": "2026-01-01T00:00:00Z"}},
+                    sort_keys=True,
+                ).encode(),
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "id": "retained-marker-message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "::note: retained owner note"}],
+                        },
+                    },
+                    sort_keys=True,
+                ).encode(),
+            )
         )
-    assert calls == []
+        + b"\n"
+    )
+
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        raw_id = acquire_full_revision(
+            archive,
+            provider=Provider.CODEX,
+            source_path=source_path,
+            payload=payload,
+            native_id=native_id,
+            generation=0,
+            acquired_at_ms=1,
+        )
+
+    replay_retained_raws(archive_root, (raw_id,))
+
+    state = _accepted_marker_state(archive_root / "source.db", raw_id)
+    assert state is not None
+    sequence, carrier_bytes, _index_incarnation_id = state
+    assert sequence == 1
+    carrier = json.loads(cast(bytes, carrier_bytes))
+    assert carrier["raw_id"] == raw_id
+    assert carrier["request_facts"]["source_path"] == str(source_path)
+    assert carrier["request_facts"]["provider"] == Provider.CODEX.value
+    assert [session["session_id"] for session in carrier["request_sessions"]] == [f"codex-session:{native_id}"]
+    candidates = carrier["sessions"][0]["candidates"]
+    assert len(candidates) == 1
+    assert candidates[0]["match"]["body"] == "retained owner note"
+    with sqlite3.connect(archive_root / "index.db") as index:
+        retained_message = index.execute(
+            "SELECT message_id FROM messages WHERE session_id = ?", (f"codex-session:{native_id}",)
+        ).fetchone()
+    assert retained_message is not None
+    assert candidates[0]["provenance"]["message_id"] == retained_message[0]
+
+    with sqlite3.connect(archive_root / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
+        parsed_at = source.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+        assert parsed_at is not None and parsed_at[0] is not None

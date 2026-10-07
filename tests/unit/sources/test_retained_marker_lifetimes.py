@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Generator, Iterable
 from contextlib import closing
 from types import SimpleNamespace
 from typing import cast
@@ -18,7 +18,7 @@ from polylogue.sources.revision_backfill import (
     _prepared_accepted_marker_sessions,
 )
 from polylogue.storage import accepted_marker_producer
-from polylogue.storage.accepted_marker_producer import prepare_accepted_marker_carrier
+from polylogue.storage.accepted_marker_producer import PreparedAcceptedMarkerCarrier, prepare_accepted_marker_carrier
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite
 
 
@@ -26,7 +26,7 @@ class _PreparedArtifact:
     def __init__(self, sessions: tuple[ParsedSession, ...]) -> None:
         self.sessions = sessions
 
-    def iter_sessions(self):
+    def iter_sessions(self) -> Generator[ParsedSession, None, None]:
         yield from self.sessions
 
 
@@ -60,7 +60,7 @@ def _carrier(
     raw_id: str,
     sessions: tuple[ParsedSession, ...],
     writes: Iterable[tuple[str, PreparedSessionWrite, tuple[object, ...]]],
-):
+) -> PreparedAcceptedMarkerCarrier:
     bindings = tuple(_accepted_marker_request_session_binding(session) for session in sessions)
     return prepare_accepted_marker_carrier(
         raw_id=raw_id,
@@ -109,7 +109,7 @@ def test_marker_only_write_closes_when_carrier_consumption_fails_or_cancels(fail
     def make_write(_raw_id: str, _session: ParsedSession) -> PreparedSessionWrite:
         return cast(PreparedSessionWrite, _PreparedWrite(tracker))
 
-    def fail_candidates(_prepared: PreparedSessionWrite):
+    def fail_candidates(_prepared: PreparedSessionWrite) -> Generator[dict[str, object], None, None]:
         raise failure
         yield {}  # Make this a generator while preserving the injected failure.
 
