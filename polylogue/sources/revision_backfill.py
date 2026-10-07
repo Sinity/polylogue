@@ -902,7 +902,11 @@ def prepare_retained_jsonl_artifact(
                 "retained JSON refusal and artifact cleanup failed", [blob_refusal, cleanup]
             ) from None
         raise blob_refusal
-    if artifact.error is None and artifact.resolved_provider is not None:
+    if (
+        artifact.error is None
+        and artifact.resolved_provider is not None
+        and not path_declaration_refuses_session(provider, source_path)
+    ):
         from polylogue.schemas import validate_retained_document
 
         validation_jsonl = is_jsonl_source_path(source_path)
