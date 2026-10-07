@@ -1095,6 +1095,7 @@ class PreparedJsonl:
             metadata["messages"] = []
             metadata["session_events"] = []
             metadata["attachments"] = []
+            _restore_spilled_accounting(metadata, self.sessions_path)
             session = ParsedSession.model_validate(metadata)
             yield session.model_copy(
                 update={
@@ -1578,6 +1579,7 @@ class PreparedJsonl:
             metadata["messages"] = []
             metadata["session_events"] = []
             metadata["attachments"] = []
+            _restore_spilled_accounting(metadata, self.sessions_path)
             session = ParsedSession.model_validate(metadata)
             return session.model_copy(
                 update={
@@ -2199,6 +2201,18 @@ def _prepare_sidecar_publications(store: SqliteMessageStore, publisher: ArchiveB
     store.conn.commit()
 
 
+def _restore_spilled_accounting(metadata: dict[str, object], sessions_path: Path) -> None:
+    accounting = metadata.get("unit_accounting")
+    if not isinstance(accounting, dict):
+        return
+    outcomes = accounting.get("outcomes")
+    if not isinstance(outcomes, dict) or "$polylogue_spilled_outcomes" not in outcomes:
+        return
+    from polylogue.sources.parsers.base_models import ParseAccounting
+
+    metadata["unit_accounting"] = ParseAccounting.from_prepared_payload(accounting, sessions_path)
+
+
 def _append_artifact_session(store: SqliteMessageStore, ordinal: int, session: ParsedSession) -> None:
     conn = store.conn
     source_messages: object = session.messages
@@ -2227,7 +2241,7 @@ def _append_artifact_session(store: SqliteMessageStore, ordinal: int, session: P
     metadata["content_hash"] = session.content_hash
     metadata["enrichment_evidence_key"] = session.enrichment_evidence_key
     metadata["unit_accounting"] = (
-        session.unit_accounting.model_dump(mode="json") if session.unit_accounting is not None else None
+        session.unit_accounting.to_prepared_payload() if session.unit_accounting is not None else None
     )
     metadata["provider_session_aliases"] = session.provider_session_aliases
     metadata["created_at_provenance"] = session.created_at_provenance

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import heapq
 import math
 from bisect import bisect_right
 from collections.abc import Iterator, Mapping, Sequence
+from pathlib import Path
 from typing import Literal
 
 from pydantic import (
@@ -14,6 +16,7 @@ from pydantic import (
     Field,
     FieldSerializationInfo,
     PrivateAttr,
+    SkipValidation,
     ValidationInfo,
     field_serializer,
     field_validator,
@@ -139,34 +142,113 @@ class ParseAccounting(BaseModel):
     """
 
     expected: dict[AdmissionUnit, int] = Field(default_factory=dict)
-    outcomes: list[AdmissionOutcome] = Field(default_factory=list)
+    outcomes: SkipValidation[object] = Field(default_factory=list)
     materialized_ordinals: dict[AdmissionUnit, list[tuple[int, int]]] = Field(default_factory=dict)
+
+    def to_prepared_payload(self) -> dict[str, object]:
+        from polylogue.sources.parse_accounting_spool import SpilledParseAccountingOutcomes
+
+        if isinstance(self.outcomes, SpilledParseAccountingOutcomes):
+            outcomes: object = {
+                "$polylogue_spilled_outcomes": self.outcomes.accounting_id,
+                "count": len(self.outcomes),
+            }
+        else:
+            outcomes = [
+                item.model_dump(mode="json") if isinstance(item, AdmissionOutcome) else item
+                for item in self.outcomes  # type: ignore[union-attr]
+            ]
+        return {
+            "expected": {unit.value: count for unit, count in self.expected.items()},
+            "outcomes": outcomes,
+            "materialized_ordinals": {
+                unit.value: [[start, end] for start, end in ranges]
+                for unit, ranges in self.materialized_ordinals.items()
+            },
+        }
+
+    @classmethod
+    def from_prepared_payload(cls, value: object, path: Path) -> ParseAccounting:
+        from polylogue.sources.parse_accounting_spool import SpilledParseAccountingOutcomes
+
+        if not isinstance(value, Mapping):
+            raise ValueError("prepared parse accounting must be an object")
+        raw_outcomes = value.get("outcomes", [])
+        if isinstance(raw_outcomes, Mapping) and isinstance(raw_outcomes.get("$polylogue_spilled_outcomes"), str):
+            accounting_id = str(raw_outcomes["$polylogue_spilled_outcomes"])
+            raw_outcomes = SpilledParseAccountingOutcomes.from_prepared_reference(
+                path, accounting_id, int(raw_outcomes.get("count", -1))
+            )
+        return cls(
+            expected=value.get("expected", {}),
+            outcomes=raw_outcomes,
+            materialized_ordinals=value.get("materialized_ordinals", {}),
+        )
+
+    @field_validator("outcomes", mode="before")
+    @classmethod
+    def validate_outcomes(cls, value: object) -> object:
+        from polylogue.sources.parse_accounting_spool import SpilledParseAccountingOutcomes
+
+        if isinstance(value, SpilledParseAccountingOutcomes):
+            return value
+        if value is None:
+            return []
+        if isinstance(value, (str, bytes, Mapping)):
+            raise ValueError("parse accounting outcomes require an iterable of outcome records")
+        try:
+            return [
+                item if isinstance(item, AdmissionOutcome) else AdmissionOutcome.model_validate(item) for item in value
+            ]  # type: ignore[union-attr]
+        except TypeError as exc:
+            raise ValueError("parse accounting outcomes require an iterable of outcome records") from exc
 
     def iter_outcomes(self) -> Iterator[AdmissionOutcome]:
         """Yield every terminal outcome, materialized ranges expanded, in ordinal order per unit."""
+        from polylogue.sources.parse_accounting_spool import SpilledParseAccountingOutcomes
+
+        outcomes = self.outcomes
+        if isinstance(outcomes, SpilledParseAccountingOutcomes):
+            units = list(dict.fromkeys((*self.expected, *self.materialized_ordinals)))
+            for unit in units:
+                exceptional = (AdmissionOutcome.model_validate(item) for item in outcomes.iter_unit(unit.value))
+                ranges = _materialized_outcomes(unit, self.materialized_ordinals.get(unit, ()))
+                yield from heapq.merge(exceptional, ranges, key=lambda item: item.ordinal)
+            return
         by_unit: dict[AdmissionUnit, list[AdmissionOutcome]] = {}
-        for outcome in self.outcomes:
-            by_unit.setdefault(outcome.unit, []).append(outcome)
+        for outcome in outcomes:  # type: ignore[union-attr]
+            parsed = outcome if isinstance(outcome, AdmissionOutcome) else AdmissionOutcome.model_validate(outcome)
+            by_unit.setdefault(parsed.unit, []).append(parsed)
         units = list(dict.fromkeys((*self.materialized_ordinals, *by_unit)))
         for unit in units:
-            expanded: list[AdmissionOutcome] = list(by_unit.get(unit, ()))
-            for start, end in self.materialized_ordinals.get(unit, ()):
-                expanded.extend(
-                    AdmissionOutcome(
-                        unit=unit,
-                        ordinal=ordinal,
-                        key=str(ordinal),
-                        disposition=AdmissionDisposition.MATERIALIZED,
-                    )
-                    for ordinal in range(start, end)
-                )
-            expanded.sort(key=lambda item: item.ordinal)
-            yield from expanded
+            exceptional = sorted(by_unit.get(unit, ()), key=lambda item: item.ordinal)
+            ranges = _materialized_outcomes(unit, self.materialized_ordinals.get(unit, ()))
+            yield from heapq.merge(iter(exceptional), ranges, key=lambda item: item.ordinal)
 
     def assert_conserved(self) -> None:
         expected = {unit: int(count) for unit, count in self.expected.items()}
         if any(count < 0 for count in expected.values()):
             raise ValueError("admission denominators cannot be negative")
+        from polylogue.sources.parse_accounting_spool import SpilledParseAccountingOutcomes
+
+        if isinstance(self.outcomes, SpilledParseAccountingOutcomes):
+            ranges: dict[AdmissionUnit, list[tuple[int, int]]] = {}
+            actual = self.outcomes.count_by_unit()
+            for unit, raw_ranges in self.materialized_ordinals.items():
+                ordered = sorted((int(start), int(end)) for start, end in raw_ranges)
+                previous_end = 0
+                for start, end in ordered:
+                    if end <= start or start < 0 or end > expected.get(unit, 0) or start < previous_end:
+                        raise ValueError(f"invalid materialized admission range for {unit.value}: [{start}, {end})")
+                    if self.outcomes.overlaps(unit.value, start, end):
+                        raise ValueError(f"duplicate admission outcome for {unit.value}[{start}]")
+                    previous_end = end
+                    actual[unit.value] = actual.get(unit.value, 0) + end - start
+                ranges[unit] = ordered
+            normalized_expected = {unit.value: count for unit, count in expected.items() if count}
+            if actual != normalized_expected:
+                raise ValueError(f"admission denominator mismatch: expected={normalized_expected}, actual={actual}")
+            return
         actual: dict[AdmissionUnit, int] = {}
         # Ranges are validated without enumerating their members: sorted,
         # non-empty, and pairwise disjoint proves the same no-duplicate
@@ -196,6 +278,17 @@ class ParseAccounting(BaseModel):
             actual[outcome.unit] = actual.get(outcome.unit, 0) + 1
         if actual != {unit: count for unit, count in expected.items() if count}:
             raise ValueError(f"admission denominator mismatch: expected={expected}, actual={actual}")
+
+
+def _materialized_outcomes(unit: AdmissionUnit, ranges: Sequence[tuple[int, int]]) -> Iterator[AdmissionOutcome]:
+    for start, end in ranges:
+        for ordinal in range(start, end):
+            yield AdmissionOutcome(
+                unit=unit,
+                ordinal=ordinal,
+                key=str(ordinal),
+                disposition=AdmissionDisposition.MATERIALIZED,
+            )
 
 
 class ParsedWebConstruct(BaseModel):

@@ -154,12 +154,105 @@ def _event_payload_hash(event_type: str, payload: Mapping[str, object]) -> str:
     """Hash event content with typed framing only for lossy legacy values."""
     excluded = _EVENT_PAYLOAD_EXCLUDED_KEYS.get(event_type)
     content = {key: value for key, value in payload.items() if key not in excluded} if excluded else payload
+    from polylogue.sources.streamed_event_payload import StreamedJsonArray, iter_json_value
+
+    if _contains_streamed_json_array(content):
+        normalized = _normalize_streamed_payload(content)
+        collision = _has_typed_lowering_collision(content)
+        if not collision:
+            digest = hashlib.sha256()
+            for chunk in iter_json_value(normalized, ensure_ascii=True, sort_keys=True):
+                digest.update(chunk.encode("ascii"))
+            return digest.hexdigest()
+        # The legacy digest plus typed witness is one framed byte string. Keep
+        # that preimage on managed scratch so even a lossy ordinary field beside
+        # a streamed array does not force the array into memory.
+        scratch_root = Path(tempfile.gettempdir())
+        with tempfile.TemporaryFile(mode="w+b", dir=scratch_root) as preimage:
+            for chunk in iter_json_value(normalized, ensure_ascii=True, sort_keys=True):
+                preimage.write(chunk.encode("ascii"))
+            preimage.write(b"\x00polylogue-event-typed-lowering-v1\x00")
+            for chunk in _iter_typed_streamed_json(content, StreamedJsonArray):
+                preimage.write(chunk.encode("ascii"))
+            preimage.seek(0)
+            digest = hashlib.sha256()
+            while chunk := preimage.read(1024 * 1024):
+                digest.update(chunk)
+            return digest.hexdigest()
     normalized = _normalize_nested_for_hash(content)
     legacy = canonical_bytes(normalized, QUERY)
     if not _has_typed_lowering_collision(content):
         return hashlib.sha256(legacy).hexdigest()
     typed = canonical_bytes(_typed_identity_value(content), QUERY)
     return hashlib.sha256(legacy + b"\x00polylogue-event-typed-lowering-v1\x00" + typed).hexdigest()
+
+
+def _contains_streamed_json_array(value: object) -> bool:
+    from polylogue.sources.streamed_event_payload import StreamedJsonArray
+
+    if isinstance(value, StreamedJsonArray):
+        return True
+    if isinstance(value, Mapping):
+        return any(_contains_streamed_json_array(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_streamed_json_array(item) for item in value)
+    return False
+
+
+def _normalize_streamed_payload(value: object) -> object:
+    from polylogue.sources.streamed_event_payload import StreamedJsonArray
+
+    if isinstance(value, StreamedJsonArray):
+        return value
+    if isinstance(value, Mapping):
+        return _normalize_mapping_for_hash(value, lambda _key, item: _normalize_streamed_payload(item))
+    if isinstance(value, (list, tuple)):
+        return [_normalize_streamed_payload(item) for item in value]
+    return _normalize_nested_for_hash(value)
+
+
+def _iter_typed_streamed_json(value: object, streamed_type: type[object]) -> Iterator[str]:
+    """Stream `_typed_identity_value`'s established tags over array markers."""
+    from polylogue.sources.streamed_event_payload import iter_json_value
+
+    if isinstance(value, streamed_type):
+        yield '["array",['
+        first = True
+        for item in value.iter_values():
+            if not first:
+                yield ","
+            first = False
+            yield from iter_json_value(_typed_identity_value(item), ensure_ascii=True, sort_keys=True)
+        yield "]]"
+        return
+    if isinstance(value, Mapping):
+        entries = [(_identity_key(key), item) for key, item in value.items()]
+        entries.sort(
+            key=lambda pair: (
+                canonical_bytes(_legacy_json_key(pair[0]), QUERY),
+                canonical_bytes(_typed_identity_value(pair[0]), QUERY),
+            )
+        )
+        yield '["object",['
+        for index, (key, item) in enumerate(entries):
+            if index:
+                yield ","
+            yield "["
+            yield from iter_json_value(_typed_identity_value(key), ensure_ascii=True, sort_keys=True)
+            yield ","
+            yield from _iter_typed_streamed_json(item, streamed_type)
+            yield "]"
+        yield "]]"
+        return
+    if isinstance(value, (list, tuple)):
+        yield '["array",['
+        for index, item in enumerate(value):
+            if index:
+                yield ","
+            yield from _iter_typed_streamed_json(item, streamed_type)
+        yield "]]"
+        return
+    yield from iter_json_value(_typed_identity_value(value), ensure_ascii=True, sort_keys=True)
 
 
 _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
@@ -1086,6 +1179,12 @@ def _legacy_json_key(key: object) -> str:
 
 def _has_typed_lowering_collision(value: object) -> bool:
     """Whether a declared value loses type/association under legacy JSON lowering."""
+    from polylogue.sources.streamed_event_payload import StreamedJsonArray
+
+    # The marker contains JSON-decoded values only, whose legacy and typed
+    # lowerings are injective and identical for their JSON-native types.
+    if isinstance(value, StreamedJsonArray):
+        return False
     # Exact builtin types first: parser payloads are almost entirely plain
     # JSON trees, and these cases decide exactly as the general walk below.
     cls = type(value)

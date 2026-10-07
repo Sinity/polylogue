@@ -19,7 +19,10 @@ from polylogue.storage.runtime import BlockRecord
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import MESSAGES_SPEC
 from polylogue.storage.sqlite.queries.mappers import _row_to_content_block
 from polylogue.storage.sqlite.queries.mappers_archive import bind_message_row_mapper
-from polylogue.storage.sqlite.queries.session_events import _row_to_session_event
+from polylogue.storage.sqlite.queries.session_events import (
+    _row_to_session_event,
+    hydrate_session_event_array_items,
+)
 
 if TYPE_CHECKING:
     from polylogue.analysis.orchestration_evidence import SessionOrchestrationEvidence
@@ -120,8 +123,10 @@ def iter_orchestration_events(conn: sqlite3.Connection, session_id: str) -> Iter
             """,
             (session_id, *after, _PAGE_SIZE),
         ).fetchall()
-        for row in rows:
-            yield session_event_from_record(_row_to_session_event(row))
+        records = [_row_to_session_event(row) for row in rows]
+        hydrate_session_event_array_items(conn, records)
+        for record in records:
+            yield session_event_from_record(record)
         if len(rows) < _PAGE_SIZE:
             return
         after = (int(rows[-1]["position"]),)

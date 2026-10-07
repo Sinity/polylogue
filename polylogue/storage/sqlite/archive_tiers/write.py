@@ -11565,6 +11565,10 @@ def _write_session_events(
         def _flush_rows() -> None:
             if session_event_rows:
                 conn.executemany(
+                    "DELETE FROM session_event_array_items WHERE session_id = ? AND event_position = ?",
+                    ((str(row[0]), int(row[3])) for row in session_event_rows),
+                )
+                conn.executemany(
                     "INSERT OR REPLACE INTO session_events (session_id, source_message_id, "
                     "source_message_provider_id, position, event_type, payload_json, occurred_at_ms, "
                     "boundary_start_position, boundary_end_position, boundary_message_id) "
@@ -11583,6 +11587,32 @@ def _write_session_events(
             if provider_usage_rows:
                 conn.executemany(_PROVIDER_USAGE_EVENT_INSERT_SQL, provider_usage_rows)
                 provider_usage_rows.clear()
+
+        def _insert_streamed_event(row: tuple[object, ...], arrays: Mapping[str, object]) -> None:
+            conn.execute(
+                "DELETE FROM session_event_array_items WHERE session_id = ? AND event_position = ?",
+                (str(row[0]), int(row[3])),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO session_events (session_id, source_message_id, "
+                "source_message_provider_id, position, event_type, payload_json, occurred_at_ms, "
+                "boundary_start_position, boundary_end_position, boundary_message_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                row,
+            )
+            for payload_key, array in arrays.items():
+                from polylogue.sources.streamed_event_payload import StreamedJsonArray
+
+                if not isinstance(array, StreamedJsonArray):
+                    raise TypeError("session event streamed payload marker changed after preparation")
+                conn.executemany(
+                    "INSERT INTO session_event_array_items "
+                    "(session_id, event_position, payload_key, item_ordinal, value_json) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        (session_id, int(row[3]), payload_key, ordinal, _json_dumps(value))
+                        for ordinal, value in enumerate(array.iter_values())
+                    ),
+                )
 
         source_message_id: str | None
         for event in events:
@@ -11643,24 +11673,38 @@ def _write_session_events(
                                     duplicate_native_ids=duplicate_native_ids,
                                 )
                                 break
-                session_event_rows.append(
-                    (
-                        session_id,
-                        source_message_id,
-                        _sqlite_text(source_message_provider_id),
-                        position,
-                        _sqlite_text(event.event_type),
-                        _json_dumps(_stored_event_payload(event, sidecar_blob_locators)),
-                        to_epoch_ms(event.timestamp, numeric_unit="seconds"),
-                        event.boundary_start_position + position_offset
-                        if event.boundary_start_position is not None
-                        else None,
-                        event.boundary_end_position + position_offset
-                        if event.boundary_end_position is not None
-                        else None,
-                        boundary_message_id,
-                    ),
+                stored_payload = _stored_event_payload(event, sidecar_blob_locators)
+                from polylogue.sources.streamed_event_payload import StreamedJsonArray
+
+                streamed_arrays = {
+                    key: value for key, value in stored_payload.items() if isinstance(value, StreamedJsonArray)
+                }
+                ordinary_payload: dict[str, object] = {}
+                for key, value in stored_payload.items():
+                    if isinstance(value, StreamedJsonArray):
+                        if len(value) == 0:
+                            ordinary_payload[key] = []
+                    else:
+                        ordinary_payload[key] = value
+                row = (
+                    session_id,
+                    source_message_id,
+                    _sqlite_text(source_message_provider_id),
+                    position,
+                    _sqlite_text(event.event_type),
+                    _json_dumps(ordinary_payload),
+                    to_epoch_ms(event.timestamp, numeric_unit="seconds"),
+                    event.boundary_start_position + position_offset
+                    if event.boundary_start_position is not None
+                    else None,
+                    event.boundary_end_position + position_offset if event.boundary_end_position is not None else None,
+                    boundary_message_id,
                 )
+                if streamed_arrays:
+                    _flush_rows()
+                    _insert_streamed_event(row, streamed_arrays)
+                else:
+                    session_event_rows.append(row)
             if event.event_type == "agent_policy":
                 # Every field keeps its named producer: approval/sandbox/network
                 # all come from this payload, and ``source_message_id`` is the
