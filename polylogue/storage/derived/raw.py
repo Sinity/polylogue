@@ -1798,6 +1798,11 @@ class RawObservationDerivation(RawObservationInspection):
                                     _provider, _blob_hash, _path, _kind, raw_size = descriptors[raw_id]
                                     artifact_key = keys_by_raw[raw_id]
                                     profile = artifact_key[-2]
+                                    fallback_timestamp = artifact_key[-3]
+                                    if profile is not None and not isinstance(profile, str):
+                                        raise TypeError("checkpoint profile identity must be text or absent")
+                                    if fallback_timestamp is not None and not isinstance(fallback_timestamp, str):
+                                        raise TypeError("checkpoint fallback timestamp must be text or absent")
                                     options = CodexCheckpointArtifactOptions(
                                         classification=dataclasses.replace(head_taxonomy, record_count=record_count),
                                         parsed_prefix_size=raw_size,
@@ -1806,7 +1811,7 @@ class RawObservationDerivation(RawObservationInspection):
                                             tempfile.mkdtemp(prefix="codex-interior-", dir=scratch)
                                         ),
                                         source_path=_path,
-                                        fallback_timestamp=artifact_key[-3],
+                                        fallback_timestamp=fallback_timestamp,
                                     )
                                     options_by_raw[raw_id] = options
                                     return options
@@ -2099,7 +2104,12 @@ class RawObservationDerivation(RawObservationInspection):
                                 None,
                             )
                             if refused_raw_id is not None:
-                                verdict = prepared[refused_raw_id].prepared_artifact.validation_verdict
+                                refused_input = prepared.get(refused_raw_id)
+                                if refused_input is None or refused_input.prepared_artifact is None:
+                                    raise AssertionError("strictly refused raw lost its prepared artifact")
+                                verdict = refused_input.prepared_artifact.validation_verdict
+                                if verdict is None:
+                                    raise AssertionError("strictly refused raw lost its validation verdict")
                                 detail = (
                                     verdict.first_diagnostic
                                     if verdict is not None and verdict.first_diagnostic
@@ -2475,7 +2485,12 @@ class RawObservationDerivation(RawObservationInspection):
                                         None,
                                     )
                                     if refused_member is not None:
-                                        verdict = prepared[refused_member].prepared_artifact.validation_verdict
+                                        refused_input = prepared.get(refused_member)
+                                        if refused_input is None or refused_input.prepared_artifact is None:
+                                            raise AssertionError("strictly refused member lost its prepared artifact")
+                                        verdict = refused_input.prepared_artifact.validation_verdict
+                                        if verdict is None:
+                                            raise AssertionError("strictly refused member lost its validation verdict")
                                         detail = (
                                             verdict.first_diagnostic
                                             if verdict is not None and verdict.first_diagnostic
