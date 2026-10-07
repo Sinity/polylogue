@@ -102,6 +102,7 @@ def test_parse_accounting_spill_preserves_complete_outcomes_and_conservation(tmp
 
 def test_session_event_reads_restore_streamed_payload_keys(tmp_path: Path) -> None:
     connection = sqlite3.connect(tmp_path / "index.sqlite")
+    connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
     try:
         connection.row_factory = sqlite3.Row
         connection.executescript(
