@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Provider, Role, TitleSource
 from polylogue.sources.live import WatchSource
@@ -217,11 +218,9 @@ def test_retained_replay_does_not_discover_sidecars_from_ambient_tree(
 # unlinks every original path, then publishes the provider bytes through the
 # retained replay owner. Nothing is hand-seeded into the source tier.
 #
-# Anti-vacuity: drop the retained map -- delete the ``sessions-index.json`` /
-# ``history.jsonl`` / ``conversation_asset_file_names.json`` raw row, as
-# ``test_dropping_the_retained_asset_map_loses_the_resolved_name`` does -- and
-# the matching fidelity assertion fails. Reverting the
-# removing the retained assembly lookup makes the fidelity assertions fail.
+# Anti-vacuity: remove the ChatGPT map's artifact declarations while preserving
+# its raw rows and membership census; the matching fidelity assertion fails.
+# Reverting the retained assembly lookup makes the fidelity assertions fail.
 # ---------------------------------------------------------------------------
 
 _CLAUDE_SESSION_ID = "aaaaaaaa-1111-2222-3333-444444444444"
@@ -575,6 +574,11 @@ def _chatgpt_resolution_event(parsed: Session) -> dict[str, object]:
     return dict(events[0].payload)
 
 
+def _chatgpt_message_attachments(parsed: Session) -> list[Attachment]:
+    """Return message-owned attachments through the ordinary read contract."""
+    return [attachment for message in parsed.messages for attachment in message.attachments]
+
+
 def _chatgpt_replay(archive_root: Path, conversations: Path) -> Session:
     return _retained_session_sync(archive_root, Provider.CHATGPT, _chatgpt_export_document(), str(conversations))
 
@@ -622,7 +626,7 @@ async def test_chatgpt_asset_identity_and_bytes_resolve_with_the_export_gone(tmp
         path.unlink()
 
     parsed = _chatgpt_replay(archive_root, conversations)
-    [attachment] = parsed.attachments
+    [attachment] = _chatgpt_message_attachments(parsed)
     assert attachment.name == "diagram.png"
     [(native_id, display_name, acquisition_status, blob_hash)] = _stored_chatgpt_asset_evidence(archive_root, parsed)
     assert native_id == _CHATGPT_ASSET_ID
@@ -649,14 +653,29 @@ async def test_dropping_the_retained_asset_map_loses_the_resolved_name(tmp_path:
     conn = sqlite3.connect(archive_root / "source.db")
     try:
         conn.execute("DELETE FROM raw_artifacts WHERE artifact_kind = 'export_asset_index'")
-        conn.execute("DELETE FROM raw_sessions WHERE source_path LIKE '%asset_file_names.json'")
-        conn.execute("DELETE FROM raw_sessions WHERE source_path LIKE '%library_files.json'")
+        # Remove the retained map declarations while preserving the raw rows
+        # and their complete membership census. Deleting raw_sessions directly
+        # would manufacture an invalid archive state with orphan memberships.
         conn.commit()
+        assert (
+            conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE artifact_kind = 'export_asset_index'").fetchone()[0]
+            == 0
+        )
+        assert (
+            conn.execute(
+                """
+            SELECT COUNT(*) FROM raw_session_memberships AS membership
+            LEFT JOIN raw_sessions AS raw USING (raw_id)
+            WHERE raw.raw_id IS NULL
+            """
+            ).fetchone()[0]
+            == 0
+        )
     finally:
         conn.close()
 
     parsed = _chatgpt_replay(archive_root, conversations)
-    [attachment] = parsed.attachments
+    [attachment] = _chatgpt_message_attachments(parsed)
     assert attachment.name != "diagram.png"
 
 
@@ -675,7 +694,7 @@ async def test_the_same_asset_id_in_two_exports_never_cross_binds(tmp_path: Path
     conversations = mine / "conversations.json"
 
     parsed = _chatgpt_replay(archive_root, conversations)
-    [attachment] = parsed.attachments
+    [attachment] = _chatgpt_message_attachments(parsed)
     assert attachment.name != "diagram.png"
     [(_native_id, display_name, acquisition_status, blob_hash)] = _stored_chatgpt_asset_evidence(archive_root, parsed)
     assert display_name is None
@@ -700,7 +719,8 @@ async def test_a_late_asset_map_resolves_on_the_next_convergence(tmp_path: Path)
     conversations.write_bytes(_chatgpt_export_document())
 
     before = _chatgpt_replay(archive_root, conversations)
-    assert before.attachments[0].name != "diagram.png"
+    [before_attachment] = _chatgpt_message_attachments(before)
+    assert before_attachment.name != "diagram.png"
     [before_asset] = _stored_chatgpt_asset_evidence(archive_root, before)
     assert before_asset[3] is None
 
@@ -709,7 +729,8 @@ async def test_a_late_asset_map_resolves_on_the_next_convergence(tmp_path: Path)
         path.unlink()
 
     after = _chatgpt_replay(archive_root, conversations)
-    assert after.attachments[0].name == "diagram.png"
+    [after_attachment] = _chatgpt_message_attachments(after)
+    assert after_attachment.name == "diagram.png"
     [after_asset] = _stored_chatgpt_asset_evidence(archive_root, after)
     assert after_asset[3] is not None
 
@@ -750,7 +771,7 @@ async def test_retained_replay_archives_every_duplicate_asset_rendition(tmp_path
         path.unlink()
 
     replayed = _chatgpt_replay(archive_root, conversations)
-    attachments = list(replayed.attachments)
+    attachments = _chatgpt_message_attachments(replayed)
     assert len(live_keys) == 2
     assert len(attachments) == 2
     asset_rows = _stored_chatgpt_asset_evidence(archive_root, replayed)

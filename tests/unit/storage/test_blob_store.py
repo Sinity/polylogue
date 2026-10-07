@@ -776,7 +776,7 @@ def test_staging_companion_suffix_cannot_escape_before_cleanup(tmp_path: Path) -
     assert retained.read_bytes() == b"retained"
 
 
-@pytest.mark.parametrize("method", ["single", "batch", "renewing"])
+@pytest.mark.parametrize("method", ["single", "batch"])
 @pytest.mark.parametrize("failed_directory", ["shard", "root"])
 @pytest.mark.parametrize("reopen", [False, True])
 def test_publication_retry_persists_visible_blob_after_failed_barrier(
@@ -813,8 +813,6 @@ def test_publication_retry_persists_visible_blob_after_failed_barrier(
     def publish(active: BlobStore) -> tuple[str, int]:
         if method == "batch":
             return active.publish_many([prepared])[0]
-        if method == "renewing":
-            return active.publish_prepared_renewing(prepared)
         return active.publish_prepared(prepared)
 
     monkeypatch.setattr(os, "fsync", sync)

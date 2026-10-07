@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import errno
@@ -163,6 +164,7 @@ def _capture_with_carriers(carriers: dict[str, bytes]) -> dict[str, object]:
             "attachments": [
                 {
                     "provider_attachment_id": attachment_id,
+                    "message_provider_id": "u1",
                     "name": f"{attachment_id}.bin",
                     "inline_base64": "data:application/octet-stream;base64,"
                     + base64.b64encode(carriers[attachment_id]).decode(),
@@ -181,7 +183,8 @@ async def test_retained_capture_decodes_as_a_stream_and_publishes_its_carriers(
 
     Anti-vacuity: ordinary whole-document decoding is refused for the retained
     raw blob, each attachment's storage identity matches the provider parser,
-    its acquired bytes match its content hash, and an aged duplicate is renewed.
+    its acquired bytes match its content hash, and a stale duplicate is kept
+    alive by its durable reference through the ordinary GC route.
     """
     from polylogue.core.enums import Provider
     from polylogue.sources.parsers import browser_capture as browser_capture_parser
@@ -266,7 +269,30 @@ async def test_retained_capture_decodes_as_a_stream_and_publishes_its_carriers(
             assert row[7] == attachment.mime_type
             with store.open(hashlib.sha256(content).hexdigest()) as blob:
                 assert blob.read() == content
-    assert store.blob_path(aged_hash).stat().st_mtime > 0
+        source = archive.source_connection
+        assert source is not None
+        aged_digest = bytes.fromhex(aged_hash)
+        assert (
+            source.execute(
+                "SELECT COUNT(*) FROM blob_refs WHERE blob_hash = ? AND ref_id = ? AND ref_type = 'attachment'",
+                (aged_digest, raw_id),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            source.execute(
+                "SELECT COUNT(*) FROM blob_publication_reservations WHERE blob_hash = ?",
+                (aged_digest,),
+            ).fetchone()[0]
+            == 0
+        )
+
+    from polylogue.storage.blob_gc import run_blob_gc_report
+
+    gc = await asyncio.to_thread(run_blob_gc_report, archive_root / "source.db", archive_root / "blob", max_batch=10)
+    assert gc.skipped_referenced >= 1
+    assert gc.deleted_count == 0
+    assert store.exists(aged_hash)
 
 
 def test_the_admission_summary_retains_no_turn() -> None:
