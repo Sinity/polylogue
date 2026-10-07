@@ -93,7 +93,7 @@ def test_external_candidate_write_settles_when_watched_input_is_excluded(tmp_pat
         async def acknowledge(self, item: IntakeItem) -> None:
             self.acknowledged = True
 
-    with fixture_index_connection(tmp_path / "candidate.db") as conn:
+    with fixture_index_connection(tmp_path / "candidate" / "index.db") as conn:
         write_fixture_index_session(
             conn,
             ParsedSession(
