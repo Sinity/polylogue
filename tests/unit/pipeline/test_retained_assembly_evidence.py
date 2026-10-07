@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.session.domain_models import Session
-from polylogue.core.enums import Provider, TitleSource
+from polylogue.core.enums import Provider, Role, TitleSource
 from polylogue.sources.live import WatchSource
 from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.blob_store import BlobStore
@@ -467,7 +467,7 @@ def test_retained_claude_paste_output_sink_closes_when_consumer_cancels(
     source_sink.append(
         ParsedMessage(
             provider_message_id="user-1",
-            role="user",
+            role=Role.USER,
             text="first prompt",
             timestamp="2026-01-01T00:00:00Z",
         )
