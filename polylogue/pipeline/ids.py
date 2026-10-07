@@ -154,7 +154,7 @@ def _event_payload_hash(event_type: str, payload: Mapping[str, object]) -> str:
     """Hash event content with typed framing only for lossy legacy values."""
     excluded = _EVENT_PAYLOAD_EXCLUDED_KEYS.get(event_type)
     content = {key: value for key, value in payload.items() if key not in excluded} if excluded else payload
-    from polylogue.sources.streamed_event_payload import StreamedJsonArray, iter_json_value
+    from polylogue.sources.streamed_event_payload import iter_json_value
 
     if _contains_streamed_json_array(content):
         normalized = _normalize_streamed_payload(content)
@@ -172,12 +172,12 @@ def _event_payload_hash(event_type: str, payload: Mapping[str, object]) -> str:
             for chunk in iter_json_value(normalized, ensure_ascii=True, sort_keys=True):
                 preimage.write(chunk.encode("ascii"))
             preimage.write(b"\x00polylogue-event-typed-lowering-v1\x00")
-            for chunk in _iter_typed_streamed_json(content, StreamedJsonArray):
+            for chunk in _iter_typed_streamed_json(content):
                 preimage.write(chunk.encode("ascii"))
             preimage.seek(0)
             digest = hashlib.sha256()
-            while chunk := preimage.read(1024 * 1024):
-                digest.update(chunk)
+            while byte_chunk := preimage.read(1024 * 1024):
+                digest.update(byte_chunk)
             return digest.hexdigest()
     normalized = _normalize_nested_for_hash(content)
     legacy = canonical_bytes(normalized, QUERY)
@@ -211,11 +211,11 @@ def _normalize_streamed_payload(value: object) -> object:
     return _normalize_nested_for_hash(value)
 
 
-def _iter_typed_streamed_json(value: object, streamed_type: type[object]) -> Iterator[str]:
+def _iter_typed_streamed_json(value: object) -> Iterator[str]:
     """Stream `_typed_identity_value`'s established tags over array markers."""
-    from polylogue.sources.streamed_event_payload import iter_json_value
+    from polylogue.sources.streamed_event_payload import StreamedJsonArray, iter_json_value
 
-    if isinstance(value, streamed_type):
+    if isinstance(value, StreamedJsonArray):
         yield '["array",['
         first = True
         for item in value.iter_values():
@@ -240,7 +240,7 @@ def _iter_typed_streamed_json(value: object, streamed_type: type[object]) -> Ite
             yield "["
             yield from iter_json_value(_typed_identity_value(key), ensure_ascii=True, sort_keys=True)
             yield ","
-            yield from _iter_typed_streamed_json(item, streamed_type)
+            yield from _iter_typed_streamed_json(item)
             yield "]"
         yield "]]"
         return
@@ -249,7 +249,7 @@ def _iter_typed_streamed_json(value: object, streamed_type: type[object]) -> Ite
         for index, item in enumerate(value):
             if index:
                 yield ","
-            yield from _iter_typed_streamed_json(item, streamed_type)
+            yield from _iter_typed_streamed_json(item)
         yield "]]"
         return
     yield from iter_json_value(_typed_identity_value(value), ensure_ascii=True, sort_keys=True)

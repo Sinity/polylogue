@@ -5,9 +5,9 @@ from __future__ import annotations
 import heapq
 import math
 from bisect import bisect_right
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 from pydantic import (
     AliasChoices,
@@ -113,6 +113,22 @@ class AdmissionOutcome(BaseModel):
         return self
 
 
+class AdmissionOutcomeCollection(Protocol):
+    """Replayable outcomes with a count and a bounded iteration interface."""
+
+    accounting_id: str
+
+    def __len__(self) -> int: ...
+
+    def __iter__(self) -> Iterator[AdmissionOutcome]: ...
+
+    def iter_unit(self, unit: str) -> Iterator[dict[str, object]]: ...
+
+    def count_by_unit(self) -> dict[str, int]: ...
+
+    def overlaps(self, unit: str, start: int, end: int) -> bool: ...
+
+
 def _ordinal_in_ranges(ranges: Sequence[tuple[int, int]], ordinal: int) -> bool:
     """Membership test over sorted, disjoint half-open ordinal ranges."""
     index = bisect_right(ranges, (ordinal, math.inf))
@@ -141,23 +157,20 @@ class ParseAccounting(BaseModel):
     conserved denominator and must not name the same ordinal twice.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     expected: dict[AdmissionUnit, int] = Field(default_factory=dict)
-    outcomes: SkipValidation[object] = Field(default_factory=list)
+    outcomes: SkipValidation[list[AdmissionOutcome] | AdmissionOutcomeCollection] = Field(default_factory=list)
     materialized_ordinals: dict[AdmissionUnit, list[tuple[int, int]]] = Field(default_factory=dict)
 
     def to_prepared_payload(self) -> dict[str, object]:
-        from polylogue.sources.parse_accounting_spool import SpilledParseAccountingOutcomes
-
-        if isinstance(self.outcomes, SpilledParseAccountingOutcomes):
+        if not isinstance(self.outcomes, list):
             outcomes: object = {
                 "$polylogue_spilled_outcomes": self.outcomes.accounting_id,
                 "count": len(self.outcomes),
             }
         else:
-            outcomes = [
-                item.model_dump(mode="json") if isinstance(item, AdmissionOutcome) else item
-                for item in self.outcomes  # type: ignore[union-attr]
-            ]
+            outcomes = [item.model_dump(mode="json") for item in self.outcomes]
         return {
             "expected": {unit.value: count for unit, count in self.expected.items()},
             "outcomes": outcomes,
@@ -196,29 +209,23 @@ class ParseAccounting(BaseModel):
             return []
         if isinstance(value, (str, bytes, Mapping)):
             raise ValueError("parse accounting outcomes require an iterable of outcome records")
-        try:
-            return [
-                item if isinstance(item, AdmissionOutcome) else AdmissionOutcome.model_validate(item) for item in value
-            ]  # type: ignore[union-attr]
-        except TypeError as exc:
-            raise ValueError("parse accounting outcomes require an iterable of outcome records") from exc
+        if not isinstance(value, Iterable):
+            raise ValueError("parse accounting outcomes require an iterable of outcome records")
+        return [item if isinstance(item, AdmissionOutcome) else AdmissionOutcome.model_validate(item) for item in value]
 
     def iter_outcomes(self) -> Iterator[AdmissionOutcome]:
         """Yield every terminal outcome, materialized ranges expanded, in ordinal order per unit."""
-        from polylogue.sources.parse_accounting_spool import SpilledParseAccountingOutcomes
-
         outcomes = self.outcomes
-        if isinstance(outcomes, SpilledParseAccountingOutcomes):
+        if not isinstance(outcomes, list):
             units = list(dict.fromkeys((*self.expected, *self.materialized_ordinals)))
             for unit in units:
-                exceptional = (AdmissionOutcome.model_validate(item) for item in outcomes.iter_unit(unit.value))
-                ranges = _materialized_outcomes(unit, self.materialized_ordinals.get(unit, ()))
-                yield from heapq.merge(exceptional, ranges, key=lambda item: item.ordinal)
+                spilled_exceptional = (AdmissionOutcome.model_validate(item) for item in outcomes.iter_unit(unit.value))
+                spilled_ranges = _materialized_outcomes(unit, self.materialized_ordinals.get(unit, ()))
+                yield from heapq.merge(spilled_exceptional, spilled_ranges, key=lambda item: item.ordinal)
             return
         by_unit: dict[AdmissionUnit, list[AdmissionOutcome]] = {}
-        for outcome in outcomes:  # type: ignore[union-attr]
-            parsed = outcome if isinstance(outcome, AdmissionOutcome) else AdmissionOutcome.model_validate(outcome)
-            by_unit.setdefault(parsed.unit, []).append(parsed)
+        for outcome in outcomes:
+            by_unit.setdefault(outcome.unit, []).append(outcome)
         units = list(dict.fromkeys((*self.materialized_ordinals, *by_unit)))
         for unit in units:
             exceptional = sorted(by_unit.get(unit, ()), key=lambda item: item.ordinal)
@@ -229,11 +236,8 @@ class ParseAccounting(BaseModel):
         expected = {unit: int(count) for unit, count in self.expected.items()}
         if any(count < 0 for count in expected.values()):
             raise ValueError("admission denominators cannot be negative")
-        from polylogue.sources.parse_accounting_spool import SpilledParseAccountingOutcomes
-
-        if isinstance(self.outcomes, SpilledParseAccountingOutcomes):
-            ranges: dict[AdmissionUnit, list[tuple[int, int]]] = {}
-            actual = self.outcomes.count_by_unit()
+        if not isinstance(self.outcomes, list):
+            spilled_actual = self.outcomes.count_by_unit()
             for unit, raw_ranges in self.materialized_ordinals.items():
                 ordered = sorted((int(start), int(end)) for start, end in raw_ranges)
                 previous_end = 0
@@ -243,11 +247,12 @@ class ParseAccounting(BaseModel):
                     if self.outcomes.overlaps(unit.value, start, end):
                         raise ValueError(f"duplicate admission outcome for {unit.value}[{start}]")
                     previous_end = end
-                    actual[unit.value] = actual.get(unit.value, 0) + end - start
-                ranges[unit] = ordered
+                    spilled_actual[unit.value] = spilled_actual.get(unit.value, 0) + end - start
             normalized_expected = {unit.value: count for unit, count in expected.items() if count}
-            if actual != normalized_expected:
-                raise ValueError(f"admission denominator mismatch: expected={normalized_expected}, actual={actual}")
+            if spilled_actual != normalized_expected:
+                raise ValueError(
+                    f"admission denominator mismatch: expected={normalized_expected}, actual={spilled_actual}"
+                )
             return
         actual: dict[AdmissionUnit, int] = {}
         # Ranges are validated without enumerating their members: sorted,

@@ -184,7 +184,9 @@ def _attach_array_rows(rows: Iterable[Sequence[object]], record_by_position: dic
     current: tuple[int, str] | None = None
     values: list[object] = []
     for position, key, encoded in rows:
-        coordinate = (int(position), str(key))
+        if not isinstance(position, int) or not isinstance(key, str) or not isinstance(encoded, str):
+            raise TypeError("session event array item has invalid stored columns")
+        coordinate = (position, key)
         if current is not None and coordinate != current:
             target = record_by_position.get(current[0])
             if target is not None:
