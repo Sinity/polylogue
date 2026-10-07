@@ -387,7 +387,7 @@ def _normalize_empty_arrays(data: object, schema: object = None) -> object:
 def _sample_payload(value: object) -> ValidationSample | None:
     if not isinstance(value, Mapping):
         return None
-    return json_document(dict(value))
+    return json_document(dict(value.items()))
 
 
 def _validation_samples(

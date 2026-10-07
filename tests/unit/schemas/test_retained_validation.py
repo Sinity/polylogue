@@ -48,7 +48,7 @@ def _write_jsonl(path: Path, rows: list[object]) -> None:
 
 def test_retained_strict_counts_late_failure_and_advisory_accepts(tmp_path: Path) -> None:
     path = tmp_path / "raw.jsonl"
-    _write_jsonl(path, [{"kind": "first"}, {"kind": 17}])
+    _write_jsonl(path, [{"type": "record", "kind": "first"}, {"type": "record", "kind": 17}])
     registry = _registry(tmp_path, "string")
     args = {
         "provider": "claude-code",
@@ -81,7 +81,7 @@ def test_retained_strict_counts_late_failure_and_advisory_accepts(tmp_path: Path
 
 def test_retained_historical_fallback_replays_every_jsonl_record(tmp_path: Path) -> None:
     path = tmp_path / "raw.jsonl"
-    _write_jsonl(path, [{"kind": "text"}, {"kind": 17}])
+    _write_jsonl(path, [{"type": "record", "kind": "text"}, {"type": "record", "kind": 17}])
     registry = _registry(tmp_path, "string", {"anyOf": [{"type": "string"}, {"type": "integer"}]})
 
     verdict = validate_retained_document(
@@ -124,7 +124,7 @@ def test_retained_drift_reduction_is_order_independent(tmp_path: Path) -> None:
             registry=registry,
         )
 
-    rows = [{"kind": 1, "alpha": 1}, {"kind": 2, "beta": 1}]
+    rows = [{"type": "record", "kind": 1, "alpha": 1}, {"type": "record", "kind": 2, "beta": 1}]
     forward = run("forward.jsonl", rows)
     reverse = run("reverse.jsonl", list(reversed(rows)))
 
@@ -139,7 +139,7 @@ def test_retained_drift_reduction_is_order_independent(tmp_path: Path) -> None:
 def test_retained_drift_classifies_default_and_known_unread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     registry = _registry(tmp_path, "string")
     path = tmp_path / "record.json"
-    path.write_text(json.dumps({"kind": "value"}), encoding="utf-8")
+    path.write_text(json.dumps({"type": "record", "kind": "value"}), encoding="utf-8")
     monkeypatch.setattr("polylogue.schemas.retained_validation.unread_field_names", lambda _provider: {"kind"})
 
     unseen = validate_retained_document(
