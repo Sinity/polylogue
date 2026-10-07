@@ -102,11 +102,6 @@
   {
     "target": "polylogue/api",
     "file": "polylogue/api/archive.py",
-    "import": "polylogue.storage.sqlite.async_sqlite"
-  },
-  {
-    "target": "polylogue/api",
-    "file": "polylogue/api/archive.py",
     "import": "polylogue.storage.sqlite.connection_profile"
   },
   {
@@ -208,11 +203,6 @@
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/maintenance/_assertion_export.py",
     "import": "polylogue.storage.sqlite.archive_tiers.types"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/maintenance/_assertion_export.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.user_write"
   },
   {
     "target": "polylogue/cli",

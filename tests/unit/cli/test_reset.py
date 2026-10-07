@@ -8,7 +8,8 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, cast
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -24,37 +25,23 @@ from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.operation_recovery import recover_on_admitted_owner
 
 
-def test_reset_session_resolution_uses_readonly_database_boundary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_reset_session_resolution_uses_declared_resident_read(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_module = importlib.import_module("polylogue.cli.commands.reset")
-    index_db = tmp_path / "index.db"
-    with sqlite3.connect(index_db) as writer:
-        writer.execute("CREATE TABLE sessions (session_id TEXT)")
-        writer.execute("INSERT INTO sessions VALUES ('selected')")
+    from polylogue.cli import operation_kernel
 
-    real_open = reset_module.open_readonly_connection
-    observed = []
+    seen: list[tuple[str, dict[str, object]]] = []
 
-    def checked_open(path: Path, **kwargs: Any) -> sqlite3.Connection:
-        conn = cast(sqlite3.Connection, real_open(path, **kwargs))
-        observed.append(path)
-        for statement in (
-            "INSERT INTO sessions VALUES ('wrong')",
-            "UPDATE sessions SET session_id = 'wrong'",
-            "DELETE FROM sessions",
-            "CREATE TABLE unwanted (value TEXT)",
-            "PRAGMA query_only = OFF",
-            "ATTACH DATABASE ':memory:' AS writable",
-        ):
-            with pytest.raises(sqlite3.DatabaseError):
-                conn.execute(statement)
-        return conn
+    def read(_config: object, operation: str, payload: dict[str, object]) -> Any:
+        seen.append((operation, payload))
+        return SimpleNamespace(value={"session_ids": ["selected"]})
 
-    monkeypatch.setattr(reset_module, "_index_db_path", lambda: index_db)
-    monkeypatch.setattr(reset_module, "open_readonly_connection", checked_open)
-    assert reset_module._resolve_archive_session_ids(["selected"]) == ["selected"]
-    assert observed == [index_db]
+    monkeypatch.setattr(operation_kernel, "configured_read_operation", read)
+    env = SimpleNamespace(config=object())
+    assert reset_module._identity_reset_targets(env, conv_id="selected", source_path=None) == (
+        ["selected"],
+        "session 'selected'",
+    )
+    assert seen == [("session.identity-reset.targets", {"session": "selected"})]
 
 
 def _no_seed(_root: Path) -> None:

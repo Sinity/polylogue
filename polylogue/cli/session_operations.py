@@ -11,6 +11,9 @@ from pydantic import BaseModel
 
 
 def main() -> int:
+    # Direct-capable adapter: this machine interface is a standalone executor
+    # for the same typed session operation used by MCP. It delegates semantics
+    # to ``session_operation_response`` and owns no CLI-side archive query.
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("contracts", "execute"))
     args = parser.parse_args()
