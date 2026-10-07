@@ -84,7 +84,7 @@ if TYPE_CHECKING:
     )
     from polylogue.storage.index_generation import IndexGeneration
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead, PreparedSessionWrite
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 
     #: A Source phase committed in place: its receipt and the fields its tape changed.
@@ -310,6 +310,54 @@ class _NeutralParserOperand:
     zip_coordinate: CapturedZipMemberCoordinate | None
     append_logical_key: str | None
     sidecar_signature: tuple[object, ...] | None = None
+
+
+def _neutral_artifact_key(
+    raw_id: str,
+    operand: _NeutralParserOperand,
+    validation_mode: ValidationMode,
+    cohort_identity: tuple[object, ...],
+) -> tuple[object, ...]:
+    """Identify parsed artifacts by every typed parser input and selected cohort."""
+    return (_neutral_parser_cache_identity(raw_id, operand), validation_mode, cohort_identity)
+
+
+def _neutral_parser_cache_identity(raw_id: str, operand: _NeutralParserOperand) -> tuple[object, ...]:
+    """Keep source kind exact for rebind proof while sharing equivalent full/unknown parses."""
+    provider, blob_hash, source_path, kind, size = operand.descriptor
+    return (
+        raw_id,
+        provider,
+        blob_hash,
+        source_path,
+        kind.value == "append",
+        size,
+        operand.profile_identity,
+        operand.fallback_timestamp,
+        operand.native_id,
+        operand.zip_coordinate,
+        operand.append_logical_key,
+        operand.sidecar_signature,
+    )
+
+
+def _neutral_parser_operand(read: PreparedSessionSourceRead, raw_id: str) -> _NeutralParserOperand:
+    """Read the exact typed values a detached parser and its enrichment consume."""
+    descriptor = read.raw_revision_descriptor(raw_id)
+    provider, _blob_hash, source_path, kind, _raw_size = descriptor
+    scope_signature: tuple[object, ...] | None = None
+    if provider is Provider.CLAUDE_CODE:
+        scope = read.retained_sidecar_resolver().claude_code_scope(source_path)
+        scope_signature = (scope.scope_key, scope.available, scope.witness)
+    return _NeutralParserOperand(
+        descriptor=descriptor,
+        profile_identity=read.raw_profile_identity(raw_id),
+        fallback_timestamp=read.raw_revision_file_mtime(raw_id),
+        native_id=read.raw_native_id(raw_id) if kind.value == "append" else None,
+        zip_coordinate=read.raw_captured_zip_coordinate(raw_id),
+        append_logical_key=read.raw_append_logical_key(raw_id) if kind.value == "append" else None,
+        sidecar_signature=scope_signature,
+    )
 
 
 class _CarryInvalidatedError(Exception):
@@ -1860,10 +1908,10 @@ class RawObservationDerivation(RawObservationInspection):
 
         cohort_identity: tuple[object, ...] = (
             original_selection,
-            tuple((raw_id, operands[raw_id]) for raw_id in raw_ids),
+            tuple(_neutral_parser_cache_identity(raw_id, operands[raw_id]) for raw_id in raw_ids),
         )
         for raw_id in raw_ids:
-            artifact_key: tuple[object, ...] = (
+            artifact_key = _neutral_artifact_key(
                 raw_id,
                 operands[raw_id],
                 self._validation_mode,
@@ -2093,6 +2141,7 @@ class RawObservationDerivation(RawObservationInspection):
         carry = _PreparationCarry(reference_seal) if carry is None else carry
         from polylogue.core.prepared_file import VerificationCancelledError
         from polylogue.sources.dispatch import is_jsonl_source_path
+        from polylogue.sources.origin_specs import path_declaration_refuses_session
         from polylogue.sources.revision_backfill import (
             PreparedRetainedInput,
             RetainedPreparationRetryableError,
@@ -2133,6 +2182,28 @@ class RawObservationDerivation(RawObservationInspection):
                     if refusal is not None:
                         raise refusal
                 descriptors = {raw_id: selection_read.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
+                neutral_artifact_keys: dict[str, tuple[object, ...]] = {}
+                if raw_ids and all(
+                    descriptor[0] in {Provider.CODEX, Provider.CLAUDE_CODE}
+                    and is_jsonl_source_path(descriptor[2])
+                    and not path_declaration_refuses_session(descriptor[0], descriptor[2])
+                    and not looks_like_logical_source_path(Path(descriptor[2]))
+                    for descriptor in descriptors.values()
+                ):
+                    neutral_operands = {raw_id: _neutral_parser_operand(selection_read, raw_id) for raw_id in raw_ids}
+                    neutral_cohort: tuple[object, ...] = (
+                        (raw_ids, logical_keys),
+                        tuple(_neutral_parser_cache_identity(raw_id, neutral_operands[raw_id]) for raw_id in raw_ids),
+                    )
+                    neutral_artifact_keys = {
+                        raw_id: _neutral_artifact_key(
+                            raw_id,
+                            neutral_operands[raw_id],
+                            self._validation_mode,
+                            neutral_cohort,
+                        )
+                        for raw_id in raw_ids
+                    }
             if (
                 select_retained_raw_ids is None
                 and not replay_current
@@ -2285,6 +2356,9 @@ class RawObservationDerivation(RawObservationInspection):
                                 codex_groups.setdefault(candidate_path, []).append(candidate_raw_id)
 
                         def checkpoint_key(raw_id: str) -> tuple[object, ...]:
+                            neutral_key = neutral_artifact_keys.get(raw_id)
+                            if neutral_key is not None:
+                                return neutral_key
                             provider, blob_hash, path, kind, _size = descriptors[raw_id]
                             with reference_seal.original_read_snapshot(), reference_seal.source_producer():
                                 read = PreparedSessionSourceRead(reference_seal, blob_store=material_store)
@@ -2513,6 +2587,8 @@ class RawObservationDerivation(RawObservationInspection):
                             )
                             if provider is Provider.CLAUDE_CODE:
                                 artifact_key = (*artifact_key, sidecar_signature)
+                            if raw_id in neutral_artifact_keys:
+                                artifact_key = neutral_artifact_keys[raw_id]
                             artifact = prepared_artifacts.get(artifact_key)
                             if artifact is None:
                                 try:
