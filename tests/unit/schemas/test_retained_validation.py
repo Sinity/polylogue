@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import gc
 import json
 import tracemalloc
@@ -50,6 +51,97 @@ def _registry(tmp_path: Path, current: object, historical: object | None = None)
 
 def _write_jsonl(path: Path, rows: list[object]) -> None:
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+
+def _schema_shaped_witness(schema: object, root: object | None = None, depth: int = 0) -> object:
+    """Build a small synthetic candidate; the independent oracle decides validity."""
+    from jsonschema import Draft202012Validator
+
+    root = schema if root is None else root
+    if depth > 32 or schema is False:
+        return None
+    if schema is True or not isinstance(schema, dict):
+        return {}
+    validator = Draft202012Validator(root)
+    if "const" in schema:
+        return schema["const"]
+    if isinstance(schema.get("enum"), list) and schema["enum"]:
+        return schema["enum"][0]
+    for keyword in ("anyOf", "oneOf"):
+        branches = schema.get(keyword)
+        if isinstance(branches, list):
+            base = {key: value for key, value in schema.items() if key not in {"anyOf", "oneOf"}}
+            for branch in branches:
+                candidate = _schema_shaped_witness(branch, root, depth + 1)
+                if isinstance(candidate, dict):
+                    candidate = {**_schema_shaped_witness(base, root, depth + 1), **candidate}
+                if validator.is_valid(candidate):
+                    return candidate
+    if "allOf" in schema:
+        base = {key: value for key, value in schema.items() if key != "allOf"}
+        candidate = _schema_shaped_witness(base, root, depth + 1)
+        if not isinstance(candidate, dict):
+            candidate = {}
+        for branch in schema["allOf"]:
+            value = _schema_shaped_witness(branch, root, depth + 1)
+            if isinstance(value, dict):
+                candidate.update(value)
+        if validator.is_valid(candidate):
+            return candidate
+    kind = schema.get("type")
+    kinds = kind if isinstance(kind, list) else [kind]
+    if "object" in kinds or "properties" in schema or "required" in schema:
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        if not isinstance(properties, dict) or not isinstance(required, list):
+            return {}
+        return {key: _schema_shaped_witness(properties.get(key, {}), root, depth + 1) for key in required}
+    if "array" in kinds:
+        items = schema.get("items", {})
+        minimum = int(schema.get("minItems", 0))
+        return [_schema_shaped_witness(items, root, depth + 1) for _ in range(minimum)]
+    if "string" in kinds:
+        return ""
+    if "integer" in kinds or "number" in kinds:
+        return 0
+    if "boolean" in kinds:
+        return True
+    if "null" in kinds:
+        return None
+    return {}
+
+
+def _late_invalid_variant(schema: object, witness: object) -> object | None:
+    """Try a few schema-guided type changes and let Draft 2020-12 arbitrate."""
+    from jsonschema import Draft202012Validator
+
+    validator = Draft202012Validator(schema)
+    if not isinstance(schema, dict) or not isinstance(witness, dict):
+        return None
+    properties = schema.get("properties", {})
+    if isinstance(properties, dict):
+        for key, child_schema in properties.items():
+            if key not in witness or not isinstance(child_schema, dict):
+                continue
+            kind = child_schema.get("type")
+            kind_key = kind if isinstance(kind, str) else None
+            alternatives: tuple[object, ...] = {
+                "string": (0, None, []),
+                "integer": ("invalid", None, []),
+                "number": ("invalid", None, []),
+                "boolean": (0, "invalid", None),
+                "object": ("invalid", None, []),
+                "array": ("invalid", None, {}),
+            }.get(kind_key, (None, "invalid", []))
+            for replacement in alternatives:
+                candidate = copy.deepcopy(witness)
+                candidate[key] = replacement
+                if not validator.is_valid(candidate):
+                    return candidate
+    for candidate in ([], None, "invalid", 0, False):
+        if not validator.is_valid(candidate):
+            return candidate
+    return None
 
 
 def test_retained_strict_counts_late_failure_and_advisory_accepts(tmp_path: Path) -> None:
@@ -351,6 +443,9 @@ def test_committed_schema_files_match_draft202012_validity() -> None:
         {"type": "session", "messages": [{"role": "user", "content": "text"}]},
     )
     schema_count = 0
+    schema_shaped_positive_count = 0
+    late_invalid_count = 0
+    generic_distribution: dict[str, list[int]] = {}
     with scratch_connection_context(
         prefix="polylogue-schema-package-parity-", filename="validation.sqlite"
     ) as connection:
@@ -360,10 +455,30 @@ def test_committed_schema_files_match_draft202012_validity() -> None:
                     schema = registry.load_committed_schema_file(provider, version, schema_file)
                     assert schema is not None, (provider, version, schema_file)
                     schema_count += 1
-                    for case in cases:
+                    oracle = Draft202012Validator(schema)
+                    generic_valid = sum(oracle.is_valid(_normalize_empty_arrays(case, schema)) for case in cases)
+                    bucket = generic_distribution.setdefault(provider, [0, 0])
+                    bucket[0 if generic_valid else 1] += 1
+                    witness = _schema_shaped_witness(schema)
+                    assert oracle.is_valid(witness), (provider, version, schema_file, "witness", witness)
+                    schema_shaped_positive_count += 1
+                    late_invalid = _late_invalid_variant(schema, witness)
+                    if late_invalid is not None:
+                        assert not oracle.is_valid(late_invalid), (
+                            provider,
+                            version,
+                            schema_file,
+                            "late invalid variant",
+                            late_invalid,
+                        )
+                        late_invalid_count += 1
+                    parity_cases = (*cases, witness, *((late_invalid,) if late_invalid is not None else ()))
+                    for case in parity_cases:
                         expected = Draft202012Validator(schema).is_valid(_normalize_empty_arrays(case, schema))
                         actual = _bounded_validator(schema, connection).is_valid(
                             _normalized(case, schema, schema, connection)
                         )
                         assert actual == expected, (provider, version, schema_file, case)
     assert schema_count == 60
+    assert schema_shaped_positive_count == schema_count, generic_distribution
+    assert late_invalid_count == schema_count, f"only {late_invalid_count}/{schema_count} had invalid variants"
