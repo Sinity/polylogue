@@ -68,27 +68,14 @@ into internals" this module is supposed to make impossible to do by
 accident. The Protocol makes the dependency surface an explicit, readable
 contract instead of "whatever `self` happens to have".
 
-``ArchiveStore`` keeps one-line delegating methods for the two named
+``ArchiveStore`` keeps one-line delegating methods for the named
 classification entry points (``def
 classify_raw_revision_cohort_for_rebuild_repair(self, ...): return
-classify_raw_revision_cohort_for_rebuild_repair(self, ...)``, and the
-``_for_live_watch`` twin) so every existing external caller
-(``polylogue/sources/live/batch.py``, ``polylogue/sources/live/append_ingest.py``,
-``polylogue/sources/revision_backfill.py``, and every test that holds an
-``ArchiveStore``/``archive`` instance) keeps calling
-``archive.classify_raw_revision_cohort_for_*(...)`` unchanged. That is not a
-compatibility shim: there is exactly one shared implementation
-(``_classify_raw_revision_cohort``), it lives here, and ``ArchiveStore``'s
-method bodies are the call site — the same shape as any other
-function-then-delegate extraction, not a parallel/duplicated implementation
-kept alive for a deprecated audience. (polylogue-vp2ky retired the single
-``classify_raw_revision_cohort(..., check_source_path_identity_split: bool)``
-entry point in favor of these two names: the boolean answered two distinct
-questions -- "is this the rebuild/backfill repair path, where a stale-parser
-identity split must be caught" vs. "is this the live-watch path, where an
-atomic same-path content replacement must NOT be mistaken for a split" -- and
-every caller had to independently get the right literal right. Naming the
-question makes it impossible to pass the wrong answer.)
+classify_raw_revision_cohort_for_rebuild_repair(self, ...)``). There is
+exactly one shared implementation (``_classify_raw_revision_cohort``), it
+lives here, and ``ArchiveStore``'s method bodies are the call site. The live
+watcher binds append revisions at acquisition and never classifies a cohort,
+so every entry point applies the source-path identity-split guard.
 """
 
 from __future__ import annotations
@@ -1353,7 +1340,7 @@ def raw_append_revision_parent(
         store._ensure_source_conn()
         .execute(
             """
-        SELECT raw_id, COALESCE(baseline_raw_id, raw_id), acquisition_generation
+        SELECT raw_id, CASE WHEN revision_kind = 'full' THEN raw_id ELSE baseline_raw_id END, acquisition_generation
         FROM raw_sessions
         WHERE logical_source_key = ? AND source_revision = ?
           AND revision_authority != 'quarantined'
@@ -1508,9 +1495,7 @@ def classify_raw_revision_cohort_for_rebuild_repair(
     (see ``_raw_revision_source_path_has_divergent_evidence``) so such a
     split is refused a naive singleton byte-chain accept and instead folds
     into membership governance, where the real content-based classifier
-    weighs every known sibling together. Never call this from the live
-    watcher -- see ``classify_raw_revision_cohort_for_live_watch`` for why
-    the same guard is unsound there.
+    weighs every known sibling together.
 
     This entry point owns the source transaction. Batch rebuilds use the
     explicitly caller-owned ``*_in_transaction`` variant below.
@@ -1518,7 +1503,6 @@ def classify_raw_revision_cohort_for_rebuild_repair(
     return _classify_raw_revision_cohort(
         store,
         logical_source_key,
-        check_source_path_identity_split=True,
         manage_transaction=True,
         source_effects=True,
     )
@@ -1532,7 +1516,6 @@ def classify_raw_revision_cohort_for_rebuild_repair_in_transaction(
     return _classify_raw_revision_cohort(
         store,
         logical_source_key,
-        check_source_path_identity_split=True,
         manage_transaction=False,
         source_effects=True,
     )
@@ -1546,51 +1529,8 @@ def classify_raw_revision_cohort_for_frozen_candidate(
     return _classify_raw_revision_cohort(
         store,
         logical_source_key,
-        check_source_path_identity_split=True,
         manage_transaction=False,
         source_effects=False,
-    )
-
-
-def classify_raw_revision_cohort_for_live_watch(
-    store: RawRevisionSourceHost,
-    logical_source_key: str,
-) -> RevisionReplayPlan:
-    """Classify a cohort for the live incremental-watch path.
-
-    This is the caller that must NOT apply the source-path cross-key
-    divergent-evidence guard used by
-    ``classify_raw_revision_cohort_for_rebuild_repair``: a watched source
-    path can legitimately be atomically replaced with an entirely different
-    session's content (same path, genuinely different identity, exercised
-    by
-    ``test_full_ingest_does_not_advance_cursor_across_same_size_replacement``
-    et al.). Applying the rebuild-repair guard here would wrongly quarantine
-    that legitimate replacement as "divergent evidence".
-
-    This entry point owns the source transaction. A caller that already owns
-    the transaction uses the explicitly named ``*_in_transaction`` variant.
-    """
-    return _classify_raw_revision_cohort(
-        store,
-        logical_source_key,
-        check_source_path_identity_split=False,
-        manage_transaction=True,
-        source_effects=True,
-    )
-
-
-def classify_raw_revision_cohort_for_live_watch_in_transaction(
-    store: RawRevisionGovernanceHost,
-    logical_source_key: str,
-) -> RevisionReplayPlan:
-    """Classify one live-watch cohort inside the caller's open transaction."""
-    return _classify_raw_revision_cohort(
-        store,
-        logical_source_key,
-        check_source_path_identity_split=False,
-        manage_transaction=False,
-        source_effects=True,
     )
 
 
@@ -1640,23 +1580,15 @@ def _classify_raw_revision_cohort(
     store: RawRevisionSourceHost,
     logical_source_key: str,
     *,
-    check_source_path_identity_split: bool,
     manage_transaction: bool = True,
     source_effects: bool,
     prepared_updates: list[tuple[str, str, str | None, str | None, int]] | None = None,
 ) -> RevisionReplayPlan:
     """Promote only a unique byte-prefix full chain and contiguous appends.
 
-    Shared implementation behind ``classify_raw_revision_cohort_for_rebuild_repair``
-    and ``classify_raw_revision_cohort_for_live_watch`` -- callers should use
-    one of those two named entry points, never this function directly, so
-    that ``check_source_path_identity_split`` is always set correctly for
-    the calling context by construction rather than by the caller getting a
-    bare boolean right.
-
-    When ``check_source_path_identity_split`` is set, additionally refuses a
-    singleton accept when another 'full' raw shares this raw's
-    ``source_path`` under a DIFFERENT key (see
+    Shared implementation behind the named ``classify_raw_revision_cohort_for_*``
+    entry points. Refuses a singleton accept when another 'full' raw shares
+    this raw's ``source_path`` under a DIFFERENT key (see
     ``_raw_revision_source_path_has_divergent_evidence``).
     """
     if source_effects and store._blob_publisher is None:
@@ -1715,11 +1647,7 @@ def _classify_raw_revision_cohort(
     # reparse) -- the caller's existing "no accepted chain" fallback
     # folds this raw into membership governance too, where the real
     # content-based classifier weighs every known sibling together.
-    if (
-        full_rows
-        and check_source_path_identity_split
-        and _raw_revision_source_path_has_divergent_evidence(store, logical_source_key)
-    ):
+    if full_rows and _raw_revision_source_path_has_divergent_evidence(store, logical_source_key):
         full_rows = []
     historical: list[HistoricalRawRevisionStream] = []
     for row in full_rows:
@@ -1840,7 +1768,7 @@ def _contiguous_append_authority_candidates(
 ) -> tuple[sqlite3.Row | tuple[object, ...], ...]:
     candidates = conn.execute(
         """
-            SELECT child.raw_id, parent.raw_id, COALESCE(parent.baseline_raw_id, parent.raw_id),
+            SELECT child.raw_id, parent.raw_id, CASE WHEN parent.revision_kind = 'full' THEN parent.raw_id ELSE parent.baseline_raw_id END,
                    parent.acquisition_generation + 1
             FROM raw_sessions AS child
             JOIN raw_sessions AS parent
@@ -1857,7 +1785,7 @@ def _contiguous_append_authority_candidates(
               AND (
                   child.revision_authority = 'quarantined'
                   OR child.predecessor_raw_id != parent.raw_id
-                  OR child.baseline_raw_id != COALESCE(parent.baseline_raw_id, parent.raw_id)
+                  OR child.baseline_raw_id != CASE WHEN parent.revision_kind = 'full' THEN parent.raw_id ELSE parent.baseline_raw_id END
                   OR child.acquisition_generation != parent.acquisition_generation + 1
               )
             """,
@@ -2106,6 +2034,19 @@ def open_raw_revision_material(
     payload_store = _retained_blob_store(store)
     with payload_store.open(blob_hash) as payload:
         yield provider, payload, source_path, kind
+
+
+@contextmanager
+def open_raw_container_material(
+    store: RawRevisionGovernanceHost, captured_zip_coordinate: CapturedZipMemberCoordinate
+) -> Iterator[BinaryIO | None]:
+    """Open the accepted physical container of one ZIP member raw, if retained."""
+    payload_store = _retained_blob_store(store)
+    if not payload_store.exists(captured_zip_coordinate.container_blob_hash):
+        yield None
+        return
+    with payload_store.open(captured_zip_coordinate.container_blob_hash) as container:
+        yield container
 
 
 def raw_revision_material(
@@ -4123,7 +4064,7 @@ def prepare_raw_revision_byte_classification(
 
 
 _CONTIGUOUS_APPEND_CANDIDATES_SQL = """
-            SELECT child.raw_id, parent.raw_id, COALESCE(parent.baseline_raw_id, parent.raw_id),
+            SELECT child.raw_id, parent.raw_id, CASE WHEN parent.revision_kind = 'full' THEN parent.raw_id ELSE parent.baseline_raw_id END,
                    parent.acquisition_generation + 1
             FROM raw_sessions AS child
             JOIN raw_sessions AS parent
@@ -4140,7 +4081,7 @@ _CONTIGUOUS_APPEND_CANDIDATES_SQL = """
               AND (
                   child.revision_authority = 'quarantined'
                   OR child.predecessor_raw_id != parent.raw_id
-                  OR child.baseline_raw_id != COALESCE(parent.baseline_raw_id, parent.raw_id)
+                  OR child.baseline_raw_id != CASE WHEN parent.revision_kind = 'full' THEN parent.raw_id ELSE parent.baseline_raw_id END
                   OR child.acquisition_generation != parent.acquisition_generation + 1
               )
             """

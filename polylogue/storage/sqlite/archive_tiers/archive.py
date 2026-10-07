@@ -222,8 +222,6 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     bind_raw_revision,
     blob_path_for_hash,
     classify_raw_revision_cohort_for_frozen_candidate,
-    classify_raw_revision_cohort_for_live_watch,
-    classify_raw_revision_cohort_for_live_watch_in_transaction,
     classify_raw_revision_cohort_for_rebuild_repair,
     classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
     convertible_full_revision_raw_ids,
@@ -233,6 +231,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     finalize_raw_parse_state,
     mark_raw_parse_failed,
     mark_raw_parse_succeeded,
+    open_raw_container_material,
     open_raw_revision_material,
     pending_raw_revision_logical_keys,
     promote_reconstructed_legacy_append_revisions,
@@ -2887,19 +2886,6 @@ class ArchiveStore:
     def classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key: str) -> RevisionReplayPlan:
         return classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key)
 
-    @_archive_mutator
-    def classify_raw_revision_cohort_for_live_watch(
-        self,
-        logical_source_key: str,
-    ) -> RevisionReplayPlan:
-        self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_live_watch(self, logical_source_key)
-
-    @_archive_mutator
-    def classify_raw_revision_cohort_for_live_watch_in_transaction(self, logical_source_key: str) -> RevisionReplayPlan:
-        self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_live_watch_in_transaction(self, logical_source_key)
-
     @staticmethod
     def _promote_contiguous_append_evidence(conn: sqlite3.Connection, logical_source_key: str) -> None:
         return _promote_contiguous_append_evidence(conn, logical_source_key)
@@ -2942,6 +2928,14 @@ class ArchiveStore:
 
     def raw_revision_material(self, raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
         return raw_revision_material(self, raw_id)
+
+    @contextmanager
+    def open_raw_container_material(self, raw_id: str) -> Iterator[BinaryIO | None]:
+        coordinate = self.raw_captured_zip_coordinate(raw_id)
+        if coordinate is None:
+            raise ValueError(f"raw has no captured ZIP container: {raw_id}")
+        with open_raw_container_material(self, coordinate) as container:
+            yield container
 
     def blob_path_for_hash(self, blob_hash: str) -> Path | None:
         return blob_path_for_hash(self, blob_hash)

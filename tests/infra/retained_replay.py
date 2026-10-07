@@ -24,9 +24,10 @@ from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fi
 from tests.infra.live_ingest import prepared_live_convergence_owner
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +65,13 @@ class RetainedReplayRun:
         )
 
 
+def _select(raw_ids: tuple[str, ...]) -> Callable[[PreparedSessionSourceRead], Sequence[str]]:
+    def select(_reader: PreparedSessionSourceRead) -> Sequence[str]:
+        return raw_ids
+
+    return select
+
+
 def _replay_on_creator(
     archive_root: Path,
     compute_adapter: BoundedComputeAdapter,
@@ -84,9 +92,17 @@ def _replay_on_creator(
     for raw_id in seeds:
         if raw_id in visited:
             continue
+        # As the production owner does, a pass after a lineage deferral
+        # re-prepares only the deferred children, not the keys it published.
+        deferred_selection: tuple[str, ...] | None = None
         while True:
             check_compute_cancelled()
-            replacement = adapter.compute(frame, raw_id, replay_current=True)
+            replacement = adapter.compute(
+                frame,
+                raw_id,
+                replay_current=True,
+                select_retained_raw_ids=None if deferred_selection is None else _select(deferred_selection),
+            )
             phases: list[str] = []
 
             def record(
@@ -107,6 +123,8 @@ def _replay_on_creator(
                 # A lineage-deferral pass published its unit except the
                 # deferred children, which this seed's next pass re-prepares.
                 visited.update(set(replacement.raw_ids).difference(replacement.lineage_deferred_raw_ids))
+                if replacement.lineage_deferred_raw_ids:
+                    deferred_selection = replacement.lineage_deferred_raw_ids
             # A committed census, classification, byte restoration or deferred
             # parent publication is this key's own progress, which the adapter
             # reports exactly as it does to the derivation kernel; the next pass

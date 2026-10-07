@@ -250,6 +250,9 @@ class RawObservationArchiveWork:
                     continue
                 require_authority(raw_id)
                 previous_progress: tuple[str, tuple[object, ...]] | None = None
+                # After a lineage-deferral pass only its deferred children are
+                # re-prepared; the keys that pass published are not replayed again.
+                deferred_selection: tuple[str, ...] | None = None
                 while True:
                     check_compute_cancelled()
                     original_inputs: list[tuple[object, ...]] = []
@@ -259,6 +262,7 @@ class RawObservationArchiveWork:
                         reader: PreparedSessionSourceRead,
                         *,
                         selected_raw_id: str = raw_id,
+                        reselected: tuple[str, ...] | None = deferred_selection,
                         captured_inputs: list[tuple[object, ...]] = original_inputs,
                         captured_keys: dict[str, tuple[str, ...]] = original_keys,
                     ) -> Sequence[str]:
@@ -276,8 +280,12 @@ class RawObservationArchiveWork:
                         selected_ids = tuple(
                             item
                             for item in (
-                                selected_raw_id,
-                                *(select_retained_raw_ids(reader) if select_retained_raw_ids else ()),
+                                reselected
+                                if reselected is not None
+                                else (
+                                    selected_raw_id,
+                                    *(select_retained_raw_ids(reader) if select_retained_raw_ids else ()),
+                                )
                             )
                             if item not in refused_ids and item not in dependency_blocked_ids
                         )
@@ -442,6 +450,7 @@ class RawObservationArchiveWork:
                                 on_membership_refusal(membership_refusal)
                         results.append(replay_phases[0])
                         visited.update(set(replacement.raw_ids).difference(replacement.lineage_deferred_raw_ids))
+                        deferred_selection = replacement.lineage_deferred_raw_ids
                         previous_progress = None
                         continue
                     if replay_phases or not source_phases:

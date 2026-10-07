@@ -236,9 +236,9 @@ def test_append_plan_resynthesizes_an_append_kind_head(tmp_path: Path) -> None:
                 authority=RawRevisionAuthority.QUARANTINED,
             ),
         )
-        # Promote the append into the accepted chain the same way the real
-        # append-ingest path does, via the durable classifier.
-        archive.classify_raw_revision_cohort_for_live_watch(f"codex:{session_id}")
+        # Promote the append into the accepted chain through the durable
+        # byte-chain classifier.
+        archive.classify_raw_revision_cohort_for_rebuild_repair(f"codex:{session_id}")
     second_append = _codex_message("second-append")
     source.write_bytes(baseline + first_append_delta + second_append)
     _seed_native_session(tmp_path, session_id=session_id)
@@ -255,7 +255,7 @@ def test_append_plan_resynthesizes_an_append_kind_head(tmp_path: Path) -> None:
 
 
 def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) -> None:
-    """A quarantined recovery snapshot must not strand the accepted append chain."""
+    """A recovery snapshot after a continuity lapse must not strand the append chain."""
     session_id = "append-lapse-recovery"
     bootstrap_archive_root(tmp_path)
     source = tmp_path / "rollout-append-lapse-recovery.jsonl"
@@ -282,7 +282,7 @@ def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) 
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        archive.classify_raw_revision_cohort_for_live_watch(f"codex-session:{session_id}")
+        archive.classify_raw_revision_cohort_for_rebuild_repair(f"codex-session:{session_id}")
     # Publish the baseline through replay so the append extends a governed
     # head: an ungoverned seeded session is incomparable Index state that
     # replay refuses to adopt.
@@ -295,9 +295,10 @@ def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) 
     first_result = ingest_append_with_owner(processor, [first_plan])
     assert first_result.succeeded == [first_plan]
 
-    # Simulate the continuity lapse's full recovery capture.  Its bytes are
-    # retained, but strict grown-frontier governance leaves the snapshot
-    # quarantined beside the accepted full+append chain.
+    # Simulate the continuity lapse's full recovery capture. Byte
+    # classification of its cohort: the baseline is its byte prefix, so it is
+    # a byte-proven full chain member and the newest full baseline, and
+    # replay moves the accepted head to its frontier.
     recovery_snapshot = baseline + first_delta + recovery_delta
     source.write_bytes(recovery_snapshot)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -315,17 +316,23 @@ def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) 
                 authority=RawRevisionAuthority.QUARANTINED,
             ),
         )
+        archive.classify_raw_revision_cohort_for_rebuild_repair(f"codex-session:{session_id}")
+    replay_retained_raws(tmp_path)
 
-    # The disposable ops cursor is gone.  Durable resynthesis must use the
-    # accepted append head as the proved frontier and capture the next range.
+    # The disposable ops cursor is gone. Durable resynthesis uses the accepted
+    # recovery head as the proved frontier and captures only the next range.
+    # The append grows from a full that is itself a chain member, so its
+    # baseline is that full, not the chain root; binding it to the root left
+    # it outside the replay plan and deferred forever.
     source.write_bytes(recovery_snapshot + next_delta)
     reset_processor = _processor(tmp_path, CursorStore(tmp_path / "ops-reset.db"))
     resumed_plan = reset_processor._append_plan(source)
     assert isinstance(resumed_plan, _AppendPlan)
-    assert resumed_plan.start_offset == len(baseline) + len(first_delta)
-    assert resumed_plan.payload == recovery_delta + next_delta
+    assert resumed_plan.start_offset == len(recovery_snapshot)
+    assert resumed_plan.payload == next_delta
     resumed_result = ingest_append_with_owner(reset_processor, [resumed_plan])
     assert resumed_result.succeeded == [resumed_plan]
+    assert resumed_result.deferred == []
 
 
 def test_pre_fresh_source_tier_is_refused_not_migrated(tmp_path: Path) -> None:

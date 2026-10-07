@@ -787,7 +787,7 @@ def _maximal_evidence_fallback(representatives: list[MembershipRevision]) -> Mem
     raw_id through MEMBERSHIP governance still overwrites the head's own
     ``accepted_frontier_kind``/generation metadata (e.g. downgrading a
     byte-governed head to "semantic"), a real authority downgrade despite
-    the pointed-to raw_id never changing (``test_live_multi_session_divergence_reopens_raw_authority``).
+    the pointed-to raw_id never changing (``test_live_multi_session_divergence_keeps_accepted_head_as_debt``).
     """
     return max(representatives, key=lambda item: (_frontier(item.projection), item.raw_id))
 

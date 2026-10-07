@@ -32,13 +32,24 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.core.enums import Provider
 from polylogue.core.provider_identity import captured_hermes_profile_key, profile_root_for_artifact
 
 __all__ = [
+    "declares_profile_identity",
     "profile_key",
     "qualified_session_id",
     "split_qualified_session_id",
 ]
+
+
+def declares_profile_identity(provider: Provider | None) -> bool:
+    """Whether acquisition records a profile namespace for this provider's inputs.
+
+    Only Hermes inputs, and inputs whose provider is not yet detected, carry
+    one. Raws, cursors and cursor reconciliation all read through this rule.
+    """
+    return provider is None or provider in {Provider.HERMES, Provider.UNKNOWN}
 
 
 def profile_key(profile_root: Path) -> str:

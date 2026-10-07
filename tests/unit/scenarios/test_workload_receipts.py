@@ -67,7 +67,7 @@ def test_process_scope_does_not_expand_watcher_scope_matrix() -> None:
     spec = watcher_append_cohort_canary_spec(profile_id="profile", archive_id="archive")
 
     assert MeasurementScope.PROCESS.value == "process"
-    assert len(spec.phases) == 10
+    assert len(spec.phases) == 6
     assert all(phase.endswith(("process-tree", "cgroup")) for phase in spec.phases)
 
 

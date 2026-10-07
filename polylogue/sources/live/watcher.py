@@ -64,6 +64,7 @@ from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
+from polylogue.sources.parsers.hermes_identity import declares_profile_identity
 from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
 from polylogue.sources.sqlite_snapshot import (
     is_sqlite_path,
@@ -1329,7 +1330,7 @@ class LiveWatcher:
             authority = CursorPathAuthority.observe(path)
         except FileNotFoundError:
             return _ArchivedCursorReconciliation.UNAVAILABLE
-        if source_provider not in {None, Provider.HERMES, Provider.UNKNOWN}:
+        if not declares_profile_identity(source_provider):
             # Acquisition captures a profile namespace only for Hermes (and
             # not-yet-detected) inputs; every other origin's raw carries none,
             # so its cursor carries none either.

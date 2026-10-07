@@ -314,7 +314,7 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if report.failed:
         original = _SHORTENED_NODEIDS.get(report.nodeid)
         if original is not None:
-            from devtools.pytest_rerun import report_nodeid_to_selector
+            from devtools.pytest_stream_report import report_nodeid_to_selector
 
             # Both sides in selector form: an xdist ``@group`` suffix in either
             # one is not collectible, and the rerun strips it before lookup.
