@@ -22,7 +22,7 @@ from tests.infra.retained_jsonl import retained_parser_fixture
 from tests.infra.retained_parser_payloads import _single_session_state_db_bytes
 
 
-def _projection(session: ParsedSession) -> object:
+def _projection(session: ParsedSession) -> tuple[object, ...]:
     return (
         session.model_dump(mode="json", exclude={"messages", "session_events", "unit_accounting"}),
         [message.model_dump(mode="json") for message in session.messages],
@@ -106,7 +106,7 @@ def test_retained_sqlite_preparation_streams_complete_parser_metadata(
         assert actual[0].messages[0].text == ("hi" if provider is Provider.HERMES else "retained text")
         if provider is Provider.HERMES:
             assert actual[0].title == "root"
-            assert events["hermes_session_metadata"].payload["end_reason"] == "completed"
+            assert events["hermes_session_metadata"].payload["source"] == "cli"
             assert events["hermes_message_state"].payload["active"] is True
         else:
             assert actual[0].unit_accounting is not None

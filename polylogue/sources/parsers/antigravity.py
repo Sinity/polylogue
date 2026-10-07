@@ -516,8 +516,6 @@ def _trajectory_schema_matches(connection: sqlite3.Connection) -> bool:
 
 def looks_like_trajectory_db_path(path: Path, *, immutable: bool = False) -> bool:
     """Recognize the Antigravity trajectory store by its verified schema."""
-    if path.suffix.lower() not in _TRAJECTORY_DB_SUFFIXES:
-        return False
     try:
         from polylogue.sources.sqlite_export import logical_source_context
 
