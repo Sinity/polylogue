@@ -191,6 +191,12 @@ identity. A raw without a receipt reports the explicit profile gap instead of
 discovering a qualifier from current source paths.
 New ingest acceptance stages physical inputs pagewise through
 `prepare_source_manifest` and carries a sealed reference into the audit plan.
+After materialization, the ingest writer settles an accepted item only when its
+current generation/item binding and exact raw/blob membership match the pinned
+receipt and every raw has complete logical publication evidence. Strict
+validation refusal remains pending with typed `validation_rejected` evidence;
+it keeps the generation census unsealable and the terminal ingest receipt
+degraded. Unresolved or untyped raw evidence cannot settle an item.
 Immutable pending commands retain their original inline evidence for restart;
 the opened single-ZIP acquisition also retains its one-input manifest. Decoder
 completion compares streamed coordinates against the caller's uncommitted

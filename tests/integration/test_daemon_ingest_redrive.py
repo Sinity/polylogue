@@ -988,7 +988,7 @@ async def test_ingest_counts_sessions_convergence_published_before_its_materiali
     assert result.counts["sessions"] == result.changed_counts["sessions"] == 1
     assert result.counts["messages"] == result.changed_counts["messages"] == 2
     assert len(result.processed_ids) == 1
-    operation_id, _record = _only_request(archive_root)
+    operation_id, record = _only_request(archive_root)
     audit = AuditRepository.for_archive_root(archive_root)
     with audit.settled_machine_read():
         history = audit.historical_machine_receipt(operation_id)
@@ -996,6 +996,19 @@ async def test_ingest_counts_sessions_convergence_published_before_its_materiali
     assert history.summary.parse_projection_known
     assert history.summary.changed_session_count == 1
     assert history.summary.changed_message_count == history.summary.processed_message_count == 2
+    generation_id = str(record["artifact_ref"])
+    with sqlite3.connect(archive_root / "source.db") as source_db:
+        settled = source_db.execute(
+            "SELECT disposition, outcome_code, stage FROM source_items WHERE source_generation_id=?",
+            (generation_id,),
+        ).fetchall()
+        census = source_db.execute(
+            "SELECT pending, admitted, deliberate, unknown_blocking, sealable "
+            "FROM source_item_reconciliation WHERE source_generation_id=?",
+            (generation_id,),
+        ).fetchone()
+    assert settled == [("admitted", "success", "materialization")]
+    assert census == (0, 1, 0, 0, 1)
 
 
 @pytest.mark.asyncio
@@ -1021,6 +1034,22 @@ async def test_materialize_keeps_valid_subject_after_original_decode_refusal(
             failures.append(failure)
             raise
         reached.append((len(raw_ids), len(result.session_page())))
+
+        def reject_strictly(connection: sqlite3.Connection) -> None:
+            row = connection.execute(
+                "SELECT raw_id FROM raw_sessions WHERE source_path LIKE ? ORDER BY raw_id LIMIT 1",
+                ("%/refused.json",),
+            ).fetchone()
+            assert row is not None
+            connection.execute(
+                "UPDATE raw_sessions SET validation_status='failed', validation_mode='strict', "
+                "validation_error='synthetic strict schema rejection', validated_at_ms=1 WHERE raw_id=?",
+                (row[0],),
+            )
+
+        # Inject the durable typed refusal through the same admitted Source
+        # writer used by production validation, before finalization consumes it.
+        await self.source_write(reject_strictly)
         return result
 
     monkeypatch.setattr(IngestExecution, "materialize", materialize)
@@ -1040,6 +1069,30 @@ async def test_materialize_keeps_valid_subject_after_original_decode_refusal(
     assert result.changed_counts["sessions"] == 1
     assert result.changed_counts["messages"] == 2
     assert _session_titles(archive_root) == ["Retained Redrive"]
+    operation_id, record = _only_request(archive_root)
+    generation_id = str(record["artifact_ref"])
+    with sqlite3.connect(archive_root / "source.db") as source_db:
+        items = source_db.execute(
+            "SELECT disposition, outcome_code, stage, retryable, evidence_ref FROM source_items "
+            "WHERE source_generation_id=? ORDER BY logical_coordinate",
+            (generation_id,),
+        ).fetchall()
+        census = source_db.execute(
+            "SELECT pending, admitted, deliberate, unknown_blocking, sealable "
+            "FROM source_item_reconciliation WHERE source_generation_id=?",
+            (generation_id,),
+        ).fetchone()
+    assert items[0] == ("admitted", "success", "materialization", 0, None)
+    assert items[1][:4] == ("pending", "validation_rejected", "validation", 0)
+    assert items[1][4].startswith("raw:")
+    assert census == (1, 1, 0, 0, 0)
+    audit = AuditRepository.for_archive_root(archive_root)
+    with audit.settled_machine_read():
+        history = audit.historical_machine_receipt(operation_id)
+        state = machine_request_state(audit, record)
+    assert isinstance(history, IngestHistoricalReceiptV2)
+    assert history.summary.source_complete is False
+    assert state["outcome"] == "degraded"
 
 
 @pytest.mark.asyncio
