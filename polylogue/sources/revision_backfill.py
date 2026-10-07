@@ -4202,7 +4202,7 @@ def _prepared_accepted_marker_sessions(
     """Stream canonical marker writes, closing each owned temporary after use."""
     from polylogue.sources.parsers.base_models import ParsedSession as ParsedSessionModel
 
-    found_bindings: dict[str, dict[str, object]] = {}
+    found_binding_digests: dict[str, str] = {}
     with closing(artifact.iter_sessions()) as parsed_sessions:
         for session in parsed_sessions:
             if not isinstance(session, ParsedSessionModel):
@@ -4213,14 +4213,17 @@ def _prepared_accepted_marker_sessions(
             session_id = binding["session_id"]
             if not isinstance(session_id, str) or session_id not in selected_session_ids:
                 continue
-            prior_binding = found_bindings.get(session_id)
-            if prior_binding is not None:
-                if prior_binding != binding:
+            binding_digest = hashlib.sha256(
+                json.dumps(binding, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            ).hexdigest()
+            prior_binding_digest = found_binding_digests.get(session_id)
+            if prior_binding_digest is not None:
+                if prior_binding_digest != binding_digest:
                     raise RetainedPreparationRetryableError(
                         f"accepted marker request has conflicting parsed session {raw_id}:{session_id}"
                     )
                 continue
-            found_bindings[session_id] = binding
+            found_binding_digests[session_id] = binding_digest
             prepared = prepared_writes.get((raw_id, session_id))
             if prepared is None:
                 prepared = marker_write_factory(raw_id, session)
@@ -4230,7 +4233,7 @@ def _prepared_accepted_marker_sessions(
                     prepared.close()
             else:
                 yield session_id, prepared, ()
-    missing = selected_session_ids - found_bindings.keys()
+    missing = selected_session_ids - found_binding_digests.keys()
     if missing:
         missing_session_id = min(missing)
         raise RetainedPreparationRetryableError(
