@@ -3166,21 +3166,32 @@ async def _run_daemon_services_under_active_writer_lease(
                     async def admit_hook_events(raw_id: str) -> AdmissionResult:
                         """Materialize exactly one acquired carrier's events.
 
-                        The domain publishes under its own writer lease, so
-                        this must not run inside the daemon's. The kernel's
-                        own verdicts decide the outcome: a refusal that a
+                        Hook carrier discovery and derivation stay on the
+                        compute pool; its short publication uses the daemon's
+                        ordinary writer bridge. The kernel's verdicts decide
+                        the outcome: a refusal that a
                         later pass could resolve is retryable, a carrier that
                         is already materialized is a duplicate.
                         """
 
+                        from polylogue.core.stage_admission import stage_write_admission
+                        from polylogue.daemon.convergence import _DerivationAdmission
                         from polylogue.operations.hook_event_derivation import converge_hook_carriers
 
-                        submitted = daemon_compute.submit(
-                            propagate(
-                                functools.partial(converge_hook_carriers, archive_root_path, raw_ids=(raw_id,), limit=1)
-                            ),
-                            admission_class="incremental-background",
+                        loop = asyncio.get_running_loop()
+                        admission = _DerivationAdmission(
+                            DaemonWriteThreadBridge(write_coordinator, loop),
+                            loop_thread_id=threading.get_ident(),
                         )
+                        with stage_write_admission(admission.stage_write):
+                            submitted = daemon_compute.submit(
+                                propagate(
+                                    functools.partial(
+                                        converge_hook_carriers, archive_root_path, raw_ids=(raw_id,), limit=1
+                                    )
+                                ),
+                                admission_class="incremental-background",
+                            )
                         report = await asyncio.wrap_future(submitted.future)
                         return _derivation_admission(report, raw_id, subject="hook event")
 

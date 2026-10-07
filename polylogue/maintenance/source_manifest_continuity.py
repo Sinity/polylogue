@@ -278,8 +278,10 @@ def configured_source_frontier(archive_root: Path) -> SourceFrontier:
             # The complete hook root is declared below so pending envelopes
             # and provider carriers share the same spool owner.
             continue
-        if not path.exists():
-            continue
+        # The resolver omits optional local sources that are disabled or
+        # absent in configuration. Once a source is present in runtime.sources,
+        # its path is part of the denominator even if it disappears before this
+        # observation; build_source_frontier turns that race into a blocker.
         name = source.name
         layout_name = name if path.is_dir() else None
         sqlite_paths: list[Path] = []
@@ -320,23 +322,19 @@ def configured_source_frontier(archive_root: Path) -> SourceFrontier:
         )
     for spec in hook_spool_sources():
         root = Path(spec.root)
-        if not root.exists():
-            continue
         for provider in ("claude-code", "codex", "hermes"):
             carrier_root = root / "carriers" / provider
-            if carrier_root.exists():
-                rows.append(
-                    SourceDeclaration(
-                        f"{spec.source_id}:carrier:{provider}",
-                        SourceRole.SPOOL,
-                        carrier_root,
-                        True,
-                        f"{provider}-hooks",
-                    )
+            rows.append(
+                SourceDeclaration(
+                    f"{spec.source_id}:carrier:{provider}",
+                    SourceRole.SPOOL,
+                    carrier_root,
+                    True,
+                    f"{provider}-hooks",
                 )
+            )
         pending = root / "pending"
-        if pending.exists():
-            rows.append(SourceDeclaration(f"{spec.source_id}:pending", SourceRole.SPOOL, pending, True))
+        rows.append(SourceDeclaration(f"{spec.source_id}:pending", SourceRole.SPOOL, pending, True))
     unique: dict[str, SourceDeclaration] = {row.source_id: row for row in rows}
     return build_source_frontier(unique.values())
 

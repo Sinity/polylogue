@@ -983,6 +983,7 @@ class _SpoolHandoffStrategy(_FilesystemStrategy):
                 retired,
                 binding.source.mutable,
                 binding.source.layout_name,
+                binding.source.exclude_coordinates,
             ),
             _root_identity(retired),
             binding.policy,
