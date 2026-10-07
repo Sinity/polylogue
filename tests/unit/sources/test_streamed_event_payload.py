@@ -154,7 +154,7 @@ def test_parse_accounting_spill_preserves_complete_outcomes_and_conservation(
         assert second_outcomes.accounting_id != first_outcomes.accounting_id
         assert second.stable_binding_digest() == first_binding
         inline_rows = [
-            AdmissionOutcome.model_validate(row) for row in second.outcomes.iter_unit(AdmissionUnit.PART.value)
+            AdmissionOutcome.model_validate(row) for row in second_outcomes.iter_unit(AdmissionUnit.PART.value)
         ]
         inline_rows.reverse()
         inline = ParseAccounting(expected={AdmissionUnit.PART: total}, outcomes=inline_rows)

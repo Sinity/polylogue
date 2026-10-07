@@ -279,7 +279,9 @@ def test_unchanged_reingest_does_not_reach_the_production_writer(
             first = await owner.converge_raw_id(raw_id)
             assert first.done == 1 and first.failed == first.pending == 0, first.outcomes
 
-            write = revision_governance.write_parsed_session_to_archive
+            from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+
+            write = write_parsed_session_to_archive
 
             def observe_writer(*args: object, **kwargs: object) -> str:
                 writer_calls.append("write")
