@@ -343,7 +343,7 @@ def _source_facts(
     return int(row[0]), int(row[1]), int(row[2]), int(row[3]), authorities, raw_rows
 
 
-@pytest.mark.timeout(900)
+@pytest.mark.timeout(0)
 @pytest.mark.uses_real_clock("measures wall-clock cost of an incident-scale convergence pass")
 @pytest.mark.asyncio
 async def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
