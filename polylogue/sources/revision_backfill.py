@@ -2752,6 +2752,13 @@ def parse_retained_raw_sessions(archive: RetainedRawRead, raw_id: str) -> list[P
     for Codex/Claude JSONL evidence.
     """
     provider, blob_hash, source_path, kind, _payload_size = archive.raw_revision_descriptor(raw_id)
+    if (
+        not is_work_event_raw_id(raw_id)
+        and declared_evidence_classification(source_path, provider=provider) is not None
+    ):
+        # A raw-only declaration is terminal even when the retained payload is
+        # empty. Do not send zero bytes through a provider JSON decoder.
+        return []
     profile_identity = archive.raw_profile_identity(raw_id)
     fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
     sidecar_resolver = archive.retained_sidecar_resolver()
