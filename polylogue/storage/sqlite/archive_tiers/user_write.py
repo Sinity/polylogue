@@ -2657,6 +2657,7 @@ def list_assertions_for_export(
     kinds: Sequence[str | AssertionKind] | None = None,
     statuses: Sequence[str | AssertionStatus] | None = None,
     limit: int | None = None,
+    schema: str = "main",
 ) -> list[ArchiveAssertionEnvelope]:
     """List assertion rows for durable user-tier export.
 
@@ -2665,7 +2666,9 @@ def list_assertions_for_export(
     accepted claims, deleted rows, and private transform candidates.
     """
 
-    if not _table_exists(conn, "assertions"):
+    if schema not in {"main", "user_tier"}:
+        raise ValueError(f"unsupported assertion export schema: {schema}")
+    if not _table_exists(conn, "assertions", schema=schema):
         return []
 
     where: list[str] = []
@@ -2688,7 +2691,7 @@ def list_assertions_for_export(
         params.append(ASSERTION_DEFAULT_STATUS.value)
         params.extend(normalized_statuses)
 
-    sql = f"SELECT {_ASSERTION_COLUMNS} FROM assertions"
+    sql = f"SELECT {_ASSERTION_COLUMNS} FROM {schema}.assertions"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY created_at_ms, assertion_id"

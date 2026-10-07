@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
@@ -53,16 +54,17 @@ def execute_cli_aux_read(name: str, payload: Mapping[str, object], *, archive: A
             list_assertions_for_export,
         )
 
-        if not archive.user_db_path.exists():
+        attached = {str(row[1]) for row in archive._conn.execute("PRAGMA database_list")}
+        if "user_tier" not in attached:
             rows = []
         else:
-            with archive._owned_read_connection(archive.user_db_path, validate_schema=False) as connection:
-                rows = list_assertions_for_export(
-                    connection,
-                    kinds=cast(list[str] | None, payload.get("kinds")),
-                    statuses=cast(list[str] | None, payload.get("statuses")),
-                    limit=cast(int | None, payload.get("limit")),
-                )
+            rows = list_assertions_for_export(
+                archive._conn,
+                kinds=cast(list[str] | None, payload.get("kinds")),
+                statuses=cast(list[str] | None, payload.get("statuses")),
+                limit=cast(int | None, payload.get("limit")),
+                schema="user_tier",
+            )
         items = [assertion_envelope_to_payload(row) for row in rows]
         return {
             "items": items,
@@ -96,17 +98,21 @@ def _resolve_session_prefixes(archive: ArchiveStore, tokens: list[str]) -> list[
 
 
 def _sessions_from_source_path(archive: ArchiveStore, path: Path) -> list[str]:
-    if not archive.index_db_path.exists() or not archive.source_db_path.exists():
-        return []
+    attached = {str(row[1]) for row in archive._conn.execute("PRAGMA database_list")}
+    if "source_tier" not in attached:
+        raise ArchiveTierUnavailableError(
+            tier="source.db",
+            path=str(archive.source_db_path.resolve(strict=False)),
+            reason="source tier is not attached to the pinned operation snapshot",
+            guidance="restore or initialize the durable source tier, then retry the query; "
+            "the reader will not open a replacement tier during an operation",
+        )
     from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 
     exact_prefix, child_prefix = escaped_sql_path_prefix_patterns(path)
-    from polylogue.storage.sqlite.connection_profile import attach_readonly_database
-
-    attach_readonly_database(archive._conn, archive.source_db_path, alias="source")
     rows = archive._conn.execute(
         """SELECT s.session_id FROM sessions s
-           JOIN source.raw_sessions r ON r.raw_id = s.raw_id
+           JOIN source_tier.raw_sessions r ON r.raw_id = s.raw_id
            WHERE REPLACE(r.source_path, char(92), '/') = ?
               OR REPLACE(r.source_path, char(92), '/') LIKE ? ESCAPE '\\'
            ORDER BY s.session_id""",
