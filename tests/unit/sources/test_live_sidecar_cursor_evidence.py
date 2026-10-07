@@ -237,7 +237,7 @@ async def test_settled_sidecar_cursor_stays_settled_on_the_next_scan(
     root.mkdir(parents=True)
     owner, subagents, sidecars = _build_session_tree(root, sidecar_names=("settled.txt",))
     sidecar = sidecars[0]
-    sources = (WatchSource(name="claude-code", root=root, suffixes=(".jsonl", ".txt")),)
+    sources = (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl", ".txt"))),)
     async with _processor(workspace_env, root) as processor:
         await processor.ingest_files([sidecar, owner, *subagents], emit_event=False)
         record = processor._cursor.get_record(sidecar)

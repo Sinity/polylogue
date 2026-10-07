@@ -31,6 +31,7 @@ from polylogue.core.enums import Provider
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
@@ -127,7 +128,7 @@ def _live_ingest(archive_root: Path, paths: Sequence[Path], *, source_name: str)
     bootstrap_archive_root(archive_root)
     processor = LiveBatchProcessor(
         Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
-        (WatchSource(name=source_name, root=paths[0].parent, suffixes=(".json", ".jsonl")),),
+        (WatchSource(name=source_name, root=paths[0].parent, layout=export_drop_layout((".json", ".jsonl"))),),
         cursor=CursorStore(archive_root / "index.db"),
         parser_fingerprint=_PARSER_FINGERPRINT,
     )
