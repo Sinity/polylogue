@@ -339,6 +339,11 @@
     ]
   },
   {
+    "file": "polylogue/storage/accepted_marker_producer.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/storage/blob_gc.py",
     "tiers": [
       "source"

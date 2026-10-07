@@ -117,6 +117,7 @@ def write_fixture_retained_session(
     source_index: int = 0,
     revision_authoritative: bool = False,
     acquired_at_ms: int = 1,
+    preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
 ) -> tuple[bool, dict[str, int]]:
     """Publish one admitted ParsedSession through the retained session writer.
 
@@ -125,7 +126,9 @@ def write_fixture_retained_session(
     Preparation on an original seal and the guarded write under that seal
     are the ones retained publication runs. This starts at a ParsedSession and
     claims no provider-byte fidelity. Returns the writer's ``content_changed``
-    decision and its counts.
+    decision and its counts. ``preacquired_attachment_blobs`` is the actual
+    acquisition result keyed by each attachment's current carrier identity;
+    callers that publish bytes must carry this mapping with their Source refs.
     """
     import json
 
@@ -157,6 +160,7 @@ def write_fixture_retained_session(
             raw_id=raw_id,
             source_index=source_index,
             revision_authoritative=revision_authoritative,
+            preacquired_attachment_blobs=preacquired_attachment_blobs,
         )
         archive.commit()
     return result.content_changed, dict(result.counts)

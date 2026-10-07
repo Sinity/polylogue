@@ -442,7 +442,6 @@ async def test_claude_index_and_history_resolve_with_the_original_tree_gone(tmp_
 
     parsed = await _retained_session(archive_root, Provider.CLAUDE_CODE, content, str(transcript))
     assert parsed.title == "Curated index title"
-    assert str(parsed.title_source) == TitleSource.ORIGIN.value
     user_message = next(message for message in parsed.messages if message.role == "user")
     assert user_message.has_paste
     with sqlite3.connect(archive_root / "index.db") as conn:
@@ -451,6 +450,68 @@ async def test_claude_index_and_history_resolve_with_the_original_tree_gone(tmp_
             (str(parsed.id),),
         ).fetchall()
     assert [row[0] for row in paste_markers] == ["1"]
+    assert str(parsed.title_source) == TitleSource.ORIGIN.value
+
+
+def test_retained_claude_paste_output_sink_closes_when_consumer_cancels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A yielded clone stays readable until downstream cancellation closes it."""
+    from polylogue.sources import revision_backfill
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from polylogue.sources.parsers.claude.history import HistoryEntry, HistoryPaste
+    from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
+
+    source_store = SqliteMessageStore(tmp_path / "source.sqlite")
+    source_sink = source_store.new_sink()
+    source_sink.append(
+        ParsedMessage(
+            provider_message_id="user-1",
+            role="user",
+            text="first prompt",
+            timestamp="2026-01-01T00:00:00Z",
+        )
+    )
+    sealed = SqliteMessageSink(source_store.path, source_sink.session_ordinal, count=1)
+    source_store.conn.commit()
+    source = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="session-1",
+        messages=[],
+    ).model_copy(update={"messages": sealed})
+    entry = HistoryEntry(
+        display="first prompt",
+        timestamp_ms=1767225600000,
+        project=None,
+        session_id="session-1",
+        pastes=(HistoryPaste(paste_id="1", paste_type="text", content="pasted body", has_content=True),),
+    )
+    monkeypatch.setattr(
+        revision_backfill,
+        "_retained_enrichment_sidecar_data",
+        lambda **_: {"history_paste_index": {"session-1": [entry]}},
+    )
+    iterator = revision_backfill.iter_enriched_sessions_from_retained_read(
+        object(),  # type: ignore[arg-type]
+        Provider.CLAUDE_CODE,
+        "session.jsonl",
+        [source],
+        captured_zip_coordinate=None,
+    )
+    output_path: Path | None = None
+    try:
+        enriched = next(iterator)
+        assert isinstance(enriched.messages, SqliteMessageSink)
+        output_path = enriched.messages.path
+        assert output_path != source_store.path
+        assert output_path.exists()
+        assert next(iter(enriched.messages)).paste_spans[0].source_marker == "1"
+        assert next(iter(sealed)).paste_spans == []
+    finally:
+        iterator.close()
+        source_store.close()
+    assert output_path is not None
+    assert not output_path.exists()
 
 
 @pytest.mark.asyncio

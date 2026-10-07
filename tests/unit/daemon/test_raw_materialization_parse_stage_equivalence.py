@@ -155,7 +155,7 @@ async def test_two_accepted_revisions_survive_one_periodic_profile_pass(tmp_path
             archive_root,
             limit=revision,
         )
-        assert result.done == 1 and result.failed == 0
+        assert result.done == 1 and result.failed == 0, result
 
     with sqlite3.connect(archive_root / "source.db") as source:
         retained = source.execute("SELECT sequence, raw_id FROM accepted_marker_inputs ORDER BY sequence").fetchall()
@@ -174,11 +174,13 @@ async def test_two_accepted_revisions_survive_one_periodic_profile_pass(tmp_path
         periodic = await composed.callback(None)
         assert periodic.outcomes
         # Marker delivery intentionally advances one accepted source batch per
-        # transaction. The next periodic tick consumes R2 without republishing
-        # the already-current profile of the coalesced index revision.
+        # transaction. The scheduler may drain both transactions in this tick
+        # or leave R2 for the next one, without republishing the already-current
+        # profile of the coalesced index revision.
         second = await composed.callback(None)
-        assert second.outcomes
         assert all(item.key.domain != "session_profile" for item in second.outcomes)
+        with sqlite3.connect(archive_root / "user.db") as user:
+            assert user.execute("SELECT applied_sequence FROM accepted_marker_delivery_cursor").fetchone() == (2,)
         with sqlite3.connect(archive_root / "index.db") as index:
             assert index.execute(
                 "SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", ("codex-session:coalesced-profile",)

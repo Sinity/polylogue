@@ -4,8 +4,12 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
+from polylogue.archive.message.roles import Role
+from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import MessageOwnerResolution, _event_payload_hash
-from polylogue.sources.parse_accounting_spool import SqliteParseAccountingWriter
+from polylogue.sources.parse_accounting_spool import SpilledParseAccountingOutcomes, SqliteParseAccountingWriter
 from polylogue.sources.parsers.base import ParsedSessionEvent
 from polylogue.sources.parsers.base_models import (
     AdmissionDisposition,
@@ -14,6 +18,8 @@ from polylogue.sources.parsers.base_models import (
     AdmissionUnit,
     AdmissionUnknownReason,
     ParseAccounting,
+    ParsedMessage,
+    ParsedSession,
 )
 from polylogue.sources.prepared_message_sink import SqliteMessageStore
 from polylogue.sources.streamed_event_payload import SqliteJsonArrayWriter, StreamedJsonArray
@@ -69,7 +75,9 @@ def test_streamed_event_payload_replays_hashes_and_prepared_event_round_trips(tm
         store.close()
 
 
-def test_parse_accounting_spill_preserves_complete_outcomes_and_conservation(tmp_path: Path) -> None:
+def test_parse_accounting_spill_preserves_complete_outcomes_and_conservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     store = SqliteMessageStore(tmp_path / "prepared.sqlite")
     try:
         total = 5000
@@ -110,9 +118,64 @@ def test_parse_accounting_spill_preserves_complete_outcomes_and_conservation(tmp
         store.conn.commit()
         restored = ParseAccounting.from_prepared_payload(accounting.to_prepared_payload(), store.path)
         restored.assert_conserved()
+        first_binding = accounting.stable_binding_digest()
         replayed = restored.iter_outcomes()
         assert next(replayed).key == "part-0"
         assert sum(1 for _ in replayed) == total - 1
+
+        second_writer = SqliteParseAccountingWriter(store.conn, {AdmissionUnit.PART: total})
+        for ordinal in range(total):
+            disposition = (
+                AdmissionDisposition.MATERIALIZED,
+                AdmissionDisposition.TYPED_UNKNOWN,
+                AdmissionDisposition.TYPED_REFUSAL,
+            )[ordinal % 3]
+            reason = (
+                AdmissionUnknownReason.UNSUPPORTED_SHAPE
+                if disposition is AdmissionDisposition.TYPED_UNKNOWN
+                else AdmissionRefusalReason.MALFORMED
+                if disposition is AdmissionDisposition.TYPED_REFUSAL
+                else None
+            )
+            second_writer.append(
+                AdmissionOutcome(
+                    unit=AdmissionUnit.PART,
+                    ordinal=ordinal,
+                    key=f"part-{ordinal}",
+                    disposition=disposition,
+                    reason=reason,
+                )
+            )
+        second = ParseAccounting(expected={AdmissionUnit.PART: total}, outcomes=second_writer.finish())
+        assert second.outcomes.accounting_id != accounting.outcomes.accounting_id
+        assert second.stable_binding_digest() == first_binding
+
+        def unexpected_full_iteration(self: SpilledParseAccountingOutcomes) -> object:
+            raise AssertionError("marker binding must stream spilled outcomes by unit")
+
+        monkeypatch.setattr(SpilledParseAccountingOutcomes, "__iter__", unexpected_full_iteration)
+
+        from polylogue.sources.revision_backfill import _accepted_marker_request_session_binding
+
+        message_sink = store.new_sink()
+        message_sink.append(ParsedMessage(provider_message_id="streamed-1", role=Role.USER, text="bound text"))
+        array_writer = SqliteJsonArrayWriter(store.conn)
+        array_writer.extend(f"event-{index}" for index in range(2048))
+        event_sink = store.new_event_sink()
+        event_sink.append(
+            ParsedSessionEvent(event_type="marker-binding-test", payload={"values": array_writer.finish()})
+        )
+        store.conn.commit()
+        session = ParsedSession(
+            source_name=Provider.ANTIGRAVITY,
+            provider_session_id="spilled-accounting-session",
+            messages=[],
+            unit_accounting=second,
+        ).model_copy(update={"messages": message_sink, "session_events": event_sink})
+        binding = _accepted_marker_request_session_binding(session)
+        assert binding["unit_accounting_digest"] == first_binding
+        assert binding["content_hash"]
+        assert "unit_accounting" not in binding
     finally:
         store.close()
 

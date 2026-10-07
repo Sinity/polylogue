@@ -75,6 +75,7 @@ from polylogue.operations.mutation_transaction import (
 )
 from polylogue.operations.operation_context import PinnedOperationRead, open_operation_read
 from polylogue.operations.operation_context_types import OperationContext
+from polylogue.operations.source_item_settlement import settle_materialized_source_items
 from polylogue.sources.origin_specs import retained_enumeration_fingerprint
 from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
@@ -253,8 +254,10 @@ def _spool_source_receipt(
     with spool_connection(path) as spool:
         spool.executescript(
             "CREATE TABLE items(ordinal INTEGER PRIMARY KEY, source_item_id TEXT NOT NULL, coordinate TEXT NOT NULL, "
-            "raw_count INTEGER NOT NULL, unresolved_count INTEGER NOT NULL, retired_count INTEGER NOT NULL);"
-            "CREATE TABLE item_raws(source_item_id TEXT NOT NULL, raw_id TEXT NOT NULL, complete INTEGER NOT NULL, "
+            "raw_count INTEGER NOT NULL, unresolved_count INTEGER NOT NULL, retired_count INTEGER NOT NULL, "
+            "source_complete INTEGER NOT NULL);"
+            "CREATE TABLE item_raws(source_item_id TEXT NOT NULL, raw_id TEXT NOT NULL, raw_blob_hash BLOB NOT NULL, "
+            "complete INTEGER NOT NULL, "
             "PRIMARY KEY(source_item_id, raw_id)) WITHOUT ROWID;"
             "CREATE UNIQUE INDEX items_source_id ON items(source_item_id);"
             "CREATE TABLE raws(raw_id TEXT PRIMARY KEY, complete INTEGER NOT NULL, parser_complete INTEGER NOT NULL) WITHOUT ROWID;"
@@ -301,12 +304,25 @@ def _spool_source_receipt(
                                 "INSERT INTO raw_logicals VALUES (?, ?) ON CONFLICT DO NOTHING",
                                 (raw.raw_id, logical.logical_source_key),
                             )
+                        member_hash = source_conn.execute(
+                            "SELECT raw_blob_hash FROM main.source_item_raw_members "
+                            "WHERE source_generation_id=? AND source_item_id=? AND raw_id=? "
+                            "ORDER BY record_coordinate LIMIT 1",
+                            (generation_id, item.source_item_id, raw.raw_id),
+                        ).fetchone()
+                        if member_hash is None or not isinstance(member_hash[0], bytes):
+                            raw_complete = False
                         raw_count += 1
                         unresolved_count += not raw_complete
                         complete &= raw_complete
                         spool.execute(
-                            "INSERT INTO item_raws VALUES (?, ?, ?)",
-                            (item.source_item_id, raw.raw_id, int(raw_complete)),
+                            "INSERT INTO item_raws VALUES (?, ?, ?, ?)",
+                            (
+                                item.source_item_id,
+                                raw.raw_id,
+                                member_hash[0] if member_hash is not None else b"",
+                                int(raw_complete),
+                            ),
                         )
                         spool.execute(
                             "INSERT INTO raws VALUES (?, ?, ?) ON CONFLICT(raw_id) DO UPDATE SET "
@@ -315,7 +331,7 @@ def _spool_source_receipt(
                             (raw.raw_id, int(raw_complete), int(raw.parser_complete)),
                         )
                 spool.execute(
-                    "INSERT INTO items VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO items VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         observed_count,
                         item.source_item_id,
@@ -323,6 +339,7 @@ def _spool_source_receipt(
                         raw_count,
                         unresolved_count,
                         item.retired_count,
+                        int(item.source_complete and unresolved_count == 0),
                     ),
                 )
                 observed_count += 1
@@ -397,6 +414,7 @@ class IngestExecution:
         #: interrupted attempt of it.
         self.unchanged_publications = 0
         self.refused_count = 0
+        self.source_items_sealable = False
         self.inline_refusals: list[IngestRefusedMembershipHistorical] = []
         self.refusal_pages_ref: str | None = None
         self.refusal_page_count = 0
@@ -543,6 +561,34 @@ class IngestExecution:
                 return work(connection)
 
         return await self.runtime.write_phase("ingest.source", publish)
+
+    async def settle_source_items(self, generation: RetainedSourceGeneration, receipt: SourceReceiptSpool) -> int:
+        """Publish only item outcomes proved by this generation's materialization."""
+        if receipt.source_generation_id != generation.source_generation_id:
+            raise ValueError("materialization receipt names a different source generation")
+        if self.snapshot is None:
+            raise ValueError("materialization receipt has no pinned archive identity")
+        identity = self.snapshot.identity
+
+        def settle(connection: sqlite3.Connection) -> int:
+            # The active generation may move while the callback waits for the
+            # single writer. Recheck immediately before Source mutations.
+            self.require_publication_identity(identity)
+            changed = settle_materialized_source_items(
+                connection,
+                source_generation_id=generation.source_generation_id,
+                receipt_path=receipt.path,
+                observed_at_ms=int(time() * 1000),
+                check_stop=self.check_stop,
+            )
+            census = connection.execute(
+                "SELECT sealable FROM source_item_reconciliation WHERE source_generation_id=?",
+                (generation.source_generation_id,),
+            ).fetchone()
+            self.source_items_sealable = census is not None and bool(census[0])
+            return changed
+
+        return await self.source_write(settle)
 
     async def abort_prepared(self, generation_id: str) -> None:
         """Settle a failed pre-accept attempt even after stop was requested."""
@@ -1207,7 +1253,7 @@ class IngestExecution:
             insight_pages_digest=self.insight_pages_digest,
             summary=IngestTerminalSummaryHistorical(
                 enumeration_complete=receipt.enumeration_complete,
-                source_complete=receipt.complete and self.refused_count == 0,
+                source_complete=receipt.complete and self.source_items_sealable and self.refused_count == 0,
                 confirmed_raw_count=receipt.confirmed_raw_count,
                 unresolved_raw_count=receipt.unresolved_raw_count,
                 profile_targets_observed=sum(len(part.targets) for part in profile_parts),
@@ -1249,6 +1295,7 @@ class IngestExecution:
         profile_parts: tuple[SessionInsightPartReceipt, ...],
     ) -> IngestHistoricalReceiptV2:
         assert self.started_mutation is not None
+        await self.settle_source_items(generation, receipt)
         started = self.started_mutation
         operation_id = started.operation_id
         assert operation_id is not None

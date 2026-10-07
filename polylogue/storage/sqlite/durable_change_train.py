@@ -1144,7 +1144,13 @@ def _probe_accepted_marker_input_writer() -> str:
             if first != 1 or replay != first:
                 raise DurableChangeTrainError("marker input replay advanced the stream")
             page = await read_accepted_marker_inputs(conn, limit=1)
-            if len(page) != 1 or page[0].batch != batch or page[0].sequence != first:
+            if (
+                len(page) != 1
+                or page[0].batch.raw_id != batch.raw_id
+                or page[0].batch.identity != batch.identity
+                or page[0].batch.payload_sha256 != batch.payload_sha256
+                or page[0].sequence != first
+            ):
                 raise DurableChangeTrainError("marker input reader lost retained bytes or sequence")
             if await read_accepted_marker_inputs(conn, after_sequence=first):
                 raise DurableChangeTrainError("marker input pagination repeated its cursor")

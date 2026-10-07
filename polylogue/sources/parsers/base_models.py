@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import heapq
+import json
 import math
 from bisect import bisect_right
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -162,6 +164,43 @@ class ParseAccounting(BaseModel):
     expected: dict[AdmissionUnit, int] = Field(default_factory=dict)
     outcomes: SkipValidation[list[AdmissionOutcome] | AdmissionOutcomeCollection] = Field(default_factory=list)
     materialized_ordinals: dict[AdmissionUnit, list[tuple[int, int]]] = Field(default_factory=dict)
+
+    def stable_binding_digest(self) -> str:
+        """Hash the complete accounting witness without expanding materialized ranges.
+
+        The digest deliberately excludes the preparation database path and
+        scratch ``accounting_id``. Spilled exceptional outcomes are consumed
+        one row at a time; compact materialized ranges remain compact.
+        """
+        digest = hashlib.sha256(b"polylogue.parse-accounting-binding.v1\0")
+
+        def add(value: object) -> None:
+            encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+
+        expected = sorted((unit.value, int(count)) for unit, count in self.expected.items())
+        add({"expected": expected})
+        for unit in sorted(self.materialized_ordinals, key=lambda item: item.value):
+            values = self.materialized_ordinals[unit]
+            add({"materialized_unit": unit.value, "range_count": len(values)})
+            for start, end in values:
+                add([int(start), int(end)])
+        outcomes = self.outcomes
+        if isinstance(outcomes, list):
+            # Preserve parser order for in-memory outcomes. Each record carries
+            # its unit and ordinal, so the witness remains unambiguous.
+            for outcome in outcomes:
+                add(outcome.model_dump(mode="json"))
+        else:
+            # Spilled storage is ordered by unit and ordinal and does not expose
+            # its random scratch identity as part of the witness.
+            units = {item.value for item in self.expected} | {item.value for item in self.materialized_ordinals}
+            units.update(outcomes.count_by_unit())
+            for unit_name in sorted(units):
+                for outcome_record in outcomes.iter_unit(unit_name):
+                    add(outcome_record)
+        return digest.hexdigest()
 
     def to_prepared_payload(self) -> dict[str, object]:
         if not isinstance(self.outcomes, list):

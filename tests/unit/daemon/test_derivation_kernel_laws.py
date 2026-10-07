@@ -1059,7 +1059,7 @@ def test_a_domain_that_is_not_session_derived_ignores_the_barrier() -> None:
 class CarrierKeyedDerivation(RecordingDerivation):
     """One key per carrier, each naming several sessions."""
 
-    def barrier_sessions(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, tuple[str, ...]]:
+    def barrier_sessions(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, Iterable[str]]:
         return {"batch": ("s1", "s2")}
 
 
@@ -1077,7 +1077,7 @@ def test_barrier_consumes_session_membership_in_pages_and_stops_at_a_blocker() -
     """A carrier with many sessions does not flatten its entire membership."""
 
     class LargeCarrier(CarrierKeyedDerivation):
-        def barrier_sessions(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, Sequence[str]]:
+        def barrier_sessions(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, Iterable[str]]:
             def sessions() -> Iterator[str]:
                 try:
                     for index in range(1000):

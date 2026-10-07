@@ -202,19 +202,19 @@ def stage_accepted_marker_input(seal: PreparedIndexMutation, carrier: PreparedAc
             "index_incarnation_id": seal.retain_literal_scalar(None),
             "payload_sha256": seal.retain_literal_scalar(batch.payload_sha256),
         }
-        expressions: list[str] = []
-        parameters: list[object] = [None]
+        payload_expressions: list[str] = []
+        payload_parameters: list[object] = [None]
         for column in ("identity", "raw_id", "payload", "index_incarnation_id", "payload_sha256"):
             expression, operands = seal.source_literal_expression(cells[column])
-            expressions.append(expression)
-            parameters.extend(operands)
+            payload_expressions.append(expression)
+            payload_parameters.extend(operands)
         sql = (
             "INSERT INTO accepted_marker_inputs(sequence, identity, raw_id, payload, index_incarnation_id, payload_sha256) "
-            "VALUES (?, " + ", ".join(expressions) + ") RETURNING sequence"
+            "VALUES (?, " + ", ".join(payload_expressions) + ") RETURNING sequence"
         )
         with seal.source_statement(
             sql,
-            tuple(parameters),
+            tuple(payload_parameters),
             table="accepted_marker_inputs",
             writable_targets=(),
             prepared_cells=cells,
@@ -464,7 +464,7 @@ def marker_input_excision_targets_sync(
                 saw_retained = False
                 try:
                     with conn.blobopen(table, "payload", int(rowid), readonly=True) as payload:
-                        for session_id in iter_marker_input_session_ids(payload, reference):
+                        for session_id in iter_marker_input_session_ids(cast(BinaryIO, payload), reference):
                             if session_id in target_session_ids:
                                 saw_target = True
                             else:

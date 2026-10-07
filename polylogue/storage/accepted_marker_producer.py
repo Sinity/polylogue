@@ -88,9 +88,9 @@ def marker_candidates_for_prepared_write_stream(prepared: PreparedSessionWrite) 
                 for candidate in iter_candidates_for_block(message_id, block_id, text):
                     assertion_id = assertion_id_for_marker(candidate)
                     if assertion_id is not None:
-                        try:
-                            seen.execute("INSERT INTO ids VALUES (?)", (assertion_id,))
-                        except sqlite3.IntegrityError:
+                        prior_changes = seen.total_changes
+                        seen.execute("INSERT OR IGNORE INTO ids VALUES (?)", (assertion_id,))
+                        if seen.total_changes == prior_changes:
                             continue
                     value = asdict(candidate)
                     value["assertion_kind"] = candidate.assertion_kind.value if candidate.assertion_kind else None
@@ -104,7 +104,7 @@ def prepare_accepted_marker_carrier(
     raw_id: str,
     request_facts: Mapping[str, object],
     request_sessions: Callable[[], Iterable[Mapping[str, object]]],
-    prepared_sessions: Iterable[tuple[str, PreparedSessionWrite, Iterable[str]]],
+    prepared_sessions: Iterable[tuple[str, PreparedSessionWrite, Iterable[object]]],
 ) -> PreparedAcceptedMarkerCarrier:
     """Stream one accepted raw's complete request and selected write carrier.
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,8 @@ from polylogue.pipeline.services.validation import ValidationService
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.live_ingest import prepared_live_convergence_owner
+from tests.infra.retained_jsonl import prepared_source_fixture, retained_raw_fixture
 from tests.infra.storage_records import admit_raw_record
 
 
@@ -60,3 +64,118 @@ async def test_validation_api_persists_malformed_jsonl_quarantine_without_payloa
         assert stored.parse_error == validation.parse_error
     finally:
         await backend.close()
+
+
+@pytest.mark.parametrize("mode", ["off", "advisory", "strict"])
+@pytest.mark.parametrize(
+    ("provider", "suffix"),
+    [
+        (Provider.CODEX, "jsonl"),
+        (Provider.CLAUDE_CODE, "jsonl"),
+        (Provider.CHATGPT, "json"),
+        (Provider.GEMINI, "json"),
+    ],
+)
+def test_zero_length_retained_raw_is_terminal_for_every_provider_and_validation_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: Provider, suffix: str
+) -> None:
+    """Empty acquired bytes are terminal decoder evidence, regardless of schema mode or provider."""
+    from polylogue.core.raw_failure_evidence import RAW_FAILURE_VALIDATION_FAILURE_KINDS
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    blob_hash, _size = BlobStore(root / "blob").write_from_bytes(b"")
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", mode)
+    with retained_raw_fixture(
+        root=root,
+        provider=provider,
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "exports" / f"empty.{suffix}"),
+    ) as (_source_read, raw_id):
+        pass
+
+    async def replay() -> tuple[object, list[str]]:
+        refused: list[str] = []
+        async with prepared_live_convergence_owner(root) as owner:
+            receipts = (
+                await owner.replay_retained_raw_ids(
+                    (raw_id,), on_terminal_refusal=lambda _keys, refusal: refused.append(refusal.raw_id)
+                )
+            ).require_complete()
+            return receipts, refused
+
+    receipts, refused = asyncio.run(replay())
+
+    assert receipts == (), (provider, mode, receipts)
+    assert refused == [raw_id], (provider, mode, refused)
+    with prepared_source_fixture(root) as source_read:
+        assert source_read.raw_parser_census_is_current(raw_id)
+        refusal = source_read.raw_terminal_decode_refusal(raw_id)
+        assert refusal is not None
+        assert refusal.kind.value in RAW_FAILURE_VALIDATION_FAILURE_KINDS
+        assert str(refusal).strip()
+    with sqlite3.connect(root / "source.db") as source:
+        state = source.execute(
+            "SELECT parsed_at_ms, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+        artifact_kinds = {
+            str(row[0]) for row in source.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id=?", (raw_id,))
+        }
+    assert state is not None
+    assert state[0] is None
+    assert state[1] == str(refusal)
+    assert artifact_kinds & RAW_FAILURE_VALIDATION_FAILURE_KINDS
+    with sqlite3.connect(root / "index.db") as index:
+        assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+@pytest.mark.parametrize("mode", ["off", "advisory", "strict"])
+def test_complete_malformed_jsonl_is_terminal_without_publishing_a_session_in_every_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """Schema mode changes validation only; it never makes complete malformed JSONL publishable."""
+    from polylogue.core.raw_failure_evidence import RAW_FAILURE_VALIDATION_FAILURE_KINDS
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    payload = (
+        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"safe"},'
+        b'"uuid":"m1","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"parentUuid":null "type":"user","message":{"role":"user","content":"PRIVATE_BAD_LINE"},'
+        b'"uuid":"m2","timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+    blob_hash, _size = BlobStore(root / "blob").write_from_bytes(payload)
+    monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", mode)
+    with retained_raw_fixture(
+        root=root,
+        provider=Provider.CLAUDE_CODE,
+        blob_hash=blob_hash,
+        source_path=str(tmp_path / "projects" / "proj" / "malformed.jsonl"),
+    ) as (_source_read, raw_id):
+        pass
+
+    async def replay() -> tuple[object, list[str]]:
+        refused: list[str] = []
+        async with prepared_live_convergence_owner(root) as owner:
+            receipts = (
+                await owner.replay_retained_raw_ids(
+                    (raw_id,), on_terminal_refusal=lambda _keys, refusal: refused.append(refusal.raw_id)
+                )
+            ).require_complete()
+            return receipts, refused
+
+    receipts, refused = asyncio.run(replay())
+
+    assert receipts == ()
+    assert refused == [raw_id]
+    with prepared_source_fixture(root) as source_read:
+        assert source_read.raw_parser_census_is_current(raw_id)
+        refusal = source_read.raw_terminal_decode_refusal(raw_id)
+        assert refusal is not None
+        assert refusal.kind.value in RAW_FAILURE_VALIDATION_FAILURE_KINDS
+        assert "PRIVATE_BAD_LINE" not in str(refusal)
+        assert "line" in str(refusal).lower() or "malformed" in str(refusal).lower()
+    with sqlite3.connect(root / "index.db") as index:
+        assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
