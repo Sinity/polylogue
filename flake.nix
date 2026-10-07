@@ -44,6 +44,13 @@
       # separately named alias of it.
       python = pkgs.python314FreeThreading;
       pythonPackages = python.pkgs;
+      fakeIndexedDB = pkgs.runCommand "polylogue-fake-indexeddb-6.2.5" { } ''
+        mkdir -p "$out"
+        ${pkgs.gnutar}/bin/tar -xzf ${pkgs.fetchurl {
+          url = "https://registry.npmjs.org/fake-indexeddb/-/fake-indexeddb-6.2.5.tgz";
+          hash = "sha512-CGnyrvbhPlWYMngksqrSSUT1BAVP49dZocrHuK0SvtR0D5TMs5wP0o3j7jexDJW01KSadjBp1M/71o/KR3nD1w==";
+        }} -C "$out"
+      '';
 
       # Polylogue uses the MCPServer API introduced by MCP 2.x.  nixpkgs'
       # free-threaded package set still supplies MCP 1.x, which imports but
@@ -620,9 +627,12 @@
           pkgs.ast-grep
           pkgs.scc
           pkgs.codeql
+          pkgs.nodejs_24
+          fakeIndexedDB
         ];
 
         shellHook = ''
+          export POLYLOGUE_FAKE_INDEXEDDB_PACKAGE=${fakeIndexedDB}/package
           export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
           # Permit bytecode in the checkout cache even when a parent shell
           # forbids writes. The prefix keeps caches outside source directories.
