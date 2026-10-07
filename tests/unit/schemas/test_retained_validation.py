@@ -17,7 +17,7 @@ def _schema(kind: object) -> dict[str, object]:
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
-        "properties": {"kind": kind},
+        "properties": {"kind": kind, "type": {"type": "string"}},
         "required": ["kind"],
         "additionalProperties": True,
     }
