@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -14,12 +13,11 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources import revision_backfill
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.retained_sqlite import collect_sqlite_sessions
-from polylogue.sources.sqlite_export import logical_export_bytes
 from polylogue.sources.streamed_event_payload import iter_json_value
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.retained_jsonl import retained_parser_fixture
-from tests.infra.retained_parser_payloads import _single_session_state_db_bytes
+from tests.infra.retained_parser_payloads import _antigravity_trajectory_db_bytes, _single_session_state_db_bytes
 
 
 def _projection(session: ParsedSession) -> tuple[object, ...]:
@@ -46,21 +44,7 @@ def test_retained_sqlite_preparation_streams_complete_parser_metadata(
         payload = _single_session_state_db_bytes(tmp_path)
         source_path = tmp_path / "hermes-home" / "state.db"
     else:
-        database = tmp_path / "trajectory.db"
-        with sqlite3.connect(database) as connection:
-            connection.executescript(
-                "CREATE TABLE trajectory_meta(trajectory_id TEXT, cascade_id TEXT);"
-                "CREATE TABLE steps(idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT, trajectory_id TEXT);"
-                "CREATE TABLE parent_references(cascade_id TEXT, parent_id TEXT);"
-                "CREATE TABLE conversation_summaries(cascade_id TEXT, title TEXT, last_modified_time TEXT);"
-                "INSERT INTO trajectory_meta VALUES ('trajectory-1','cascade-1');"
-                "INSERT INTO conversation_summaries VALUES ('cascade-1','Complete title','2026-01-01T00:00:00Z');"
-                "INSERT INTO steps VALUES (0,'message','v1','{\"role\":\"user\",\"text\":\"retained text\"}','trajectory-1');"
-                "INSERT INTO steps VALUES (1,'future_step','v2','{\"opaque\":\"retained evidence\"}','trajectory-1');"
-                "INSERT INTO parent_references VALUES ('cascade-1','parent-a');"
-                "INSERT INTO parent_references VALUES ('cascade-1','parent-b');"
-            )
-        payload = logical_export_bytes(database)
+        payload = _antigravity_trajectory_db_bytes(tmp_path)
         source_path = tmp_path / "antigravity" / "trajectory.db"
     archive = tmp_path / "archive"
     bootstrap_archive_root(archive)
@@ -138,17 +122,8 @@ def test_public_sqlite_source_models_survive_iterator_completion(tmp_path: Path,
         _single_session_state_db_bytes(tmp_path)
         database = tmp_path / "state.db"
     else:
+        _antigravity_trajectory_db_bytes(tmp_path)
         database = tmp_path / "trajectory.db"
-        with sqlite3.connect(database) as connection:
-            connection.executescript(
-                "CREATE TABLE trajectory_meta(trajectory_id TEXT, cascade_id TEXT);"
-                "CREATE TABLE steps(idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);"
-                "CREATE TABLE parent_references(cascade_id TEXT, parent_id TEXT);"
-                "INSERT INTO trajectory_meta VALUES ('trajectory-1','cascade-1');"
-                'INSERT INTO steps VALUES (0,\'message\',\'v1\',\'{"role":"user","text":"independent text"}\');'
-                "INSERT INTO steps VALUES (1,'future_step','v2','{\"opaque\":\"evidence\"}');"
-                "INSERT INTO parent_references VALUES ('cascade-1','parent-a');"
-            )
     archive = tmp_path / "archive"
     bootstrap_archive_root(archive)
     pairs = list(
@@ -164,7 +139,7 @@ def test_public_sqlite_source_models_survive_iterator_completion(tmp_path: Path,
     )
     assert len(pairs) == 1
     _raw, session = pairs[0]
-    assert session.messages[0].text == ("hi" if provider is Provider.HERMES else "independent text")
+    assert session.messages[0].text == ("hi" if provider is Provider.HERMES else "retained text")
     assert session.session_events
     _projection(session)
     session_content_hash(session)
@@ -172,4 +147,4 @@ def test_public_sqlite_source_models_survive_iterator_completion(tmp_path: Path,
         assert session.unit_accounting is not None
         session.unit_accounting.assert_conserved()
         event = next(event for event in session.session_events if event.event_type == "antigravity_parent_reference")
-        assert event.payload["parent_provider_ids"] == ["parent-a"]
+        assert event.payload["parent_provider_ids"] == ["parent-a", "parent-b"]
