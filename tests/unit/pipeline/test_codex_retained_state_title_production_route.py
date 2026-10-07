@@ -236,7 +236,7 @@ def test_unknown_export_codex_raw_publishes_under_its_resolved_provider(tmp_path
                 retained.remove(replacement)
 
             def exercise() -> None:
-                adapter, index_path = owner._destination_adapter()
+                adapter, index_path, _index_destination = owner._archive.destination_adapter()
                 frame = raw_observation_frame(archive_root, raw_ids=(raw_id,), index_db_path=index_path)
                 stale = adapter.compute(frame, raw_id, replay_current=True)
                 retained.append(stale)

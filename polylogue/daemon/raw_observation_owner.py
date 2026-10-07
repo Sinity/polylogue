@@ -48,12 +48,10 @@ if TYPE_CHECKING:
         AppendPlan,
         AppendResult,
         PreparedSessionSourceRead,
-        RawObservationDerivation,
         RawObservationReplacement,
         RetainedMaterializationResult,
         RetainedReplayOutcome,
     )
-    from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
 
 T = TypeVar("T")
 P = ParamSpec("P")
@@ -181,7 +179,7 @@ class RawObservationConvergenceOwner:
                 raise RuntimeError("raw observation convergence must start after the daemon writer lease is released")
             self._require_source_frontier_authority(raw_id)
             await self._prepare_cold_destination()
-            adapter, index_path, _index_destination = self._destination_adapter()
+            adapter, index_path, _index_destination = self._archive.destination_adapter()
             owner = DerivationConvergenceOwner(
                 DaemonConverger((), derivations=(adapter,)),
                 compute_adapter=self._compute_adapter,
@@ -211,12 +209,6 @@ class RawObservationConvergenceOwner:
         establish = self._archive.cold_destination(before_publication)
         if establish is not None:
             await self._write_coordinator.run_sync("retained.cold.destination", establish)
-
-    def _destination_adapter(
-        self,
-    ) -> tuple[RawObservationDerivation, Path | None, IndexMutationDestination | None]:
-        """Bind preparation and its frame to the actual registered destination."""
-        return self._archive.destination_adapter()
 
     def _require_source_frontier_authority(self, raw_id: str) -> None:
         self._archive.require_source_frontier_authority(raw_id)
@@ -312,7 +304,7 @@ class RawObservationConvergenceOwner:
             scope_operand,
             retained=retained,
             # Late-bound so the destination is read when the worker runs.
-            destination=lambda: self._destination_adapter(),
+            destination=self._archive.destination_adapter,
             require_authority=self._require_source_frontier_authority,
             select_retained_raw_ids=select_retained_raw_ids,
             on_terminal_refusal=on_terminal_refusal,

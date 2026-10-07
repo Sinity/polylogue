@@ -97,7 +97,7 @@ async def test_generation_owned_cohort_spans_input_pages(tmp_path: Path) -> None
     async with prepared_live_convergence_owner(root) as owner:
 
         def select_first_original() -> None:
-            adapter, index_path = owner._destination_adapter()
+            adapter, index_path, _index_destination = owner._archive.destination_adapter()
             frame = raw_observation_frame(root, raw_ids=(str(members[0][1]),), index_db_path=index_path)
             replacement = adapter.compute(frame, str(members[0][1]), replay_current=True)
             retained_outputs.append(replacement)
@@ -171,7 +171,7 @@ async def test_source_census_codex_artifact_enrolls_original_projected_titles(tm
         retained: list[RawObservationReplacement] = []
 
         def census() -> None:
-            adapter, index_path = owner._destination_adapter()
+            adapter, index_path, _index_destination = owner._archive.destination_adapter()
             frame = raw_observation_frame(root, raw_ids=(raw_id,), index_db_path=index_path)
             replacement = adapter.compute(frame, raw_id)
             retained.append(replacement)

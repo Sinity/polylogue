@@ -182,8 +182,8 @@ async def test_paused_raw_preparation_does_not_hold_writer_for_unrelated_publica
             return _admit(tmp_path, "paused")
 
         raw_id = await coordinator.run_sync("test.raw.paused.acquire", acquire)
-        adapter, index_path = owner._destination_adapter()
-        monkeypatch.setattr(owner, "_destination_adapter", lambda: (adapter, index_path))
+        adapter, index_path, index_destination = owner._archive.destination_adapter()
+        monkeypatch.setattr(owner._archive, "destination_adapter", lambda: (adapter, index_path, index_destination))
         original_compute = adapter.compute
 
         def source_progress() -> tuple[object, ...]:

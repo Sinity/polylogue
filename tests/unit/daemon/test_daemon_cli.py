@@ -3583,8 +3583,8 @@ def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
             write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
             write_coordinator=coordinator,
         )
-        adapter, index_path = owner._destination_adapter()
-        monkeypatch.setattr(owner, "_destination_adapter", lambda: (adapter, index_path))
+        adapter, index_path, index_destination = owner._archive.destination_adapter()
+        monkeypatch.setattr(owner._archive, "destination_adapter", lambda: (adapter, index_path, index_destination))
         original_compute = RawObservationDerivation.compute
         original_publish = RawObservationDerivation.publish
         publication_flags: list[tuple[bool, bool, bool, bool]] = []
