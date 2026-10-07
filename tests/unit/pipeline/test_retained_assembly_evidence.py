@@ -442,7 +442,6 @@ async def test_claude_index_and_history_resolve_with_the_original_tree_gone(tmp_
 
     parsed = await _retained_session(archive_root, Provider.CLAUDE_CODE, content, str(transcript))
     assert parsed.title == "Curated index title"
-    assert str(parsed.title_source) == TitleSource.ORIGIN.value
     user_message = next(message for message in parsed.messages if message.role == "user")
     assert user_message.has_paste
     with sqlite3.connect(archive_root / "index.db") as conn:
@@ -451,6 +450,7 @@ async def test_claude_index_and_history_resolve_with_the_original_tree_gone(tmp_
             (str(parsed.id),),
         ).fetchall()
     assert [row[0] for row in paste_markers] == ["1"]
+    assert str(parsed.title_source) == TitleSource.ORIGIN.value
 
 
 def test_retained_claude_paste_output_sink_closes_when_consumer_cancels(
@@ -477,8 +477,8 @@ def test_retained_claude_paste_output_sink_closes_when_consumer_cancels(
     source = ParsedSession(
         source_name=Provider.CLAUDE_CODE,
         provider_session_id="session-1",
-        messages=sealed,
-    )
+        messages=[],
+    ).model_copy(update={"messages": sealed})
     entry = HistoryEntry(
         display="first prompt",
         timestamp_ms=1767225600000,
