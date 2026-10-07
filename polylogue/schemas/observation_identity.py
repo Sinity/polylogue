@@ -45,9 +45,14 @@ def bundle_scope_identity(scope: str) -> str:
 
 def schema_cluster_id(cluster_payload: SchemaClusterPayload, artifact_kind: str) -> str:
     """Compute a stable cluster identifier for a schema unit."""
-    from polylogue.schemas.shape_fingerprint import _structure_fingerprint
+    from polylogue.schemas.shape_fingerprint import fingerprint_parts
 
-    return fingerprint_hash((artifact_kind, _structure_fingerprint(cluster_payload)))
+    digest = hashlib.sha256()
+    digest.update(("(" + repr(artifact_kind) + ", ").encode("utf-8"))
+    for part in fingerprint_parts(cluster_payload):
+        digest.update(part.encode("utf-8"))
+    digest.update(b")")
+    return digest.hexdigest()[:16]
 
 
 def profile_cluster_id(artifact_kind: str, profile_tokens: tuple[str, ...]) -> str:

@@ -195,11 +195,9 @@ def extract_payload_samples(
         return []
 
     if sample_granularity == "document":
-        documents = [json_document(payload)] if isinstance(payload, dict) else [json_document(item) for item in payload]
-        documents = [document for document in documents if document]
-        if max_samples is None:
-            return documents
-        return documents[:max_samples] if max_samples > 0 else []
+        candidates = (payload,) if isinstance(payload, dict) else payload
+        documents = (document for item in candidates if (document := json_document(item)))
+        return list(documents if max_samples is None else islice(documents, max(0, max_samples)))
 
     if isinstance(payload, dict):
         payload_record = json_document(payload)

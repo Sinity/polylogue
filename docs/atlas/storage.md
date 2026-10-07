@@ -419,3 +419,13 @@ separately owned resumable bulk generation retains its existing chunk commits.
 Provider total-only or reasoning-only counters cannot establish the priced input/output/cache lanes. Their cost remains unknown through append and usage-rollup derivation. The same derived `session_model_usage` row carries `provider_lanes_complete`, independently of nullable catalog price. Append composes that bit with the new event window; reads use the same SQLite snapshot and expose incompleteness without rescanning events. An empty model declaration has no unmappable provider evidence, but remains unknown usage rather than a measured zero. Catalog repricing precedes the provider fold during derivation so it cannot erase the refusal. Explicit zero lanes remain measured zero.
 
 Event projection and stored catalog costs retain precision; the origin/model rollup rounds only after summing. Session buckets are replaced directly for cumulative observations without rescanning other sessions. Memory follows the distinct session/model result cardinality, with stored source events streamed. The caller owns the transaction; projection performs no commits. This additive-derived column moves the Index identity and must land before reconvergence; there is no durable migration or live rebuild in this delivery.
+
+## Retained schema coverage
+
+Artifact inspection measures large JSON documents through the same semantic
+observations as decoded registry resolution. Its private SQLite spill keeps
+input keys and nested schema state on disk; structural hashes stream all
+required evidence, including canonical and shipped-order source witnesses.
+Eligibility requires complete document validation through EOF. The diagnostic
+prefix does not decide support. Memory remains subject to the existing decoder's
+one-scalar allocation and SQLite's physical value-length bound.
