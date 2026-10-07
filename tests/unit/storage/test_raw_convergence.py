@@ -758,8 +758,8 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
                 "sessionId": session_id,
                 "timestamp": "2026-07-20T10:00:03Z",
                 "message": {
-                    "role": "assistant",
-                    "content": [{"type": "tool_use", "id": "toolu_sibling", "name": "Bash", "input": {}}],
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "toolu_sibling", "content": "sibling output"}],
                 },
             }
         )
