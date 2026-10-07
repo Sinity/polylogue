@@ -322,19 +322,19 @@ def configured_source_frontier(archive_root: Path) -> SourceFrontier:
             for member in sqlite_paths
         )
     for spec in hook_spool_sources():
-        root = Path(spec.root)
-        for provider in ("claude-code", "codex", "hermes"):
-            carrier_root = root / "carriers" / provider
+        spool_root = Path(spec.root)
+        for carrier_provider in ("claude-code", "codex", "hermes"):
+            carrier_root = spool_root / "carriers" / carrier_provider
             rows.append(
                 SourceDeclaration(
-                    f"{spec.source_id}:carrier:{provider}",
+                    f"{spec.source_id}:carrier:{carrier_provider}",
                     SourceRole.SPOOL,
                     carrier_root,
                     True,
-                    f"{provider}-hooks",
+                    f"{carrier_provider}-hooks",
                 )
             )
-        pending = root / "pending"
+        pending = spool_root / "pending"
         rows.append(SourceDeclaration(f"{spec.source_id}:pending", SourceRole.SPOOL, pending, True))
     unique: dict[str, SourceDeclaration] = {row.source_id: row for row in rows}
     return build_source_frontier(unique.values())

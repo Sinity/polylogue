@@ -518,7 +518,7 @@ def _walk_files(
             from polylogue.sources.source_layout import source_layout_for
 
             layout = source_layout_for(layout_name)
-        directories = [(root, root_info, ())]
+        directories: list[tuple[Path, os.stat_result, tuple[str, ...]]] = [(root, root_info, ())]
         while directories:
             check_compute_cancelled()
             directory, expected, relative = directories.pop()

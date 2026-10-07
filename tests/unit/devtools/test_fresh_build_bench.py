@@ -693,6 +693,7 @@ def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypa
         daemon_env={},
         interrupted=[],
         progress=lambda _line: None,
+        hook_preparation=None,
     )
 
     assert receipt["outcome"] == "terminal"
@@ -1046,6 +1047,7 @@ def _scripted_run(
         daemon_env={},
         interrupted=interrupted,
         progress=lambda _line: None,
+        hook_preparation=None,
     )
     captured["clock"] = clock
     captured["observe_kwargs"] = observe_kwargs
@@ -1885,6 +1887,7 @@ def test_shutdown_progress_ignores_the_stack_sampler_cpu(tmp_path: Path, monkeyp
         daemon_env={},
         interrupted=[],
         progress=lambda _line: None,
+        hook_preparation=None,
     )
     (probe,) = probes
     before = probe()

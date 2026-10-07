@@ -1062,12 +1062,16 @@ def _prepare_hook_spool(paths: dict[str, Path], *, progress: Callable[[str], Non
     result = compact_legacy_spool(root)
     compaction_s = time.monotonic() - started
     summary = {"compaction_s": compaction_s, "result": result}
+    refused = result.get("refused", {})
+    refused_count = (
+        sum(value for value in refused.values() if isinstance(value, int)) if isinstance(refused, dict) else 0
+    )
     progress(
         "hook spool compaction "
         f"seconds={compaction_s:.3f} "
         f"scanned={result.get('scanned', 0)} "
         f"folded={result.get('folded', 0)} "
-        f"refused={sum(result.get('refused', {}).values())}"
+        f"refused={refused_count}"
     )
     return summary
 

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -178,8 +179,9 @@ async def test_hook_derivation_rechecks_binding_after_writer_admission(
     from polylogue.daemon.convergence import _DerivationAdmission
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
     from polylogue.logging import propagate
-    from polylogue.operations.hook_event_derivation import HookEventsDerivation, discover_pending_hook_carriers
+    from polylogue.operations.hook_event_derivation import discover_pending_hook_carriers
     from polylogue.sources.live.archive_open import _open_archive_for_live_write
+    from polylogue.storage.derived.hook_events import HookEventsDerivation
 
     archive_root, spool_root = _scratch(tmp_path, monkeypatch)
     append_hook_event(
@@ -210,7 +212,7 @@ async def test_hook_derivation_rechecks_binding_after_writer_admission(
     )
     archive_open_count = 0
 
-    def admit_after_competing_publication(actor: str, work: Any) -> Any:
+    def admit_after_competing_publication(actor: str, work: Callable[[], bool]) -> bool:
         def publish_competitor() -> bool:
             nonlocal archive_open_count
             archive_open_count += 1
