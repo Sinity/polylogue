@@ -17,7 +17,6 @@ honestly `unfetched` rather than fabricating a hash.
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,18 +24,10 @@ from typing import IO
 
 from polylogue.config import Source
 from polylogue.core.json import JSONValue
-from polylogue.pipeline.ids import session_content_hash
-from polylogue.pipeline.ids import session_id as make_session_id
-from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.sources import DriveFile, download_drive_files
 from polylogue.sources.drive import drive_cache_file_path, iter_drive_raw_data
-from polylogue.sources.parsers.base import ParsedSession
-from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.index_writer import write_fixture_ingest_payload
 
 
 @dataclass
@@ -69,14 +60,6 @@ class _DriveSessionClient:
 
 def _empty_cursor_state() -> CursorStatePayload:
     return {}
-
-
-def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, ArchiveTier.INDEX)
-    return conn
 
 
 def test_download_drive_files_contract(tmp_path: Path) -> None:
@@ -170,24 +153,3 @@ def test_iter_drive_raw_data_replaces_a_cache_rewritten_with_attachment_bytes(tm
     assert len(records) == 1
     assert client.download_bytes_calls == ["file-1"]
     assert json.loads(cache.read_bytes()) == payload
-
-
-def _write_via_ingest_batch(
-    *,
-    conn: sqlite3.Connection,
-    source_conn: sqlite3.Connection,
-    blob_publisher: ArchiveBlobPublisher,
-    session: ParsedSession,
-    raw_id: str,
-) -> None:
-    payload = SessionWritePayload(
-        session_id=str(make_session_id(session.source_name, session.provider_session_id)),
-        content_hash=session_content_hash(session),
-        parsed_session=session,
-        message_count=len(session.messages),
-        attachment_count=len(session.attachments),
-        raw_id=raw_id,
-    )
-    changed, _ = write_fixture_ingest_payload(conn, payload, blob_publisher=blob_publisher, source_conn=source_conn)
-    assert changed is True
-    conn.commit()

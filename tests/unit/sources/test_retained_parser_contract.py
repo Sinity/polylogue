@@ -11,13 +11,14 @@ from pathlib import Path
 
 import pytest
 
+import polylogue.sources.prepared_jsonl as prepared_jsonl
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.sources import revision_backfill
-from polylogue.sources.dispatch import PayloadRecord
+from polylogue.sources.dispatch import PayloadRecord, parse_generic_messages_stream
 from polylogue.sources.fallback_identity import fallback_session_id
-from polylogue.sources.parsers.base import ParsedMessage
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.prepared_jsonl import DecodeFailure, PreparedDecodeError, terminal_decode_evidence
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
@@ -87,8 +88,6 @@ def test_retained_generic_message_object_alias_uses_streaming_message_sink(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, suffix: str
 ) -> None:
     """A generic single-object Drive export streams even under a neutral filename."""
-    from polylogue.sources import prepared_jsonl
-
     bootstrap_archive_root(tmp_path)
     messages = [
         {"role": "user" if index % 2 == 0 else "assistant", "content": f"neutral message {index}"}
@@ -102,7 +101,7 @@ def test_retained_generic_message_object_alias_uses_streaming_message_sink(
 
     monkeypatch.setattr(revision_backfill, "parse_retained_raw_sessions", refuse_collecting_replay)
     streamed_records = 0
-    original_parse = prepared_jsonl.parse_generic_messages_stream
+    original_parse = parse_generic_messages_stream
 
     def observe_stream(
         provider: Provider,
@@ -111,10 +110,10 @@ def test_retained_generic_message_object_alias_uses_streaming_message_sink(
         fallback_id: str,
         *,
         message_sink: MutableSequence[ParsedMessage],
-    ):
+    ) -> ParsedSession | None:
         nonlocal streamed_records
 
-        def count_records():
+        def count_records() -> Iterable[object]:
             nonlocal streamed_records
             for record in records:
                 streamed_records += 1

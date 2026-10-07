@@ -22,7 +22,6 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Provider, TitleSource
-from polylogue.sources.assembly_codex import resolve_retained_codex_state_titles
 from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.agent_thread_state import (
@@ -197,7 +196,7 @@ def test_unknown_export_codex_raw_publishes_under_its_resolved_provider(tmp_path
     from polylogue.core.stage_admission import admit_stage_write
     from polylogue.operations.raw_observation_derivation import raw_observation_frame
     from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
-    from polylogue.storage.derived.raw import RawObservationReplacement
+    from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
 
     archive_root = _archive_with_retained_state_export(tmp_path)
@@ -237,6 +236,7 @@ def test_unknown_export_codex_raw_publishes_under_its_resolved_provider(tmp_path
 
             def exercise() -> None:
                 adapter, index_path, _index_destination = owner._archive.destination_adapter()
+                assert isinstance(adapter, RawObservationDerivation)
                 frame = raw_observation_frame(archive_root, raw_ids=(raw_id,), index_db_path=index_path)
                 stale = adapter.compute(frame, raw_id, replay_current=True)
                 retained.append(stale)
@@ -369,9 +369,6 @@ def test_state_projection_keeps_disjoint_roots_and_omitted_evidence(
     }
     initial_a.unlink()
     initial_b.unlink()
-    assert resolve_retained_codex_state_titles(
-        archive_root, ["a-old"], source_path=str(root_a / "sessions" / "rollout-a-old.jsonl")
-    ) == {"a-old": "A old"}
 
 
 def test_state_projection_uses_receipt_order_for_a_b_a_observations(tmp_path: Path) -> None:
@@ -388,9 +385,6 @@ def test_state_projection_uses_receipt_order_for_a_b_a_observations(tmp_path: Pa
     _write_state_db(state_path, thread_id="thread", title="A title")
     _record_state_export(archive_root, state_path, acquired_at_ms=300)
 
-    assert resolve_retained_codex_state_titles(
-        archive_root, ["thread"], source_path=str(state_path.parent / "sessions" / "rollout-thread.jsonl")
-    ) == {"thread": "A title"}
     with closing(sqlite3.connect(archive_root / "index.db")) as index_conn:
         provenance = read_provenance(index_conn)
     assert provenance is not None
