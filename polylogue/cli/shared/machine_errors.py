@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING, Literal, NoReturn, NotRequired, TypedDict
 
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.surfaces.machine_envelope import (
@@ -98,7 +98,7 @@ class MachineError:
         del exclude_none
         return json.dumps(self.to_dict(), indent=2)
 
-    def emit(self, *, exit_code: int = 1) -> None:
+    def emit(self, *, exit_code: int = 1) -> NoReturn:
         """Write the payload to stdout and exit."""
         sys.stdout.write(self.to_json(exclude_none=True))
         sys.stdout.write("\n")

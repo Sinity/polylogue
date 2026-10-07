@@ -359,7 +359,11 @@ def apply_gemini_tool_output_sidecars(session: ParsedSession, join_result: Sidec
                 continue
             blocks = []
             for block in message.blocks:
-                match = replacements.get(block.tool_id) if block.type is BlockType.TOOL_RESULT else None
+                match = (
+                    replacements.get(block.tool_id)
+                    if block.type is BlockType.TOOL_RESULT and block.tool_id is not None
+                    else None
+                )
                 if match is None:
                     blocks.append(block)
                     continue
