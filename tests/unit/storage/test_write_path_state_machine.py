@@ -11,11 +11,6 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Origin, Provider
-from polylogue.pipeline.services.ingest_batch._core import (
-    _append_delta_payload,
-    _incoming_write_carries_distinct_messages,
-)
-from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
@@ -142,11 +137,14 @@ def test_append_delta_compares_composed_parent_prefix(tmp_path: Path) -> None:
         [_message("replayed-p0", "shared", 0), _message("c1", "old tail", 1), _message("c2", "new tail", 2)],
         parent="parent",
     )
-    payload = SessionWritePayload(session_id=child_id, content_hash="", parsed_session=incoming)
-    delta, skipped = _append_delta_payload(index, payload)
-    assert delta is not None
-    assert skipped == 2
-    assert [message.text for message in delta.messages] == ["new tail"]
+    write_fixture_index_session(index, incoming, merge_append=True)
+    envelope = read_archive_session_envelope(index, child_id)
+    assert [block.text for message in envelope.messages for block in message.blocks] == [
+        "shared",
+        "old tail",
+        "new tail",
+    ]
+    assert index.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 2
     index.close()
 
 
@@ -170,11 +168,16 @@ def test_freshness_tie_matches_a_replayed_parent_prefix_by_content(tmp_path: Pat
         parent="parent",
     )
 
-    def carries(session: ParsedSession) -> bool:
-        payload = SessionWritePayload(session_id=child_id, content_hash="", parsed_session=session)
-        return _incoming_write_carries_distinct_messages(index, payload, session)
-
-    assert (carries(replay), carries(grown)) == (False, True)
+    outcomes: list[archive_tier_write.ArchiveWriteOutcome] = []
+    write_fixture_index_session(index, replay, write_outcome=outcomes)
+    write_fixture_index_session(index, grown, write_outcome=outcomes)
+    assert outcomes[-1].wrote is True
+    stored = read_archive_session_envelope(index, child_id)
+    assert [block.text for message in stored.messages for block in message.blocks] == [
+        "shared",
+        "old tail",
+        "new tail",
+    ]
     index.close()
 
 

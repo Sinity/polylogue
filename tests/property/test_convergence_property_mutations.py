@@ -8,12 +8,7 @@ from pathlib import Path
 
 import pytest
 
-import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 import tests.infra.convergence_harness as convergence_harness
-from polylogue.core.enums import Provider
-from polylogue.pipeline.ids import session_content_hash
-from polylogue.pipeline.ids import session_id as make_session_id
-from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.storage.derived.session.derivation import SessionProfileDerivation
 from polylogue.storage.fts.derivation import FtsDerivationAdapter
 from polylogue.storage.sqlite.archive_tiers import write as archive_write
@@ -34,7 +29,8 @@ from tests.infra.convergence_laws import (
     read_semantic_projection,
     semantic_oracle,
 )
-from tests.infra.index_writer import write_fixture_ingest_payload
+from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.retained_replay import replay_retained_components
 
 
 def test_convergence_property_fts_publication_mutation_red_twin(
@@ -161,7 +157,6 @@ def test_order_sensitive_overwrite_has_permutation_control(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mutated: bool
 ) -> None:
     """The stale-write gate keeps a newer revision independent of ingest order."""
-    from polylogue.pipeline.services.ingest_batch import _core as ingest_core
     from tests.infra.source_composer import compose_append_revision_chain
 
     composed = compose_append_revision_chain(revision_count=2, messages_per_revision=1)
@@ -172,22 +167,13 @@ def test_order_sensitive_overwrite_has_permutation_control(
         parsed = convergence_harness._parsed_session(composed.sessions[index], corpus_index=index).model_copy(
             update={"attachments": []}
         )
-        payload = SessionWritePayload(
-            session_id=str(make_session_id(Provider.CODEX, parsed.provider_session_id)),
-            content_hash=str(session_content_hash(parsed)),
-            parsed_session=parsed,
-            message_count=len(parsed.messages),
-            attachment_count=len(parsed.attachments),
-            raw_id=None,
-        )
         with closing(open_connection(root / "index.db")) as conn:
             conn.row_factory = sqlite3.Row
-            with conn:
-                write_fixture_ingest_payload(conn, payload)
+            write_fixture_index_session(conn, parsed)
 
     write_revision(1)
     if mutated:
-        monkeypatch.setattr(ingest_core, "should_skip_stale_replace", lambda **_kwargs: False)
+        monkeypatch.setattr(archive_write, "should_skip_stale_replace", lambda **_kwargs: False)
     write_revision(0)
     observed = read_semantic_projection(root, probe_terms=("revision",))
     expected = semantic_oracle(authoritative_sessions(composed), probe_terms=("revision",))
@@ -266,17 +252,14 @@ def test_unchanged_reingest_does_not_reach_the_production_writer(
     workload = generated_convergence_workload()
     archive = build_converged_archive(tmp_path / "archive", workload.sources)
     writer_calls: list[str] = []
+    import polylogue.storage.sqlite.archive_tiers.revision_governance as revision_governance
+
     write = archive_write.write_parsed_session_to_archive
 
     def observe_writer(*args: object, **kwargs: object) -> str:
         writer_calls.append("write")
         return write(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(ingest_batch_core, "write_parsed_session_to_archive", observe_writer)
-    ingest_composed_sources(
-        archive.root,
-        workload.sources,
-        session_indexes=tuple(range(len(workload.sources.sessions))),
-        converge_after_each=False,
-    )
+    monkeypatch.setattr(revision_governance, "write_parsed_session_to_archive", observe_writer)
+    replay_retained_components(archive.root)
     assert not writer_calls

@@ -775,7 +775,7 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
 def test_live_append_refuses_declared_non_session_artifact(tmp_path: Path) -> None:
     """Regression for polylogue-xwkh: close the third chokepoint.
 
-    Live daemon ingest (``ingest_worker.py``) and rebuild replay
+    Retained archive ingestion and rebuild replay
     (``revision_backfill.py``'s ``_parse_one``/``_parse_stream``) classify an
     OriginSpec-declared "fact" artifact -- a workflow journal, in this case --
     via ``classify_artifact``/``artifact_rule_for_path``. The live
