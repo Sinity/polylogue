@@ -317,9 +317,12 @@ def prepare_codex_prefix_checkpoints(
         head_blob, prefix_record_counts, hashes, header_id, head_message_count = _read_head_and_prove(
             source_read, raw_ids, head_blob
         )
-        if head_artifact.blob_hash != hashes[-1]:
-            raise ValueError("canonical head artifact is not bound to this cohort's exact head blob")
-        parsed_sessions = head_artifact.session_sequence()
+        parser_head = getattr(head_artifact, "parser_stage_artifact", None) or head_artifact
+        if parser_head.blob_hash != hashes[-1]:
+            raise ValueError("canonical head parser stage is not bound to this cohort's exact head blob")
+        if parser_head.captured_profile_key != source_read.raw_profile_identity(raw_ids[-1]):
+            raise ValueError("canonical head parser profile differs from its captured source witness")
+        parsed_sessions = parser_head.session_sequence()
         if len(parsed_sessions) != 1:
             raise ValueError("Codex checkpoint head must contain exactly one parsed session")
         head = parsed_sessions[0]
