@@ -5,14 +5,16 @@ from __future__ import annotations
 import json
 import sqlite3
 import tracemalloc
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 
 from polylogue.sources.parse_accounting_spool import SqliteParseAccountingWriter
 from polylogue.sources.parsers.antigravity import parse_trajectory_db
-from polylogue.sources.parsers.base import AdmissionUnit, ParseAccounting
+from polylogue.sources.parsers.base import AdmissionUnit, ParseAccounting, ParsedSession
 from polylogue.sources.prepared_message_sink import SqliteMessageStore
+from polylogue.sources.streamed_event_payload import StreamedJsonArray
 
 
 class _AccountingBuilder:
@@ -27,9 +29,14 @@ class _AccountingBuilder:
         return ParseAccounting.model_construct(expected=self.expected, outcomes=self.writer.finish())
 
 
-def _accounting_factory(store: SqliteMessageStore):
+def _accounting_factory(
+    store: SqliteMessageStore,
+) -> Callable[[dict[AdmissionUnit, int]], _AccountingBuilder]:
     def create(expected: dict[AdmissionUnit, int]) -> _AccountingBuilder:
-        return _AccountingBuilder(expected, SqliteParseAccountingWriter(store.conn, expected))
+        writer_expected: dict[object, int] = {}
+        for unit, count in expected.items():
+            writer_expected[unit] = count
+        return _AccountingBuilder(expected, SqliteParseAccountingWriter(store.conn, writer_expected))
 
     return create
 
@@ -44,7 +51,7 @@ def _source(path: Path) -> sqlite3.Connection:
     return connection
 
 
-def _parse(path: Path, store: SqliteMessageStore):
+def _parse(path: Path, store: SqliteMessageStore) -> Iterator[ParsedSession]:
     return parse_trajectory_db(
         path,
         grouping=store.conn,
@@ -75,8 +82,10 @@ def test_one_trajectory_spills_many_unsupported_steps(tmp_path: Path) -> None:
 
         assert len(session.messages) == 0
         assert len(session.session_events) == count + 1
-        assert len(session.unit_accounting.outcomes) == count
-        session.unit_accounting.assert_conserved()
+        accounting = session.unit_accounting
+        assert accounting is not None
+        assert len(accounting.outcomes) == count
+        accounting.assert_conserved()
         # All per-step events and exceptional admission rows live in SQLite.
         assert peak < 20 * 1024 * 1024, f"peak traced memory: {peak} bytes"
     finally:
@@ -138,6 +147,8 @@ def test_parent_reference_event_arrays_are_spilled(tmp_path: Path) -> None:
         )
         references = parent_event.payload["references"]
         parent_ids = parent_event.payload["parent_provider_ids"]
+        assert isinstance(references, StreamedJsonArray)
+        assert isinstance(parent_ids, StreamedJsonArray)
         assert len(references) == count
         assert len(parent_ids) == count
         assert sum(1 for _ in references.iter_values()) == count
@@ -172,8 +183,10 @@ def test_long_tool_call_run_keeps_only_count_and_sole_identity(tmp_path: Path) -
         assert len(session.messages) == count + 1
         assert result.type.value == "tool_result"
         assert result.tool_id is None
-        assert session.unit_accounting.expected[AdmissionUnit.PART] == count + 1
-        session.unit_accounting.assert_conserved()
+        accounting = session.unit_accounting
+        assert accounting is not None
+        assert accounting.expected[AdmissionUnit.PART] == count + 1
+        accounting.assert_conserved()
     finally:
         store.close()
 
