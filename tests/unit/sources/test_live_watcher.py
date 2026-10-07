@@ -4856,7 +4856,8 @@ async def test_cursor_reconciliation_hashes_off_the_writer_and_rechecks_under_it
         sources=(WatchSource(name="codex", root=source_root),),
         write_coordinator=RecordingCoordinator(),
     )
-    real_hash = live_watcher.sha256_range_from_path
+    from polylogue.sources.live.batch_support import sha256_range_from_path as real_hash
+
     hashed: list[Path] = []
 
     def observed_hash(path: Path, **kwargs: Any) -> Any:
