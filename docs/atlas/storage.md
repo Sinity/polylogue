@@ -15,6 +15,15 @@ Six SQLite tiers plus a content-addressed filesystem blob store. Durability, not
 | `ops.db` | `disposable` | no | Ingest cursors, convergence debt, daemon stage/lifecycle events, MCP telemetry (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:74-79`; `polylogue/storage/sqlite/archive_tiers/ops.py:106-176`; `polylogue/storage/sqlite/archive_tiers/ops.py:199-287`; `polylogue/storage/sqlite/archive_tiers/ops.py:299-336`) |
 | `audit.db` | `irreplaceable` | required | Operation previews, authorizations, runs, targets, attempts, events, continuity head (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:80-85`; `polylogue/storage/sqlite/archive_tiers/audit.py:51-211`; `polylogue/storage/sqlite/archive_tiers/audit.py:212-265`) |
 
+Large streamed session-event arrays are stored as ordered JSON item rows in
+`session_event_array_items`, keyed by session, event position and payload key.
+`session_events.payload_json` keeps the other event fields; typed event reads
+restore array fields as JSON arrays in the returned payload, preserving the
+public event shape. Those public full-event reads intentionally materialize the
+arrays. Ingest, hashing, prepared serialization and index writes replay the
+ordered item rows without collecting them. The table is part of the rebuildable
+index schema and cascades with its event.
+
 Live page admission first proves that every active index raw reference exists
 in source. A process-local healthy certificate starts with a complete check,
 then consumes source/index transactional changed-key journals on each page;
