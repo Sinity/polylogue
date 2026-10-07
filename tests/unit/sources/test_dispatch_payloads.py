@@ -753,8 +753,8 @@ def test_parse_stream_payload_codex_long_rollout_with_repeated_session_meta_yiel
     4 ``session_meta`` records, ~500 ``reasoning``, ~440 ``function_call``/
     ``function_call_output`` pairs, ~44 ``custom_tool_call``/
     ``custom_tool_call_output`` pairs, and 55 ``message`` records, all routed
-    through ``parse_stream_payload`` -- the exact function
-    ``pipeline/services/ingest_worker.py`` calls for streamed Codex ingest.
+    through ``parse_stream_payload`` -- the parser consumed by retained
+    revision preparation for streamed Codex ingest.
     Current code already parses the real bytes correctly (verified directly
     against the live blob); this fixture keeps that guarantee under CI.
 
@@ -890,9 +890,8 @@ def test_admit_parsed_sessions_for_publication_refuses_claude_code_stream_with_n
     ``parse_stream_payload`` itself, which stays pure routing -- see its
     caller-facing docstring) by every real production write path:
     ``sources/live/batch.py``'s full-ingest loop,
-    ``pipeline/services/ingest_worker.py``'s ``_parse_plan_sessions``,
     ``sources/live/append_ingest.py``, and
-    ``sources/revision_backfill.py``'s ``_parse_stream``. This test pins the
+    ``sources/revision_backfill.py``'s retained parse preparation. This test pins the
     filter function itself against the exact ``parse_stream_payload`` output
     shape those callers see.
 

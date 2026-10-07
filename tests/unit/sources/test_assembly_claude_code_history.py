@@ -301,7 +301,7 @@ def test_materialization_ors_heuristic_with_history_evidence(text: str, history_
 # ``test_retained_history_bytes_rebuild_the_same_paste_index`` goes red; the
 # full production-route proof that a replay recovers the span with the tree
 # deleted is
-# ``tests/unit/pipeline/test_ingest_worker_assembly.py::test_claude_index_and_history_resolve_with_the_original_tree_gone``.
+# ``tests/unit/pipeline/test_retained_assembly_evidence.py``.
 # ---------------------------------------------------------------------------
 
 

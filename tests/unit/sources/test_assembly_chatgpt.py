@@ -915,7 +915,7 @@ def test_realtime_video_and_frame_pointers_bind_extension_asset_members(tmp_path
 # ``test_two_exports_are_two_scopes`` goes red; the full production-route
 # proofs (attachment name, payload and no cross-binding with every original
 # file deleted) are in
-# ``tests/unit/pipeline/test_ingest_worker_assembly.py``.
+# ``tests/unit/pipeline/test_retained_assembly_evidence.py``.
 # ---------------------------------------------------------------------------
 
 

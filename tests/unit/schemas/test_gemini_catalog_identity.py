@@ -19,8 +19,8 @@ always fell back to ``package_default``, which
 
 These tests exercise the DEFAULT (bundled, no storage_root override)
 ``SchemaRegistry`` -- i.e. the exact registry
-``polylogue.pipeline.services.ingest_worker._runtime_schema_registry()``
-uses in production -- against a gemini/AI-Studio payload shaped exactly
+``polylogue.schemas.operator.registry.runtime_schema_registry()``
+provides in production -- against a gemini/AI-Studio payload shaped exactly
 like real cached Drive exports (a bare ``{chunkedPrompt, runSettings,
 systemInstruction}`` document, no top-level ``id``/``title``/
 ``createTime``), to prove the committed catalog now resolves it as a real

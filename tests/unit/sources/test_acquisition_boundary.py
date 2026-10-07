@@ -449,9 +449,6 @@ _DECLARED_NON_ACQUISITION_SITES: dict[tuple[str, str], str] = {
     ("polylogue/operations/attachment_convergence.py", "_download_prepared"): (
         "downloads a provider-hosted attachment, not session records"
     ),
-    ("polylogue/pipeline/services/ingest_worker.py", "_browser_capture_payload.spill"): (
-        "decodes a retained browser capture's attachment carriers into blobs, not session records"
-    ),
     ("polylogue/operations/ingest_inputs.py", "retain_input_page"): (
         "freezes a declared input's physical bytes; its decode "
         "(retained_acquisition) reads them through the boundary before any raw"
