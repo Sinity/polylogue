@@ -24,6 +24,18 @@ Interruption during preparation accepts no material rows; replay publishes the
 complete material set without duplicates. Row and text pages bound work while
 preserving all content.
 
+For a same-path Codex JSONL cohort of at least four full or unknown-kind
+revisions, `RawObservationDerivation` may use prefix checkpoints only after
+proving each retained blob is the exact byte prefix of the next, every revision
+ends on a complete JSONL record, and the stream has one leading `session_meta`
+followed by supported explicit-ID plain-text messages. It prepares the smallest
+revision, the next-smallest matching revision and the head as independent
+canonical artifacts; one head scan derives each interior revision's own typed
+validation verdict in the configured mode. Unsupported shapes or a failed
+proof use ordinary retained preparation. APPEND revisions are outside this
+optimization (`storage/derived/raw.py`;
+`sources/prepared_codex_checkpoints.py`).
+
 ## Source observation and SQLite reads
 
 `source_snapshot.py` publishes a declared root's complete member inventory or
@@ -256,6 +268,12 @@ provider (`docs/provider-origin-identity.md:15-30`;
   parser evidence before short admitted publication; the matching writer
   consumes the prepared receipt. Physical cleanup stays with that preparation
   creator through publication and failure.
+- Hook-event carriers are raw-only for session classification, but remain
+  eligible for physical append acquisition. The first capture binds a FULL
+  revision to the carrier path; later growth retains only the exact APPEND byte
+  slice on that chain. `hook_events` materializes the events from retained
+  bytes, so a carrier is never parsed as a conversation
+  (`sources/live/batch.py`; `sources/live/append_ingest.py`).
 
 ## Retained validation policy
 
