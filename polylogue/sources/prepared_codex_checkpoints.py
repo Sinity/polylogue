@@ -319,7 +319,7 @@ def prepare_codex_prefix_checkpoints(
         )
         if head_artifact.blob_hash != hashes[-1]:
             raise ValueError("canonical head artifact is not bound to this cohort's exact head blob")
-        parsed_sessions = list(head_artifact.iter_sessions())
+        parsed_sessions = head_artifact.session_sequence()
         if len(parsed_sessions) != 1:
             raise ValueError("Codex checkpoint head must contain exactly one parsed session")
         head = parsed_sessions[0]
