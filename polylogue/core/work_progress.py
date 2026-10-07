@@ -8,6 +8,10 @@ monotonically growing counters (messages and bytes processed) at most every
 :data:`PROGRESS_INTERVAL_S`, plus one final event, so liveness is judged by
 work done rather than by elapsed time.
 
+Each event has a unique ``unit_id`` for one invocation and an optional
+``productive_id`` for the stable source recipe across retries. Consumers can
+ignore counter resets and count only advances beyond that recipe's high-water.
+
 Counting is cheap and context-local: :func:`advance_work_progress` is a no-op
 outside a declared unit, and the unit belongs to the context that entered it.
 """
@@ -15,6 +19,8 @@ outside a declared unit, and the unit belongs to the context that entered it.
 from __future__ import annotations
 
 import functools
+import hashlib
+import json
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -34,14 +40,14 @@ WORK_PROGRESS_EVENT: Final = "daemon.work.progress"
 
 
 class WorkProgress:
-    """Cumulative counters of one unit of work and its event throttle."""
+    """Cumulative counters of one invocation and its productive source recipe."""
 
     __slots__ = ("phase", "unit_id", "productive_id", "messages", "bytes", "_started", "_last_emitted")
 
     def __init__(self, phase: str, productive_id: str | None) -> None:
         self.phase = phase
         self.unit_id = uuid4().hex
-        self.productive_id = productive_id or self.unit_id
+        self.productive_id = productive_id
         self.messages = 0
         self.bytes = 0
         self._started = time.monotonic()
@@ -94,9 +100,9 @@ def work_progress(phase: str, *, productive_id: str | None = None) -> Iterator[W
 def reports_work_progress(
     phase: str,
     *,
-    productive_identity: Callable[P, str] | None = None,
+    productive_identity: Callable[..., str | None] | None = None,
 ) -> Callable[[Callable[P, T]], Callable[P, T]]:
-    """Run the decorated function as one declared unit of work."""
+    """Run a function as one declared unit with an optional retry-stable recipe ID."""
 
     def decorate(function: Callable[P, T]) -> Callable[P, T]:
         @functools.wraps(function)
@@ -117,6 +123,12 @@ def advance_work_progress(*, messages: int = 0, bytes: int = 0) -> None:
         progress.advance(messages=messages, bytes=bytes)
 
 
+def stable_productive_identity(recipe: tuple[object, ...]) -> str:
+    """Hash an explicit, source-derived recipe for retry-comparable work."""
+    encoded = json.dumps(recipe, ensure_ascii=True, separators=(",", ":"), allow_nan=False).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def utf8_byte_length(value: str) -> int:
     """Count UTF-8 bytes without allocating a second copy of a large string."""
     chunk_size = 64 * 1024
@@ -132,6 +144,7 @@ __all__ = [
     "WorkProgress",
     "advance_work_progress",
     "reports_work_progress",
+    "stable_productive_identity",
     "utf8_byte_length",
     "work_progress",
 ]

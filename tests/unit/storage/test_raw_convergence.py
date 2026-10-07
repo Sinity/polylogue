@@ -724,6 +724,79 @@ def test_codex_neutral_parse_survives_unrelated_source_commit(
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (inserted[0],)).fetchone() == (1,)
 
 
+def test_mixed_default_retained_selection_neutralizes_only_eligible_codex_raw(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mixed acquired selection detaches eligible JSONL while fresh-binding opaque rows."""
+    from polylogue.operations.raw_observation_owner import RetainedMaterializationResult
+    from polylogue.schemas import validate_retained_document as validate_original
+    from polylogue.sources import prepared_jsonl as prepared_jsonl_module
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+
+    bootstrap_archive_root(tmp_path)
+    codex_raw = _admit(
+        tmp_path,
+        (),
+        provider=Provider.CODEX,
+        path="codex/mixed.jsonl",
+        payload=_codex_conversation_bytes("mixed-codex"),
+    )
+    opaque_raw = _admit(tmp_path, ("mixed-chatgpt",), path="chatgpt/mixed.json")
+    inserted: list[str] = []
+    parsed_codex_ids: list[str] = []
+    validation_raw_ids: list[str] = []
+    prepare_original = cast(Callable[..., PreparedJsonl], prepared_jsonl_module.prepare_jsonl_blob)
+    validate_call = cast(Callable[..., object], validate_original)
+
+    def counted_prepare(*args: object, **kwargs: object) -> PreparedJsonl:
+        if len(args) > 2 and args[2] == Provider.CODEX.value:
+            parsed_codex_ids.append(str(args[1]))
+        return prepare_original(*args, **kwargs)
+
+    def commit_during_validation(*args: object, **kwargs: object) -> object:
+        raw_id = str(kwargs["raw_id"])
+        validation_raw_ids.append(raw_id)
+        verdict = validate_call(*args, **kwargs)
+        if not inserted:
+            inserted.append(
+                _admit(
+                    tmp_path,
+                    ("unrelated-chatgpt",),
+                    path="chatgpt/unrelated.json",
+                    acquired_at_ms=2,
+                )
+            )
+        return verdict
+
+    monkeypatch.setattr(prepared_jsonl_module, "prepare_jsonl_blob", counted_prepare)
+    monkeypatch.setattr("polylogue.schemas.validate_retained_document", commit_during_validation)
+
+    async def materialize() -> RetainedMaterializationResult:
+        async with prepared_live_convergence_owner(tmp_path) as owner:
+            return await owner.materialize_retained_raw_ids((codex_raw, opaque_raw))
+
+    result = asyncio.run(materialize())
+    receipts = result.outcome.require_complete()
+
+    assert receipts
+    assert parsed_codex_ids == ["codex/mixed.jsonl"]
+    assert validation_raw_ids.count(codex_raw) == 1
+    assert len(inserted) == 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute(
+            "SELECT native_id FROM sessions WHERE raw_id IN (?, ?) ORDER BY native_id",
+            (codex_raw, opaque_raw),
+        ).fetchall() == [("mixed-chatgpt",), ("mixed-codex",)]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        census = conn.execute(
+            "SELECT raw_id, parsed_at_ms FROM raw_sessions WHERE raw_id IN (?, ?)",
+            (codex_raw, opaque_raw),
+        ).fetchall()
+        assert len(census) == 2
+        assert {str(raw_id) for raw_id, parsed_at_ms in census if parsed_at_ms is not None} == {codex_raw, opaque_raw}
+
+
 @pytest.mark.parametrize("replace_sidecar", [False, True])
 def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     tmp_path: Path,

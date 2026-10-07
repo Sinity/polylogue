@@ -39,7 +39,7 @@ from polylogue.core.prepared_file import PreparedFileSeal, VerificationCancelled
 from polylogue.core.provider_identity import profile_root_for_artifact
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
-from polylogue.core.work_progress import reports_work_progress
+from polylogue.core.work_progress import reports_work_progress, stable_productive_identity
 from polylogue.logging import WARNING, emit
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.acquisition_boundary import bound_profile_identity, open_bound_path
@@ -2455,7 +2455,56 @@ def _finalize_prepared_cohort(
     return replace(result, parser_stage_artifact=replace(original, attempt_directory=None))
 
 
-@reports_work_progress("source_preparation")
+def _prepared_jsonl_productive_identity(
+    blob_path: str,
+    source_path: str,
+    provider_value: str,
+    fallback_id: str,
+    *,
+    is_stream: bool,
+    profile_identity: str | None = None,
+    shard_directory: str,
+    sidecar_resolver: SidecarResolver | None = None,
+    prepare_sessions: Callable[[PreparedSessionSequence], Iterable[ParsedSession]] | None = None,
+    prepare_session: Callable[[ParsedSession], ParsedSession] | None = None,
+    preparation_dependency: Callable[[], tuple[str | None, str | None]] | None = None,
+    parse_prefix_size: int | None = None,
+    attempt_directory: Path | None = None,
+    source_sha256: str | None = None,
+    strict_jsonl_records: bool = False,
+    publication_publisher: ArchiveBlobPublisher | None = None,
+    publication_source_read: BlobPublicationSourceRead | None = None,
+    progress_identity: str | None = None,
+) -> str | None:
+    """Bind parser progress to retained bytes and source operands, never scratch paths."""
+    has_prepare_sessions = prepare_sessions is not None
+    has_prepare_session = prepare_session is not None
+    del blob_path, shard_directory, prepare_sessions, prepare_session, preparation_dependency
+    del attempt_directory, publication_publisher, publication_source_read
+    if progress_identity is not None:
+        return progress_identity
+    sidecar_signature: tuple[object, ...] | None = None
+    if sidecar_resolver is not None and provider_value == "claude-code":
+        scope = sidecar_resolver.claude_code_scope(source_path)
+        sidecar_signature = (scope.scope_key, scope.available, scope.witness)
+    recipe = (
+        "prepared-jsonl",
+        provider_value,
+        source_sha256,
+        source_path,
+        fallback_id,
+        is_stream,
+        profile_identity,
+        parse_prefix_size,
+        strict_jsonl_records,
+        sidecar_signature,
+        has_prepare_sessions,
+        has_prepare_session,
+    )
+    return stable_productive_identity(recipe) if source_sha256 is not None else None
+
+
+@reports_work_progress("source_preparation", productive_identity=_prepared_jsonl_productive_identity)
 def prepare_jsonl_blob(
     blob_path: str,
     source_path: str,
@@ -2473,6 +2522,7 @@ def prepare_jsonl_blob(
     attempt_directory: Path | None = None,
     source_sha256: str | None = None,
     strict_jsonl_records: bool = False,
+    progress_identity: str | None = None,
     publication_publisher: ArchiveBlobPublisher | None = None,
     publication_source_read: BlobPublicationSourceRead | None = None,
 ) -> PreparedJsonl:

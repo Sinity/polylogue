@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -43,6 +44,56 @@ from polylogue.sources.prepared_message_sink import (
     read_chatgpt_mapping_object,
 )
 from polylogue.sources.sidecar_evidence import RetainedSidecarFile, RetainedSidecarScope
+
+
+def test_prepared_jsonl_retry_progress_keeps_source_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from devtools.fresh_build_bench.run import WorkProgressTail
+    from polylogue.core import work_progress
+
+    monkeypatch.setattr(work_progress, "PROGRESS_INTERVAL_S", 0)
+    emitted: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(work_progress, "emit", lambda event, **fields: emitted.append((event, fields)))
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"retry-progress"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m-1","role":"user",'
+        b'"content":[{"type":"input_text","text":"stable source"}]}}\n'
+    )
+    blob_hash = hashlib.sha256(payload).hexdigest()
+    events_path = tmp_path / "events.jsonl"
+    tail = WorkProgressTail(events_path)
+    counts: list[int] = []
+    unit_ids: set[str] = set()
+    productive_ids: set[str] = set()
+
+    for attempt in ("first", "retry"):
+        source = tmp_path / f"{attempt}.jsonl"
+        source.write_bytes(payload)
+        artifact = prepare_jsonl_blob(
+            str(source),
+            "codex/stable.jsonl",
+            Provider.CODEX.value,
+            "fallback",
+            is_stream=True,
+            shard_directory=str(tmp_path / f"{attempt}-shards"),
+            source_sha256=blob_hash,
+            strict_jsonl_records=True,
+        )
+        artifact.discard()
+        with events_path.open("a", encoding="utf-8") as handle:
+            for event, fields in emitted:
+                if event == "daemon.work.progress":
+                    unit_ids.add(str(fields["unit_id"]))
+                    productive_ids.add(str(fields["productive_id"]))
+                    handle.write(json.dumps({"event": event, **fields}) + "\n")
+        emitted.clear()
+        counts.append(tail.poll())
+
+    assert len(unit_ids) == 2
+    assert len(productive_ids) == 1
+    assert counts[0] > 0
+    assert counts[1] == counts[0]
+
+
 from polylogue.sources.value_bounds import MAX_STORABLE_VALUE_BYTES
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard

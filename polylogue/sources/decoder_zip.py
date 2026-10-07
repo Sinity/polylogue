@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import zipfile
 from collections.abc import Callable, Collection, Iterable, Iterator
 from contextlib import ExitStack, contextmanager
@@ -141,9 +142,11 @@ def prepare_zip_entry(
     with TemporaryDirectory(prefix="polylogue-zip-entry-") as directory:
         root = Path(directory)
         member = root / "input"
+        digest = hashlib.sha256()
         with open_zip_entry(zf, info) as source, member.open("wb") as destination:
             while chunk := source.read(_ZIP_READ_CHUNK_SIZE):
                 destination.write(chunk)
+                digest.update(chunk)
         artifact = prepare_jsonl_blob(
             str(member),
             source_path,
@@ -153,6 +156,7 @@ def prepare_zip_entry(
             profile_identity=profile_identity,
             shard_directory=str(root),
             strict_jsonl_records=True,
+            source_sha256=digest.hexdigest(),
         )
         try:
             yield artifact

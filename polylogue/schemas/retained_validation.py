@@ -9,7 +9,6 @@ view before it is closed.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import sqlite3
 from collections.abc import Iterator, KeysView, Mapping, Sequence
@@ -28,7 +27,12 @@ from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.provider_identity import normalize_provider_token
 from polylogue.core.sources import origin_from_provider
-from polylogue.core.work_progress import advance_work_progress, reports_work_progress, utf8_byte_length
+from polylogue.core.work_progress import (
+    advance_work_progress,
+    reports_work_progress,
+    stable_productive_identity,
+    utf8_byte_length,
+)
 from polylogue.schemas.drift_sentinel import (
     FIELD_CHANGED,
     KNOWN_FIELD_UNREAD,
@@ -98,8 +102,7 @@ def _retained_validation_productive_identity(
         resolution,
         schema_resolution_is_explicit,
     )
-    encoded = json.dumps(recipe, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return stable_productive_identity(recipe)
 
 
 class _ConnectionBoundValidator:

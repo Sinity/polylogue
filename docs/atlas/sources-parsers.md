@@ -36,19 +36,22 @@ proof use ordinary retained preparation. APPEND revisions are outside this
 optimization (`storage/derived/raw.py`;
 `sources/prepared_codex_checkpoints.py`).
 
-On its first Source binding, `RawObservationDerivation` prepares eligible
-Codex and Claude Code JSONL session inputs in two stages. It copies selected
-primary CAS bytes while the original Source witness is current, then closes
-that witness before parser work and retained-schema validation. Claude Code
+On its first Source binding, `RawObservationDerivation` keeps the complete
+selected unit and its census/publication boundary, then detaches only the
+eligible Codex and Claude Code JSONL session inputs. It copies those primary
+CAS bytes while the original Source witness is current, then closes that
+witness before parser work and retained-schema validation. Other selected
+providers remain on the ordinary fresh-bound preparation path. Claude Code
 also captures the resolved `tool-results/` files and the sibling FULL/APPEND
 record chains used by the sidecar ownership index. A captured resolver reads
 only those private staged files and has no filesystem fallback. A fresh
-Source witness must reproduce the selected raw set, parser operands and
-Claude sidecar-scope witness before current enrichment and publication are
-prepared. If that bind becomes stale during enrichment, a new Source witness
-repeats the comparison and reuses the detached parser artifact only when its
-selected raws and parser operands still match exactly; changed parser inputs
-are reparsed. The neutral artifacts contain no enrichment state (`storage/derived/raw.py`;
+Source witness must reproduce the full selected raw set and logical keys,
+plus the exact eligible parser operands and Claude sidecar-scope witness,
+before current enrichment and publication are prepared. If that bind becomes
+stale during enrichment, a new Source witness repeats the comparison and
+reuses detached parser artifacts only when the eligible raws and their parser
+operands still match exactly; changed inputs are reparsed. The neutral
+artifacts contain no enrichment state (`storage/derived/raw.py`;
 `sources/sidecar_evidence.py`).
 
 ## Source observation and SQLite reads

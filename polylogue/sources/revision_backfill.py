@@ -898,6 +898,7 @@ def prepare_retained_jsonl_artifact(
             publication_source_read=evidence_reader,
             strict_jsonl_records=True,
             parse_prefix_size=parse_prefix_size,
+            source_sha256=blob_hash,
             sidecar_resolver=evidence_reader.retained_sidecar_resolver(),
             prepare_session=prepare_bundle_session if prepare_per_session else None,
             prepare_sessions=None if prepare_per_session else finalize,

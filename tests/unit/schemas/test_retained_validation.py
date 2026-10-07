@@ -257,6 +257,7 @@ def test_retained_validation_reports_real_nested_schema_traversal_progress(
 
 
 def test_retained_validation_productive_identity_uses_source_recipe_not_attempt_path(tmp_path: Path) -> None:
+    from polylogue.core.work_progress import stable_productive_identity
     from polylogue.schemas.retained_validation import _retained_validation_productive_identity
 
     def identity(*, path: Path, revision_sha256: str = "a" * 64, mode: ValidationMode = ValidationMode.ADVISORY) -> str:
@@ -277,6 +278,7 @@ def test_retained_validation_productive_identity_uses_source_recipe_not_attempt_
     assert identity(path=tmp_path / "attempt-b.jsonl") == original
     assert identity(path=tmp_path / "attempt-a.jsonl", revision_sha256="b" * 64) != original
     assert identity(path=tmp_path / "attempt-a.jsonl", mode=ValidationMode.STRICT) != original
+    assert stable_productive_identity(("source-path", "/tmp/source-\udcff.jsonl"))
 
 
 def test_spilled_object_membership_checks_only_the_key_index(tmp_path: Path) -> None:

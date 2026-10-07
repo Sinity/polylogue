@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
-from polylogue.core.work_progress import advance_work_progress, reports_work_progress
+from polylogue.core.work_progress import advance_work_progress, reports_work_progress, stable_productive_identity
 from polylogue.logging import emit
 from polylogue.sources import codex_state_projection
 from polylogue.sources.parsers import codex_state
@@ -145,7 +145,34 @@ def _upsert_codex_material_source(
     )
 
 
-@reports_work_progress("codex-state-materialization")
+def _codex_state_productive_identity(
+    producer: MaterialSourceProducer,
+    raw_id: str,
+    *,
+    prepared_state: PreparedJsonl,
+    source_path: str,
+    state_kind: str,
+    acquired_at_ms: int,
+    settle_page: Callable[[], None],
+    row_limit: int = codex_state.CODEX_STATE_PAGE_ROWS,
+    aggregate_byte_limit: int = codex_state.CODEX_STATE_MAX_AGGREGATE_BYTES,
+) -> str:
+    del producer, settle_page
+    return stable_productive_identity(
+        (
+            "codex-state-materialization",
+            raw_id,
+            prepared_state.blob_hash,
+            source_path,
+            state_kind,
+            acquired_at_ms,
+            row_limit,
+            aggregate_byte_limit,
+        )
+    )
+
+
+@reports_work_progress("codex-state-materialization", productive_identity=_codex_state_productive_identity)
 def _materialize_codex_state_content(
     producer: MaterialSourceProducer,
     raw_id: str,

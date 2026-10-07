@@ -341,9 +341,14 @@ def _neutral_parser_cache_identity(raw_id: str, operand: _NeutralParserOperand) 
     )
 
 
-def _neutral_parser_operand(read: PreparedSessionSourceRead, raw_id: str) -> _NeutralParserOperand:
+def _neutral_parser_operand(
+    read: PreparedSessionSourceRead,
+    raw_id: str,
+    *,
+    descriptor: tuple[Provider, str, str, RawRevisionKind, int] | None = None,
+) -> _NeutralParserOperand:
     """Read the exact typed values a detached parser and its enrichment consume."""
-    descriptor = read.raw_revision_descriptor(raw_id)
+    descriptor = read.raw_revision_descriptor(raw_id) if descriptor is None else descriptor
     provider, _blob_hash, source_path, kind, _raw_size = descriptor
     scope_signature: tuple[object, ...] | None = None
     if provider is Provider.CLAUDE_CODE:
@@ -357,6 +362,20 @@ def _neutral_parser_operand(read: PreparedSessionSourceRead, raw_id: str) -> _Ne
         zip_coordinate=read.raw_captured_zip_coordinate(raw_id),
         append_logical_key=read.raw_append_logical_key(raw_id) if kind.value == "append" else None,
         sidecar_signature=scope_signature,
+    )
+
+
+def _neutral_jsonl_candidate(provider: Provider, source_path: str) -> bool:
+    """Whether a retained JSONL raw can be detached and parsed before rebinding."""
+    from polylogue.sources.dispatch import is_jsonl_source_path
+    from polylogue.sources.origin_specs import path_declaration_refuses_session
+    from polylogue.sources.sqlite_export import looks_like_logical_source_path
+
+    return (
+        provider in {Provider.CODEX, Provider.CLAUDE_CODE}
+        and is_jsonl_source_path(source_path)
+        and not path_declaration_refuses_session(provider, source_path)
+        and not looks_like_logical_source_path(Path(source_path))
     )
 
 
@@ -1640,8 +1659,7 @@ class RawObservationDerivation(RawObservationInspection):
         with no ambient filesystem fallback. A new witness proves the same
         selected raws and parser operands before enrichment and publication.
         """
-        from polylogue.sources.dispatch import is_jsonl_source_path, is_stream_record_provider
-        from polylogue.sources.origin_specs import path_declaration_refuses_session
+        from polylogue.sources.dispatch import is_stream_record_provider
         from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
         from polylogue.sources.sidecar_evidence import (
             CapturedSidecarResolver,
@@ -1650,7 +1668,6 @@ class RawObservationDerivation(RawObservationInspection):
             SiblingTranscript,
             iter_jsonl_records,
         )
-        from polylogue.sources.sqlite_export import looks_like_logical_source_path
         from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
         from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
 
@@ -1665,25 +1682,15 @@ class RawObservationDerivation(RawObservationInspection):
             raw_ids, logical_keys = read.expand_raw_membership_selection(selected)
             if not raw_ids:
                 return seal
+            descriptors = {raw_id: read.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
+            eligible_raw_ids: tuple[str, ...] = tuple(
+                raw_id for raw_id in raw_ids if _neutral_jsonl_candidate(descriptors[raw_id][0], descriptors[raw_id][2])
+            )
+            if not eligible_raw_ids:
+                return seal
             operands: dict[str, _NeutralParserOperand] = {}
-            for raw_id in raw_ids:
-                descriptor = read.raw_revision_descriptor(raw_id)
-                provider, _blob_hash, source_path, kind, _raw_size = descriptor
-                if (
-                    provider not in {Provider.CODEX, Provider.CLAUDE_CODE}
-                    or not is_jsonl_source_path(source_path)
-                    or path_declaration_refuses_session(provider, source_path)
-                    or looks_like_logical_source_path(Path(source_path))
-                ):
-                    return seal
-                operands[raw_id] = _NeutralParserOperand(
-                    descriptor=descriptor,
-                    profile_identity=read.raw_profile_identity(raw_id),
-                    fallback_timestamp=read.raw_revision_file_mtime(raw_id),
-                    native_id=read.raw_native_id(raw_id) if kind.value == "append" else None,
-                    zip_coordinate=read.raw_captured_zip_coordinate(raw_id),
-                    append_logical_key=read.raw_append_logical_key(raw_id) if kind.value == "append" else None,
-                )
+            for raw_id in eligible_raw_ids:
+                operands[raw_id] = _neutral_parser_operand(read, raw_id, descriptor=descriptors[raw_id])
 
             if carry.scratch_owner is None:
                 staging = blob_store._ensure_private_staging_root()
@@ -1719,7 +1726,7 @@ class RawObservationDerivation(RawObservationInspection):
                 return target_path
 
             retained_sidecar_resolver = read.retained_sidecar_resolver()
-            for raw_id in raw_ids:
+            for raw_id in eligible_raw_ids:
                 descriptor = operands[raw_id].descriptor
                 provider, _hash, source_path, _kind, _size = descriptor
                 if provider is not Provider.CLAUDE_CODE:
@@ -1782,13 +1789,13 @@ class RawObservationDerivation(RawObservationInspection):
                     available=scope.available,
                     witness=scope.witness,
                 )
-            for raw_id in raw_ids:
+            for raw_id in eligible_raw_ids:
                 maybe_scope = sidecar_scope_by_raw.get(raw_id)
                 signature = (
                     None if maybe_scope is None else (maybe_scope.scope_key, maybe_scope.available, maybe_scope.witness)
                 )
                 operands[raw_id] = dataclasses.replace(operands[raw_id], sidecar_signature=signature)
-            for raw_id in raw_ids:
+            for raw_id in eligible_raw_ids:
                 operand = operands[raw_id]
                 descriptor = operand.descriptor
                 profile = operand.profile_identity
@@ -1884,6 +1891,9 @@ class RawObservationDerivation(RawObservationInspection):
                 strict_jsonl_records=True,
                 parse_prefix_size=parse_prefix_size,
                 sidecar_resolver=captured_sidecar_resolver,
+                progress_identity=hashlib.sha256(
+                    repr(neutral_keys[raw_id]).encode("utf-8", "surrogatepass")
+                ).hexdigest(),
             )
             # Transfer ownership before validation or checkpoint work can fail.
             carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
@@ -1907,10 +1917,10 @@ class RawObservationDerivation(RawObservationInspection):
             return neutral
 
         cohort_identity: tuple[object, ...] = (
-            raw_ids,
-            tuple(_neutral_parser_cache_identity(raw_id, operands[raw_id]) for raw_id in raw_ids),
+            eligible_raw_ids,
+            tuple(_neutral_parser_cache_identity(raw_id, operands[raw_id]) for raw_id in eligible_raw_ids),
         )
-        for raw_id in raw_ids:
+        for raw_id in eligible_raw_ids:
             artifact_key = _neutral_artifact_key(
                 raw_id,
                 operands[raw_id],
@@ -1929,7 +1939,7 @@ class RawObservationDerivation(RawObservationInspection):
         # reducer for simple, strictly growing Codex message chains. The helper
         # reads only these private staged copies through CapturedCodexRead.
         groups: dict[str, list[str]] = {}
-        for raw_id in raw_ids:
+        for raw_id in eligible_raw_ids:
             descriptor = captures[raw_id].descriptor
             if descriptor[0] is Provider.CODEX and descriptor[3].value in {"full", "unknown"}:
                 groups.setdefault(descriptor[2], []).append(raw_id)
@@ -2018,7 +2028,7 @@ class RawObservationDerivation(RawObservationInspection):
                         neutral_by_raw[checkpoint_raw_id] = checkpoint_artifact
                         carry.neutral_artifacts[neutral_keys[checkpoint_raw_id]] = checkpoint_artifact
 
-        for raw_id in raw_ids:
+        for raw_id in eligible_raw_ids:
             neutral = neutral_by_raw.get(raw_id)
             if neutral is None:
                 neutral = prepare_neutral(raw_id)
@@ -2039,11 +2049,17 @@ class RawObservationDerivation(RawObservationInspection):
                 fresh_read = PreparedSessionSourceRead(fresh, blob_store=blob_store)
                 fresh_selected = (key,) if selection is None else tuple(selection(fresh_read))
                 fresh_raw_ids, fresh_logical_keys = fresh_read.expand_raw_membership_selection(fresh_selected)
+                fresh_descriptors = {raw_id: fresh_read.raw_revision_descriptor(raw_id) for raw_id in fresh_raw_ids}
                 fresh_operands: dict[str, _NeutralParserOperand] = {}
-                if fresh_raw_ids == raw_ids:
+                fresh_eligible_raw_ids = tuple(
+                    raw_id
+                    for raw_id in fresh_raw_ids
+                    if _neutral_jsonl_candidate(fresh_descriptors[raw_id][0], fresh_descriptors[raw_id][2])
+                )
+                if fresh_raw_ids == raw_ids and fresh_eligible_raw_ids == eligible_raw_ids:
                     fresh_sidecar_resolver = fresh_read.retained_sidecar_resolver()
-                    for raw_id in fresh_raw_ids:
-                        descriptor = fresh_read.raw_revision_descriptor(raw_id)
+                    for raw_id in fresh_eligible_raw_ids:
+                        descriptor = fresh_descriptors[raw_id]
                         fresh_scope_signature: tuple[object, ...] | None = None
                         if descriptor[0] is Provider.CLAUDE_CODE:
                             fresh_scope = fresh_sidecar_resolver.claude_code_scope(descriptor[2])
@@ -2063,7 +2079,11 @@ class RawObservationDerivation(RawObservationInspection):
                             ),
                             sidecar_signature=fresh_scope_signature,
                         )
-                if (fresh_raw_ids, fresh_logical_keys) != original_selection or fresh_operands != operands:
+                if (
+                    (fresh_raw_ids, fresh_logical_keys) != original_selection
+                    or fresh_eligible_raw_ids != eligible_raw_ids
+                    or fresh_operands != operands
+                ):
                     raise _CarryInvalidatedError
 
                 from polylogue.core.timestamp_authority import normalize_session_timestamps
@@ -2071,7 +2091,7 @@ class RawObservationDerivation(RawObservationInspection):
                 from polylogue.sources.revision_backfill import iter_enriched_sessions_from_retained_read
                 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
-                for raw_id in raw_ids:
+                for raw_id in eligible_raw_ids:
                     captured = captures[raw_id]
                     descriptor = captured.descriptor
                     profile = captured.profile_identity
@@ -2141,7 +2161,6 @@ class RawObservationDerivation(RawObservationInspection):
         carry = _PreparationCarry(reference_seal) if carry is None else carry
         from polylogue.core.prepared_file import VerificationCancelledError
         from polylogue.sources.dispatch import is_jsonl_source_path
-        from polylogue.sources.origin_specs import path_declaration_refuses_session
         from polylogue.sources.revision_backfill import (
             PreparedRetainedInput,
             RetainedPreparationRetryableError,
@@ -2184,26 +2203,27 @@ class RawObservationDerivation(RawObservationInspection):
                 descriptors = {raw_id: selection_read.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
                 neutral_artifact_keys: dict[str, tuple[object, ...]] = {}
                 neutral_operands: dict[str, _NeutralParserOperand] = {}
-                if raw_ids and all(
-                    descriptor[0] in {Provider.CODEX, Provider.CLAUDE_CODE}
-                    and is_jsonl_source_path(descriptor[2])
-                    and not path_declaration_refuses_session(descriptor[0], descriptor[2])
-                    and not looks_like_logical_source_path(Path(descriptor[2]))
-                    for descriptor in descriptors.values()
-                ):
-                    neutral_operands = {raw_id: _neutral_parser_operand(selection_read, raw_id) for raw_id in raw_ids}
+                neutral_raw_ids = tuple(
+                    raw_id
+                    for raw_id in raw_ids
+                    if _neutral_jsonl_candidate(descriptors[raw_id][0], descriptors[raw_id][2])
+                )
+                if neutral_raw_ids:
+                    neutral_operands = {
+                        raw_id: _neutral_parser_operand(selection_read, raw_id) for raw_id in neutral_raw_ids
+                    }
                     neutral_cohort: tuple[object, ...] = (
-                        raw_ids,
-                        tuple(_neutral_parser_cache_identity(raw_id, neutral_operands[raw_id]) for raw_id in raw_ids),
+                        neutral_raw_ids,
+                        tuple(
+                            _neutral_parser_cache_identity(raw_id, neutral_operands[raw_id])
+                            for raw_id in neutral_raw_ids
+                        ),
                     )
                     neutral_artifact_keys = {
                         raw_id: _neutral_artifact_key(
-                            raw_id,
-                            neutral_operands[raw_id],
-                            self._validation_mode,
-                            neutral_cohort,
+                            raw_id, neutral_operands[raw_id], self._validation_mode, neutral_cohort
                         )
-                        for raw_id in raw_ids
+                        for raw_id in neutral_raw_ids
                     }
             if (
                 select_retained_raw_ids is None
@@ -2349,7 +2369,8 @@ class RawObservationDerivation(RawObservationInspection):
                                 candidate_raw_id
                             ]
                             if (
-                                candidate_provider is Provider.CODEX
+                                candidate_raw_id in neutral_operands
+                                and candidate_provider is Provider.CODEX
                                 and candidate_kind in {RawRevisionKind.FULL, RawRevisionKind.UNKNOWN}
                                 and is_jsonl_source_path(candidate_path)
                                 and not looks_like_logical_source_path(Path(candidate_path))
