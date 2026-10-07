@@ -14,6 +14,7 @@ from typing import Any, TypedDict
 import pytest
 
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
+from polylogue.core.json import JSONDocument
 from polylogue.schemas import observation_spill
 from polylogue.schemas.packages import SchemaResolution, SchemaResolutionReason
 from polylogue.schemas.retained_validation import PrefixValidationState, _bounded_validator, _normalized
@@ -266,7 +267,7 @@ def test_prefix_validation_state_matches_each_current_and_historical_resolution(
     registry.write_schema_version("codex", "v1", codex_schema(["old", "new"]), element_kind="session_record_stream")
     registry.write_schema_version("codex", "v2", codex_schema(["old"]), element_kind="session_record_stream")
     registry.write_schema_version("codex", "v3", codex_schema(["current"]), element_kind="session_record_stream")
-    records: list[dict[str, object]] = [
+    records: list[JSONDocument] = [
         {"type": "session_meta", "payload": {"id": "prefix-state", "timestamp": "2026-01-01T00:00:00Z"}}
     ]
     for index, text in enumerate(("old", "old", "new", "bad")):
@@ -318,6 +319,7 @@ def test_prefix_validation_state_matches_each_current_and_historical_resolution(
                 assert streamed.schema_resolution is not None
                 assert streamed.schema_resolution.package_version == "v1"
             if record_index == 5:
+                assert streamed.schema_resolution is not None
                 assert (streamed.schema_resolution.package_version, streamed.invalid_count) == ("v3", 4)
                 assert streamed.status is ValidationStatus.FAILED
 
@@ -344,8 +346,8 @@ def test_prefix_validation_state_preserves_sampler_witness_order_at_64_records(t
         legacy = legacy_structure_schema_digest(observed)
         return {canonical, legacy}
 
-    header: dict[str, object] = {"type": "session_meta", "payload": {"id": "witness-session"}}
-    first_message: dict[str, object] = {
+    header: JSONDocument = {"type": "session_meta", "payload": {"id": "witness-session"}}
+    first_message: JSONDocument = {
         "type": "response_item",
         "payload": {
             "type": "message",
@@ -359,13 +361,12 @@ def test_prefix_validation_state_preserves_sampler_witness_order_at_64_records(t
     catalog.packages[0].elements[0].exact_structure_ids = sorted(row_witnesses(header) | row_witnesses(first_message))
     registry.save_package_catalog(catalog)
 
-    records: list[dict[str, object]] = [header]
+    records: list[JSONDocument] = [header]
     for index in range(64):
         row = dict(first_message)
-        row["payload"] = dict(first_message["payload"])
-        payload = row["payload"]
-        assert isinstance(payload, dict)
-        payload["id"] = f"m{index}"
+        message_payload = first_message["payload"]
+        assert isinstance(message_payload, dict)
+        row["payload"] = {**message_payload, "id": f"m{index}"}
         records.append(row)
 
     path = tmp_path / "witness-prefix.jsonl"

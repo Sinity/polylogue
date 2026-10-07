@@ -3,16 +3,19 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
 from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.core.enums import Provider, ValidationMode
 from polylogue.core.timestamp_authority import normalize_session_timestamps
+from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers import codex
 from polylogue.sources.parsers.base_models import AdmissionUnit
@@ -48,7 +51,7 @@ def _records(count: int) -> list[dict[str, object]]:
     return rows
 
 
-def test_every_checkpoint_prefix_matches_ordinary_codex_parse(tmp_path) -> None:
+def test_every_checkpoint_prefix_matches_ordinary_codex_parse(tmp_path: Path) -> None:
     records = _records(8)
     head = codex.parse_stream(records, "fallback")
 
@@ -56,9 +59,9 @@ def test_every_checkpoint_prefix_matches_ordinary_codex_parse(tmp_path) -> None:
     for record_count in range(1, len(records) + 1):
         ordinary = codex.parse_stream(records[:record_count], "fallback")
         message_count = record_count - 1
-        updated_pair = codex.parse_timestamp_pair(head.created_at)
+        updated_pair = parse_timestamp_pair(head.created_at)
         for message in head.messages[:message_count]:
-            updated_pair = codex._newer_timestamp_pair(updated_pair, codex.parse_timestamp_pair(message.timestamp))
+            updated_pair = codex._newer_timestamp_pair(updated_pair, parse_timestamp_pair(message.timestamp))
         checkpoint = _finalize_codex_prefix(
             head,
             head.messages,
@@ -117,6 +120,8 @@ def test_checkpoint_grammar_falls_back_for_future_sensitive_codex_shapes() -> No
     assert _plain_text_header(_records(0)[0]) == "prefix-session"
     message = _records(1)[1]
     assert _plain_text_message(message) == ("message-0", "user", "content-0")
+    payload = message["payload"]
+    assert isinstance(payload, dict)
 
     event_msg = {"type": "event_msg", "payload": {"type": "exec_command_end", "id": "event"}}
     code_mode_call = {
@@ -135,14 +140,14 @@ def test_checkpoint_grammar_falls_back_for_future_sensitive_codex_shapes() -> No
         _plain_text_message(
             {
                 "type": "response_item",
-                "payload": {**message["payload"], "content": [{"type": "output_text", "text": "x"}]},
+                "payload": {**payload, "content": [{"type": "output_text", "text": "x"}]},
             }
         )
         is None
     )
     assert (
         _plain_text_message(
-            {"type": "response_item", "payload": {**message["payload"], "content": [{"type": "image", "url": "x"}]}}
+            {"type": "response_item", "payload": {**payload, "content": [{"type": "image", "url": "x"}]}}
         )
         is None
     )
@@ -152,7 +157,7 @@ class _SourceRead:
     def __init__(self, payloads: list[bytes]) -> None:
         self.payloads = {f"raw-{index}": payload for index, payload in enumerate(payloads)}
 
-    def raw_revision_descriptor(self, raw_id: str):
+    def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
         payload = self.payloads[raw_id]
         return (
             Provider.CODEX,
@@ -169,7 +174,7 @@ class _SourceRead:
         return f"2026-06-0{int(raw_id.removeprefix('raw-')) + 1}T01:00:00Z"
 
     @contextmanager
-    def open_raw_revision_material(self, raw_id: str):
+    def open_raw_revision_material(self, raw_id: str) -> Iterator[tuple[Provider, BinaryIO, str, RawRevisionKind]]:
         yield Provider.CODEX, BytesIO(self.payloads[raw_id]), "same/path.jsonl", RawRevisionKind.FULL
 
 
@@ -180,7 +185,7 @@ def test_source_read_proof_checks_hash_prefix_and_complete_record_boundaries(tmp
         text = "\n".join(json.dumps(row, separators=(",", ":")) for row in records[:count]) + "\n"
         captures.append(text.encode())
     source_read = _SourceRead(captures)
-    head_blob = tempfile.TemporaryFile(mode="w+b")
+    head_blob: BinaryIO = tempfile.TemporaryFile(mode="w+b")
     head_blob, counts, hashes, header, message_count, verdicts = _read_head_and_prove(
         source_read,
         tuple(source_read.payloads),
@@ -230,7 +235,9 @@ def test_source_read_proof_checks_hash_prefix_and_complete_record_boundaries(tmp
 
 def test_each_prefix_keeps_its_own_fallback_timestamp_provenance() -> None:
     records = _records(3)
-    records[0]["payload"].pop("timestamp")
+    payload = records[0]["payload"]
+    assert isinstance(payload, dict)
+    payload.pop("timestamp")
     head = codex.parse_stream(records, "fallback")
     checkpoint = _finalize_codex_prefix(head, head.messages, 2, _prefix_accounting(2), head.created_at)
 
@@ -261,10 +268,12 @@ def test_each_prefix_keeps_its_own_fallback_timestamp_provenance() -> None:
     assert observed[0][4] == observed[1][4] == [None, None]
 
 
-def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path, monkeypatch) -> None:
+def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     records = _records(3)
-    records[0]["payload"].pop("timestamp")
-    payloads = []
+    payload = records[0]["payload"]
+    assert isinstance(payload, dict)
+    payload.pop("timestamp")
+    payloads: list[bytes] = []
     for count in range(1, 5):
         text = "\n".join(json.dumps(row, separators=(",", ":")) for row in records[:count]) + "\n"
         payloads.append(text.encode())

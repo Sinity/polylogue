@@ -490,7 +490,6 @@ class PrefixValidationState:
             selected_resolution = replace(
                 selected_resolution,
                 package_version=selected.version,
-                element_kind=self._base_element or selected_resolution.element_kind,
             )
         assert selected.reducer is not None
         return selected.reducer.verdict(
