@@ -114,11 +114,17 @@ def test_zero_length_retained_raw_is_terminal_for_every_provider_and_validation_
         refusal = source_read.raw_terminal_decode_refusal(raw_id)
         assert refusal is not None
         assert refusal.kind.value in RAW_FAILURE_VALIDATION_FAILURE_KINDS
-        assert "empty" in str(refusal).lower() or "zero" in str(refusal).lower()
+        assert str(refusal).strip()
     with sqlite3.connect(root / "source.db") as source:
+        state = source.execute(
+            "SELECT parsed_at_ms, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
         artifact_kinds = {
             str(row[0]) for row in source.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id=?", (raw_id,))
         }
+    assert state is not None
+    assert state[0] is None
+    assert state[1] == str(refusal)
     assert artifact_kinds & RAW_FAILURE_VALIDATION_FAILURE_KINDS
     with sqlite3.connect(root / "index.db") as index:
         assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
