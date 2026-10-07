@@ -596,13 +596,6 @@ def candidate_identity(candidate: Path) -> dict[str, Any]:
     }
 
 
-def _file_size(path: Path) -> int | None:
-    try:
-        return path.stat().st_size
-    except OSError:
-        return None
-
-
 def candidate_stamp(candidate: Path) -> dict[str, tuple[int, ...]]:
     """Stamps of every tracked and untracked, unignored file and their directories.
 
@@ -765,6 +758,23 @@ def _prepare_paths(config: RunConfig) -> dict[str, Path]:
     config_path.write_text("[embedding]\nenabled = false\n", encoding="utf-8")
     paths["config"] = config_path
     return paths
+
+
+def _archive_write_stamp(archive: Path) -> tuple[tuple[str, int, int], ...]:
+    """Size and mtime of every archive database and WAL file, for shutdown progress.
+
+    ``-shm`` files are left out: readers update their read marks there.
+    """
+    stamp: list[tuple[str, int, int]] = []
+    for path in sorted(archive.rglob("*")):
+        if not path.name.endswith((".db", ".db-wal")):
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        stamp.append((str(path.relative_to(archive)), stat.st_size, stat.st_mtime_ns))
+    return tuple(stamp)
 
 
 def _stop(
@@ -961,13 +971,12 @@ def _measure_and_write_receipt(
         exit_code, shutdown_s = _stop(
             process,
             stall_s=config.stall_timeout_s,
-            # I/O and the event log move while shutdown drains or
-            # checkpoints; CPU is left out, since the injected stack sampler
-            # keeps it moving even when the daemon is hung.
-            progress=lambda: (
-                sampler.samples[-1][3:] if sampler.samples else None,
-                _file_size(paths["events"]),
-            ),
+            # A draining or checkpointing shutdown moves the archive's
+            # database and WAL files. Process CPU, read I/O, thread counts and
+            # the event log are left out: the stack sampler, status readers
+            # and periodic skip events keep those moving in a hung daemon, so
+            # a stalled run was never terminated.
+            progress=lambda: _archive_write_stamp(paths["archive"]),
             interrupted=interrupted,
         )
         sampler.finish()

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sqlite3
+import threading
 import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from contextlib import closing, contextmanager, suppress
@@ -27,7 +28,9 @@ from polylogue.archive.revision_authority import decided_unresolved_membership_s
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.evidence import Measured
 from polylogue.core.protocols import ArchiveRootOwner
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import provider_from_origin
+from polylogue.core.stage_admission import admit_stage_write, stage_write_admission
 from polylogue.logging import get_logger
 from polylogue.sources.hooks import (
     HookSpoolSourceSpec,
@@ -129,6 +132,15 @@ _INCOMPLETE_APPEND_PROBE_CHUNK_BYTES = 1024 * 1024
 # pass would have re-observed the file anyway.
 _STUCK_DEFERRED_APPEND_AGE_S = 60.0 * 60.0
 INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson", ".db", ".sqlite", ".sqlite3")
+
+
+# Lifecycle evidence kinds are carried by failed raws; only a classification
+# artifact can declare a raw non-session.
+_FAILURE_EVIDENCE_KINDS_SQL = ", ".join(f"'{kind.value}'" for kind in RawFailureEvidenceKind)
+
+
+def _stat_identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
 class _ArchivedCursorReconciliation(str, Enum):
@@ -454,7 +466,9 @@ class LiveWatcher:
         self._ingest_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._watcher_ready = asyncio.Event()
-        self._archived_cursor_conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
+        # Per thread: selection runs on a worker thread off the writer, and a
+        # connection never crosses threads.
+        self._archived_cursor_local = threading.local()
         self._batch_processor = LiveBatchProcessor(
             polylogue,
             self._sources,
@@ -485,6 +499,82 @@ class LiveWatcher:
         if self._write_coordinator is None:
             raise UnleasedWriteError(f"{actor} writes the archive and requires the daemon write coordinator")
         return await self._write_coordinator.run_sync(actor, function, *args, **kwargs)
+
+    @property
+    def _archived_cursor_conns(self) -> tuple[sqlite3.Connection, sqlite3.Connection] | None:
+        conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = getattr(
+            self._archived_cursor_local, "conns", None
+        )
+        return conns
+
+    @_archived_cursor_conns.setter
+    def _archived_cursor_conns(self, conns: tuple[sqlite3.Connection, sqlite3.Connection] | None) -> None:
+        self._archived_cursor_local.conns = conns
+
+    async def classify_ingest_candidates_off_writer(
+        self, paths: Sequence[Path]
+    ) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        """Run :meth:`classify_ingest_candidates` with the writer released.
+
+        Selection reads cursors and archive rows and hashes source bytes; a
+        whole-file reconciliation hash under the writer queued every other
+        archive writer behind it. Each cursor correction it decides is a short
+        section admitted onto the writer, which first re-checks that the file
+        observation and cursor row it was decided from still hold.
+        """
+        coordinator = self._write_coordinator
+        if coordinator is None:
+            raise UnleasedWriteError("watcher.intake.select writes cursors and requires the daemon write coordinator")
+        loop = asyncio.get_running_loop()
+
+        def admission(actor: str, work: Callable[[], Any]) -> Any:
+            return asyncio.run_coroutine_threadsafe(coordinator.run_sync(actor, work), loop).result()
+
+        def select() -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+            with stage_write_admission(admission):
+                return self.classify_ingest_candidates(paths)
+
+        selection = asyncio.ensure_future(asyncio.to_thread(select))
+        try:
+            return await asyncio.shield(selection)
+        except asyncio.CancelledError:
+            # The worker may be inside an admitted write; let it settle while
+            # the loop still serves it, then propagate the cancellation.
+            with suppress(BaseException):
+                await selection
+            raise
+
+    def _admit_observed_cursor_write(
+        self,
+        actor: str,
+        path: Path,
+        *,
+        stat: os.stat_result,
+        expected: CursorRecord | None,
+        write: Callable[[], object],
+    ) -> bool:
+        """Apply one selection cursor write if its observation still holds.
+
+        The decision was made, and its bytes hashed, without the writer. Under
+        the writer the file's identity and the cursor row are compared with
+        what the decision read; a changed file or a cursor another writer
+        moved refuses the write, and the caller treats the file as needing
+        ingest.
+        """
+
+        def guarded() -> bool:
+            try:
+                current = path.stat()
+            except OSError:
+                return False
+            if _stat_identity(current) != _stat_identity(stat):
+                return False
+            if self._cursor.get_record(path) != expected:
+                return False
+            write()
+            return True
+
+        return bool(admit_stage_write(actor, guarded))
 
     @property
     def has_write_coordinator(self) -> bool:
@@ -684,8 +774,35 @@ class LiveWatcher:
                 ):
                     needed.append(path)
         if rebases:
-            self._cursor.rebase_authoritative_observations(rebases)
+            needed.extend(self._admit_rebases(rebases))
         return tuple(needed)
+
+    def _admit_rebases(self, rebases: Sequence[CursorObservationRebase]) -> list[Path]:
+        """Persist proved rebases under the writer; return paths whose file moved since."""
+        moved: list[Path] = []
+
+        def write() -> None:
+            current: list[CursorObservationRebase] = []
+            for rebase in rebases:
+                try:
+                    observed = rebase.path.stat()
+                except OSError:
+                    moved.append(rebase.path)
+                    continue
+                if (observed.st_dev, observed.st_ino, observed.st_size, observed.st_mtime_ns) != (
+                    rebase.st_dev,
+                    rebase.st_ino,
+                    rebase.expected.byte_size,
+                    rebase.mtime_ns,
+                ):
+                    moved.append(rebase.path)
+                    continue
+                current.append(rebase)
+            # The store compares each row with its expected record itself.
+            self._cursor.rebase_authoritative_observations(current)
+
+        admit_stage_write("watcher.intake.cursor_rebase", write)
+        return moved
 
     def _needs_work(self, path: Path) -> bool:
         """Return True if the file is new, grown, or fingerprint-changed."""
@@ -749,7 +866,7 @@ class LiveWatcher:
             if cursor.captured_profile_key is None or cursor.captured_profile_key != observed_profile.key:
                 return True
         if cursor is None:
-            if not self._reconcile_archived_cursor(path, stat=stat):
+            if not self._reconcile_archived_cursor(path, stat=stat, expected=None):
                 return True
             cursor = self._cursor.get_record(path)
             return cursor is not None and size > cursor.byte_offset
@@ -786,17 +903,28 @@ class LiveWatcher:
         if cursor.failure_count == 0 and cursor.content_fingerprint is None and cursor.next_retry_at is not None:
             if not _retry_due(cursor.next_retry_at):
                 return False
-            reconciliation = self._reconcile_archived_cursor_outcome(path, stat=stat)
+            reconciliation = self._reconcile_archived_cursor_outcome(path, stat=stat, expected=cursor)
             if reconciliation is _ArchivedCursorReconciliation.RECONCILED:
                 reconciled = self._cursor.get_record(path)
                 return reconciled is not None and size > reconciled.byte_offset
             if reconciliation is _ArchivedCursorReconciliation.UNAVAILABLE:
-                self._cursor.defer_full_cursor_reconciliation(path)
-                return False
-            self._invalidate_deferred_full_cursor(path, stat=stat)
+                return not self._admit_observed_cursor_write(
+                    "watcher.intake.cursor_defer",
+                    path,
+                    stat=stat,
+                    expected=cursor,
+                    write=lambda: self._cursor.defer_full_cursor_reconciliation(path),
+                )
+            self._admit_observed_cursor_write(
+                "watcher.intake.cursor_invalidate",
+                path,
+                stat=stat,
+                expected=cursor,
+                write=lambda: self._invalidate_deferred_full_cursor(path, stat=stat),
+            )
             return True
         if cursor.failure_count > 0:
-            if self._reconcile_archived_cursor(path, stat=stat):
+            if self._reconcile_archived_cursor(path, stat=stat, expected=cursor):
                 cursor = self._cursor.get_record(path)
                 return cursor is not None and size > cursor.byte_offset
             return _retry_due(cursor.next_retry_at)
@@ -864,11 +992,20 @@ class LiveWatcher:
                     cursor.byte_size - cursor.byte_offset,
                     cursor.byte_offset,
                 )
-                self._cursor.mark_failed(path, authority=CursorPathAuthority.of_record(cursor), failed_stat=stat)
-                return False
+                # The deferral above rewrote the row; compare against what it left.
+                stuck = self._cursor.get_record(path) or cursor
+                return not self._admit_observed_cursor_write(
+                    "watcher.intake.cursor_stuck_append",
+                    path,
+                    stat=stat,
+                    expected=stuck,
+                    write=lambda: self._cursor.mark_failed(
+                        path, authority=CursorPathAuthority.of_record(stuck), failed_stat=stat
+                    ),
+                )
             prefix_hash = cursor_prefix_hash(cursor.tail_hash)
             if prefix_hash is None:
-                if self._reconcile_archived_cursor(path, stat=stat):
+                if self._reconcile_archived_cursor(path, stat=stat, expected=cursor):
                     reconciled = self._cursor.get_record(path)
                     return reconciled is None or size > reconciled.byte_offset
                 return True
@@ -935,8 +1072,17 @@ class LiveWatcher:
                     stat.st_size - cursor.byte_offset,
                     cursor.byte_offset,
                 )
-                self._cursor.mark_failed(path, authority=CursorPathAuthority.of_record(cursor), failed_stat=stat)
-                return False
+                # The deferral above rewrote the row; compare against what it left.
+                stuck = self._cursor.get_record(path) or cursor
+                return not self._admit_observed_cursor_write(
+                    "watcher.intake.cursor_stuck_append",
+                    path,
+                    stat=stat,
+                    expected=stuck,
+                    write=lambda: self._cursor.mark_failed(
+                        path, authority=CursorPathAuthority.of_record(stuck), failed_stat=stat
+                    ),
+                )
             return not self._defer_incomplete_jsonl_append(path, stat=stat, cursor=cursor)
         if cursor.content_fingerprint is None:
             return True
@@ -1005,15 +1151,22 @@ class LiveWatcher:
         # polylogue-hat0: this probe found no complete trailing record, not a
         # resolved authority state -- preserve any existing pending-authority
         # marker unchanged rather than clearing it.
-        record_deferred_append_cursor(
-            self._cursor,
+        # A refused write (the file or cursor moved since the probe) is not a
+        # deferral: the caller routes the file to ingest.
+        return self._admit_observed_cursor_write(
+            "watcher.intake.cursor_defer_append",
             path,
-            cursor=cursor,
-            parser_fingerprint=_PARSER_FINGERPRINT,
-            source_name=self._source_name_for(path),
-            deferred_end_offset=cursor.deferred_end_offset,
+            stat=stat,
+            expected=cursor,
+            write=lambda: record_deferred_append_cursor(
+                self._cursor,
+                path,
+                cursor=cursor,
+                parser_fingerprint=_PARSER_FINGERPRINT,
+                source_name=self._source_name_for(path),
+                deferred_end_offset=cursor.deferred_end_offset,
+            ),
         )
-        return True
 
     def _invalidate_deferred_full_cursor(self, path: Path, *, stat: os.stat_result) -> None:
         """Clear a busy-handoff defer when current bytes reject archive authority."""
@@ -1047,10 +1200,11 @@ class LiveWatcher:
         if not updated:
             raise sqlite3.OperationalError(f"failed to invalidate deferred cursor for {path}")
 
-    def _reconcile_archived_cursor(self, path: Path, *, stat: os.stat_result) -> bool:
+    def _reconcile_archived_cursor(self, path: Path, *, stat: os.stat_result, expected: CursorRecord | None) -> bool:
         """Restore a missing/stale cursor from proven archive raw state."""
 
-        return self._reconcile_archived_cursor_outcome(path, stat=stat) is _ArchivedCursorReconciliation.RECONCILED
+        outcome = self._reconcile_archived_cursor_outcome(path, stat=stat, expected=expected)
+        return outcome is _ArchivedCursorReconciliation.RECONCILED
 
     @contextmanager
     def _archived_cursor_reconciliation_scope(self) -> Iterator[None]:
@@ -1208,14 +1362,27 @@ class LiveWatcher:
         source_conn: sqlite3.Connection,
         index_conn: sqlite3.Connection,
     ) -> bool:
-        """True unless ``path`` has session authority the index cannot show."""
+        """True unless ``path`` has session authority the index cannot show.
+
+        A raw its artifact classification declares non-session (a Claude Code
+        tool-result sidecar, a workflow fact) is parsed but never yields a
+        session, so the index can never show it; counting it as session
+        authority demoted every settled sidecar's cursor and re-ingested it on
+        each periodic scan.
+        """
         has_session_raw = source_conn.execute(
-            """
+            f"""
             SELECT 1 FROM raw_sessions
             WHERE source_path = ?
               AND COALESCE(source_index, 0) >= 0
               AND (parsed_at_ms IS NOT NULL OR revision_authority IN ('asserted', 'byte_proven'))
               AND parse_error IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM raw_artifacts AS a
+                  WHERE a.raw_id = raw_sessions.raw_id
+                    AND a.parse_as_session = 0
+                    AND a.artifact_kind NOT IN ({_FAILURE_EVIDENCE_KINDS_SQL})
+              )
             LIMIT 1
             """,
             (str(path),),
@@ -1258,6 +1425,7 @@ class LiveWatcher:
         path: Path,
         *,
         stat: os.stat_result,
+        expected: CursorRecord | None,
     ) -> _ArchivedCursorReconciliation:
         """Restore a missing/stale cursor from proven archive raw state.
 
@@ -1274,6 +1442,8 @@ class LiveWatcher:
             # Force a fresh source observation instead of deferring on an
             # index that this mode is explicitly forbidden to read.
             return _ArchivedCursorReconciliation.INCOMPATIBLE
+        # ``expected`` is the cursor row the caller decided from (bulk-read
+        # for a page); the restore re-checks it under the writer.
         shared = self._archived_cursor_conns
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         try:
@@ -1370,23 +1540,35 @@ class LiveWatcher:
         if authority.captured_profile_key != captured_profile_key:
             # The archived raw was captured under another profile namespace.
             return _ArchivedCursorReconciliation.INCOMPATIBLE
-        self._cursor.set(
-            path,
-            archived_size,
-            authority=authority,
-            byte_offset=last_complete_newline,
-            last_complete_newline=last_complete_newline,
-            parser_fingerprint=_PARSER_FINGERPRINT,
-            content_fingerprint=content_fingerprint,
-            tail_hash=tail_hash,
-            source_name=provider_from_origin(Origin.from_string(str(origin))).value
+        source_name = (
+            provider_from_origin(Origin.from_string(str(origin))).value
             if origin is not None
-            else self._source_name_for(path),
-            st_dev=stat.st_dev,
-            st_ino=stat.st_ino,
-            mtime_ns=stat.st_mtime_ns,
+            else self._source_name_for(path)
         )
-        self._cursor.reset_failures(path)
+
+        def restore() -> None:
+            self._cursor.set(
+                path,
+                archived_size,
+                authority=authority,
+                byte_offset=last_complete_newline,
+                last_complete_newline=last_complete_newline,
+                parser_fingerprint=_PARSER_FINGERPRINT,
+                content_fingerprint=content_fingerprint,
+                tail_hash=tail_hash,
+                source_name=source_name,
+                st_dev=stat.st_dev,
+                st_ino=stat.st_ino,
+                mtime_ns=stat.st_mtime_ns,
+            )
+            self._cursor.reset_failures(path)
+
+        # The hashes above ran without the writer; the restore re-checks the
+        # file and cursor it was proved against before it writes.
+        if not self._admit_observed_cursor_write(
+            "watcher.intake.cursor_reconcile", path, stat=stat, expected=expected, write=restore
+        ):
+            return _ArchivedCursorReconciliation.UNAVAILABLE
         logger.info("live.watcher: reconciled cursor from archive source row for %s", path)
         return _ArchivedCursorReconciliation.RECONCILED
 

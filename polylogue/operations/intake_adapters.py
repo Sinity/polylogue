@@ -859,14 +859,12 @@ class FileIntakeAdapter(IntakeAdapter):
                 # The selection is a read that can decide to write: an
                 # incomplete-append deferral, an archived-cursor
                 # reconciliation and a device-drift rebase all correct cursor
-                # rows in place. Those are ordinary archive writes, so they
-                # run through the writer admission like every other one --
-                # under process-wide lease enforcement an unadmitted cursor
-                # write is refused, which turned the whole page retryable.
+                # rows in place. It runs with the writer released (its
+                # reconciliation hashes whole files); each of those writes is
+                # admitted onto the writer on its own, after re-checking the
+                # observation it was decided from.
                 if self.context.watcher.has_write_coordinator:
-                    selected, pending = await self.context.watcher._run_writer_sync(
-                        "watcher.intake.select", classify, paths
-                    )
+                    selected, pending = await self.context.watcher.classify_ingest_candidates_off_writer(paths)
                 else:
                     selected, pending = classify(paths)
                 needed = set(selected)

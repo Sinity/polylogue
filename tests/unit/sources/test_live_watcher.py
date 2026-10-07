@@ -9,7 +9,7 @@ import os
 import sqlite3
 import time
 import zipfile
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -367,7 +367,12 @@ async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path
     with sqlite3.connect(shadow_index) as conn:
         conn.execute("DELETE FROM sessions")
         conn.commit()
-    assert watcher._reconcile_archived_cursor(source_path, stat=source_path.stat()) is True
+    assert (
+        watcher._reconcile_archived_cursor(
+            source_path, stat=source_path.stat(), expected=watcher._cursor.get_record(source_path)
+        )
+        is True
+    )
     watcher.stop()
 
 
@@ -4784,3 +4789,112 @@ def test_cold_build_cursor_corroboration_reads_the_candidate_index(
     monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root=None: None)
     monkeypatch.setattr(live_watcher, "resolve_active_index_path", lambda root: root / "index.db")
     assert live_watcher._published_index_path(tmp_path) == tmp_path / "index.db"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("moved_after_hash", [False, True], ids=["unchanged", "appended-before-admission"])
+async def test_cursor_reconciliation_hashes_off_the_writer_and_rechecks_under_it(
+    tmp_path: Path, moved_after_hash: bool
+) -> None:
+    """Intake selection hashes source bytes without the writer.
+
+    Only the cursor restore is admitted, and under the writer it re-checks the
+    file it hashed: a file appended while the restore awaits the writer (after
+    every read the decision made) refuses the restore and is selected for
+    ingest instead. Anti-vacuity: running selection through the
+    writer (the old ``watcher.intake.select`` admission) holds the lease
+    around the hash and fails the first assertion in ``observed_hash``; a
+    restore without the re-check records a cursor for bytes it never proved.
+    """
+    from polylogue.archive.session_revision_membership import MembershipClassification
+    from polylogue.core.write_lease import current_write_lease
+    from polylogue.pipeline.ids import session_revision_projection
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    source_root = tmp_path / "src"
+    source_root.mkdir()
+    source_path = source_root / "off-writer.jsonl"
+    payload = b'{"native_id":"off-writer"}\n'
+    source_path.write_bytes(payload)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="off-writer",
+        messages=[ParsedMessage(provider_message_id="m0", role=Role.USER, text="settled content")],
+    )
+
+    def settle_decided_raw() -> None:
+        # Archive setup takes synchronous leases, so it runs off the loop.
+        initialize_active_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=str(source_path),
+                canonical_source_path=str(source_path),
+                acquired_at_ms=1,
+            )
+        seed_membership_census(tmp_path, [(raw_id, [session])], parser_fingerprint="test-parser")
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            publish_prepared_membership_classification(
+                archive,
+                "codex-session:off-writer",
+                MembershipClassification((), (), (raw_id,)),
+                {raw_id: session},
+                {raw_id: session_revision_projection(session)},
+                decided_at_ms=2,
+            )
+
+    await asyncio.to_thread(settle_decided_raw)
+
+    admitted: list[str] = []
+
+    class RecordingCoordinator:
+        async def run(self, actor: str, operation: Callable[[], Awaitable[Any]], /) -> Any:
+            raise AssertionError(f"selection must not take a whole-operation writer: {actor}")
+
+        async def run_sync(self, actor: str, function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+            admitted.append(actor)
+            if moved_after_hash:
+                # The source's writer appends while the restore waits for
+                # admission: after every read the decision made.
+                with source_path.open("ab") as handle:
+                    handle.write(b'{"native_id":"off-writer","turn":2}\n')
+
+            def leased() -> Any:
+                with write_lease(actor, archive_root=tmp_path):
+                    return function(*args, **kwargs)
+
+            return await asyncio.to_thread(leased)
+
+    watcher, _full_ingest = _make_watcher(
+        tmp_path,
+        source_root,
+        sources=(WatchSource(name="codex", root=source_root),),
+        write_coordinator=RecordingCoordinator(),
+    )
+    from polylogue.sources.live.batch_support import sha256_range_from_path as real_hash
+
+    hashed: list[Path] = []
+
+    def observed_hash(path: Path, **kwargs: Any) -> Any:
+        assert current_write_lease() is None, "the reconciliation hash ran under the writer"
+        hashed.append(path)
+        return real_hash(path, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(live_watcher, "sha256_range_from_path", observed_hash)
+        selected, pending = await watcher.classify_ingest_candidates_off_writer([source_path])
+
+    assert hashed == [source_path]
+    assert pending == ()
+    assert "watcher.intake.select" not in admitted
+    assert admitted == ["watcher.intake.cursor_reconcile"]
+    record = watcher._cursor.get_record(source_path)
+    if moved_after_hash:
+        assert selected == (source_path,)
+        assert record is None
+    else:
+        assert selected == ()
+        assert record is not None
+        assert record.byte_offset == len(payload)
+    watcher.stop()

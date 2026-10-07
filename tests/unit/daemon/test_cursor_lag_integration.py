@@ -14,10 +14,12 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
+from polylogue.core.write_lease import current_write_lease
+from polylogue.daemon import health as daemon_health
 from polylogue.daemon.cursor_lag_alert import reset_default_dedup_state as reset_static_dedup
 from polylogue.daemon.cursor_lag_anomaly import (
     reset_default_dedup_state as reset_anomaly_dedup,
@@ -282,32 +284,44 @@ async def test_default_periodic_health_schedule_runs_medium_probes_and_records_c
     )
 
     observed: dict[str, object] = {}
+    admitted: list[str] = []
+    real_check_health = daemon_health.check_health
 
-    class _OneTickCoordinator:
-        async def run_sync(self, actor: str, check: Callable[..., object], **kwargs: object) -> object:
-            assert actor == "maintenance.health_check"
-            observed["tiers"] = kwargs["tiers"]
+    def check_health(**kwargs: Any) -> DaemonHealth:
+        # The checks are reads: the tick must not hold the writer around them.
+        assert current_write_lease() is None
+        observed["tiers"] = kwargs["tiers"]
+        health = real_check_health(**kwargs)
+        observed["health"] = health
+        return health
 
-            def leased() -> object:
-                # Like the real coordinator: the writer runs the check off the loop under the lease.
-                with write_lease(actor, archive_root=db.parent):
-                    return check(**kwargs)
-
-            health = run_off_event_loop(leased)
-            observed["health"] = health
-            raise asyncio.CancelledError
+    def admission(actor: str, work: Callable[[], object]) -> object:
+        # Like the daemon admission: the write section alone holds the writer.
+        admitted.append(actor)
+        with write_lease(actor, archive_root=db.parent):
+            return work()
 
     async def _immediate_sleep(interval: float) -> None:
         # The runner jitters each tick; the configured cadence is the floor.
         assert 300 <= interval <= 330
+        if "health" in observed:
+            raise asyncio.CancelledError
 
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: _OneTickCoordinator())
+    monkeypatch.setattr(daemon_health, "check_health", check_health)
+    monkeypatch.setattr(daemon_cli, "_daemon_stage_write_admission", lambda: admission)
+    monkeypatch.setattr(
+        daemon_cli,
+        "daemon_write_coordinator",
+        lambda: (_ for _ in ()).throw(AssertionError("the health check must not take the whole-check writer")),
+    )
     monkeypatch.setattr("polylogue.daemon.cli.asyncio.sleep", _immediate_sleep)
     monkeypatch.setattr("polylogue.daemon.notifications.send_notifications", lambda *_args, **_kwargs: None)
 
     with pytest.raises(asyncio.CancelledError):
         await daemon_cli._periodic_health_check()
 
+    assert set(admitted) <= {"daemon.cursor_lag.sample", "daemon.cursor_lag.gc"}
+    assert "daemon.cursor_lag.sample" in admitted
     assert observed["tiers"] == {HealthTier.FAST, HealthTier.MEDIUM}
     health = cast(DaemonHealth, observed["health"])
     assert any(alert.check_name == "fts_readiness" for alert in health.alerts)
