@@ -107,8 +107,8 @@ def test_zero_length_retained_raw_is_terminal_for_every_provider_and_validation_
 
     receipts, refused = asyncio.run(replay())
 
-    assert receipts == ()
-    assert refused == [raw_id]
+    assert receipts == (), (provider, mode, receipts)
+    assert refused == [raw_id], (provider, mode, refused)
     with prepared_source_fixture(root) as source_read:
         assert source_read.raw_parser_census_is_current(raw_id)
         refusal = source_read.raw_terminal_decode_refusal(raw_id)
