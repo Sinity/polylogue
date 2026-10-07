@@ -292,6 +292,7 @@ def test_history_paste_enrichment_writes_past_sealed_sink_and_preserves_matching
         source_sink = store.new_sink()
         source_sink.extend(messages)
         sealed = SqliteMessageSink(store.path, source_sink.session_ordinal, count=len(source_sink))
+        store.conn.commit()
         prepared = ParsedSession(source_name=Provider.CLAUDE_CODE, provider_session_id="main", messages=[]).model_copy(
             update={"messages": sealed}
         )
