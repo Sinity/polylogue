@@ -309,14 +309,12 @@ def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[
         current.versions.get(tier) == ARCHIVE_FORMAT_FLOOR_VERSION for tier in _DURABLE_TIERS
     )
     # A new marker lineage fences every earlier archive before its tiers open.
-    # It may therefore revise the fresh floor's DDL while keeping all six
-    # user_version counters at one, but it must not also add a migration route.
+    # It may therefore revise the fresh floor's DDL, or fold a predecessor's
+    # numbered migrations into it, provided every durable user_version counter
+    # returns to one and no migration route is added alongside.
     new_fresh_lineage = (
         previous.lineage != current.lineage
-        and all(
-            previous.versions.get(tier) == current.versions.get(tier) == ARCHIVE_FORMAT_FLOOR_VERSION
-            for tier in _DURABLE_TIERS
-        )
+        and all(current.versions.get(tier) == ARCHIVE_FORMAT_FLOOR_VERSION for tier in _DURABLE_TIERS)
         and not any(_added_migration_versions(base, tier)[0] for tier in _DURABLE_TIERS)
     )
 
@@ -352,7 +350,7 @@ def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[
             # treating the reset as an ordinary schema downgrade here would
             # reject the intentional v1 floor while allowing no useful
             # migration path.  Other backwards moves remain prohibited.
-            if new_version != ARCHIVE_FORMAT_FLOOR_VERSION or not reset_to_new_floor:
+            if new_version != ARCHIVE_FORMAT_FLOOR_VERSION or not (reset_to_new_floor or new_fresh_lineage):
                 violations.append(f"{tier.value}: schema version moved backwards from v{old_version} to v{new_version}")
         elif new_version != old_version:
             expected = set(range(old_version + 1, new_version + 1))

@@ -22,10 +22,13 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import _template_key, clone_archive_template, finalize_archive_template
+from tests.infra.durable_tier_fixtures import ship_synthetic_source_train
 from tests.infra.workload_artifacts import ImmutableTreeArtifact
 
 
-def _populated_template(root: Path) -> str:
+def _populated_template(root: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    # A released train gives the template history for population to detach.
+    ship_synthetic_source_train(root.parent / "train-package", monkeypatch)
     initialize_active_archive_root(root)
     payload = b'{"synthetic_record":"retained"}\n'
     BlobStore(root / "blob").write_from_bytes(payload)
@@ -43,10 +46,12 @@ def _populated_template(root: Path) -> str:
         )
 
 
-def test_populated_template_clone_keeps_rows_blobs_and_original_provenance(tmp_path: Path) -> None:
+def test_populated_template_clone_keeps_rows_blobs_and_original_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "source"
     destination = tmp_path / "destination"
-    raw_id = _populated_template(source)
+    raw_id = _populated_template(source, monkeypatch)
     original_train = source / ".maintenance-state/durable-change-trains/source-002.json"
     original_bytes = original_train.read_bytes()
     finalize_archive_template(source)
@@ -89,7 +94,7 @@ def test_clone_validates_source_release_before_any_source_backup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "source"
-    _populated_template(source)
+    _populated_template(source, monkeypatch)
     finalize_archive_template(source)
     verified = False
     verify = durable_change_train._verify_released_train_live_tier
@@ -138,9 +143,11 @@ def test_clone_validates_source_release_before_any_source_backup(
 
 
 @pytest.mark.parametrize("kind", ("schema", "pending"))
-def test_clone_refuses_unreleased_or_custom_archive_without_population(tmp_path: Path, kind: str) -> None:
+def test_clone_refuses_unreleased_or_custom_archive_without_population(
+    tmp_path: Path, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "source"
-    _populated_template(source)
+    _populated_template(source, monkeypatch)
     if kind == "schema":
         with closing(sqlite3.connect(source / "source.db")) as conn:
             conn.execute("CREATE TABLE custom_unproved (value TEXT)")
@@ -179,7 +186,7 @@ def test_fixture_population_fences_concurrent_reader_and_retains_interruption(
     from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
 
     source = tmp_path / "source"
-    _populated_template(source)
+    _populated_template(source, monkeypatch)
     finalize_archive_template(source)
     destination = tmp_path / "destination"
     actual = archive_population._populate_authenticated_archive
@@ -261,7 +268,7 @@ def test_fixture_copy_fences_the_actual_destination_before_the_first_file(
     from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
 
     source = tmp_path / "source"
-    _populated_template(source)
+    _populated_template(source, monkeypatch)
     finalize_archive_template(source)
     destination = tmp_path / "destination"
     actual = subprocess.run

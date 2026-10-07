@@ -1505,7 +1505,7 @@ def _load_excision_source_target(seal: PreparedIndexMutation, target: ExcisionTa
     The frozen domain target is provenance; exact original physical row cells
     remain the authority used by Native capture and live effect comparison.
     All canonical incoming raw FK carriers are retained before the parent is
-    removed, including Source003 profile receipts and SET NULL dispositions.
+    removed, including Source profile receipts and SET NULL dispositions.
     """
     from polylogue.storage.sqlite.reference_seal import ReferenceSealError
 

@@ -47,11 +47,9 @@ def test_fresh_bootstrap_format_publication_failure_is_resumable(
     assert not (marker_root / ".bootstrap").exists()
     monkeypatch.setattr(archive_plan, "record_fresh_archive_format", original)
     bootstrap.initialize_active_archive_root(tmp_path)
-    from polylogue.storage.sqlite.durable_change_train import load_durable_change_train_manifest
-    from polylogue.storage.sqlite.migration_runner import DurableChangeTrainState
+    from polylogue.storage.sqlite.durable_change_train import durable_train_manifest_paths
 
-    assert not (marker_root / ".bootstrap").exists()
-    assert load_durable_change_train_manifest(marker_root / "source-002.json").state is DurableChangeTrainState.RELEASED
+    assert durable_train_manifest_paths(marker_root) == ()
     assert not (marker_root / ".bootstrap.pending").exists()
     assert_archive_format_lineage(tmp_path)
 

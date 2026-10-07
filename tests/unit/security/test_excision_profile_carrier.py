@@ -1,4 +1,4 @@
-"""Source004 profile receipts follow their exact raw acquisition cascade."""
+"""Source profile receipts follow their exact raw acquisition cascade."""
 
 from pathlib import Path
 
@@ -6,6 +6,7 @@ import pytest
 
 from polylogue.security.excision_carriers import SESSION_CARRIERS, CarrierReach, audit_session_carriers
 from polylogue.storage.io_phase_metrics import connection_cursor
+from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.connection_profile import readonly_connection_context
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 from polylogue.storage.sqlite.write_lease import write_lease
@@ -23,13 +24,11 @@ def test_runtime_source_profile_receipt_has_verified_cascade(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize("cascade", [True, False])
-def test_profile_receipt_exact_migration_fk_erases_only_target(cascade: bool) -> None:
-    # Use the released Source004 table statement; the negative control changes
-    # only its FK action, which the live registry must detect.
-    migration = (
-        Path(__file__).parents[3] / "polylogue/storage/sqlite/migrations/source/004_captured_profile_identity.sql"
-    )
-    statement = migration.read_text().split(";", 1)[0]
+def test_profile_receipt_exact_baseline_fk_erases_only_target(cascade: bool) -> None:
+    # Use the shipped Source baseline table statement; the negative control
+    # changes only its FK action, which the live registry must detect.
+    start = SOURCE_DDL.index("CREATE TABLE IF NOT EXISTS raw_profile_identity_receipts")
+    statement = SOURCE_DDL[start : SOURCE_DDL.index(";", start)]
     if not cascade:
         statement = statement.replace("ON DELETE CASCADE", "ON DELETE NO ACTION")
     with sqlite_connection(":memory:") as source:

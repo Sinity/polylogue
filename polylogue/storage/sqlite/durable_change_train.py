@@ -2509,7 +2509,6 @@ def execute_durable_change_train(
     runtime_consumer_results: Sequence[DurableRuntimeConsumerResult] | None = None,
     schema_replay_proof: DurableMigrationReplayProof | None = None,
     release_archive_ownership: Callable[[], None],
-    allow_pristine_source_baseline: bool = False,
 ) -> DurableChangeTrainExecution:
     """Execute every persisted train state while the caller holds archive ownership.
 
@@ -2682,7 +2681,6 @@ def execute_durable_change_train(
                 train,
                 backup_manifest=backup_manifest,
                 evidence_ref=f"proof:maintenance-backup:{train.train_id}",
-                allow_pristine_source_baseline=allow_pristine_source_baseline,
             )
         train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
     if train.state is DurableChangeTrainState.BACKUP_AUTHORIZED:

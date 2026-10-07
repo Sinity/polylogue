@@ -602,21 +602,27 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
         f".maintenance-state/durable-change-trains/source-{step:03d}.json"
         for step in range(2, ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] + 1)
     }
-    expected_inventory = released_trains | {
-        "blob",
-        f"blob/{blob_hash[:2]}",
-        f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
-        "blob-inventory.json",
-        "blob-reference-evidence.json",
-        "embeddings.db",
-        "audit.db",
-        "manifest.json",
-        "source.db",
-        "user.db",
-        ".polylogue-format.json",
-        ".maintenance-state",
-        ".maintenance-state/durable-change-trains",
-    }
+    # The history directory exists only to carry released trains.
+    history_directories = (
+        {".maintenance-state", ".maintenance-state/durable-change-trains"} if released_trains else set()
+    )
+    expected_inventory = (
+        released_trains
+        | history_directories
+        | {
+            "blob",
+            f"blob/{blob_hash[:2]}",
+            f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
+            "blob-inventory.json",
+            "blob-reference-evidence.json",
+            "embeddings.db",
+            "audit.db",
+            "manifest.json",
+            "source.db",
+            "user.db",
+            ".polylogue-format.json",
+        }
+    )
     assert set(artifact_inventory) == expected_inventory, sorted(set(artifact_inventory) ^ expected_inventory)
     for released in sorted(released_trains):
         train_path = Path(released)
@@ -2653,19 +2659,22 @@ def test_verified_backup_restore_owns_destination_train_and_preserves_original_e
     result = backup_archive(output_dir=tmp_path / "backups", profile=profile, verify=True)
     assert result.ok and result.verified and result.output_path is not None
     package = Path(result.output_path)
-    original_history = (package / ".maintenance-state/durable-change-trains/source-002.json").read_bytes()
+    # The fresh v1 archive released no train, so the package carries no
+    # train history and restore has none to detach.
+    assert not (package / ".maintenance-state/durable-change-trains").exists()
     receipt_bytes = (package / "verification-receipt.json").read_bytes()
     destination = tmp_path / "restored"
     detail = backup_operations.restore_verified_backup(backup_dir=package, destination=destination)
     assert detail["operational_admission"] == ("ready" if profile == "full_evidence" else "degraded")
     assert detail["unrestored_purchased_tiers"] == ([] if include_embeddings else ["embeddings.db"])
     assert detail["restored_tiers"] == sorted(json.loads((package / "manifest.json").read_text())["included_tiers"])
-    assert (destination / ".maintenance-state/durable-change-trains/source-002.json").read_bytes() != original_history
-    assert (package / ".maintenance-state/durable-change-trains/source-002.json").read_bytes() == original_history
+    assert not list((destination / ".maintenance-state/durable-change-trains").glob("source-*.json"))
     assert (package / "verification-receipt.json").read_bytes() == receipt_bytes
     namespace = hashlib.sha256(str(detail["source_manifest_id"]).encode()).hexdigest()
     provenance = destination / ".archive-population-provenance" / namespace
-    assert (provenance / "original-history/source-002.json").read_bytes() == original_history
+    assert not (provenance / "original-history").exists()
+    receipts = json.loads((provenance / "source.json").read_text())["original_receipts"]
+    assert [item[0] for item in receipts] == [".polylogue-format.json"]
     assert (provenance / "original-backup/verification-receipt.json").read_bytes() == receipt_bytes
     for tier in ("source", "user", "audit"):
         with (
@@ -2849,7 +2858,7 @@ def test_failed_restore_retains_pending_evidence_and_refuses_restart(
             pass
 
 
-def test_verified_source1_backup_restores_through_destination_owned_source002(
+def test_verified_baseline_backup_restores_under_destination_owned_authority(
     workspace_paths: dict[str, Path], tmp_path: Path
 ) -> None:
     import struct
@@ -2946,7 +2955,8 @@ def test_verified_source1_backup_restores_through_destination_owned_source002(
     assert "ops.db" not in restored_tiers
     assert "embeddings.db" in restored_tiers
     assert (package / ".maintenance-state/durable-change-trains/.bootstrap").read_bytes() == original_marker
-    assert (destination / ".maintenance-state/durable-change-trains/source-002.json").is_file()
+    # The baseline is the current Source schema: the destination owns no train.
+    assert not list((destination / ".maintenance-state/durable-change-trains").glob("source-*.json"))
     namespace = hashlib.sha256(str(detail["source_manifest_id"]).encode()).hexdigest()
     assert (
         destination / ".archive-population-provenance" / namespace / "original-history/.bootstrap"
@@ -2968,15 +2978,12 @@ def test_verified_source1_backup_restores_through_destination_owned_source002(
     with closing(sqlite3.connect(destination / "source.db")) as conn:
         from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 
-        # The destination applies its whole owned chain, source-002 onward,
-        # up to this runtime's Source version.
+        # The destination reaches this runtime's Source version through any
+        # numbered steps it owns. The retained version-1 rows are compared
+        # literally on the version-1 relations and columns, and every relation
+        # a later step adds starts empty.
         restored_version = conn.execute("PRAGMA user_version").fetchone()[0]
         assert restored_version == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE], (restored_version, detail)
-        # Later Source steps add relations and columns the version-1 image
-        # never had (source-004 creates ``raw_profile_identity_receipts``), so
-        # a whole-schema literal digest cannot match across the chain. The
-        # retained version-1 rows are compared literally on the version-1
-        # relations and columns, and every added relation starts empty.
         with closing(
             sqlite3.connect(package.joinpath("source.db").as_uri() + "?mode=ro&immutable=1", uri=True)
         ) as baseline:
@@ -3002,7 +3009,6 @@ def test_verified_source1_backup_restores_through_destination_owned_source002(
             )
             if str(row[0]) not in baseline_tables
         ]
-        assert added, "this law follows the full Source chain, which adds relations"
         for name in added:
             assert conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone() == (0,), name
     # The ordinary startup owner validates the new physical receipt; no copied

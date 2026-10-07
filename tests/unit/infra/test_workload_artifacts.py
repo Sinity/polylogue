@@ -661,8 +661,6 @@ def test_seeded_archive_clone_is_private_full_root_and_preserves_base(
 ) -> None:
     artifact = c03_seeded_artifact
     base_manifest = artifact.root.joinpath("manifest.json").read_bytes()
-    marker_relative = Path(".maintenance-state/durable-change-trains/source-002.json")
-    base_marker = artifact.root.joinpath(marker_relative).read_bytes()
     inherited_provenance = {
         path.relative_to(artifact.root): path.read_bytes()
         for path in (artifact.root / ".archive-population-provenance").rglob("*")
@@ -679,7 +677,6 @@ def test_seeded_archive_clone_is_private_full_root_and_preserves_base(
     assert clone.root.joinpath("source.db").exists()
     assert clone.root.joinpath("index.db").exists()
     assert artifact.root.joinpath("manifest.json").read_bytes() == base_manifest
-    assert artifact.root.joinpath(marker_relative).read_bytes() == base_marker
     source_namespace = hashlib.sha256(artifact.manifest.manifest_id.encode()).hexdigest()
     provenance = clone.root / ".archive-population-provenance" / source_namespace / "source.json"
     assert all((clone.root / relative).read_bytes() == value for relative, value in inherited_provenance.items())
@@ -687,9 +684,8 @@ def test_seeded_archive_clone_is_private_full_root_and_preserves_base(
     assert original["source_manifest_id"] == artifact.manifest.manifest_id
     assert original["owning_artifact"] == str(artifact.root)
     assert not provenance.parent.joinpath("original-history").exists()
-    source_train = artifact.root / ".maintenance-state/durable-change-trains/source-002.json"
-    clone_train = clone.root / ".maintenance-state/durable-change-trains/source-002.json"
-    assert source_train.read_bytes() != clone_train.read_bytes()
+    # The fresh v1 seed released no train, so the clone owns none either.
+    assert not list((clone.root / ".maintenance-state/durable-change-trains").glob("source-*.json"))
     assert not artifact.root.joinpath("private-mutation.txt").exists()
 
     with ArchiveStore.open_existing(clone.root, read_only=False) as reopened:
@@ -2991,7 +2987,7 @@ def test_outer_archive_publication_finalizes_before_manifest_and_freeze(tmp_path
 
 
 @pytest.mark.parametrize("artifact_kind", ["seeded", "immutable"])
-def test_sealed_archive_copy_publication_owns_its_released_train(
+def test_sealed_archive_copy_publication_detaches_no_train_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, artifact_kind: str
 ) -> None:
     import tests.infra.workload_artifacts as artifacts
@@ -3053,10 +3049,9 @@ def test_sealed_archive_copy_publication_owns_its_released_train(
         assert not raw_materialization_ready(readiness)
     assert source_manifest_id is not None
     source_namespace = hashlib.sha256(source_manifest_id.encode()).hexdigest()
-    provenance = root / ".archive-population-provenance" / source_namespace / "original-history/source-002.json"
-    released = root / ".maintenance-state/durable-change-trains/source-002.json"
+    provenance = root / ".archive-population-provenance" / source_namespace / "original-history"
     assert not provenance.exists()
-    original_history = released.read_bytes()
+    assert not list((root / ".maintenance-state/durable-change-trains").glob("source-*.json"))
     assert {item["path"] for item in manifest_files} == {
         str(path.relative_to(root))
         for path in root.rglob("*")
@@ -3071,21 +3066,14 @@ def test_sealed_archive_copy_publication_owns_its_released_train(
                 (clone.root / ".archive-population-provenance" / source_namespace / "source.json").read_text()
             )
             assert source_record["owning_artifact"] == str(root)
-            original_receipts = {item[0]: (item[1], item[2]) for item in source_record["original_receipts"]}
-            assert original_receipts[".maintenance-state/durable-change-trains/source-002.json"] == (
-                len(original_history),
-                hashlib.sha256(original_history).hexdigest(),
-            )
-            assert released.read_bytes() == original_history
+            assert not [item[0] for item in source_record["original_receipts"] if "/source-" in item[0]]
     else:
         assert tree is not None
         cloned_tree = clone_immutable_tree(tree, tmp_path / "clone")
         with ArchiveStore.open_existing(cloned_tree.root, read_only=True) as archive:
             assert archive.count_sessions() == 0
-        copied_history = (
-            cloned_tree.root / ".archive-population-provenance" / source_namespace / "original-history/source-002.json"
-        )
-        assert copied_history.read_bytes() == original_history
+        history = cloned_tree.root / ".archive-population-provenance" / source_namespace / "original-history"
+        assert not list(history.glob("source-*.json"))
 
 
 @pytest.mark.uses_real_clock("independent process observes the held destination write lock")
@@ -3142,6 +3130,7 @@ def test_authenticated_clone_preserves_actual_destination_write_custody_lock(
 def test_advanced_archive_artifact_carries_original_tier_identity_through_clone(
     tmp_path: Path,
     invalid_identity: str | None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import contextlib
     from dataclasses import replace
@@ -3150,7 +3139,11 @@ def test_advanced_archive_artifact_carries_original_tier_identity_through_clone(
     from polylogue.storage.sqlite.archive_population import ArchivePopulationError
     from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec, initialize_active_archive_root
     from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.durable_tier_fixtures import ship_synthetic_source_train
 
+    # The original archive advances through one backup-requiring train, so it
+    # carries released history and a verified pre-migration backup.
+    ship_synthetic_source_train(tmp_path / "train-package", monkeypatch, requires_backup=True)
     captured: dict[str, str] = {}
     build_count = 0
 

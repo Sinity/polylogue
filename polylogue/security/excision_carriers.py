@@ -161,7 +161,7 @@ SESSION_CARRIERS: Final[dict[str, SessionCarrier]] = _carriers(
     SessionCarrier(
         "raw_profile_identity_receipts",
         CarrierReach.RAW_CASCADE,
-        "Source003 captured-profile receipt belongs to its raw acquisition",
+        "Source captured-profile receipt belongs to its raw acquisition",
     ),
     SessionCarrier(
         "raw_authority_verdicts",
