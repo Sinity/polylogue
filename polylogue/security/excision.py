@@ -166,15 +166,11 @@ from polylogue.storage.blob_liveness import (
     LivenessState,
     inspect_session_blob_references,
 )
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     is_blob_hash_excised,
 )
-from polylogue.storage.sqlite.connection_profile import (
-    READ_PROFILES,
-    open_isolated_write_connection,
-    open_profiled_connection,
-)
-from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
 
 if TYPE_CHECKING:
     from polylogue.operations.mutation_actuators import SessionExcisionArgs
@@ -184,13 +180,8 @@ if TYPE_CHECKING:
 
 
 # Excision opens and commits one tier at a time so a mid-apply failure leaves
-# at most one tier mutated, never a half-written cross-tier transaction. Both
-# factories below are the declared no-sibling-attach routes for exactly that.
-
-
-def _connect_ro(path: Path) -> sqlite3.Connection:
-    """Open a one-shot read-only tier connection with the background profile."""
-    return open_profiled_connection(path, profile=READ_PROFILES["background-read"])
+# at most one tier mutated, never a half-written cross-tier transaction. The
+# writer factory below is the declared no-sibling-attach route for that apply.
 
 
 def _connect_rw(path: Path, *, archive_root: Path, foreign_keys: bool = False) -> sqlite3.Connection:
@@ -403,19 +394,21 @@ def excision_target_from_replay(value: object) -> ExcisionTarget:
     return target
 
 
-def resolve_session_excision_target(archive_root: Path, session_id: str) -> ExcisionTarget:
+def resolve_session_excision_target(archive: ArchiveStore, session_id: str) -> ExcisionTarget:
     """Resolve the exact rows an excision of ``session_id`` would touch."""
 
-    return _resolve_session_excision_target(archive_root, session_id, target_session_ids=frozenset({session_id}))
+    return _resolve_session_excision_target(archive, session_id, target_session_ids=frozenset({session_id}))
 
 
 def _resolve_session_excision_target(
-    archive_root: Path, session_id: str, *, target_session_ids: frozenset[str]
+    archive: ArchiveStore, session_id: str, *, target_session_ids: frozenset[str]
 ) -> ExcisionTarget:
     """Resolve one target against the full preflight cascade set."""
 
-    index_db = archive_root / "index.db"
-    source_db = archive_root / "source.db"
+    index_db = archive.index_db_path
+    source_db = archive.source_db_path
+    index = archive._conn
+    source = archive.source_connection
 
     raw_ids: list[str] = []
     session_exists = False
@@ -425,36 +418,32 @@ def _resolve_session_excision_target(
     sidecar_ownership = _SidecarOwnership()
 
     if index_db.exists():
-        conn = _connect_ro(index_db)
-        try:
-            row = conn.execute(
-                "SELECT raw_id, content_hash FROM sessions WHERE session_id = ?",
+        row = index.execute(
+            "SELECT raw_id, content_hash FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is not None:
+            session_content_hash = bytes(row[1]) if row[1] is not None else None
+        if row is not None and row[0]:
+            session_exists = True
+            raw_ids.append(str(row[0]))
+        elif row is not None:
+            session_exists = True
+        message_ids = tuple(
+            str(r[0])
+            for r in index.execute(
+                "SELECT message_id FROM messages WHERE session_id = ? ORDER BY message_id",
                 (session_id,),
-            ).fetchone()
-            if row is not None:
-                session_content_hash = bytes(row[1]) if row[1] is not None else None
-            if row is not None and row[0]:
-                session_exists = True
-                raw_ids.append(str(row[0]))
-            elif row is not None:
-                session_exists = True
-            message_ids = tuple(
-                str(r[0])
-                for r in conn.execute(
-                    "SELECT message_id FROM messages WHERE session_id = ? ORDER BY message_id",
-                    (session_id,),
-                ).fetchall()
-            )
-            block_ids = tuple(
-                str(r[0])
-                for r in conn.execute(
-                    "SELECT block_id FROM blocks WHERE session_id = ? ORDER BY block_id",
-                    (session_id,),
-                ).fetchall()
-            )
-            sidecar_ownership = _session_sidecar_ownership(conn, session_id)
-        finally:
-            conn.close()
+            ).fetchall()
+        )
+        block_ids = tuple(
+            str(r[0])
+            for r in index.execute(
+                "SELECT block_id FROM blocks WHERE session_id = ? ORDER BY block_id",
+                (session_id,),
+            ).fetchall()
+        )
+        sidecar_ownership = _session_sidecar_ownership(index, session_id)
 
     # sessions.raw_id names only the most recently applied revision. Every
     # superseded baseline and append fragment is retained live by default
@@ -464,11 +453,7 @@ def _resolve_session_excision_target(
     # differently. Corroborate the head with the index's own revision
     # bookkeeping before crossing into the durable tier.
     if index_db.exists() and session_exists:
-        conn = _connect_ro(index_db)
-        try:
-            raw_ids.extend(_index_revision_raw_ids(conn, session_id))
-        finally:
-            conn.close()
+        raw_ids.extend(_index_revision_raw_ids(index, session_id))
 
     raw_targets: tuple[ExcisionRawTarget, ...] = ()
     hook_event_ids: tuple[str, ...] = ()
@@ -479,100 +464,80 @@ def _resolve_session_excision_target(
     material_blob_hashes: tuple[bytes, ...] = ()
     marker_input_targets: tuple[MarkerInputExcisionTarget, ...] = ()
     if source_db.exists():
-        conn = _connect_ro(source_db)
-        try:
-            # Fail closed before resolving anything: a session-keyed relation
-            # with no declared excision reach must refuse, not be skipped
-            # into a success receipt (polylogue-9lrqs).
-            audit_session_carriers(conn).raise_if_unreachable()
-            # Fact-tier evidence carries no sessions row, so the index can
-            # never seed it. Resolve it from its own declared identity and
-            # add it to the seed set before the revision closure runs, so
-            # every retained revision of that same file is covered too.
-            fact_raw_ids = _session_fact_raw_ids(conn, session_id)
-            raw_ids.extend(fact_raw_ids)
-            raw_ids.extend(_session_work_event_raw_ids(conn, session_id))
-            # Tool-output sidecars are retained as their own raw rows, named
-            # by no session relation. Their scope is derived from the
-            # session's transcript paths, so resolve those first, then seed
-            # the owned sidecars before the closure that the rest of the
-            # target is computed from (polylogue-8j9rh).
-            if sidecar_ownership and raw_ids:
-                sidecar_raw_ids = _session_sidecar_raw_ids(
-                    conn, session_id, _durable_revision_closure(conn, raw_ids), sidecar_ownership
-                )
-                raw_ids.extend(sidecar_raw_ids)
-            marker_target_raw_ids = frozenset(raw_ids)
-            resolved = _durable_revision_closure(conn, raw_ids) if raw_ids else ()
-            marker_target_raw_ids = frozenset(resolved)
-            has_marker_inputs = _table_exists(conn, "pending_accepted_marker_inputs") and _table_exists(
-                conn, "accepted_marker_inputs"
+        # Fail closed before resolving anything: a session-keyed relation
+        # with no declared excision reach must refuse, not be skipped into a
+        # success receipt (polylogue-9lrqs).
+        audit_session_carriers(source).raise_if_unreachable()
+        # Fact-tier evidence carries no sessions row, so the index can never
+        # seed it. Resolve it from its own declared identity and add it to the
+        # seed set before the revision closure runs.
+        fact_raw_ids = _session_fact_raw_ids(source, session_id)
+        raw_ids.extend(fact_raw_ids)
+        raw_ids.extend(_session_work_event_raw_ids(source, session_id))
+        if sidecar_ownership and raw_ids:
+            sidecar_raw_ids = _session_sidecar_raw_ids(
+                source, session_id, _durable_revision_closure(source, raw_ids), sidecar_ownership
             )
-            if has_marker_inputs:
-                # A carrier is persisted before its index transaction. It can
-                # therefore be the only surviving link from a requested
-                # session to its durable raw revision. Resolve by session as
-                # well as the current raw closure, then include those carrier
-                # raw ids in the same durable revision closure before deleting
-                # source bytes or writing their excision markers.
-                marker_input_targets = marker_input_excision_targets_sync(
-                    conn,
-                    target_session_ids=target_session_ids,
-                    target_raw_ids=marker_target_raw_ids,
-                )
-                raw_ids.extend(marker.raw_id for marker in marker_input_targets)
-                resolved = _durable_revision_closure(conn, raw_ids) if raw_ids else ()
-                marker_target_raw_ids = frozenset(resolved)
-            if raw_ids:
-                placeholders = ",".join("?" for _ in resolved)
-                rows = conn.execute(
-                    f"SELECT raw_id, blob_hash, source_path FROM raw_sessions WHERE raw_id IN ({placeholders}) ORDER BY raw_id",
-                    resolved,
-                ).fetchall()
-                raw_targets = tuple(
-                    ExcisionRawTarget(raw_id=str(r[0]), blob_hash=bytes(r[1]), source_path=str(r[2])) for r in rows
-                )
-                containers = _resolve_container_disposition(conn, tuple(t.raw_id for t in raw_targets))
-            if has_marker_inputs:
-                marker_input_targets = marker_input_excision_targets_sync(
-                    conn,
-                    target_session_ids=target_session_ids,
-                    target_raw_ids=marker_target_raw_ids,
-                )
-            hook_event_ids = _session_hook_event_ids(conn, session_id)
-            material_ids, material_blob_hashes = _session_material_targets(conn, session_id)
-        finally:
-            conn.close()
+            raw_ids.extend(sidecar_raw_ids)
+        marker_target_raw_ids = frozenset(raw_ids)
+        resolved = _durable_revision_closure(source, raw_ids) if raw_ids else ()
+        marker_target_raw_ids = frozenset(resolved)
+        has_marker_inputs = _table_exists(source, "pending_accepted_marker_inputs") and _table_exists(
+            source, "accepted_marker_inputs"
+        )
+        if has_marker_inputs:
+            marker_input_targets = marker_input_excision_targets_sync(
+                source,
+                target_session_ids=target_session_ids,
+                target_raw_ids=marker_target_raw_ids,
+            )
+            raw_ids.extend(marker.raw_id for marker in marker_input_targets)
+            resolved = _durable_revision_closure(source, raw_ids) if raw_ids else ()
+            marker_target_raw_ids = frozenset(resolved)
+        if raw_ids:
+            placeholders = ",".join("?" for _ in resolved)
+            rows = source.execute(
+                f"SELECT raw_id, blob_hash, source_path FROM raw_sessions WHERE raw_id IN ({placeholders}) ORDER BY raw_id",
+                resolved,
+            ).fetchall()
+            raw_targets = tuple(
+                ExcisionRawTarget(raw_id=str(r[0]), blob_hash=bytes(r[1]), source_path=str(r[2])) for r in rows
+            )
+            containers = _resolve_container_disposition(source, tuple(t.raw_id for t in raw_targets))
+        if has_marker_inputs:
+            marker_input_targets = marker_input_excision_targets_sync(
+                source,
+                target_session_ids=target_session_ids,
+                target_raw_ids=marker_target_raw_ids,
+            )
+        hook_event_ids = _session_hook_event_ids(source, session_id)
+        material_ids, material_blob_hashes = _session_material_targets(source, session_id)
 
     index_marker_witnesses: list[IndexMarkerExcisionTarget] = []
     if index_db.exists() and marker_input_targets:
-        conn = _connect_ro(index_db)
-        try:
-            incarnation = conn.execute(
-                "SELECT incarnation_id,device,inode FROM ingest_index_incarnation WHERE singleton=1"
+        incarnation = index.execute(
+            "SELECT incarnation_id,device,inode FROM ingest_index_incarnation WHERE singleton=1"
+        ).fetchone()
+        physical = index_db.stat()
+        for marker in sorted(marker_input_targets, key=lambda marker: marker.identity):
+            row = index.execute(
+                "SELECT carrier_digest,incarnation_id,dispositions_json FROM ingest_marker_witnesses WHERE request_key=?",
+                (marker.identity,),
             ).fetchone()
-            physical = index_db.stat()
-            for marker in sorted(marker_input_targets, key=lambda marker: marker.identity):
-                row = conn.execute(
-                    "SELECT carrier_digest,incarnation_id,dispositions_json FROM ingest_marker_witnesses WHERE request_key=?",
-                    (marker.identity,),
-                ).fetchone()
-                if row is None:
-                    continue
-                if (
-                    incarnation is None
-                    or tuple(incarnation[1:]) != (physical.st_dev, physical.st_ino)
-                    or row[:2] != (marker.carrier_digest, incarnation[0])
-                    or not isinstance(row[2], str)
-                ):
-                    raise ValueError("Excision marker witness differs from its Source carrier or Index incarnation")
-                index_marker_witnesses.append(
-                    IndexMarkerExcisionTarget(
-                        marker.identity, row[0], row[1], hashlib.sha256(row[2].encode("utf-8")).digest()
-                    )
+            if row is None:
+                continue
+            if (
+                incarnation is None
+                or tuple(incarnation[1:]) != (physical.st_dev, physical.st_ino)
+                or row[:2] != (marker.carrier_digest, incarnation[0])
+                or not isinstance(row[2], str)
+            ):
+                raise ValueError("Excision marker witness differs from its Source carrier or Index incarnation")
+            index_marker_witnesses.append(
+                IndexMarkerExcisionTarget(
+                    marker.identity, row[0], row[1], hashlib.sha256(row[2].encode("utf-8")).digest()
                 )
-        finally:
-            conn.close()
+            )
 
     return ExcisionTarget(
         session_id=session_id,
@@ -807,18 +772,14 @@ def _resolve_container_disposition(conn: sqlite3.Connection, raw_ids: Sequence[s
 
 
 def _bind_cascade_container_disposition(
-    archive_root: Path, targets: tuple[ExcisionTarget, ...]
+    archive: ArchiveStore, targets: tuple[ExcisionTarget, ...]
 ) -> tuple[ExcisionTarget, ...]:
     """Resolve shared container liveness against every raw in the cascade."""
     raw_ids = tuple(dict.fromkeys(raw.raw_id for target in targets for raw in target.raw_targets))
-    source_db = archive_root / "source.db"
+    source_db = archive.source_db_path
     if not raw_ids or not source_db.exists() or not targets:
         return targets
-    conn = _connect_ro(source_db)
-    try:
-        disposition = _resolve_container_disposition(conn, raw_ids)
-    finally:
-        conn.close()
+    disposition = _resolve_container_disposition(archive.source_connection, raw_ids)
     # Container disposition is applied before raw deletion. Put the union
     # disposition on one target so shared items are removed exactly once.
     return tuple(
@@ -1052,7 +1013,7 @@ def _session_fact_raw_ids(conn: sqlite3.Connection, session_id: str) -> tuple[st
     return tuple(sorted(resolved))
 
 
-def find_lineage_dependents(archive_root: Path, session_id: str) -> tuple[str, ...]:
+def find_lineage_dependents(archive: ArchiveStore, session_id: str) -> tuple[str, ...]:
     """Return every session whose composed transcript depends on ``session_id``.
 
     Per the lineage-normalization design (`session_links`,
@@ -1071,32 +1032,28 @@ def find_lineage_dependents(archive_root: Path, session_id: str) -> tuple[str, .
     excising the parent does not touch their content.
     """
 
-    index_db = archive_root / "index.db"
+    index_db = archive.index_db_path
     if not index_db.exists():
         return ()
 
-    conn = _connect_ro(index_db)
-    try:
-        dependents: list[str] = []
-        seen = {session_id}
-        frontier = [session_id]
-        while frontier:
-            parent_id = frontier.pop()
-            rows = conn.execute(
-                "SELECT src_session_id FROM session_links "
-                "WHERE resolved_dst_session_id = ? AND inheritance = 'prefix-sharing'",
-                (parent_id,),
-            ).fetchall()
-            for (child_id,) in rows:
-                child_id = str(child_id)
-                if child_id in seen:
-                    continue
-                seen.add(child_id)
-                dependents.append(child_id)
-                frontier.append(child_id)
-        return tuple(dependents)
-    finally:
-        conn.close()
+    dependents: list[str] = []
+    seen = {session_id}
+    frontier = [session_id]
+    while frontier:
+        parent_id = frontier.pop()
+        rows = archive._conn.execute(
+            "SELECT src_session_id FROM session_links "
+            "WHERE resolved_dst_session_id = ? AND inheritance = 'prefix-sharing'",
+            (parent_id,),
+        ).fetchall()
+        for (child_id,) in rows:
+            child_id = str(child_id)
+            if child_id in seen:
+                continue
+            seen.add(child_id)
+            dependents.append(child_id)
+            frontier.append(child_id)
+    return tuple(dependents)
 
 
 class ExcisionBlobReferenceUnknownError(RuntimeError):
@@ -1219,34 +1176,34 @@ class ExcisionPlan:
         }
 
 
-def _excision_user_frame_epoch(archive_root: Path) -> int:
+def _excision_user_frame_epoch(archive: ArchiveStore) -> int:
     """Retain the assertion population precondition in the frozen plan."""
     from polylogue.storage.io_phase_metrics import connection_cursor
-    from polylogue.storage.sqlite.connection_profile import readonly_connection_context
     from polylogue.storage.sqlite.reference_seal import ReferenceSealError
 
-    with readonly_connection_context(archive_root / "user.db") as user:
-        with connection_cursor(user, "SELECT epoch FROM query_unit_frame_state WHERE singleton=1") as cursor:
-            frame = cursor.fetchone()
-        if frame is None or type(frame[0]) is not int or frame[0] < 0:
-            raise ReferenceSealError("Excision requires its canonical durable User assertion frame")
-        return frame[0]
+    with connection_cursor(
+        archive._conn, "SELECT epoch FROM user_tier.query_unit_frame_state WHERE singleton=1"
+    ) as cursor:
+        frame = cursor.fetchone()
+    if frame is None or type(frame[0]) is not int or frame[0] < 0:
+        raise ReferenceSealError("Excision requires its canonical durable User assertion frame")
+    return frame[0]
 
 
-def plan_session_excision(archive_root: Path, session_id: str, *, cascade_lineage: bool = False) -> ExcisionPlan:
-    """Enumerate exactly what an apply would remove, without mutating anything."""
+def plan_session_excision(archive: ArchiveStore, session_id: str, *, cascade_lineage: bool = False) -> ExcisionPlan:
+    """Enumerate exactly what an apply would remove from an owned read snapshot."""
 
-    dependent_ids = find_lineage_dependents(archive_root, session_id)
+    dependent_ids = find_lineage_dependents(archive, session_id)
     if dependent_ids and not cascade_lineage:
         raise LineageDependentsError(session_id=session_id, dependent_session_ids=dependent_ids)
     target_session_ids = frozenset((*dependent_ids, session_id)) if cascade_lineage else frozenset({session_id})
     session_ids = (*dependent_ids, session_id) if cascade_lineage else (session_id,)
     targets = tuple(
-        _resolve_session_excision_target(archive_root, candidate, target_session_ids=target_session_ids)
+        _resolve_session_excision_target(archive, candidate, target_session_ids=target_session_ids)
         for candidate in session_ids
     )
     if cascade_lineage:
-        targets = _bind_cascade_container_disposition(archive_root, targets)
+        targets = _bind_cascade_container_disposition(archive, targets)
     owned_marker_keys: set[str] = set()
     owned_targets: list[ExcisionTarget] = []
     for current in targets:
@@ -1257,7 +1214,7 @@ def plan_session_excision(archive_root: Path, session_id: str, *, cascade_lineag
         owned_targets.append(replace(current, index_marker_witnesses=owned))
     targets = tuple(owned_targets)
     target = targets[-1]
-    user_frame_epoch = _excision_user_frame_epoch(archive_root)
+    user_frame_epoch = _excision_user_frame_epoch(archive)
     if not target.found:
         return ExcisionPlan(
             session_id=session_id,
@@ -1277,61 +1234,46 @@ def plan_session_excision(archive_root: Path, session_id: str, *, cascade_lineag
     )
     refs = tuple(ref for current in targets for ref in _target_refs(current))
 
-    source_db = archive_root / "source.db"
-    embeddings_db = archive_root / "embeddings.db"
-    user_db = archive_root / "user.db"
+    source_db = archive.source_db_path
+    connection = archive._conn
+    source_connection = archive.source_connection
 
     source_blob_refs = 0
     already_excised: list[str] = []
     if source_db.exists() and (raw_targets or material_ids):
-        conn = _connect_ro(source_db)
-        try:
-            for material_hash in material_blob_hashes:
-                if is_blob_hash_excised(conn, material_hash):
-                    already_excised.append(material_hash.hex())
-            for raw_target in raw_targets:
-                row = conn.execute(
-                    "SELECT COUNT(*) FROM blob_refs WHERE ref_id = ?",
-                    (raw_target.raw_id,),
-                ).fetchone()
-                source_blob_refs += int(row[0]) if row else 0
-                if is_blob_hash_excised(conn, raw_target.blob_hash):
-                    already_excised.append(raw_target.blob_hash.hex())
-        finally:
-            conn.close()
+        for material_hash in material_blob_hashes:
+            if is_blob_hash_excised(source_connection, material_hash):
+                already_excised.append(material_hash.hex())
+        for raw_target in raw_targets:
+            row = source_connection.execute(
+                "SELECT COUNT(*) FROM blob_refs WHERE ref_id = ?",
+                (raw_target.raw_id,),
+            ).fetchone()
+            source_blob_refs += int(row[0]) if row else 0
+            if is_blob_hash_excised(source_connection, raw_target.blob_hash):
+                already_excised.append(raw_target.blob_hash.hex())
 
     embeddings_vectors = 0
-    if embeddings_db.exists() and message_ids:
-        conn = _connect_ro(embeddings_db)
-        try:
-            try_load_sqlite_vec(conn)
-            placeholders = ",".join("?" for _ in message_ids)
-            # message_embeddings/message_embeddings_meta are content-addressed
-            # (keyed by vector_derivation_hash, polylogue-q88p) and may be
-            # shared with messages outside this excision target; the
-            # message-scoped count is the per-message ref count, not a raw
-            # vector-table count (a shared vector must not be reported as
-            # "will be removed" when another message still needs it).
-            row = conn.execute(
-                f"SELECT COUNT(*) FROM message_embedding_refs WHERE message_id IN ({placeholders})",
-                message_ids,
-            ).fetchone()
-            embeddings_vectors = int(row[0]) if row else 0
-        finally:
-            conn.close()
+    schema_versions = archive.operation_schema_versions or {}
+    if "embeddings" not in schema_versions or not message_ids:
+        embeddings_vectors = 0
+    else:
+        placeholders = ",".join("?" for _ in message_ids)
+        # message_embeddings/message_embeddings_meta are content-addressed
+        # (keyed by vector_derivation_hash, polylogue-q88p) and may be shared
+        # with messages outside this target; count message-scoped references.
+        row = connection.execute(
+            f"SELECT COUNT(*) FROM embeddings_tier.message_embedding_refs WHERE message_id IN ({placeholders})",
+            message_ids,
+        ).fetchone()
+        embeddings_vectors = int(row[0]) if row else 0
 
-    user_assertions = 0
-    if user_db.exists():
-        conn = _connect_ro(user_db)
-        try:
-            placeholders = ",".join("?" for _ in refs)
-            row = conn.execute(
-                f"SELECT COUNT(*) FROM assertions WHERE target_ref IN ({placeholders})",
-                refs,
-            ).fetchone()
-            user_assertions = int(row[0]) if row else 0
-        finally:
-            conn.close()
+    placeholders = ",".join("?" for _ in refs)
+    row = connection.execute(
+        f"SELECT COUNT(*) FROM user_tier.assertions WHERE target_ref IN ({placeholders})",
+        refs,
+    ).fetchone()
+    user_assertions = int(row[0]) if row else 0
 
     return ExcisionPlan(
         session_id=session_id,

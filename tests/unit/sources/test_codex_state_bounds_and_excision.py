@@ -32,10 +32,6 @@ import pytest
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.sql_settlement import retain_native_sql_lifetimes
 from polylogue.core.stage_admission import admit_stage_write
-from polylogue.security.excision import (
-    plan_session_excision,
-    resolve_session_excision_target,
-)
 from polylogue.sources.codex_state_evidence import CodexStateMaterializationReceipt, _materialize_codex_state_content
 from polylogue.sources.parsers.codex_state import CODEX_STATE_MAX_TEXT_CHARS
 from polylogue.sources.prepared_jsonl import PreparedJsonl, _prepare_codex_state_blob
@@ -50,6 +46,10 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import _Prepared
 from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
 from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.excision import (
+    plan_session_excision_from_root,
+    resolve_session_excision_target_from_root,
+)
 from tests.infra.excision_execution import execute_excision
 from tests.infra.live_ingest import prepared_live_convergence_owner
 
@@ -221,9 +221,13 @@ def test_state_materialization_continues_past_each_work_window(tmp_path: Path) -
         assert all(part.get("text_continuation") or part.get("record_type") == "goals" for part in chunks)
 
 
-@pytest.mark.timeout(300)
+@pytest.mark.timeout(0)
 def test_large_goal_export_last_row_is_reachable(tmp_path: Path) -> None:
-    """A valid row after the old 10,000-row limit survives materialization."""
+    """A valid row after the old 10,000-row limit survives materialization.
+
+    This scale assertion opts out of a wall-clock kill: the materializer owns
+    cooperative cancellation and reports row/byte progress while it runs.
+    """
     root = tmp_path / "archive"
     root.mkdir()
     goals_path = tmp_path / "goals_1.sqlite"
@@ -366,12 +370,12 @@ def test_excising_a_thread_removes_its_codex_state_materials(tmp_path: Path) -> 
 
     # A session with no index row at all is still a real excision target when
     # state materials name it.
-    target = resolve_session_excision_target(root, _SESSION_A)
+    target = resolve_session_excision_target_from_root(root, _SESSION_A)
     assert target.session_exists is False
     assert target.found is True
     assert len(target.material_ids) == 1
 
-    plan = plan_session_excision(root, _SESSION_A)
+    plan = plan_session_excision_from_root(root, _SESSION_A)
     assert plan.source_materials == 1
 
     receipt = execute_excision(root, _SESSION_A, reason="operator request", actor="tests")

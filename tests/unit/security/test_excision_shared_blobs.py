@@ -40,7 +40,6 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
-from polylogue.security.excision import plan_session_excision
 from polylogue.sources.live import WatchSource
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
@@ -53,6 +52,9 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     ContentExcisedError,
     is_blob_hash_excised,
     write_source_raw_session,
+)
+from tests.infra.excision import (
+    plan_session_excision_from_root,
 )
 from tests.infra.excision_execution import execute_excision
 from tests.infra.index_writer import fixture_index_connection, write_fixture_ingest_payload
@@ -240,7 +242,7 @@ async def test_excising_a_forgets_the_tool_output_only_it_had(workspace_env: dic
     session_a = _session_row(archive_root, _SESSION_A)
     assert session_a is not None
 
-    plan = plan_session_excision(archive_root, session_a[0])
+    plan = plan_session_excision_from_root(archive_root, session_a[0])
     assert plan.source_sidecar_rows == 2
     receipt = await asyncio.to_thread(
         execute_excision, archive_root, session_a[0], reason="synthetic secret", actor="user:local"

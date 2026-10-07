@@ -30,7 +30,7 @@ def execute_cli_aux_read(name: str, payload: Mapping[str, object], *, archive: A
         session_id = str(payload["session_id"])
         cascade_lineage = bool(payload.get("cascade_lineage", False))
         try:
-            plan = plan_session_excision(archive.archive_root, session_id, cascade_lineage=cascade_lineage)
+            plan = plan_session_excision(archive, session_id, cascade_lineage=cascade_lineage)
         except LineageDependentsError as exc:
             return {
                 "found": True,

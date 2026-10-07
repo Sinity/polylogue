@@ -1153,7 +1153,9 @@ def test_read_verb_token_bounded_standard_views_compile_as_messages(view: str) -
     child.obj.config = SimpleNamespace()
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
-    image = ContextImage(spec=ContextSpec(read_views=("messages",)), segments=())
+    image = ContextImage(
+        spec=ContextSpec(seed_refs=("session:codex-session:abc123",), read_views=("messages",)), segments=()
+    )
 
     with (
         patch("polylogue.cli.query_verbs._resolve_query_action_session_ids", return_value=["codex-session:abc123"]),

@@ -23,10 +23,6 @@ from polylogue.archive.revision_authority import (
     RawRevisionEnvelope,
     RawRevisionKind,
 )
-from polylogue.security.excision import (
-    plan_session_excision,
-    resolve_session_excision_target,
-)
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
@@ -36,6 +32,10 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.excision import (
+    plan_session_excision_from_root,
+    resolve_session_excision_target_from_root,
+)
 from tests.infra.excision_execution import execute_excision
 
 _LOGICAL_KEY = "codex-session:multi-revision"
@@ -184,11 +184,11 @@ def test_excision_reaches_every_revision_of_the_session(tmp_path: Path) -> None:
     finally:
         source_conn.close()
 
-    target = resolve_session_excision_target(tmp_path, session_id)
+    target = resolve_session_excision_target_from_root(tmp_path, session_id)
     resolved = {raw.raw_id for raw in target.raw_targets}
     assert resolved == {baseline_raw_id, head_raw_id}, "the superseded baseline was not resolved"
 
-    plan = plan_session_excision(tmp_path, session_id)
+    plan = plan_session_excision_from_root(tmp_path, session_id)
     assert plan.source_raw_rows == 2
 
     receipt = execute_excision(tmp_path, session_id, reason="test", actor="user:local")
@@ -236,7 +236,7 @@ def test_excision_removes_hook_evidence_and_its_blobs(tmp_path: Path) -> None:
     finally:
         source_conn.close()
 
-    plan = plan_session_excision(tmp_path, session_id)
+    plan = plan_session_excision_from_root(tmp_path, session_id)
     assert plan.source_hook_events == 1, "the preview must name the hook evidence in scope"
 
     receipt = execute_excision(tmp_path, session_id, reason="test", actor="user:local")
