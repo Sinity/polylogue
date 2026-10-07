@@ -15,6 +15,8 @@ claiming ordinary prose, and each is load-bearing rather than stylistic:
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from io import StringIO
 
 from polylogue.markers.models import MarkerMatch
 from polylogue.markers.registry import MARKER_REGISTRY, MarkerRegistry, marker_spec
@@ -41,10 +43,14 @@ def _args(raw: str | None) -> dict[str, str]:
 
 def parse_markers(text: str, *, registry: MarkerRegistry = MARKER_REGISTRY) -> tuple[MarkerMatch, ...]:
     """Extract declared and malformed markers, preserving offsets and raw text."""
-    matches: list[MarkerMatch] = []
+    return tuple(iter_parse_markers(text, registry=registry))
+
+
+def iter_parse_markers(text: str, *, registry: MarkerRegistry = MARKER_REGISTRY) -> Iterator[MarkerMatch]:
+    """Yield markers with memory bounded by one physical line."""
     offset = 0
     fence: tuple[str, int] | None = None
-    for line in text.splitlines(keepends=True):
+    for line in StringIO(text, newline=""):
         fence_match = _FENCE.match(line.rstrip("\r\n"))
         if fence_match:
             delimiter = fence_match.group("delimiter")
@@ -63,48 +69,44 @@ def parse_markers(text: str, *, registry: MarkerRegistry = MARKER_REGISTRY) -> t
             if line_match:
                 kind = line_match.group("kind")
                 registered = marker_spec(registry, kind) is not None
-                matches.append(
-                    MarkerMatch(
-                        kind if registered else "malformed",
-                        line_match.group("body"),
-                        _args(line_match.group("args")) if registered else {"unregistered_kind": kind},
-                        line.rstrip("\r\n"),
-                        offset,
-                        offset + len(line.rstrip("\r\n")),
-                        malformed=not registered,
-                    )
+                yield MarkerMatch(
+                    kind if registered else "malformed",
+                    line_match.group("body"),
+                    _args(line_match.group("args")) if registered else {"unregistered_kind": kind},
+                    line.rstrip("\r\n"),
+                    offset,
+                    offset + len(line.rstrip("\r\n")),
+                    malformed=not registered,
                 )
             elif _MALFORMED.match(line):
-                matches.append(
-                    MarkerMatch(
-                        "malformed",
-                        line.strip(),
-                        {},
-                        line.rstrip("\r\n"),
-                        offset,
-                        offset + len(line.rstrip("\r\n")),
-                        malformed=True,
-                    )
+                yield MarkerMatch(
+                    "malformed",
+                    line.strip(),
+                    {},
+                    line.rstrip("\r\n"),
+                    offset,
+                    offset + len(line.rstrip("\r\n")),
+                    malformed=True,
                 )
-            accepted_spans: list[tuple[int, int]] = []
             for inline in _INLINE.finditer(line):
                 kind = inline.group("kind")
-                accepted_spans.append((inline.start(), inline.end()))
-                matches.append(
-                    MarkerMatch(
-                        kind if kind in registry else "malformed",
-                        inline.group("body"),
-                        {} if kind in registry else {"unregistered_kind": kind},
-                        inline.group(0),
-                        offset + inline.start(),
-                        offset + inline.end(),
-                        inline=True,
-                        malformed=kind not in registry,
-                    )
+                yield MarkerMatch(
+                    kind if kind in registry else "malformed",
+                    inline.group("body"),
+                    {} if kind in registry else {"unregistered_kind": kind},
+                    inline.group(0),
+                    offset + inline.start(),
+                    offset + inline.end(),
+                    inline=True,
+                    malformed=kind not in registry,
                 )
             raw_line = line.rstrip("\r\n")
+            accepted_spans = iter((inline.start(), inline.end()) for inline in _INLINE.finditer(line))
+            accepted_span = next(accepted_spans, None)
             for inline in _INLINE_OPEN.finditer(raw_line):
-                if any(start <= inline.start() < end for start, end in accepted_spans):
+                while accepted_span is not None and accepted_span[1] <= inline.start():
+                    accepted_span = next(accepted_spans, None)
+                if accepted_span is not None and accepted_span[0] <= inline.start() < accepted_span[1]:
                     # Already covered by an accepted inline span; a second,
                     # overlapping malformed marker would contradict it.
                     continue
@@ -114,20 +116,17 @@ def parse_markers(text: str, *, registry: MarkerRegistry = MARKER_REGISTRY) -> t
                 if close >= 0 and (next_open < 0 or close < next_open):
                     continue
                 end = next_open if next_open >= 0 else len(raw_line)
-                matches.append(
-                    MarkerMatch(
-                        "malformed",
-                        raw_line[body_start:end],
-                        {"unregistered_kind": inline.group("kind")},
-                        raw_line[inline.start() : end],
-                        offset + inline.start(),
-                        offset + end,
-                        inline=True,
-                        malformed=True,
-                    )
+                yield MarkerMatch(
+                    "malformed",
+                    raw_line[body_start:end],
+                    {"unregistered_kind": inline.group("kind")},
+                    raw_line[inline.start() : end],
+                    offset + inline.start(),
+                    offset + end,
+                    inline=True,
+                    malformed=True,
                 )
         offset += len(line)
-    return tuple(matches)
 
 
 class MarkerStreamParser:
