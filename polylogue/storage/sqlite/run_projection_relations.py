@@ -261,6 +261,14 @@ WITH RECURSIVE session_started_base AS (
     FROM sessions s0
 ),
 {pairing},
+-- Materialized once: the per-use evidence and search subqueries below are
+-- correlated, and an inlined association_results would be re-derived for
+-- every paired use, which is quadratic in the archive's tool results.
+tool_finished_results AS MATERIALIZED (
+    SELECT ar.session_key,ar.assigned_use_key,ar.message_position,ar.variant_index,ar.block_position,
+           rb.session_id || '::' || rb.message_id || '::' || rb.position AS ref,rb.search_text
+    FROM association_results ar JOIN blocks rb ON rb.block_id=ar.block_key
+),
 tool_finished_base AS (
     SELECT
         'source' AS row_source,
@@ -298,17 +306,16 @@ tool_finished_base AS (
             SELECT u.session_id || '::' || u.message_id || '::' || u.position AS ref,
                    -1 AS message_position,-1 AS variant_index,-1 AS block_position
             UNION ALL
-            SELECT rb.session_id || '::' || rb.message_id || '::' || rb.position,
-                   ar.message_position,ar.variant_index,ar.block_position
-            FROM association_results ar JOIN blocks rb ON rb.block_id=ar.block_key
-            WHERE ar.session_key=pair.session_id AND ar.assigned_use_key=pair.tool_use_block_id
+            SELECT tr.ref,tr.message_position,tr.variant_index,tr.block_position
+            FROM tool_finished_results tr
+            WHERE tr.session_key=pair.session_id AND tr.assigned_use_key=pair.tool_use_block_id
             ORDER BY message_position,variant_index,block_position
         )) AS evidence_refs_json,
         trim(COALESCE(u.search_text, '') || ' ' || COALESCE((
             SELECT group_concat(search_text,' ') FROM (
-                SELECT rb.search_text FROM association_results ar JOIN blocks rb ON rb.block_id=ar.block_key
-                WHERE ar.session_key=pair.session_id AND ar.assigned_use_key=pair.tool_use_block_id
-                ORDER BY ar.message_position,ar.variant_index,ar.block_position
+                SELECT tr.search_text FROM tool_finished_results tr
+                WHERE tr.session_key=pair.session_id AND tr.assigned_use_key=pair.tool_use_block_id
+                ORDER BY tr.message_position,tr.variant_index,tr.block_position
             )
         ),'')) AS search_text
     -- Derive associations from the shared owner, not from a potentially
