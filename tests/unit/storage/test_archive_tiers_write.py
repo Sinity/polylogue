@@ -238,7 +238,17 @@ def test_append_flushes_a_single_message_with_8193_blocks(tmp_path: Path) -> Non
 
         write_fixture_index_session(conn, appended, merge_append=True)
 
-        assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (session_id,)).fetchone()[0] == 8193
+        assert (
+            conn.execute(
+                """
+            SELECT COUNT(*) FROM blocks AS b
+            JOIN messages AS m ON m.message_id = b.message_id
+            WHERE m.session_id = ? AND m.native_id = 'large-block-message'
+            """,
+                (session_id,),
+            ).fetchone()[0]
+            == 8193
+        )
     finally:
         conn.close()
 
