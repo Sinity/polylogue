@@ -16,6 +16,7 @@ from polylogue.storage.accepted_marker_inputs import (
     read_accepted_marker_inputs_sync,
 )
 from polylogue.storage.accepted_marker_producer import (
+    accepted_marker_input_is_durable,
     prepare_accepted_marker_carrier,
     stage_accepted_marker_carrier,
 )
@@ -65,6 +66,36 @@ def _publish_many(root, revisions: tuple[tuple[str, str], ...]) -> None:
     publish_prepared_source(root, "test.accepted-marker.batch", prepare)
 
 
+def test_existing_accepted_identity_can_be_reused_without_preparing_writer_rows(tmp_path) -> None:
+    bootstrap_archive_root(tmp_path)
+    _publish(tmp_path, "revision-1", "1")
+    observed: list[bool] = []
+
+    def inspect(seal) -> None:
+        observed.append(
+            accepted_marker_input_is_durable(
+                seal,
+                raw_id="revision-1",
+                request_facts=_facts("1"),
+                request_sessions=lambda: iter(
+                    ({"session_id": "CODEX_SESSION:revision-1", "provider_session_id": "revision-1"},)
+                ),
+            )
+        )
+        observed.append(
+            accepted_marker_input_is_durable(
+                seal,
+                raw_id="revision-2",
+                request_facts=_facts("2"),
+                request_sessions=lambda: iter(({"session_id": "CODEX_SESSION:revision-2"},)),
+            )
+        )
+
+    publish_prepared_source(tmp_path, "test.accepted-marker.identity-check", inspect)
+
+    assert observed == [True, False]
+
+
 def test_accepted_revision_carriers_survive_reordered_replay_and_restart(tmp_path) -> None:
     """Earlier source marker evidence remains deliverable after a newer revision."""
     bootstrap_archive_root(tmp_path)
@@ -76,7 +107,7 @@ def test_accepted_revision_carriers_survive_reordered_replay_and_restart(tmp_pat
         page = read_accepted_marker_inputs_sync(source, limit=10)
         assert [entry.batch.raw_id for entry in page] == ["revision-2", "revision-1"]
         assert [entry.sequence for entry in page] == [1, 2]
-        assert all(entry.batch.payload for entry in page)
+        assert all(entry.batch.payload_sha256 for entry in page)
         assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
         stream_id = source.execute("SELECT stream_id FROM accepted_marker_stream WHERE singleton=1").fetchone()[0]
 

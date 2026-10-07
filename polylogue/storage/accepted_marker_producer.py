@@ -115,27 +115,7 @@ def prepare_accepted_marker_carrier(
     if not raw_id:
         raise AcceptedMarkerInputRefusedError("accepted marker carrier has an empty raw id")
     facts = dict(request_facts)
-    required_facts = {
-        "blob_hash",
-        "provider",
-        "revision_kind",
-        "source_path",
-        "parser_fingerprint",
-        "marker_recipe",
-    }
-    if not required_facts <= facts.keys() or any(
-        not isinstance(facts[key], str) or not facts[key] for key in required_facts
-    ):
-        raise AcceptedMarkerInputRefusedError("accepted marker request facts are incomplete")
-    identity_hash = hashlib.sha256()
-    _write_identity_prefix(identity_hash, raw_id, facts)
-    first = True
-    for session in request_sessions():
-        _write_comma(identity_hash, first)
-        first = False
-        _write_json(identity_hash, _request_binding(session))
-    identity_hash.update(b"]}")
-    identity = identity_hash.hexdigest()
+    identity = accepted_marker_input_identity(raw_id=raw_id, request_facts=facts, request_sessions=request_sessions)
 
     # Ownership transfers to the returned carrier, which closes it after its
     # seal staging attempt. A lexical context here would close before staging.
@@ -243,6 +223,62 @@ def _write_comma(digest: _Hash, first: bool) -> None:
 def _emit_comma(emit: Callable[[bytes], None], first: bool) -> None:
     if not first:
         emit(b",")
+
+
+def accepted_marker_input_identity(
+    *, raw_id: str, request_facts: Mapping[str, object], request_sessions: Callable[[], Iterable[Mapping[str, object]]]
+) -> str:
+    """Compute one accepted carrier identity from replayable normalized facts."""
+    if not raw_id:
+        raise AcceptedMarkerInputRefusedError("accepted marker carrier has an empty raw id")
+    facts = dict(request_facts)
+    required_facts = {
+        "blob_hash",
+        "provider",
+        "revision_kind",
+        "source_path",
+        "parser_fingerprint",
+        "marker_recipe",
+    }
+    if not required_facts <= facts.keys() or any(
+        not isinstance(facts[key], str) or not facts[key] for key in required_facts
+    ):
+        raise AcceptedMarkerInputRefusedError("accepted marker request facts are incomplete")
+    identity_hash = hashlib.sha256()
+    _write_identity_prefix(identity_hash, raw_id, facts)
+    first = True
+    for session in request_sessions():
+        _write_comma(identity_hash, first)
+        first = False
+        _write_json(identity_hash, _request_binding(session))
+    identity_hash.update(b"]}")
+    return identity_hash.hexdigest()
+
+
+def accepted_marker_input_is_durable(
+    seal: PreparedIndexMutation,
+    *,
+    raw_id: str,
+    request_facts: Mapping[str, object],
+    request_sessions: Callable[[], Iterable[Mapping[str, object]]],
+) -> bool:
+    """Check whether this exact normalized accepted identity already has a Source root.
+
+    This lets replay preserve an earlier immutable carrier without preparing
+    its canonical writer rows again. It never repairs or reconstructs a root.
+    """
+    identity = accepted_marker_input_identity(
+        raw_id=raw_id, request_facts=request_facts, request_sessions=request_sessions
+    )
+    with seal.original_rows(
+        "source", "SELECT raw_id FROM accepted_marker_inputs WHERE identity=?", (identity,)
+    ) as rows:
+        existing = rows.fetchone()
+    if existing is None:
+        return False
+    if str(existing[0]) != raw_id:
+        raise AcceptedMarkerInputRefusedError("accepted marker identity belongs to a different raw revision")
+    return True
 
 
 def stage_accepted_marker_carrier(seal: PreparedIndexMutation, carrier: PreparedAcceptedMarkerCarrier) -> None:
