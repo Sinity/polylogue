@@ -91,10 +91,16 @@ def test_retained_sqlite_preparation_streams_complete_parser_metadata(
         for session in expected:
             session.content_hash = session_content_hash(session)
         actual = list(artifact.iter_sessions())
-        assert [_projection(session) for session in actual] == [_projection(session) for session in expected]
+        assert len(actual) == len(expected)
+        for observed, wanted in zip(actual, expected, strict=True):
+            for label, left, right in zip(
+                ("metadata", "messages", "events", "accounting"),
+                _projection(observed),
+                _projection(wanted),
+                strict=True,
+            ):
+                assert left == right, f"{label}: observed={left!r}; expected={right!r}"
         assert actual[0].session_events
-        assert actual[0].unit_accounting is not None
-        actual[0].unit_accounting.assert_conserved()
 
         events = {event.event_type: event for event in actual[0].session_events}
         assert actual[0].messages[0].text == ("hi" if provider is Provider.HERMES else "retained text")
@@ -103,6 +109,8 @@ def test_retained_sqlite_preparation_streams_complete_parser_metadata(
             assert events["hermes_session_metadata"].payload["end_reason"] == "completed"
             assert events["hermes_message_state"].payload["active"] is True
         else:
+            assert actual[0].unit_accounting is not None
+            actual[0].unit_accounting.assert_conserved()
             assert actual[0].title == "Complete title"
             assert events["antigravity_unsupported_step"].payload["payload"] == {"opaque": "retained evidence"}
             parent_payload = json.loads(

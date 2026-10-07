@@ -1039,12 +1039,11 @@ def prepare_retained_non_json_artifact(
             return artifact
         # Retained SQLite sessions are parsed while their output store owns
         # every sink, array, and accounting stream through publication.
-        sqlite_path = evidence_reader.raw_revision_blob_path(raw_id)
+        sqlite_path = BlobStore(evidence_reader.archive_root / "blob").blob_path(blob_hash)
         from polylogue.sources.sqlite_export import looks_like_logical_source_path
 
         if (
             provider in {Provider.HERMES, Provider.ANTIGRAVITY}
-            and sqlite_path is not None
             and looks_like_logical_source_path(sqlite_path)
             and not path_declaration_refuses_session(provider, source_path)
         ):
