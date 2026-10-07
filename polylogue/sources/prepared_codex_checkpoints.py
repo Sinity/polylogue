@@ -284,7 +284,7 @@ def _finalize_codex_prefix(
     return codex.finalize_codex_session(
         head,
         messages=prefix_messages,
-        session_events=(),
+        session_events=[],
         updated_at=updated_at,
         unit_accounting=accounting,
         mark_active_leaf=False,
