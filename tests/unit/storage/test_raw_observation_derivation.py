@@ -1086,7 +1086,7 @@ def test_empty_claude_history_remains_non_session_when_validation_mode_changes(
             parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         )
         metrics = run_ingest_files(processor, [source_path], emit_event=False)
-        assert metrics.succeeded_file_count == 1 and metrics.failed_file_count == 0, metrics
+        assert metrics.excluded_file_count == 1 and metrics.failed_file_count == 0, metrics
 
         frame = raw_observation_frame(tmp_path)
         advisory = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
