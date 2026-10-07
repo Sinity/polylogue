@@ -3833,6 +3833,27 @@ class PreparedRetainedReplaySource:
     original_index_outputs: Mapping[str, tuple[bytes | None, int] | None]
 
 
+def _accepted_marker_request_session_binding(session: object) -> dict[str, object]:
+    """Build the small, complete session identity record used by marker replay."""
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.sources.parsers.base_models import ParsedSession
+
+    if not isinstance(session, ParsedSession):
+        raise TypeError("accepted marker request requires a parsed session")
+    content_hash = str(session_content_hash(session))
+    if session.content_hash is not None and session.content_hash != content_hash:
+        raise RetainedPreparationRetryableError("accepted marker session hash changed during preparation")
+    binding = session.model_dump(
+        mode="json",
+        exclude={"messages", "session_events", "attachments", "unit_accounting"},
+    )
+    binding["content_hash"] = content_hash
+    binding["session_id"] = str(make_session_id(session.source_name, session.provider_session_id))
+    accounting = session.unit_accounting
+    binding["unit_accounting_digest"] = None if accounting is None else accounting.stable_binding_digest()
+    return binding
+
+
 def prepare_retained_replay_source(
     seal: PreparedIndexMutation,
     *,
@@ -3877,7 +3898,6 @@ def prepare_retained_replay_source(
             def sessions() -> Iterator[Mapping[str, object]]:
                 from contextlib import closing
 
-                from polylogue.pipeline.ids import session_content_hash
                 from polylogue.sources.parsers.base_models import ParsedSession
 
                 with closing(artifact.iter_sessions()) as parsed_sessions:
@@ -3886,21 +3906,9 @@ def prepare_retained_replay_source(
                             raise RetainedPreparationRetryableError(
                                 f"accepted marker request has an invalid retained session for {raw_id}"
                             )
-                        # Prepared sessions carry disk-backed message and event
-                        # sinks, which are not serializable as Python lists.
-                        # The canonical semantic hash streams those sinks and
-                        # binds messages, events, and attachments without a
-                        # resident tree copy. Keep the normalized metadata in
-                        # the request binding alongside that hash.
-                        content_hash = str(session_content_hash(session))
-                        if session.content_hash is not None and session.content_hash != content_hash:
-                            raise RetainedPreparationRetryableError(
-                                f"accepted marker session hash changed during preparation for {raw_id}"
-                            )
-                        binding = session.model_dump(mode="json", exclude={"messages", "session_events", "attachments"})
-                        binding["content_hash"] = content_hash
-                        binding["session_id"] = str(make_session_id(session.source_name, session.provider_session_id))
-                        yield binding
+                        # Content and accounting are both bound without
+                        # serializing their disk-backed or spilled arrays.
+                        yield _accepted_marker_request_session_binding(session)
 
             return sessions
 
