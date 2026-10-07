@@ -73,7 +73,8 @@ from polylogue.operations.mutation_transaction import (
     OperationExecutor,
     StartedBoundMutation,
 )
-from polylogue.operations.operation_context import OperationContext, PinnedOperationRead, open_operation_read
+from polylogue.operations.operation_context import PinnedOperationRead, open_operation_read
+from polylogue.operations.operation_context_types import OperationContext
 from polylogue.sources.origin_specs import retained_enumeration_fingerprint
 from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation

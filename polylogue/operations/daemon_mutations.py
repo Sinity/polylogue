@@ -39,7 +39,8 @@ from polylogue.operations.mutation_transaction import (
     StartedBoundMutation,
     compute_parameter_digest,
 )
-from polylogue.operations.operation_context import OperationContext, OperationControlRead, PinnedOperationRead
+from polylogue.operations.operation_context import OperationControlRead, PinnedOperationRead
+from polylogue.operations.operation_context_types import OperationContext
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.query_rows import query_session_row
 

@@ -23,7 +23,8 @@ from polylogue.operations.mutation_transaction import (
     OperationExecutor,
     compute_parameter_digest,
 )
-from polylogue.operations.operation_context import OperationContext, OperationControlRead, open_operation_read
+from polylogue.operations.operation_context import OperationControlRead, open_operation_read
+from polylogue.operations.operation_context_types import OperationContext
 
 
 def validate_session_excision_request(

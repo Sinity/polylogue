@@ -60,13 +60,13 @@ from polylogue.operations.daemon_reads import DaemonReadDependencies, read_is_ar
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.operations.operation_context import (
-    OperationContext,
     OperationControlRead,
     OperationControlResult,
     PinnedOperationRead,
     observe_control_authority,
     open_operation_control,
 )
+from polylogue.operations.operation_context_types import OperationContext
 
 if TYPE_CHECKING:
     from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance

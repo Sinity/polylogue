@@ -159,7 +159,7 @@ def test_health_failed_cleanup_does_not_claim_physical_settlement(
     from polylogue.operations.daemon_execution import execute_operation
     from polylogue.operations.daemon_protocol import DaemonOperationRequest
     from polylogue.operations.mutation_transaction import MutationPrincipal
-    from polylogue.operations.operation_context import OperationContext
+    from polylogue.operations.operation_context_types import OperationContext
 
     class CleanupError(RuntimeError):
         pass
