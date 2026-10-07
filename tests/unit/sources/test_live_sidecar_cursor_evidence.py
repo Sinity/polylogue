@@ -215,3 +215,51 @@ async def test_sidecar_cursor_refuses_to_advance_without_source_tier_evidence(
         retained_record = cursor.get_record(retained)
         assert retained_record is not None
         assert retained_record.byte_offset == retained.stat().st_size
+
+
+@pytest.mark.asyncio
+async def test_settled_sidecar_cursor_stays_settled_on_the_next_scan(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A parsed non-session sidecar is not session authority the index must show.
+
+    The sidecar's raw is parsed and classified ``parse_as_session = 0``; it
+    never yields a session. Index corroboration counted it as an unshown
+    session raw, demoted the settled cursor to needed and re-ingested the
+    sidecar on every periodic scan. Anti-vacuity: drop the classification
+    exclusion from ``_path_corroborated_by_index`` and ``_needs_work`` is True.
+    """
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    root = workspace_env["data_root"] / "projects"
+    root.mkdir(parents=True)
+    owner, subagents, sidecars = _build_session_tree(root, sidecar_names=("settled.txt",))
+    sidecar = sidecars[0]
+    sources = (WatchSource(name="claude-code", root=root, suffixes=(".jsonl", ".txt")),)
+    async with _processor(workspace_env, root) as processor:
+        await processor.ingest_files([sidecar, owner, *subagents], emit_event=False)
+        record = processor._cursor.get_record(sidecar)
+        assert record is not None
+        assert record.byte_offset == sidecar.stat().st_size
+        conn = sqlite3.connect(f"file:{workspace_env['archive_root'] / 'source.db'}?mode=ro", uri=True)
+        try:
+            raw_state = conn.execute(
+                "SELECT r.parsed_at_ms IS NOT NULL, a.parse_as_session FROM raw_sessions r "
+                "JOIN raw_artifacts a ON a.raw_id = r.raw_id WHERE r.source_path = ?",
+                (str(sidecar),),
+            ).fetchall()
+        finally:
+            conn.close()
+        assert raw_state == [(1, 0)], "sanity: the sidecar raw is parsed and declared non-session"
+
+        watcher = live_watcher.LiveWatcher(
+            cast(Any, SimpleNamespace(archive_root=workspace_env["archive_root"])),
+            sources,
+            cursor=processor._cursor,
+        )
+        try:
+            assert watcher._needs_work(sidecar) is False
+            assert watcher.classify_ingest_candidates([sidecar]) == ((), ())
+        finally:
+            watcher.stop()

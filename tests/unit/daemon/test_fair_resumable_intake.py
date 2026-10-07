@@ -69,6 +69,17 @@ async def _inline_writer_sync(_actor: str, function: Callable[..., Any], /, *arg
     return function(*args, **kwargs)
 
 
+def _async_selection(
+    classify: Callable[[Sequence[Path]], tuple[tuple[Path, ...], tuple[Path, ...]]],
+) -> Callable[[Sequence[Path]], Any]:
+    """The off-writer selection route over a synchronous fake classifier."""
+
+    async def select(paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        return classify(paths)
+
+    return select
+
+
 class _InlineWriterWatcher:
     """A watcher fake that declares a write coordinator.
 
@@ -82,6 +93,12 @@ class _InlineWriterWatcher:
 
     async def _run_writer_sync(self, actor: str, function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
         return await _inline_writer_sync(actor, function, *args, **kwargs)
+
+    async def classify_ingest_candidates_off_writer(
+        self, paths: Sequence[Path]
+    ) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        selection: tuple[tuple[Path, ...], tuple[Path, ...]] = self.classify_ingest_candidates(paths)  # type: ignore[attr-defined]
+        return selection
 
 
 class FakeAdapter:
@@ -1182,6 +1199,7 @@ async def test_path_scoped_refusal_skips_regular_candidate_selection(tmp_path: P
         _batch_processor=PartialRefusalProcessor(),
         intake_revision=lambda _source: 0,
         classify_ingest_candidates=lambda paths: (select(paths), ()),
+        classify_ingest_candidates_off_writer=_async_selection(lambda paths: (select(paths), ())),
         _ingest_files=ingest,
     )
     adapter = FileIntakeAdapter(
@@ -1229,6 +1247,7 @@ async def test_a_scheduled_retry_is_deferred_not_acknowledged_as_a_duplicate(tmp
         _batch_processor=RefusingNothing(),
         intake_revision=lambda _source: 0,
         classify_ingest_candidates=lambda paths: ((), (owed,)),
+        classify_ingest_candidates_off_writer=_async_selection(lambda paths: ((), (owed,))),
         _ingest_files=ingest,
     )
     adapter = FileIntakeAdapter(
