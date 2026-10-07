@@ -13,7 +13,7 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import drive_chunked_prompt_envelope
-from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 from polylogue.sources.parsers import drive
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
@@ -83,7 +83,7 @@ def _prompt(count: int = 300, *, wrapped: bool = True) -> dict[str, object]:
 
 
 def _expected(provider: Provider, payload: dict[str, object], source: Path) -> ParsedSession:
-    [expected] = require_positive_conversational_evidence(
+    [expected] = admit_parsed_sessions_for_publication(
         parse_payload(provider, [payload], "fallback"), provider=provider, source_path=str(source)
     )
     expected.content_hash = session_content_hash(expected)

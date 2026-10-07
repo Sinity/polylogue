@@ -1036,10 +1036,9 @@ class ProductionCorpusRuntime:
                         repository=SessionRepository(backend=backend),
                         archive_root=self.archive_root,
                         config=config,
-                        ingest_workers=1,
                         retained_runner=owner.ingest_retained_raw_ids,
                     )
-                    parsed = await service.parse_from_raw(raw_ids=list(raw_ids), force_write=True)
+                    parsed = await service.parse_from_raw(raw_ids=list(raw_ids))
                     if parsed.parse_failures:
                         return parsed, None
                     converger = DaemonConverger(
@@ -1076,7 +1075,7 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
     if provider not in {Provider.CODEX, Provider.CHATGPT, Provider.CLAUDE_AI}:
         raise CorpusProgramError("Attach requires a provider with native capture payload support")
     from polylogue.browser_capture.models import BrowserCaptureBlock
-    from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+    from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
     from polylogue.sources.parsers.base_support import derive_attachment_provenance
 
     try:
@@ -1087,7 +1086,7 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CorpusProgramError("Attach refused: transcript is not JSON or JSONL") from exc
     sessions = parse_payload(provider, payload, artifact.artifact_id, source_path=artifact.source_path)
-    sessions = require_positive_conversational_evidence(
+    sessions = admit_parsed_sessions_for_publication(
         sessions,
         provider=provider,
         source_path=artifact.source_path,

@@ -39,7 +39,6 @@ from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import (
     _FULL_PARSE_PROGRESS_MAX_BYTES,
     _FULL_PARSE_PROGRESS_MAX_FILES,
-    _STREAMING_FULL_INGEST_BYTES,
     CursorAuthorityBlockedError,
     LiveBatchProcessor,
     _full_parse_progress_groups,
@@ -71,6 +70,10 @@ from tests.infra.raw_owner_routes import (
     seed_membership_census,
     supplied_live_owners,
 )
+
+# Well above any small-file assumption: input size is a parameter of the one
+# retained route, never a branch or refusal.
+_LARGE_INPUT_BYTES = 8 * 1024 * 1024
 
 
 class _FullIngestMock:
@@ -1084,7 +1087,7 @@ async def test_live_full_ingest_streams_large_paths_before_processing(
     ]
     _write_jsonl(source_path, records)
     with source_path.open("r+b") as handle:
-        handle.seek(_STREAMING_FULL_INGEST_BYTES + 128)
+        handle.seek(_LARGE_INPUT_BYTES + 128)
         handle.write(b"\n")
 
     db_path = tmp_path / "archive.sqlite"

@@ -28,7 +28,7 @@ from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import message_owner_resolution
 from polylogue.schemas.drift_sentinel import UNSEEN_SHAPE, classify_schema_drift
 from polylogue.schemas.runtime_registry import SchemaRegistry
-from polylogue.sources.dispatch import detect_provider, parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, detect_provider, parse_payload
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 
 _CURRENT_EXPORT_FIXTURE = Path(__file__).resolve().parents[2] / "data" / "gemini_chunked_prompt" / "current_export.json"
@@ -221,7 +221,7 @@ def test_zero_message_drive_document_never_becomes_a_session() -> None:
         "synthetic-drive-session",
     )
 
-    kept = require_positive_conversational_evidence(
+    kept = admit_parsed_sessions_for_publication(
         [stub, real],
         provider=Provider.GEMINI,
         source_path="/drive-cache/gemini/synthetic.json",

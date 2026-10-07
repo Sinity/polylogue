@@ -38,7 +38,6 @@ def _converged_full_archive(tmp_path_factory: pytest.TempPathFactory, shift: int
             tmp_path_factory.mktemp(f"append-prefix-full-{shift}") / "full",
             composed,
             session_order=rotated_session_order(composed, shift),
-            append_only=True,
         )
     return _FULL_BY_SHIFT[shift]
 
@@ -68,7 +67,6 @@ def test_convergence_property_append_prefix_matches_full(
         composed,
         session_indexes=order[:split],
         converge_after_each=False,
-        append_only=True,
     )
     converge_convergence_archive(prefix)
     combined = ingest_composed_sources(
@@ -76,7 +74,6 @@ def test_convergence_property_append_prefix_matches_full(
         composed,
         session_indexes=order[split:],
         converge_after_each=False,
-        append_only=True,
     )
     converge_convergence_archive(combined)
     execute_convergence_plan(

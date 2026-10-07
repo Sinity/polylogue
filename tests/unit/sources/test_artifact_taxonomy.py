@@ -783,10 +783,10 @@ def test_file_history_snapshot_only_stream_never_classifies_as_session() -> None
     type is a known non-conversational envelope kind) must override that
     path-only session verdict.
 
-    ``require_positive_conversational_evidence`` already refuses to
+    ``admit_parsed_sessions_for_publication`` already refuses to
     materialize this shape as an index-tier session post-parse (see
     ``test_dispatch_payloads.py``'s
-    ``test_require_positive_conversational_evidence_refuses_claude_code_stream_with_no_conversational_records``),
+    ``test_admit_parsed_sessions_for_publication_refuses_claude_code_stream_with_no_conversational_records``),
     but the raw-tier ``artifact_taxonomy``/``raw_artifacts`` classification
     is a separate layer that must independently say "sidecar", not "session
     that later turned out empty".

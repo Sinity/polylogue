@@ -24,7 +24,7 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
 from polylogue.sources.decoder_json import claude_design_object_envelope, iter_grok_export_events
 from polylogue.sources.decoders import _iter_json_stream
-from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 from polylogue.sources.parsers import chatgpt, local_agent
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
@@ -1868,7 +1868,7 @@ def test_grok_empty_conversation_is_refused_at_preparation(tmp_path: Path) -> No
     assert list(artifact.iter_sessions()) == []
     direct = parse_payload(Provider.GROK, record, "fallback")
     assert len(direct) == 1
-    assert require_positive_conversational_evidence(direct, provider=Provider.GROK, source_path=str(source)) == []
+    assert admit_parsed_sessions_for_publication(direct, provider=Provider.GROK, source_path=str(source)) == []
     artifact.discard()
 
 
@@ -1973,7 +1973,7 @@ def test_retained_grok_streams_responses_with_replay_parity(tmp_path: Path, monk
     }
     fallback_timestamp = "2025-01-02T03:04:05Z"
     source_path = str(tmp_path / "prod-grok-backend.json")
-    expected = require_positive_conversational_evidence(
+    expected = admit_parsed_sessions_for_publication(
         parse_payload(Provider.GROK, record, Path(source_path).stem),
         provider=Provider.GROK,
         source_path=source_path,
@@ -2214,7 +2214,7 @@ def test_chatgpt_bundle_worker_keeps_original_positions_after_skipped_siblings(t
     expected = parse_payload(
         Provider.CHATGPT, list(_iter_json_stream(BytesIO(source.read_bytes()), source.name)), "fallback"
     )
-    expected = require_positive_conversational_evidence(expected, provider=Provider.CHATGPT, source_path=str(source))
+    expected = admit_parsed_sessions_for_publication(expected, provider=Provider.CHATGPT, source_path=str(source))
     for session in expected:
         session.content_hash = session_content_hash(session)
     artifact = prepare_jsonl_blob(

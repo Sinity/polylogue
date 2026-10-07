@@ -18,7 +18,6 @@ from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.live import WatchSource
-from polylogue.sources.live.batch import _STREAMING_FULL_INGEST_BYTES
 from polylogue.sources.live.batch_support import _detect_provider_from_path, _parse_path_as_session_artifact
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers import antigravity, hermes_state, local_agent
@@ -30,6 +29,10 @@ from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.schema import _ensure_schema
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import db_setup
+
+# Well above any small-file assumption: input size is a parameter of the one
+# retained route, never a branch or refusal.
+_LARGE_INPUT_BYTES = 8 * 1024 * 1024
 
 
 def _write_hermes_state_db(path: Path) -> None:
@@ -1459,7 +1462,7 @@ async def test_antigravity_metadata_sidecar_is_rejected_without_blocking_convers
         # Keep this as a valid brain metadata document while forcing the
         # acquisition branch. Retained classification keeps the sidecar
         # bytes as evidence without admitting them as a session.
-        "summary": "Plan " + ("x" * _STREAMING_FULL_INGEST_BYTES),
+        "summary": "Plan " + ("x" * _LARGE_INPUT_BYTES),
         "updatedAt": "2026-08-04T08:00:00Z",
     }
     metadata_path.write_text(json.dumps(metadata_payload), encoding="utf-8")
@@ -1496,8 +1499,8 @@ async def test_antigravity_metadata_sidecar_is_rejected_without_blocking_convers
     assert session.provider_session_id == "cascade-json"
     assert [message.text for message in session.messages] == ["hello", "hi"]
 
-    assert metadata_path.stat().st_size > _STREAMING_FULL_INGEST_BYTES
-    assert conversation_path.stat().st_size < _STREAMING_FULL_INGEST_BYTES
+    assert metadata_path.stat().st_size > _LARGE_INPUT_BYTES
+    assert conversation_path.stat().st_size < _LARGE_INPUT_BYTES
     from polylogue import Polylogue
     from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
     from polylogue.sources.live.watcher import LiveWatcher

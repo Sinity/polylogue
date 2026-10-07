@@ -668,7 +668,7 @@ def test_ingest_worker_decodes_and_dispatches_provider(tmp_path: Path) -> None:
     assert result.payload_provider is not None  # Provider detected
     # polylogue-9ykn: an empty ``mapping`` carries no positive conversational
     # evidence (zero messages) -- ingest_record now refuses to materialize a
-    # session for it (via require_positive_conversational_evidence, applied
+    # session for it (via admit_parsed_sessions_for_publication, applied
     # in _parse_plan_sessions) and records a bounded, honest parse error
     # instead of the old "materializable session with zero messages"
     # default. See test_ingest_worker_quarantines_session_artifact_with_no_

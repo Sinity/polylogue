@@ -15,7 +15,7 @@ import polylogue.sources.prepared_jsonl as prepared_jsonl
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import spill_member_arrays
-from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
 from polylogue.sources.prepared_jsonl import _hermes_atif_envelope, prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import SqliteSessionEventSink
@@ -68,7 +68,7 @@ def _source(tmp_path: Path, document: dict[str, object]) -> Path:
 
 
 def _expected(document: dict[str, object], source: Path) -> list[ParsedSession]:
-    sessions = require_positive_conversational_evidence(
+    sessions = admit_parsed_sessions_for_publication(
         parse_payload(Provider.HERMES, [document], "fallback", source_path=str(source)),
         provider=Provider.HERMES,
         source_path=str(source),

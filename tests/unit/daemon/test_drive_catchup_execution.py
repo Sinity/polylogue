@@ -99,7 +99,6 @@ async def make_parser(
         repository,
         root,
         config,
-        ingest_workers=1,
         execution=execution,
         retained_runner=raw_owner.ingest_retained_raw_ids,
     )

@@ -9,9 +9,9 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.dispatch import (
+    admit_parsed_sessions_for_publication,
     detect_provider_evidence,
     parse_payload,
-    require_positive_conversational_evidence,
 )
 from tests.infra.origin_capability_matrix import (
     CapabilityWitness,
@@ -60,7 +60,7 @@ def test_each_positive_witness_has_one_cross_origin_runtime_claim(witness: Capab
     assert origin_from_provider(claim.provider) is witness.origin
 
     sessions = parse_payload(claim.provider, payload, witness.fallback_id)
-    assert require_positive_conversational_evidence(
+    assert admit_parsed_sessions_for_publication(
         sessions,
         provider=claim.provider,
         source_path=witness.fixture_path,

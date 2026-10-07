@@ -6,7 +6,7 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
-from polylogue.sources.dispatch import require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication
 from polylogue.sources.parsers.base import AdmissionDisposition, AdmissionRefusalReason
 from polylogue.sources.sqlite_inspection import inspect_sqlite_source
 from tests.infra.antigravity_parser import parse_trajectory_db
@@ -33,9 +33,7 @@ def test_streamed_bound_trajectory_preview_matches_parser_evidence(tmp_path: Pat
     }
     assert preview.degraded == any(session.ingest_flags for session in sessions)
     preflight = inspect_sqlite_source(source, preflight=True)
-    positive = require_positive_conversational_evidence(
-        sessions, provider=Provider.ANTIGRAVITY, source_path=str(source)
-    )
+    positive = admit_parsed_sessions_for_publication(sessions, provider=Provider.ANTIGRAVITY, source_path=str(source))
     assert preflight.admitted == len(positive)
     assert preflight.produced == {**preview.produced, "session_refs": []}
     assert preflight.degraded == (preview.degraded or len(positive) != len(sessions))

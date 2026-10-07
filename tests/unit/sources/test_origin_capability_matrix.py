@@ -15,10 +15,10 @@ from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
 from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.sources.dispatch import (
+    admit_parsed_sessions_for_publication,
     detect_provider,
     detect_provider_evidence,
     parse_payload,
-    require_positive_conversational_evidence,
 )
 from polylogue.sources.origin_specs import ORIGIN_SPECS
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary
@@ -116,7 +116,7 @@ def test_each_supported_origin_has_one_claim_and_reaches_production_detector_and
                 witness.fallback_id,
                 source_path=witness.fixture_path,
             )
-            accepted = require_positive_conversational_evidence(
+            accepted = admit_parsed_sessions_for_publication(
                 sessions,
                 provider=claim.provider,
                 source_path=witness.fixture_path,
@@ -175,7 +175,7 @@ def test_negative_witness_families_are_rejected_by_dispatch_and_content_gate(fam
         detected = detect_provider(case.payload)
         sessions = parse_payload(case.provider, case.payload, f"malformed-{case.name}")
         assert (
-            require_positive_conversational_evidence(
+            admit_parsed_sessions_for_publication(
                 sessions,
                 provider=case.provider,
                 source_path=None,
@@ -185,7 +185,7 @@ def test_negative_witness_families_are_rejected_by_dispatch_and_content_gate(fam
         if detected is not None and detected is not case.provider:
             cross_origin_sessions = parse_payload(detected, case.payload, f"cross-origin-{case.name}")
             assert (
-                require_positive_conversational_evidence(
+                admit_parsed_sessions_for_publication(
                     cross_origin_sessions,
                     provider=detected,
                     source_path=None,

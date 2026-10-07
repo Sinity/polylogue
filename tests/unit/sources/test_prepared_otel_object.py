@@ -14,7 +14,7 @@ import polylogue.sources.prepared_jsonl as prepared_jsonl
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import spill_otlp_spans
-from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 from polylogue.sources.origin_specs import SEMCONV_SCHEMA_URL
 from polylogue.sources.parsers import otel_genai
 from polylogue.sources.parsers.base import ParsedSession
@@ -143,7 +143,7 @@ def _source(tmp_path: Path, document: dict[str, Any] | str) -> Path:
 
 
 def _expected(document: dict[str, Any], source: Path) -> list[ParsedSession]:
-    sessions = require_positive_conversational_evidence(
+    sessions = admit_parsed_sessions_for_publication(
         parse_payload(Provider.OTEL_GENAI, [document], "fallback", source_path=str(source)),
         provider=Provider.OTEL_GENAI,
         source_path=str(source),

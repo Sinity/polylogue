@@ -34,7 +34,7 @@ from polylogue.schemas.synthetic.workload import (
     synthetic_text,
     text_measure,
 )
-from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 from tests.infra.synthetic_workload_bounds import clip_committed_profiles
 
 
@@ -93,7 +93,7 @@ def test_every_generated_stream_parses_through_production_dispatch(tmp_path: Pat
         records = _records(path.read_bytes())
         conversational = any(classify(record) in _CONVERSATIONAL_KINDS for record in records)
         sessions = parse_payload(origin, records, str(path), source_path=str(path))
-        admitted = require_positive_conversational_evidence(sessions, provider=origin, source_path=str(path))
+        admitted = admit_parsed_sessions_for_publication(sessions, provider=origin, source_path=str(path))
         assert bool(admitted) == conversational, path.name
         if admitted:
             admitted_streams += 1

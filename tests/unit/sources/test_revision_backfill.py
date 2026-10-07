@@ -1377,7 +1377,7 @@ def test_chain_inherits_only_its_interior_members(monkeypatch: pytest.MonkeyPatc
     # raw_ids[0] is the refuted header-only capture, raw_ids[1] the smallest
     # capture whose own parse agrees, raw_ids[-1] the head. Nothing between
     # them is opened.
-    assert set(parsed) == {raw_ids[0], raw_ids[1], raw_ids[-1]}
+    assert set(parsed) == {raw_ids[0], raw_ids[1], raw_ids[-1]}, parsed
     assert _census_facts(tmp_path, raw_ids[0])[0] is None
     for inherited in raw_ids[2:-1]:
         assert _census_facts(tmp_path, inherited) == ("codex-session:chain", "byte_proven", ("codex-session:chain",))
@@ -1461,7 +1461,7 @@ def test_census_skips_parse_for_byte_proven_superseded_revisions_at_scale(
     # capture whose own parse refutes the head's identity, and the smallest
     # capture that agrees with it. The 48 captures bracketed between that
     # capture and the winner are bound by byte-prefix proof.
-    assert set(parse_calls) == {raw_ids[0], raw_ids[1], raw_ids[-1]}
+    assert set(parse_calls) == {raw_ids[0], raw_ids[1], raw_ids[-1]}, parse_calls
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT raw_id FROM sessions").fetchone() == (raw_ids[-1],)
     with sqlite3.connect(tmp_path / "source.db") as conn:

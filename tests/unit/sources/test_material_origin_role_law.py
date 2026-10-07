@@ -14,7 +14,7 @@ import pytest
 
 from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Provider, Role
-from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base_support import human_authored_override
 from tests.infra.origin_capability_matrix import CapabilityWitness, load_manifest, load_witness_fixture
@@ -54,7 +54,7 @@ def test_human_authored_messages_always_carry_the_user_role(origin: str, witness
         witness.fallback_id,
         source_path=witness.fixture_path,
     )
-    accepted = require_positive_conversational_evidence(
+    accepted = admit_parsed_sessions_for_publication(
         sessions,
         provider=claim.provider,
         source_path=witness.fixture_path,

@@ -107,7 +107,7 @@ class TestSessionStreamContract:
         assert len(sessions[0].messages) == 1
 
     def test_real_wire_stream_parses_and_passes_materialization_evidence_gate(self) -> None:
-        from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
+        from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_stream_payload
 
         payload = [
             {"type": "session_meta", "payload": {"id": "real-stream"}},
@@ -126,7 +126,7 @@ class TestSessionStreamContract:
 
         assert [session.provider_session_id for session in sessions] == ["real-stream"]
         assert (
-            require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/real-stream.jsonl")
+            admit_parsed_sessions_for_publication(sessions, provider="codex", source_path="/tmp/real-stream.jsonl")
             == sessions
         )
 
@@ -151,7 +151,7 @@ class TestSessionStreamContract:
         assert sessions[0].messages[0].provider_message_id == "legacy-user"
 
     def test_legacy_direct_stream_uses_fallback_identity_and_passes_contract(self) -> None:
-        from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
+        from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_stream_payload
 
         payload = [
             {
@@ -176,12 +176,12 @@ class TestSessionStreamContract:
         assert [session.provider_session_id for session in sessions] == ["legacy-fallback"]
         assert len(sessions[0].messages) == 2
         assert (
-            require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/legacy.jsonl")
+            admit_parsed_sessions_for_publication(sessions, provider="codex", source_path="/tmp/legacy.jsonl")
             == sessions
         )
 
     def test_bare_session_headers_fail_parser_contract_and_materialization_gate(self) -> None:
-        from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
+        from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_stream_payload
 
         payload = [{"type": "session_meta"}, {"type": "session_meta"}]
 
@@ -190,12 +190,12 @@ class TestSessionStreamContract:
 
         assert sessions[0].messages == []
         assert (
-            require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/bare-headers.jsonl")
+            admit_parsed_sessions_for_publication(sessions, provider="codex", source_path="/tmp/bare-headers.jsonl")
             == []
         )
 
     def test_mixed_envelope_and_direct_stream_fails_admission_and_evidence_gate(self) -> None:
-        from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
+        from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_stream_payload
 
         payload = [
             {"type": "session_meta", "payload": {"id": "mixed-stream"}},
@@ -220,7 +220,7 @@ class TestSessionStreamContract:
 
         assert sessions[0].messages
         assert (
-            require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/mixed.jsonl")
+            admit_parsed_sessions_for_publication(sessions, provider="codex", source_path="/tmp/mixed.jsonl")
             == sessions
         )
 

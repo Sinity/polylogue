@@ -80,10 +80,10 @@ def test_preflight_refuses_what_the_production_evidence_gate_refuses(tmp_path: P
     """A trajectory whose steps yield no message is refused as production refuses it.
 
     Anti-vacuity: report an event-only trajectory as supported and preflight
-    promises an import that ``require_positive_conversational_evidence``
+    promises an import that ``admit_parsed_sessions_for_publication``
     removes on every production write path.
     """
-    from polylogue.sources.dispatch import require_positive_conversational_evidence
+    from polylogue.sources.dispatch import admit_parsed_sessions_for_publication
 
     source = tmp_path / "quiet-trajectory.sqlite"
     with sqlite3.connect(source) as connection:
@@ -99,7 +99,7 @@ def test_preflight_refuses_what_the_production_evidence_gate_refuses(tmp_path: P
 
     result = prepare_import_source_admission(source).preflight
 
-    assert require_positive_conversational_evidence(sessions, provider=Provider.ANTIGRAVITY, source_path=None) == []
+    assert admit_parsed_sessions_for_publication(sessions, provider=Provider.ANTIGRAVITY, source_path=None) == []
     assert result.admissible is False
 
 

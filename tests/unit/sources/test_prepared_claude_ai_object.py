@@ -13,7 +13,7 @@ import pytest
 from polylogue.core.enums import Provider, Role
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import claude_ai_object_envelope
-from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.parsers.claude import common as claude_common
 from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
@@ -81,7 +81,7 @@ def _conversation(message_count: int = 300) -> dict[str, object]:
 
 
 def _expected(payload: dict[str, object], source: Path) -> ParsedSession:
-    [expected] = require_positive_conversational_evidence(
+    [expected] = admit_parsed_sessions_for_publication(
         parse_payload(Provider.CLAUDE_AI, [payload], "fallback"),
         provider=Provider.CLAUDE_AI,
         source_path=str(source),

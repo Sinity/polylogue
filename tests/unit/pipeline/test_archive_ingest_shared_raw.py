@@ -725,7 +725,7 @@ async def test_archive_ingest_refuses_filename_stem_identity_without_authored_co
 ) -> None:
     """Canonical one-shot intake must not mint fragment-identity husks.
 
-    ``require_positive_conversational_evidence`` is the archive's admission law
+    ``admit_parsed_sessions_for_publication`` is the archive's admission law
     for "parsed, but no conversation is present". Every other production write
     path applies it -- the daemon decode worker, live batch convergence, the
     incremental append route, and offline replay. ``ingest_one_shot_archive``

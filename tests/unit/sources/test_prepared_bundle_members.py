@@ -23,7 +23,7 @@ from polylogue.sources.decoder_json import (
     scan_container_members,
 )
 from polylogue.sources.decoders import _iter_json_stream
-from polylogue.sources.dispatch import bundle_member_sessions, parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, bundle_member_sessions, parse_payload
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.claude import common as claude_common
 from polylogue.sources.parsers.claude.lineage_graph import ClaudeLineageGraph, LineageNode
@@ -70,7 +70,7 @@ def _chatgpt(conversation_id: str, turns: int = 3) -> dict[str, object]:
 
 
 def _expected(provider: Provider, source: Path) -> list[ParsedSession]:
-    expected = require_positive_conversational_evidence(
+    expected = admit_parsed_sessions_for_publication(
         parse_payload(provider, list(_iter_json_stream(BytesIO(source.read_bytes()), source.name)), "fallback"),
         provider=provider,
         source_path=str(source),
@@ -385,7 +385,7 @@ def test_retained_bundle_streams_members_and_keeps_artifact_taxonomy(
 ) -> None:
     payload = [_conversation(20), {**_conversation(9), "uuid": "second"}]
     source_path = tmp_path / "claude" / "conversations.json"
-    expected = require_positive_conversational_evidence(
+    expected = admit_parsed_sessions_for_publication(
         parse_payload(Provider.CLAUDE_AI, payload, source_path.stem),
         provider=Provider.CLAUDE_AI,
         source_path=str(source_path),
@@ -425,7 +425,7 @@ def test_claude_lineage_graph_and_attachments_stay_in_scratch(tmp_path: Path, mo
     payload["attachments"] = [{"file_name": "brief.txt", "file_type": "text/plain"}, {"file_name": "loose.txt"}]
     source = tmp_path / "conversation.json"
     source.write_text(json.dumps(payload), encoding="utf-8")
-    [expected] = require_positive_conversational_evidence(
+    [expected] = admit_parsed_sessions_for_publication(
         parse_payload(Provider.CLAUDE_AI, [payload], "fallback"), provider=Provider.CLAUDE_AI, source_path=str(source)
     )
     expected.content_hash = session_content_hash(expected)
@@ -473,7 +473,7 @@ def test_claude_non_array_conversation_attachments_keep_streaming(tmp_path: Path
     assert object_result is not None
     assert object_result[0]["attachments"] == {"not": "a list"}
     assert object_result[1] == ("files",)
-    [expected] = require_positive_conversational_evidence(
+    [expected] = admit_parsed_sessions_for_publication(
         parse_payload(Provider.CLAUDE_AI, [payload], "fallback"), provider=Provider.CLAUDE_AI, source_path=str(source)
     )
     expected.content_hash = session_content_hash(expected)
@@ -508,7 +508,7 @@ def test_grok_root_admission_preserves_hook_taxonomy_and_provider_streaming(
     assert grok_export_item_count(BytesIO(raw), detect=False) == 1
     source = tmp_path / "prod-grok-backend.json"
     source.write_bytes(raw)
-    expected = require_positive_conversational_evidence(
+    expected = admit_parsed_sessions_for_publication(
         parse_payload(Provider.GROK, payload, "fallback"), provider=Provider.GROK, source_path=str(source)
     )
     if hook_record:

@@ -83,3 +83,21 @@ def test_delta_write_keeps_the_merged_session_hash(tmp_path: Path) -> None:
     assert [row[0] for row in rows] == ["m0", "m1"]
     assert stored_hash == bytes.fromhex(session_content_hash(merged))
     assert stored_hash != bytes.fromhex(session_content_hash(delta))
+
+
+def test_append_normalizes_native_id_before_duplicate_admission(tmp_path: Path) -> None:
+    """Whitespace around a repeated provider ID cannot replace the stored row."""
+    with fixture_index_connection(tmp_path / "index.db") as conn:
+        initial = _session("m0", "original")
+        session_id = write_fixture_index_session(conn, initial)
+
+        write_fixture_index_session(conn, _session(" m0 ", "must not replace"), merge_append=True)
+        rows = conn.execute(
+            """SELECT m.native_id, b.text
+               FROM messages AS m JOIN blocks AS b ON b.message_id = m.message_id
+               WHERE m.session_id = ? AND b.block_type = 'text'
+               ORDER BY m.position, b.position""",
+            (session_id,),
+        ).fetchall()
+
+    assert [tuple(row) for row in rows] == [("m0", "original")]
