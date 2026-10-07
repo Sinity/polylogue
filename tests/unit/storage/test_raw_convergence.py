@@ -12,9 +12,11 @@ import asyncio
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable, Iterable
 from contextlib import closing
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -659,6 +661,7 @@ def test_codex_neutral_parse_survives_unrelated_source_commit(
     """Codex parse and schema validation finish before a fresh Source binding."""
     from polylogue.schemas import validate_retained_document as validate_original
     from polylogue.sources import prepared_jsonl as prepared_jsonl_module
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
 
     bootstrap_archive_root(tmp_path)
     target = _admit(
@@ -671,16 +674,17 @@ def test_codex_neutral_parse_survives_unrelated_source_commit(
     parse_calls = 0
     validation_raw_ids: list[str] = []
     inserted: list[str] = []
-    prepare_original = prepared_jsonl_module.prepare_jsonl_blob
+    prepare_original = cast(Callable[..., PreparedJsonl], prepared_jsonl_module.prepare_jsonl_blob)
+    validate_call = cast(Callable[..., object], validate_original)
 
-    def counted_prepare(*args: object, **kwargs: object) -> object:
+    def counted_prepare(*args: object, **kwargs: object) -> PreparedJsonl:
         nonlocal parse_calls
         parse_calls += 1
         return prepare_original(*args, **kwargs)
 
     def commit_during_validation(*args: object, **kwargs: object) -> object:
         validation_raw_ids.append(str(kwargs["raw_id"]))
-        verdict = validate_original(*args, **kwargs)
+        verdict = validate_call(*args, **kwargs)
         if not inserted:
             inserted.append(
                 _admit(
@@ -728,6 +732,7 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     from polylogue.schemas import validate_retained_document as validate_original
     from polylogue.sources import prepared_jsonl as prepared_jsonl_module
     from polylogue.sources import revision_backfill as revision_backfill_module
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
 
     bootstrap_archive_root(tmp_path)
     session_id = "2c9fbada-0d07-4429-8728-63f70e3c672f"
@@ -828,10 +833,13 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     neutral_sidecar_events: list[tuple[str, dict[str, object]]] = []
     inserted: list[str] = []
     enrichment_calls = 0
-    prepare_original = prepared_jsonl_module.prepare_jsonl_blob
-    enrich_original = revision_backfill_module.iter_enriched_sessions_from_retained_read
+    prepare_original = cast(Callable[..., PreparedJsonl], prepared_jsonl_module.prepare_jsonl_blob)
+    validate_call = cast(Callable[..., object], validate_original)
+    enrich_original = cast(
+        Callable[..., Iterable[object]], revision_backfill_module.iter_enriched_sessions_from_retained_read
+    )
 
-    def counted_prepare(*args: object, **kwargs: object) -> object:
+    def counted_prepare(*args: object, **kwargs: object) -> PreparedJsonl:
         nonlocal parse_calls
         parse_calls += 1
         artifact = prepare_original(*args, **kwargs)
@@ -841,7 +849,7 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
 
     def commit_during_validation(*args: object, **kwargs: object) -> object:
         validation_raw_ids.append(str(kwargs["raw_id"]))
-        return validate_original(*args, **kwargs)
+        return validate_call(*args, **kwargs)
 
     def commit_during_enrichment(*args: object, **kwargs: object) -> object:
         nonlocal enrichment_calls

@@ -274,9 +274,11 @@ class _PreparationCarry:
         if not preserve_neutral:
             self.neutral_artifacts.clear()
         self.attachment_refs_published.clear()
-        if keep is not None and keep.scratch_owner is self.scratch_owner:
+        if keep is not None and keep.scratch_owner is self.scratch_owner and not preserve_neutral:
             self.scratch_owner = None
         if preserve_neutral and self.neutral_artifacts:
+            if failures:
+                raise BaseExceptionGroup("carried preparation cleanup failed", failures)
             return
         if self.scratch_owner is not None and not failures:
             try:
@@ -297,6 +299,17 @@ class _CapturedNeutralRaw:
     zip_coordinate: CapturedZipMemberCoordinate | None
     append_logical_key: str | None
     staged_blob: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _NeutralParserOperand:
+    descriptor: tuple[Provider, str, str, RawRevisionKind, int]
+    profile_identity: str | None
+    fallback_timestamp: str | None
+    native_id: str | None
+    zip_coordinate: CapturedZipMemberCoordinate | None
+    append_logical_key: str | None
+    sidecar_signature: tuple[object, ...] | None = None
 
 
 class _CarryInvalidatedError(Exception):
@@ -389,7 +402,7 @@ class RawObservationReplacement:
         seal.retain_preparation_payload(self._close_prepared_payload)
         seal.close()
 
-    def _close_prepared_payload(self) -> None:
+    def _close_prepared_payload(self, *, preserve_scratch: bool = False) -> None:
         """Settle the carrier payload without recursing into its retained seal."""
         with retain_native_sql_lifetimes(*(() if self.scratch_owner is None else (self.scratch_owner,))):
             failures: list[BaseException] = []
@@ -416,7 +429,7 @@ class RawObservationReplacement:
                     failures.append(failure)
             # Scratch files depend on every native preparation owner. Keep
             # them on any failed close for the original creator's retry.
-            if not failures and self.scratch_owner is not None:
+            if not failures and self.scratch_owner is not None and not preserve_scratch:
                 try:
                     _cleanup_scratch(self.scratch_owner)
                 except BaseException as failure:
@@ -1542,10 +1555,14 @@ class RawObservationDerivation(RawObservationInspection):
                 # The bound artifact owns the scratch directory, while neutral
                 # parser artifacts are the retry cache. Close its SQL owners
                 # without letting it remove the shared directory.
-                replacement.scratch_owner = None
+                close_replacement = partial(replacement._close_prepared_payload, preserve_scratch=True)
+                close_seal = () if replacement.reference_seal is None else (replacement.reference_seal.close,)
+                close_replacement_lifetime = (close_replacement, *close_seal)
+            else:
+                close_replacement_lifetime = (replacement.close if replacement is not None else seal.close,)
             failures: list[BaseException] = []
             for close in (
-                seal.close if replacement is None else replacement.close,
+                *close_replacement_lifetime,
                 partial(carry.discard_payload, keep=replacement, preserve_neutral=preserve_neutral),
             ):
                 try:
@@ -1600,7 +1617,7 @@ class RawObservationDerivation(RawObservationInspection):
             raw_ids, logical_keys = read.expand_raw_membership_selection(selected)
             if not raw_ids:
                 return seal
-            operands: dict[str, tuple[object, ...]] = {}
+            operands: dict[str, _NeutralParserOperand] = {}
             for raw_id in raw_ids:
                 descriptor = read.raw_revision_descriptor(raw_id)
                 provider, _blob_hash, source_path, kind, _raw_size = descriptor
@@ -1611,13 +1628,13 @@ class RawObservationDerivation(RawObservationInspection):
                     or looks_like_logical_source_path(Path(source_path))
                 ):
                     return seal
-                operands[raw_id] = (
-                    descriptor,
-                    read.raw_profile_identity(raw_id),
-                    read.raw_revision_file_mtime(raw_id),
-                    read.raw_native_id(raw_id) if kind.value == "append" else None,
-                    read.raw_captured_zip_coordinate(raw_id),
-                    read.raw_append_logical_key(raw_id) if kind.value == "append" else None,
+                operands[raw_id] = _NeutralParserOperand(
+                    descriptor=descriptor,
+                    profile_identity=read.raw_profile_identity(raw_id),
+                    fallback_timestamp=read.raw_revision_file_mtime(raw_id),
+                    native_id=read.raw_native_id(raw_id) if kind.value == "append" else None,
+                    zip_coordinate=read.raw_captured_zip_coordinate(raw_id),
+                    append_logical_key=read.raw_append_logical_key(raw_id) if kind.value == "append" else None,
                 )
 
             if carry.scratch_owner is None:
@@ -1655,7 +1672,7 @@ class RawObservationDerivation(RawObservationInspection):
 
             retained_sidecar_resolver = read.retained_sidecar_resolver()
             for raw_id in raw_ids:
-                descriptor = operands[raw_id][0]
+                descriptor = operands[raw_id].descriptor
                 provider, _hash, source_path, _kind, _size = descriptor
                 if provider is not Provider.CLAUDE_CODE:
                     continue
@@ -1718,13 +1735,19 @@ class RawObservationDerivation(RawObservationInspection):
                     witness=scope.witness,
                 )
             for raw_id in raw_ids:
-                scope = sidecar_scope_by_raw.get(raw_id)
-                signature = None if scope is None else (scope.scope_key, scope.available, scope.witness)
-                operands[raw_id] = (*operands[raw_id], signature)
-            for raw_id in raw_ids:
-                descriptor, profile, fallback_timestamp, native_id, zip_coordinate, append_logical_key, _sidecar = (
-                    operands[raw_id]
+                maybe_scope = sidecar_scope_by_raw.get(raw_id)
+                signature = (
+                    None if maybe_scope is None else (maybe_scope.scope_key, maybe_scope.available, maybe_scope.witness)
                 )
+                operands[raw_id] = dataclasses.replace(operands[raw_id], sidecar_signature=signature)
+            for raw_id in raw_ids:
+                operand = operands[raw_id]
+                descriptor = operand.descriptor
+                profile = operand.profile_identity
+                fallback_timestamp = operand.fallback_timestamp
+                native_id = operand.native_id
+                zip_coordinate = operand.zip_coordinate
+                append_logical_key = operand.append_logical_key
                 provider, blob_hash, _source_path, _kind, raw_size = descriptor
                 input_hash, input_size = seal.retain_original_blob_input(raw_id)
                 if input_hash != bytes.fromhex(blob_hash) or input_size != raw_size:
@@ -1845,7 +1868,7 @@ class RawObservationDerivation(RawObservationInspection):
             fallback_timestamp = captured.fallback_timestamp
             native_id = captured.native_id
             provider, blob_hash, source_path, _kind, _raw_size = descriptor
-            artifact_key = (
+            artifact_key: tuple[object, ...] = (
                 raw_id,
                 provider,
                 blob_hash,
@@ -1976,54 +1999,44 @@ class RawObservationDerivation(RawObservationInspection):
                 fresh_read = PreparedSessionSourceRead(fresh, blob_store=blob_store)
                 fresh_selected = (key,) if selection is None else tuple(selection(fresh_read))
                 fresh_raw_ids, fresh_logical_keys = fresh_read.expand_raw_membership_selection(fresh_selected)
-                fresh_operands: dict[str, tuple[object, ...]] = {}
+                fresh_operands: dict[str, _NeutralParserOperand] = {}
                 if fresh_raw_ids == raw_ids:
                     fresh_sidecar_resolver = fresh_read.retained_sidecar_resolver()
                     for raw_id in fresh_raw_ids:
                         descriptor = fresh_read.raw_revision_descriptor(raw_id)
-                        sidecar_signature: tuple[object, ...] | None = None
+                        fresh_scope_signature: tuple[object, ...] | None = None
                         if descriptor[0] is Provider.CLAUDE_CODE:
                             fresh_scope = fresh_sidecar_resolver.claude_code_scope(descriptor[2])
-                            sidecar_signature = (
+                            fresh_scope_signature = (
                                 fresh_scope.scope_key,
                                 fresh_scope.available,
                                 fresh_scope.witness,
                             )
-                        fresh_operands[raw_id] = (
-                            descriptor,
-                            fresh_read.raw_profile_identity(raw_id),
-                            fresh_read.raw_revision_file_mtime(raw_id),
-                            fresh_read.raw_native_id(raw_id) if descriptor[3].value == "append" else None,
-                            fresh_read.raw_captured_zip_coordinate(raw_id),
-                            fresh_read.raw_append_logical_key(raw_id) if descriptor[3].value == "append" else None,
-                            sidecar_signature,
+                        fresh_operands[raw_id] = _NeutralParserOperand(
+                            descriptor=descriptor,
+                            profile_identity=fresh_read.raw_profile_identity(raw_id),
+                            fallback_timestamp=fresh_read.raw_revision_file_mtime(raw_id),
+                            native_id=fresh_read.raw_native_id(raw_id) if descriptor[3].value == "append" else None,
+                            zip_coordinate=fresh_read.raw_captured_zip_coordinate(raw_id),
+                            append_logical_key=(
+                                fresh_read.raw_append_logical_key(raw_id) if descriptor[3].value == "append" else None
+                            ),
+                            sidecar_signature=fresh_scope_signature,
                         )
                 if (fresh_raw_ids, fresh_logical_keys) != original_selection or fresh_operands != operands:
                     raise _CarryInvalidatedError
 
                 from polylogue.core.timestamp_authority import normalize_session_timestamps
-                from polylogue.sources.prepared_jsonl import _finalize_prepared_cohort
+                from polylogue.sources.prepared_jsonl import PreparedSessionSequence, _finalize_prepared_cohort
                 from polylogue.sources.revision_backfill import iter_enriched_sessions_from_retained_read
                 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
                 for raw_id in raw_ids:
-                    (
-                        descriptor,
-                        profile,
-                        fallback_timestamp,
-                        _native_id,
-                        zip_coordinate,
-                        _append_key,
-                        _staged_blob,
-                    ) = (
-                        captures[raw_id].descriptor,
-                        captures[raw_id].profile_identity,
-                        captures[raw_id].fallback_timestamp,
-                        captures[raw_id].native_id,
-                        captures[raw_id].zip_coordinate,
-                        captures[raw_id].append_logical_key,
-                        captures[raw_id].staged_blob,
-                    )
+                    captured = captures[raw_id]
+                    descriptor = captured.descriptor
+                    profile = captured.profile_identity
+                    fallback_timestamp = captured.fallback_timestamp
+                    zip_coordinate = captured.zip_coordinate
                     provider, _blob_hash, source_path, _kind, _raw_size = descriptor
                     neutral = carry.neutral_artifacts[neutral_keys[raw_id]]
                     if neutral.error is not None or neutral.deferred:
@@ -2034,13 +2047,13 @@ class RawObservationDerivation(RawObservationInspection):
                             return artifact.session_sequence().iter_provider_session_ids()
 
                         def finalize(
-                            session_sequence: object,
+                            session_sequence: PreparedSessionSequence,
                             *,
                             retained_raw_id: str = raw_id,
                             retained_provider: Provider = provider,
                             retained_path: str = source_path,
                             retained_fallback: str | None = fallback_timestamp,
-                            retained_zip: object = zip_coordinate,
+                            retained_zip: CapturedZipMemberCoordinate | None = zip_coordinate,
                             retained_provider_ids: Callable[[], Iterator[str]] = partial(provider_session_ids, neutral),
                         ) -> Iterable[ParsedSession]:
                             return iter_enriched_sessions_from_retained_read(
@@ -2495,7 +2508,7 @@ class RawObservationDerivation(RawObservationInspection):
                             # bytes. Parsing distinguishes only an append revision,
                             # so a census that types an unknown revision as full
                             # keeps the artifact.
-                            artifact_key = (
+                            artifact_key: tuple[object, ...] = (
                                 raw_id,
                                 provider,
                                 blob_hash,
