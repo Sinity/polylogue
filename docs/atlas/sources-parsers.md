@@ -3,13 +3,12 @@
 ## Area boundary
 
 Sources acquire bytes and identify their material source. Detection chooses a
-provider parser by input shape; the pipeline normalizes provider records into
-parsed sessions before the storage writer lowers them
-(`polylogue/sources/dispatch.py:1-80`; `CompiledDetectorRegistry.detect` in `polylogue/sources/detection.py:88-105`;
-`ingest_record` in
-`polylogue/pipeline/services/ingest_worker.py:1137-1226`; `_run_parse_plan`
-in the same file at `1037-1089`;
-`_materialize_parsed_sessions` in the same file at `896-959`).
+provider parser by input shape. `RawObservationConvergenceOwner` coordinates
+retained preparation through `RawObservationDerivation`; JSONL and non-JSON
+inputs use `prepare_retained_jsonl_artifact` and
+`prepare_retained_non_json_artifact` in `sources/revision_backfill.py`.
+The storage writer lowers their prepared sessions through
+`write_parsed_session_to_archive`.
 
 Document arrays use the same tightness-ordered document predicates for every
 member, including streamed detection. An unrelated fragment cannot claim a
@@ -255,24 +254,18 @@ provider (`docs/provider-origin-identity.md:15-30`;
   `RawObservationConvergenceOwner` and the original prepared Source and Index
   witnesses. Preparation reads the retained membership, precedence, blob and
   parser evidence before short admitted publication; the matching writer
-  consumes attachment reservations with the same prepared receipt. Physical
-  cleanup stays with that preparation creator through publication and failure.
-- Batch ingest keeps source membership and precedence checks read-only:
-  `_core.py` opens one read-only `source.db` handle per batch, and
-  `revision_authority_refuses_write` reads `raw_session_memberships` through
-  it, while index publication and later blob-publication receipt consumption
-  each open their own archive-root-bound write connection
-  (`_process_ingest_batch_sync` in
-  `polylogue/pipeline/services/ingest_batch/_core.py:3528-3543`;
-  `revision_authority_refuses_write` in
-  `polylogue/storage/sqlite/archive_tiers/ingest_precedence.py:182-277`;
-  `_open_sync_connection` in
-  `polylogue/pipeline/services/ingest_batch/_core.py:215-245`). After index
-  commit, `_process_ingest_batch_sync` opens the source-tier transaction with
-  `archive_root=archive_root` and calls `consume_blob_publication_receipt`
-  for each pending attachment receipt
-  (`polylogue/pipeline/services/ingest_batch/_core.py:3656-3673`;
-  `polylogue/storage/blob_publication.py:553-564`).
+  consumes the prepared receipt. Physical cleanup stays with that preparation
+  creator through publication and failure.
+
+## Retained validation policy
+
+The daemon converts runtime configuration into `ValidationMode` and supplies
+it to the resident Raw owner. Direct owner callers supply the same typed
+argument; its default is advisory. Changing an environment variable after
+constructing an owner does not change its policy. The derivation recipe
+includes the selected mode, and retained artifacts carry their own detached
+validation verdict. Declared raw-only artifacts bypass session decoding and
+schema validation; empty session inputs retain terminal decoder evidence.
 
 ## Gotchas
 
