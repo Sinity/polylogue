@@ -1012,11 +1012,42 @@ async def test_ingest_counts_sessions_convergence_published_before_its_materiali
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("refused_payload", "validation_mode", "parse_error", "expected_refusal"),
+    [
+        pytest.param(
+            b'{"fixture":"neutral schema rejection"}',
+            "strict",
+            None,
+            ("pending", "validation_rejected", "validation", 0),
+            id="strict-schema-refusal",
+        ),
+        pytest.param(
+            b"not json",
+            "strict",
+            "synthetic decoder failure",
+            ("pending", "interrupted", "manifest", None),
+            id="strict-decode-failure-is-not-schema-refusal",
+        ),
+        pytest.param(
+            b"not json",
+            "advisory",
+            "synthetic decoder failure",
+            ("pending", "interrupted", "manifest", None),
+            id="advisory-decode-failure-is-not-schema-refusal",
+        ),
+    ],
+)
 async def test_materialize_keeps_valid_subject_after_original_decode_refusal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    refused_payload: bytes,
+    validation_mode: str,
+    parse_error: str | None,
+    expected_refusal: tuple[str, str, str, int | None],
 ) -> None:
     archive_root, source = await _archive(tmp_path)
-    (source.parent / "refused.json").write_bytes(b"not json")
+    (source.parent / "refused.json").write_bytes(refused_payload)
     original = IngestExecution.materialize
     reached: list[tuple[int, int]] = []
     failures: list[BaseException] = []
@@ -1042,9 +1073,9 @@ async def test_materialize_keeps_valid_subject_after_original_decode_refusal(
             ).fetchone()
             assert row is not None
             connection.execute(
-                "UPDATE raw_sessions SET validation_status='failed', validation_mode='strict', "
-                "validation_error='synthetic strict schema rejection', validated_at_ms=1 WHERE raw_id=?",
-                (row[0],),
+                "UPDATE raw_sessions SET validation_status='failed', validation_mode=?, parse_error=?, "
+                "validation_error='synthetic typed validation failure', validated_at_ms=1 WHERE raw_id=?",
+                (validation_mode, parse_error, row[0]),
             )
 
         # Inject the durable typed refusal through the same admitted Source
@@ -1083,8 +1114,11 @@ async def test_materialize_keeps_valid_subject_after_original_decode_refusal(
             (generation_id,),
         ).fetchone()
     assert items[0] == ("admitted", "success", "materialization", 0, None)
-    assert items[1][:4] == ("pending", "validation_rejected", "validation", 0)
-    assert items[1][4].startswith("raw:")
+    assert items[1][:4] == expected_refusal
+    if expected_refusal[1] == "validation_rejected":
+        assert items[1][4].startswith("raw:")
+    else:
+        assert items[1][4] is None
     assert census == (1, 1, 0, 0, 0)
     audit = AuditRepository.for_archive_root(archive_root)
     with audit.settled_machine_read():

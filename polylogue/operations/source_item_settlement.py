@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 
 from polylogue.core.enums import IngestOutcome
@@ -13,6 +14,53 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     AcquisitionDisposition,
     transition_source_item,
 )
+
+
+def _matching_raw_members(
+    source_conn: sqlite3.Connection,
+    receipt: sqlite3.Connection,
+    *,
+    source_generation_id: str,
+    source_item_id: str,
+    expected_count: int,
+    check_stop: Callable[[], None] | None,
+) -> tuple[bool, bool]:
+    """Compare exact ordered raw/blob membership using bounded cursor state."""
+    count = 0
+    all_complete = True
+    with (
+        closing(
+            receipt.execute(
+                "SELECT raw_id, raw_blob_hash, complete FROM item_raws WHERE source_item_id=? ORDER BY raw_id",
+                (source_item_id,),
+            )
+        ) as expected_rows,
+        closing(
+            source_conn.execute(
+                "SELECT DISTINCT m.raw_id, m.raw_blob_hash, r.blob_hash "
+                "FROM source_item_raw_members AS m LEFT JOIN raw_sessions AS r ON r.raw_id=m.raw_id "
+                "WHERE m.source_generation_id=? AND m.source_item_id=? AND m.raw_id IS NOT NULL "
+                "ORDER BY m.raw_id",
+                (source_generation_id, source_item_id),
+            )
+        ) as actual_rows,
+    ):
+        while True:
+            expected = expected_rows.fetchone()
+            actual = actual_rows.fetchone()
+            if expected is None or actual is None:
+                return expected is None and actual is None and count == expected_count, all_complete
+            if check_stop is not None and count % 128 == 0:
+                check_stop()
+            if (
+                str(expected[0]) != str(actual[0])
+                or bytes(expected[1]) != bytes(actual[1])
+                or actual[2] is None
+                or bytes(actual[1]) != bytes(actual[2])
+            ):
+                return False, False
+            all_complete &= bool(expected[2])
+            count += 1
 
 
 def settle_materialized_source_items(
@@ -53,11 +101,15 @@ def settle_materialized_source_items(
                 cursor = int(ordinal)
                 if int(retired_count) or int(raw_count) == 0:
                     continue
-                raw_rows = receipt.execute(
-                    "SELECT raw_id, raw_blob_hash, complete FROM item_raws WHERE source_item_id=? ORDER BY raw_id",
-                    (item_id,),
-                ).fetchall()
-                if len(raw_rows) != int(raw_count):
+                members_match, raw_members_complete = _matching_raw_members(
+                    source_conn,
+                    receipt,
+                    source_generation_id=source_generation_id,
+                    source_item_id=str(item_id),
+                    expected_count=int(raw_count),
+                    check_stop=check_stop,
+                )
+                if not members_match:
                     continue
                 logical = receipt.execute(
                     "SELECT COUNT(DISTINCT l.logical_key), COALESCE(MIN(l.complete), 0) "
@@ -66,17 +118,6 @@ def settle_materialized_source_items(
                     (item_id,),
                 ).fetchone()
                 logical_count, logical_complete = int(logical[0]), bool(logical[1])
-                expected = tuple((str(raw_id), bytes(blob_hash)) for raw_id, blob_hash, _ in raw_rows)
-                actual_rows = source_conn.execute(
-                    "SELECT DISTINCT m.raw_id, m.raw_blob_hash, r.blob_hash "
-                    "FROM source_item_raw_members AS m LEFT JOIN raw_sessions AS r ON r.raw_id=m.raw_id "
-                    "WHERE m.source_generation_id=? AND m.source_item_id=? AND m.raw_id IS NOT NULL "
-                    "ORDER BY m.raw_id",
-                    (source_generation_id, item_id),
-                ).fetchall()
-                actual = tuple((str(raw_id), bytes(member_hash)) for raw_id, member_hash, _ in actual_rows)
-                if expected != actual or any(row[2] is None or bytes(row[1]) != bytes(row[2]) for row in actual_rows):
-                    continue
                 item = source_conn.execute(
                     "SELECT disposition, revision, enumeration_fingerprint, enumerated_at_ms, "
                     "parser_fingerprint, addressing_mode "
@@ -93,7 +134,9 @@ def settle_materialized_source_items(
                     "JOIN raw_sessions AS r ON r.raw_id=m.raw_id "
                     "LEFT JOIN raw_membership_census AS c ON c.raw_id=r.raw_id "
                     "WHERE m.source_generation_id=? AND m.source_item_id=? "
-                    "AND r.validation_status='failed' ORDER BY r.raw_id LIMIT 1",
+                    "AND r.validation_status='failed' AND r.validation_mode='strict' "
+                    "AND r.validated_at_ms IS NOT NULL AND r.validation_error IS NOT NULL "
+                    "AND r.parse_error IS NULL ORDER BY r.raw_id LIMIT 1",
                     (source_generation_id, item_id),
                 ).fetchone()
                 if validation is not None:
@@ -131,7 +174,7 @@ def settle_materialized_source_items(
                     )
                     changed += 1
                     continue
-                if not complete or any(not row[2] for row in raw_rows):
+                if not complete or not raw_members_complete:
                     continue
                 if logical_count and logical_complete:
                     disposition = AcquisitionDisposition.ADMITTED
@@ -139,7 +182,8 @@ def settle_materialized_source_items(
                 elif not logical_count:
                     typed = source_conn.execute(
                         "SELECT COUNT(*), COALESCE(SUM(CASE WHEN "
-                        "(a.parse_as_session=0 OR c.status='non_session') THEN 1 ELSE 0 END), 0) "
+                        "(r.parse_error IS NULL AND (a.parse_as_session=0 OR c.status='non_session')) "
+                        "THEN 1 ELSE 0 END), 0) "
                         "FROM raw_sessions AS r LEFT JOIN raw_artifacts AS a ON a.raw_id=r.raw_id "
                         "LEFT JOIN raw_membership_census AS c ON c.raw_id=r.raw_id "
                         "WHERE r.raw_id IN (SELECT raw_id FROM source_item_raw_members "

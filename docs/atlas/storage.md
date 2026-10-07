@@ -194,7 +194,7 @@ New ingest acceptance stages physical inputs pagewise through
 After materialization, the ingest writer settles an accepted item only when its
 current generation/item binding and exact raw/blob membership match the pinned
 receipt and every raw has complete logical publication evidence. Strict
-validation refusal remains pending with typed `validation_rejected` evidence;
+schema-validation refusal remains pending with typed `validation_rejected` evidence;
 it keeps the generation census unsealable and the terminal ingest receipt
 degraded. Unresolved or untyped raw evidence cannot settle an item.
 Immutable pending commands retain their original inline evidence for restart;
