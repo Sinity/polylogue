@@ -45,8 +45,10 @@ record chains used by the sidecar ownership index. A captured resolver reads
 only those private staged files and has no filesystem fallback. A fresh
 Source witness must reproduce the selected raw set, parser operands and
 Claude sidecar-scope witness before current enrichment and publication are
-prepared. A changed witness invalidates the detached parse. The neutral
-artifacts contain no enrichment state (`storage/derived/raw.py`;
+prepared. If that bind becomes stale during enrichment, a new Source witness
+repeats the comparison and reuses the detached parser artifact only when its
+selected raws and parser operands still match exactly; changed parser inputs
+are reparsed. The neutral artifacts contain no enrichment state (`storage/derived/raw.py`;
 `sources/sidecar_evidence.py`).
 
 ## Source observation and SQLite reads

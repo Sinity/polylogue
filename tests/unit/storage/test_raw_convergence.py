@@ -727,6 +727,7 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     """Claude's detached parser consumes captured CAS sidecars, then binds current Source."""
     from polylogue.schemas import validate_retained_document as validate_original
     from polylogue.sources import prepared_jsonl as prepared_jsonl_module
+    from polylogue.sources import revision_backfill as revision_backfill_module
 
     bootstrap_archive_root(tmp_path)
     session_id = "2c9fbada-0d07-4429-8728-63f70e3c672f"
@@ -826,7 +827,9 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     validation_raw_ids: list[str] = []
     neutral_sidecar_events: list[tuple[str, dict[str, object]]] = []
     inserted: list[str] = []
+    enrichment_calls = 0
     prepare_original = prepared_jsonl_module.prepare_jsonl_blob
+    enrich_original = revision_backfill_module.iter_enriched_sessions_from_retained_read
 
     def counted_prepare(*args: object, **kwargs: object) -> object:
         nonlocal parse_calls
@@ -838,7 +841,12 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
 
     def commit_during_validation(*args: object, **kwargs: object) -> object:
         validation_raw_ids.append(str(kwargs["raw_id"]))
-        verdict = validate_original(*args, **kwargs)
+        return validate_original(*args, **kwargs)
+
+    def commit_during_enrichment(*args: object, **kwargs: object) -> object:
+        nonlocal enrichment_calls
+        enrichment_calls += 1
+        yield from enrich_original(*args, **kwargs)
         if not inserted:
             inserted.append(
                 _admit(
@@ -850,10 +858,10 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
                     acquired_at_ms=3,
                 )
             )
-        return verdict
 
     monkeypatch.setattr(prepared_jsonl_module, "prepare_jsonl_blob", counted_prepare)
     monkeypatch.setattr("polylogue.schemas.validate_retained_document", commit_during_validation)
+    monkeypatch.setattr(revision_backfill_module, "iter_enriched_sessions_from_retained_read", commit_during_enrichment)
 
     report = run_on_convergence_owner(
         tmp_path,
@@ -870,6 +878,7 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     assert report.done == 1
     assert parse_calls == 1
     assert validation_raw_ids == [target], validation_raw_ids
+    assert enrichment_calls == 2
     assert sum(event_type == "claude_tool_result_sidecar" for event_type, _ in neutral_sidecar_events) == 1, (
         neutral_sidecar_events
     )
@@ -886,7 +895,7 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
             "SELECT COUNT(*) FROM session_events e JOIN sessions s ON s.session_id = e.session_id "
             "WHERE s.raw_id = ? AND e.event_type = 'claude_tool_result_sidecar'",
             (target,),
-        ).fetchone() == (1,), "the sibling-owned file is resolved from its retained tool_use record"
+        ).fetchone() == (1,), "the sibling-owned file is resolved from its retained tool_result record"
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sidecar,)).fetchone() == (1,)
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sibling_sidecar,)).fetchone() == (1,)

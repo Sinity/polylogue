@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, BinaryIO, Literal, Protocol, TypeVar, cast
 
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
+    RawRevisionKind,
     is_work_event_raw_id,
     parser_census_identity_measurement,
     raw_authority_parser_fingerprint,
@@ -41,6 +42,7 @@ from polylogue.core.compute import (
 )
 from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel_requested
 from polylogue.core.enums import Origin, Provider, ValidationMode
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
     RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
@@ -236,7 +238,12 @@ class _PreparationCarry:
         default_factory=list
     )
 
-    def discard_payload(self, *, keep: RawObservationReplacement | None = None) -> None:
+    def discard_payload(
+        self,
+        *,
+        keep: RawObservationReplacement | None = None,
+        preserve_neutral: bool = False,
+    ) -> None:
         """Discard carried artifacts and scratch that ``keep`` does not itself close."""
         kept_artifacts = (
             set()
@@ -254,17 +261,23 @@ class _PreparationCarry:
                 {},
                 (
                     artifact
-                    for artifact in (*self.artifacts.values(), *self.neutral_artifacts.values())
+                    for artifact in (
+                        *self.artifacts.values(),
+                        *(() if preserve_neutral else self.neutral_artifacts.values()),
+                    )
                     if id(artifact) not in kept_artifacts
                 ),
             )
         except BaseException as failure:
             failures.append(failure)
         self.artifacts.clear()
-        self.neutral_artifacts.clear()
+        if not preserve_neutral:
+            self.neutral_artifacts.clear()
         self.attachment_refs_published.clear()
         if keep is not None and keep.scratch_owner is self.scratch_owner:
             self.scratch_owner = None
+        if preserve_neutral and self.neutral_artifacts:
+            return
         if self.scratch_owner is not None and not failures:
             try:
                 _cleanup_scratch(self.scratch_owner)
@@ -273,6 +286,17 @@ class _PreparationCarry:
             self.scratch_owner = None
         if failures:
             raise BaseExceptionGroup("carried preparation cleanup failed", failures)
+
+
+@dataclass(frozen=True, slots=True)
+class _CapturedNeutralRaw:
+    descriptor: tuple[Provider, str, str, RawRevisionKind, int]
+    profile_identity: str | None
+    fallback_timestamp: str | None
+    native_id: str | None
+    zip_coordinate: CapturedZipMemberCoordinate | None
+    append_logical_key: str | None
+    staged_blob: Path
 
 
 class _CarryInvalidatedError(Exception):
@@ -1195,6 +1219,8 @@ class RawObservationDerivation(RawObservationInspection):
         # Even an initially empty discovery holds exclusive byte admission
         # before its witness can hydrate durable reference proof inputs.
         self._compute_adapter.amend_current_input_demand(0)
+        from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
         # A child replayed before its parent stores the shared prefix whole and
         # is normalized again once the parent arrives. When a write claims a
         # parent retained in another component and absent from the Index, the
@@ -1221,7 +1247,20 @@ class RawObservationDerivation(RawObservationInspection):
                     frame, key, replay_current=replay_current, selection=selection, carry=carry
                 )
             except _CarryInvalidatedError:
-                carry = _PreparationCarry()
+                carry = _PreparationCarry(
+                    scratch_owner=carry.scratch_owner,
+                    neutral_artifacts=carry.neutral_artifacts,
+                    committed=carry.committed,
+                )
+                continue
+            except ReferenceSealStaleError:
+                if not carry.neutral_artifacts:
+                    raise
+                carry = _PreparationCarry(
+                    scratch_owner=carry.scratch_owner,
+                    neutral_artifacts=carry.neutral_artifacts,
+                    committed=carry.committed,
+                )
                 continue
             try:
                 outcome = self._after_preparation(frame, replacement, carry, census_first, widened)
@@ -1450,7 +1489,11 @@ class RawObservationDerivation(RawObservationInspection):
         selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
         carry: _PreparationCarry,
     ) -> RawObservationReplacement:
-        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
+        from polylogue.storage.sqlite.reference_seal import (
+            IndexMutationDestination,
+            PreparedIndexMutation,
+            ReferenceSealStaleError,
+        )
 
         first_source_binding = carry.seal is None
         if carry.seal is not None:
@@ -1492,10 +1535,18 @@ class RawObservationDerivation(RawObservationInspection):
             seal.validate_observers_current()
             return replacement
         except BaseException as primary:
+            preserve_neutral = isinstance(primary, (_CarryInvalidatedError, ReferenceSealStaleError)) and bool(
+                carry.neutral_artifacts
+            )
+            if preserve_neutral and replacement is not None:
+                # The bound artifact owns the scratch directory, while neutral
+                # parser artifacts are the retry cache. Close its SQL owners
+                # without letting it remove the shared directory.
+                replacement.scratch_owner = None
             failures: list[BaseException] = []
             for close in (
                 seal.close if replacement is None else replacement.close,
-                partial(carry.discard_payload, keep=replacement),
+                partial(carry.discard_payload, keep=replacement, preserve_neutral=preserve_neutral),
             ):
                 try:
                     close()
@@ -1503,6 +1554,8 @@ class RawObservationDerivation(RawObservationInspection):
                     failures.append(cleanup)
             if failures:
                 raise BaseExceptionGroup("retained preparation and cleanup failed", [primary, *failures]) from primary
+            if preserve_neutral:
+                carry.seal = None
             raise
 
     def _prepare_neutral_jsonl_then_rebind(
@@ -1522,7 +1575,6 @@ class RawObservationDerivation(RawObservationInspection):
         with no ambient filesystem fallback. A new witness proves the same
         selected raws and parser operands before enrichment and publication.
         """
-        from polylogue.archive.revision_authority import RawRevisionKind
         from polylogue.sources.dispatch import is_jsonl_source_path, is_stream_record_provider
         from polylogue.sources.origin_specs import path_declaration_refuses_session
         from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
@@ -1538,10 +1590,7 @@ class RawObservationDerivation(RawObservationInspection):
         from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
 
         blob_store = BlobStore(self.archive_root / "blob")
-        captures: dict[
-            str,
-            tuple[tuple[object, ...], str | None, str | None, str | None, object, str | None, Path],
-        ] = {}
+        captures: dict[str, _CapturedNeutralRaw] = {}
         sidecar_scope_by_raw: dict[str, RetainedSidecarScope] = {}
         captured_sidecar_scopes: dict[str, RetainedSidecarScope] = {}
         staged_sidecars: dict[tuple[str, str], Path] = {}
@@ -1701,14 +1750,14 @@ class RawObservationDerivation(RawObservationInspection):
                 after = self._blob_stat_identity(blob_path)
                 if before != after or copied != raw_size or digest.hexdigest() != blob_hash:
                     raise RetainedPreparationRetryableError(f"retained JSONL input changed while staging raw {raw_id}")
-                captures[raw_id] = (
-                    descriptor,
-                    profile,
-                    fallback_timestamp,
-                    native_id,
-                    zip_coordinate,
-                    append_logical_key,
-                    staged_blob,
+                captures[raw_id] = _CapturedNeutralRaw(
+                    descriptor=descriptor,
+                    profile_identity=profile,
+                    fallback_timestamp=fallback_timestamp,
+                    native_id=native_id,
+                    zip_coordinate=zip_coordinate,
+                    append_logical_key=append_logical_key,
+                    staged_blob=staged_blob,
                 )
             original_selection = (raw_ids, logical_keys)
 
@@ -1732,9 +1781,15 @@ class RawObservationDerivation(RawObservationInspection):
             return (scope.scope_key, scope.available, scope.witness)
 
         def prepare_neutral(raw_id: str) -> PreparedJsonl:
-            descriptor, profile, fallback_timestamp, native_id, _zip_coordinate, append_logical_key, staged_blob = (
-                captures[raw_id]
-            )
+            cached = carry.neutral_artifacts.get(neutral_keys[raw_id])
+            if cached is not None:
+                return cached
+            captured = captures[raw_id]
+            descriptor = captured.descriptor
+            profile = captured.profile_identity
+            native_id = captured.native_id
+            append_logical_key = captured.append_logical_key
+            staged_blob = captured.staged_blob
             provider, blob_hash, source_path, kind, _raw_size = descriptor
             neutral_directory = staged_blob.parent
             with staged_blob.open("rb") as staged_input:
@@ -1784,9 +1839,11 @@ class RawObservationDerivation(RawObservationInspection):
             return neutral
 
         for raw_id in raw_ids:
-            descriptor, profile, fallback_timestamp, native_id, _zip_coordinate, _append_key, _staged_blob = captures[
-                raw_id
-            ]
+            captured = captures[raw_id]
+            descriptor = captured.descriptor
+            profile = captured.profile_identity
+            fallback_timestamp = captured.fallback_timestamp
+            native_id = captured.native_id
             provider, blob_hash, source_path, _kind, _raw_size = descriptor
             artifact_key = (
                 raw_id,
@@ -1803,30 +1860,37 @@ class RawObservationDerivation(RawObservationInspection):
                 artifact_key = (*artifact_key, sidecar_signature(raw_id))
             neutral_keys[raw_id] = artifact_key
 
+        reusable_keys = set(neutral_keys.values())
+        obsolete_keys = set(carry.neutral_artifacts) - reusable_keys
+        if obsolete_keys:
+            obsolete = [carry.neutral_artifacts.pop(artifact_key) for artifact_key in obsolete_keys]
+            _close_prepared_carriers({}, {}, obsolete)
+
         # Preserve the exact three canonical parses and typed one-pass prefix
         # reducer for simple, strictly growing Codex message chains. The helper
         # reads only these private staged copies through CapturedCodexRead.
         groups: dict[str, list[str]] = {}
         for raw_id in raw_ids:
-            descriptor = captures[raw_id][0]
+            descriptor = captures[raw_id].descriptor
             if descriptor[0] is Provider.CODEX and descriptor[3].value in {"full", "unknown"}:
                 groups.setdefault(descriptor[2], []).append(raw_id)
 
         class CapturedCodexRead:
             def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
-                return cast(tuple[Provider, str, str, RawRevisionKind, int], captures[raw_id][0])
+                return captures[raw_id].descriptor
 
             def raw_profile_identity(self, raw_id: str) -> str | None:
-                return captures[raw_id][1]
+                return captures[raw_id].profile_identity
 
             def raw_revision_file_mtime(self, raw_id: str) -> str | None:
-                return captures[raw_id][2]
+                return captures[raw_id].fallback_timestamp
 
             @contextmanager
             def open_raw_revision_material(
                 self, raw_id: str
             ) -> Iterator[tuple[Provider, BinaryIO, str, RawRevisionKind]]:
-                descriptor, _profile, _fallback, _native, _zip, _append_key, staged_blob = captures[raw_id]
+                descriptor = captures[raw_id].descriptor
+                staged_blob = captures[raw_id].staged_blob
                 with staged_blob.open("rb") as payload:
                     yield descriptor[0], payload, descriptor[2], descriptor[3]
 
@@ -1839,7 +1903,7 @@ class RawObservationDerivation(RawObservationInspection):
         )
 
         for group_ids in groups.values():
-            group_ids.sort(key=lambda raw_id: captures[raw_id][0][4])
+            group_ids.sort(key=lambda raw_id: captures[raw_id].descriptor[4])
             if len(group_ids) < 4:
                 continue
             first_id, second_id, head_id = group_ids[0], group_ids[1], group_ids[-1]
@@ -1861,7 +1925,10 @@ class RawObservationDerivation(RawObservationInspection):
                 existing = options_by_raw.get(raw_id)
                 if existing is not None:
                     return existing
-                descriptor, profile, fallback_timestamp, _native_id, _zip, _append_key, _staged_blob = captures[raw_id]
+                captured = captures[raw_id]
+                descriptor = captured.descriptor
+                profile = captured.profile_identity
+                fallback_timestamp = captured.fallback_timestamp
                 _provider, _blob_hash, source_path, _kind, raw_size = descriptor
                 options = CodexCheckpointArtifactOptions(
                     source_path=source_path,
@@ -1948,7 +2015,15 @@ class RawObservationDerivation(RawObservationInspection):
                         zip_coordinate,
                         _append_key,
                         _staged_blob,
-                    ) = captures[raw_id]
+                    ) = (
+                        captures[raw_id].descriptor,
+                        captures[raw_id].profile_identity,
+                        captures[raw_id].fallback_timestamp,
+                        captures[raw_id].native_id,
+                        captures[raw_id].zip_coordinate,
+                        captures[raw_id].append_logical_key,
+                        captures[raw_id].staged_blob,
+                    )
                     provider, _blob_hash, source_path, _kind, _raw_size = descriptor
                     neutral = carry.neutral_artifacts[neutral_keys[raw_id]]
                     if neutral.error is not None or neutral.deferred:
