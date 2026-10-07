@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Mapping
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -27,6 +29,10 @@ from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.prepared_replay import publish_prepared_source
 
+if TYPE_CHECKING:
+    from polylogue.storage.accepted_marker_producer import PreparedAcceptedMarkerCarrier
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
 
 def _facts(revision: str) -> dict[str, object]:
     return {
@@ -39,7 +45,7 @@ def _facts(revision: str) -> dict[str, object]:
     }
 
 
-def _carrier(raw_id: str, revision: str):
+def _carrier(raw_id: str, revision: str) -> PreparedAcceptedMarkerCarrier:
     request: tuple[Mapping[str, object], ...] = (
         {"session_id": f"CODEX_SESSION:{raw_id}", "provider_session_id": raw_id},
     )
@@ -51,27 +57,27 @@ def _carrier(raw_id: str, revision: str):
     )
 
 
-def _publish(root, raw_id: str, revision: str) -> None:
-    def prepare(seal) -> None:
+def _publish(root: Path, raw_id: str, revision: str) -> None:
+    def prepare(seal: PreparedIndexMutation) -> None:
         stage_accepted_marker_carrier(seal, _carrier(raw_id, revision))
 
     publish_prepared_source(root, "test.accepted-marker", prepare)
 
 
-def _publish_many(root, revisions: tuple[tuple[str, str], ...]) -> None:
-    def prepare(seal) -> None:
+def _publish_many(root: Path, revisions: tuple[tuple[str, str], ...]) -> None:
+    def prepare(seal: PreparedIndexMutation) -> None:
         for raw_id, revision in revisions:
             stage_accepted_marker_carrier(seal, _carrier(raw_id, revision))
 
     publish_prepared_source(root, "test.accepted-marker.batch", prepare)
 
 
-def test_existing_accepted_identity_can_be_reused_without_preparing_writer_rows(tmp_path) -> None:
+def test_existing_accepted_identity_can_be_reused_without_preparing_writer_rows(tmp_path: Path) -> None:
     bootstrap_archive_root(tmp_path)
     _publish(tmp_path, "revision-1", "1")
     observed: list[bool] = []
 
-    def inspect(seal) -> None:
+    def inspect(seal: PreparedIndexMutation) -> None:
         observed.append(
             accepted_marker_input_is_durable(
                 seal,
@@ -96,7 +102,7 @@ def test_existing_accepted_identity_can_be_reused_without_preparing_writer_rows(
     assert observed == [True, False]
 
 
-def test_accepted_revision_carriers_survive_reordered_replay_and_restart(tmp_path) -> None:
+def test_accepted_revision_carriers_survive_reordered_replay_and_restart(tmp_path: Path) -> None:
     """Earlier source marker evidence remains deliverable after a newer revision."""
     bootstrap_archive_root(tmp_path)
     _publish(tmp_path, "revision-2", "2")
@@ -123,7 +129,7 @@ def test_accepted_revision_carriers_survive_reordered_replay_and_restart(tmp_pat
         ]
 
 
-def test_excised_accepted_revision_refuses_marker_reproduction(tmp_path) -> None:
+def test_excised_accepted_revision_refuses_marker_reproduction(tmp_path: Path) -> None:
     bootstrap_archive_root(tmp_path)
     _publish(tmp_path, "revision-1", "1")
     with write_lease("test.accepted-marker.excision", archive_root=tmp_path):
@@ -146,7 +152,7 @@ def test_excised_accepted_revision_refuses_marker_reproduction(tmp_path) -> None
         assert source.execute("SELECT COUNT(*) FROM excised_marker_inputs").fetchone() == (1,)
 
 
-def test_multiple_carriers_share_one_stream_root_in_a_source_seal(tmp_path) -> None:
+def test_multiple_carriers_share_one_stream_root_in_a_source_seal(tmp_path: Path) -> None:
     """One source producer can stage multiple raw histories in one permit."""
     bootstrap_archive_root(tmp_path)
     _publish_many(tmp_path, (("revision-1", "1"), ("revision-2", "2")))
@@ -158,7 +164,7 @@ def test_multiple_carriers_share_one_stream_root_in_a_source_seal(tmp_path) -> N
         ]
 
 
-def test_carrier_candidates_come_from_the_canonical_prepared_write(tmp_path) -> None:
+def test_carrier_candidates_come_from_the_canonical_prepared_write(tmp_path: Path) -> None:
     """The source candidate coordinates match the rows the writer will publish."""
     bootstrap_archive_root(tmp_path)
     session_id = "codex-session:marker-producer"

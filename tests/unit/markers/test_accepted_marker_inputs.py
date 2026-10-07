@@ -396,7 +396,6 @@ async def test_source_required_mode_refuses_before_retained_publication(
         repository=repository,
         archive_root=tmp_path,
         config=Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[]),
-        ingest_workers=1,
         retained_runner=retained_runner,
     )
     monkeypatch.setattr(

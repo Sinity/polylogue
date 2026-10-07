@@ -3843,6 +3843,12 @@ def prepare_retained_replay_source(
     prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
 ) -> PreparedRetainedReplaySource:
     """Stage exact acknowledgements for the original ordered Index outcomes."""
+    from polylogue.markers.preparation import marker_recipe_fingerprint
+    from polylogue.storage.accepted_marker_producer import (
+        accepted_marker_input_is_durable,
+        prepare_accepted_marker_carrier,
+        stage_accepted_marker_carrier,
+    )
     from polylogue.storage.sqlite.archive_tiers.revision_governance import (
         membership_decisions_for_head_plan,
         prepare_membership_classification_source,
@@ -3857,7 +3863,89 @@ def prepare_retained_replay_source(
     produced_session_ids: set[str] = set()
     original_index_outputs: dict[str, tuple[bytes | None, int] | None] = {}
     decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
+    marker_recipe = marker_recipe_fingerprint()
     with seal.original_read_snapshot(), seal.source_producer():
+
+        def request_sessions_for(raw_id: str) -> Callable[[], Iterable[Mapping[str, object]]]:
+            retained = prepared_inputs[raw_id]
+            artifact = retained.prepared_artifact
+            if artifact is None:
+                raise RetainedPreparationRetryableError(
+                    f"accepted marker request has no canonical retained parse for {raw_id}"
+                )
+
+            def sessions() -> Iterator[Mapping[str, object]]:
+                from contextlib import closing
+
+                from polylogue.pipeline.ids import session_content_hash
+                from polylogue.sources.parsers.base_models import ParsedSession
+
+                with closing(artifact.iter_sessions()) as parsed_sessions:
+                    for session in parsed_sessions:
+                        if not isinstance(session, ParsedSession):
+                            raise RetainedPreparationRetryableError(
+                                f"accepted marker request has an invalid retained session for {raw_id}"
+                            )
+                        # Prepared sessions carry disk-backed message and event
+                        # sinks, which are not serializable as Python lists.
+                        # The canonical semantic hash streams those sinks and
+                        # binds messages, events, and attachments without a
+                        # resident tree copy. Keep the normalized metadata in
+                        # the request binding alongside that hash.
+                        content_hash = str(session_content_hash(session))
+                        if session.content_hash is not None and session.content_hash != content_hash:
+                            raise RetainedPreparationRetryableError(
+                                f"accepted marker session hash changed during preparation for {raw_id}"
+                            )
+                        binding = session.model_dump(mode="json", exclude={"messages", "session_events", "attachments"})
+                        binding["content_hash"] = content_hash
+                        binding["session_id"] = str(make_session_id(session.source_name, session.provider_session_id))
+                        yield binding
+
+            return sessions
+
+        def accepted_marker_facts(raw_id: str) -> dict[str, str]:
+            retained = prepared_inputs[raw_id]
+            return {
+                "blob_hash": retained.blob_hash,
+                "provider": retained.provider.value,
+                "revision_kind": retained.revision_kind.value,
+                "source_path": retained.source_path,
+                "parser_fingerprint": retained.parser_fingerprint,
+                "marker_recipe": marker_recipe,
+            }
+
+        def stage_accepted_marker_history(raw_id: str) -> None:
+            artifact = prepared_inputs[raw_id].prepared_artifact
+            verdict = None if artifact is None else getattr(artifact, "validation_verdict", None)
+            if verdict is not None and bool(getattr(verdict, "strict_refusal", False)):
+                return
+            request_sessions = request_sessions_for(raw_id)
+            facts = accepted_marker_facts(raw_id)
+            if accepted_marker_input_is_durable(
+                seal,
+                raw_id=raw_id,
+                request_facts=facts,
+                request_sessions=request_sessions,
+            ):
+                return
+            has_prepared_write = any(prepared_raw_id == raw_id for prepared_raw_id, _session_id in prepared_writes)
+            if not has_prepared_write and next(iter(request_sessions()), None) is not None:
+                raise RetainedPreparationRetryableError(
+                    f"accepted marker request has no canonical prepared write for {raw_id}"
+                )
+            prepared_sessions = (
+                (session_id, prepared, ())
+                for (prepared_raw_id, session_id), prepared in prepared_writes.items()
+                if prepared_raw_id == raw_id
+            )
+            carrier = prepare_accepted_marker_carrier(
+                raw_id=raw_id,
+                request_facts=facts,
+                request_sessions=request_sessions,
+                prepared_sessions=prepared_sessions,
+            )
+            stage_accepted_marker_carrier(seal, carrier)
 
         def retain_attachment_carrier(raw_id: str) -> None:
             if raw_id in attachment_artifacts:
@@ -3878,6 +3966,7 @@ def prepare_retained_replay_source(
             if adoption.session_id is None:
                 raise RetainedPreparationRetryableError("accepted byte acknowledgement has no session identity")
             for raw_id in outcome.plan.accepted_raw_ids:
+                stage_accepted_marker_history(raw_id)
                 retain_attachment_carrier(raw_id)
             for raw_id in revision_replay_terminal_raw_ids(outcome.plan):
                 prepare_raw_parse_success(seal, raw_id, provider=prepared_inputs[raw_id].provider)
@@ -3900,6 +3989,8 @@ def prepare_retained_replay_source(
                 session_id = str(make_session_id(session.source_name, session.provider_session_id))
                 skipped = not adoption.adoptable or _reader_suppresses(seal.observer("user"), session_id)
                 if not skipped:
+                    for raw_id in accepted:
+                        stage_accepted_marker_history(raw_id)
                     retain_attachment_carrier(accepted[-1])
                     produced_session_ids.add(session_id)
             decisions = membership_decisions_for_head_plan(plan.classification, plan.head_plan, suppressed=skipped)

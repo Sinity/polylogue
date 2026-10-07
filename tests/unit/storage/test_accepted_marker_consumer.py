@@ -326,7 +326,7 @@ def test_excision_streams_complete_session_membership_without_json_materializati
     source_db = tmp_path / "source.db"
     with sqlite3.connect(source_db) as source:
         source.executescript(SOURCE_DDL)
-    request_sessions = tuple({"session_id": f"source:{index}"} for index in range(300))
+    request_sessions: tuple[dict[str, object], ...] = tuple({"session_id": f"source:{index}"} for index in range(300))
 
     async def append() -> None:
         async with aiosqlite.connect(source_db) as conn:
