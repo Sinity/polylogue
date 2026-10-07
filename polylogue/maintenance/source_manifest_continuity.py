@@ -284,6 +284,7 @@ def configured_source_frontier(archive_root: Path) -> SourceFrontier:
         # observation; build_source_frontier turns that race into a blocker.
         name = source.name
         layout_name = name if path.is_dir() else None
+        role = SourceRole.APPEND_JSONL if name == "claude-code-history" else SourceRole.DIRECTORY
         sqlite_paths: list[Path] = []
         if layout_name is not None:
             layout = source_layout_for(layout_name)
@@ -304,7 +305,7 @@ def configured_source_frontier(archive_root: Path) -> SourceFrontier:
         rows.append(
             SourceDeclaration(
                 f"configured:{name}",
-                SourceRole.DIRECTORY,
+                role,
                 path,
                 True,
                 layout_name,

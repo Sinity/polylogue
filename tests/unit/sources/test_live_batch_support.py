@@ -46,7 +46,6 @@ from polylogue.sources.live.batch import (
 from polylogue.sources.live.batch_support import (
     _BROWSER_CAPTURE_PREFIX_PROBE_BYTES,
     _DEFER_APPEND,
-    _STREAMING_FULL_INGEST_BYTES,
     JsonlBoundary,
     _AppendPlan,
     _AppendResult,
@@ -89,6 +88,8 @@ from tests.infra.source_builders import (
     make_chatgpt_node,
     make_claude_chat_message,
 )
+
+_RETIRED_FULL_INGEST_SIZE_BOUND = 8 * 1024 * 1024
 
 
 def _retained_parse_by_path(
@@ -1458,7 +1459,7 @@ def test_source_only_full_ingest_bounds_oversized_ndjson_sampling(
         json.dumps(
             {
                 "type": "session_meta",
-                "payload": {"id": "oversized-record", "padding": "x" * 128_000},
+                "payload": {"id": "oversized-record", "padding": "x" * (_RETIRED_FULL_INGEST_SIZE_BOUND + 1024)},
             }
         ).encode()
         + b"\n"
@@ -1482,7 +1483,6 @@ def test_source_only_full_ingest_bounds_oversized_ndjson_sampling(
         cursor=CursorStore(tmp_path / "index.db"),
         parser_fingerprint="test-parser",
     )
-    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support.json_loads",
         lambda _raw: (_ for _ in ()).throw(AssertionError("sampling must not decode an oversized physical record")),
@@ -2549,7 +2549,6 @@ def test_streamed_incomplete_jsonl_capture_defers_completed_source_until_authori
         cursor=cursor,
         parser_fingerprint="test-parser",
     )
-    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", len(captured) - 1)
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
@@ -2831,8 +2830,6 @@ def test_large_weak_path_uses_streaming_route_before_decoded_evidence(
         cursor=CursorStore(db_path),
         parser_fingerprint="test-parser",
     )
-    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
-    monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
     original_read_bytes = Path.read_bytes
 
     def refuse_source_read_bytes(candidate: Path) -> bytes:
@@ -2872,8 +2869,6 @@ def test_threshold_crossing_strong_sidecar_is_excluded_before_streaming(
         cursor=CursorStore(db_path),
         parser_fingerprint="test-parser",
     )
-    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
-    monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support.detect_provider_from_path_evidence",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -3034,8 +3029,6 @@ def test_streaming_full_ingest_writes_archive_from_blob(
         del current_path, source_payload_read_bytes, force
         stage_events.append((phase, stage_payload))
 
-    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
-
     result = _full_paths_sync(processor, [source], source_name="codex", heartbeat=heartbeat)
 
     assert result.succeeded == [source]
@@ -3130,7 +3123,7 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
                 },
             },
         },
-        "preserved_native_bytes": "x" * 32_000,
+        "preserved_native_bytes": "x" * (_RETIRED_FULL_INGEST_SIZE_BOUND + 1024),
     }
     capture_payload = {
         "polylogue_capture_kind": "browser_llm_session",
@@ -3154,7 +3147,7 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
             "updated_at": "2026-04-24T00:00:01+00:00",
             "turns": [{"provider_turn_id": "dom-u1", "role": "user", "text": "DOM fallback", "ordinal": 0}],
         },
-        "padding": "x" * 256,
+        "padding": "x" * (_RETIRED_FULL_INGEST_SIZE_BOUND + 1024),
     }
     source.write_text(json.dumps(capture_payload), encoding="utf-8")
     index_db = tmp_path / "index.db"
@@ -3167,8 +3160,6 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
         cursor=cursor,
         parser_fingerprint="test-parser",
     )
-
-    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
 
     result = _full_paths_sync(processor, [source], source_name="browser-capture")
 
@@ -3235,7 +3226,7 @@ def test_generic_large_browser_capture_json_uses_prefix_detection_without_unknow
                 {"provider_turn_id": "a1", "role": "assistant", "text": "Generic answer text", "ordinal": 1},
             ],
         },
-        "padding": "x" * 256,
+        "padding": "x" * (_RETIRED_FULL_INGEST_SIZE_BOUND + 1024),
     }
     source.write_text(json.dumps(capture_payload), encoding="utf-8")
     index_db = tmp_path / "index.db"
@@ -3248,9 +3239,6 @@ def test_generic_large_browser_capture_json_uses_prefix_detection_without_unknow
         cursor=cursor,
         parser_fingerprint="test-parser",
     )
-
-    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
-    monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
 
     result = _full_paths_sync(processor, [source], source_name="inbox")
 
@@ -5284,6 +5272,7 @@ def test_full_ingest_does_not_advance_cursor_across_same_size_replacement(
 
     assert first.succeeded_file_count == 1
     assert first.stale_cursor_write_count == 1
+    assert first.stale_cursor_paths == (str(path),)
     if replacement_mode == "atomic":
         assert (path.stat().st_dev, path.stat().st_ino) != original_identity
     else:
@@ -6500,14 +6489,12 @@ def test_full_batch_session_shaped_workflow_journal_reaches_parser_idempotently(
 
 
 def test_large_full_batch_session_shaped_workflow_journal_reaches_parser_idempotently(tmp_path: Path) -> None:
-    from polylogue.sources.live.batch_support import _STREAMING_FULL_INGEST_BYTES
-
     root = tmp_path / "sessions"
     source = root / "subagents" / "workflows" / "wf-batch" / "journal.jsonl"
     source.parent.mkdir(parents=True)
     source.write_bytes(
         b'{"contentKey":"artifact-0","agentId":"workflow-agent","summary":"'
-        + b"x" * _STREAMING_FULL_INGEST_BYTES
+        + b"x" * _RETIRED_FULL_INGEST_SIZE_BOUND
         + b'"}\n'
         + b"".join(
             b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n'
@@ -6519,7 +6506,7 @@ def test_large_full_batch_session_shaped_workflow_journal_reaches_parser_idempot
         b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
         b'"timestamp":"2025-01-01T00:00:01Z"}\n'
     )
-    assert source.stat().st_size > _STREAMING_FULL_INGEST_BYTES
+    assert source.stat().st_size > _RETIRED_FULL_INGEST_SIZE_BOUND
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
@@ -7079,8 +7066,6 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
     # (>= this threshold uses capture_bound_path + write_raw_blob_ref,
     # never populating raw_payloads) rather than the small-payload
     # write_raw_payload path -- see polylogue-re4a.
-    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
-    monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
 
     archive_results: list[_ArchiveFullWriteResult] = []
     original_full_write = processor._acquire_full_records_archive
@@ -8698,10 +8683,10 @@ def test_gemini_cli_checkpoint_over_the_streaming_bound_reaches_the_archive(tmp_
     source = root / "session-2026-03-16T09-40-5c12869b.json"
     source.parent.mkdir(parents=True)
     source.write_text(
-        json.dumps(_gemini_cli_checkpoint("y" * (_STREAMING_FULL_INGEST_BYTES + 1024))),
+        json.dumps(_gemini_cli_checkpoint("y" * (_RETIRED_FULL_INGEST_SIZE_BOUND + 1024))),
         encoding="utf-8",
     )
-    assert source.stat().st_size > _STREAMING_FULL_INGEST_BYTES
+    assert source.stat().st_size > _RETIRED_FULL_INGEST_SIZE_BOUND
 
     cursor = CursorStore(tmp_path / "index.db")
     bootstrap_archive_root(tmp_path)
@@ -8778,9 +8763,8 @@ _LARGE_JSON_SESSION_DOCUMENTS: dict[Provider, Any] = {
 def test_json_session_admission_does_not_depend_on_file_size(
     provider: Provider,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A supported JSON document remains eligible on either side of the old bound."""
+    """A supported JSON document remains eligible above the former size boundary."""
     document = _LARGE_JSON_SESSION_DOCUMENTS[provider]
     target = tmp_path / "chats" / "session.json"
     target.parent.mkdir(parents=True)
@@ -8790,7 +8774,8 @@ def test_json_session_admission_does_not_depend_on_file_size(
     # The witness must itself be a session, or the parity below is vacuous.
     assert _parse_path_as_session_artifact(target, provider=provider) is True
 
-    monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
+    target.write_bytes(payload + b" " * max(0, _RETIRED_FULL_INGEST_SIZE_BOUND + 1024 - len(payload)))
+    assert target.stat().st_size > _RETIRED_FULL_INGEST_SIZE_BOUND
     assert _parse_path_as_session_artifact(target, provider=provider) is True
 
 
@@ -8833,18 +8818,16 @@ def _live_processor(tmp_path: Path, root: Path, *, source_name: str) -> tuple[Li
     return processor, cursor
 
 
-def test_json_document_provider_detection_does_not_depend_on_file_size(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A generic inbox detects the same provider across the former size bound."""
+def test_json_document_provider_detection_does_not_depend_on_file_size(tmp_path: Path) -> None:
+    """A generic inbox detects a provider from a document above the former size boundary."""
     root = tmp_path / "chats"
     source = root / "session-2026-03-16T09-40-5c12869b.json"
     source.parent.mkdir(parents=True)
     source.write_text(
-        json.dumps(_gemini_cli_checkpoint("y" * (_STREAMING_FULL_INGEST_BYTES + 1024))),
+        json.dumps(_gemini_cli_checkpoint("y" * (_RETIRED_FULL_INGEST_SIZE_BOUND + 1024))),
         encoding="utf-8",
     )
-    assert source.stat().st_size > _STREAMING_FULL_INGEST_BYTES
+    assert source.stat().st_size > _RETIRED_FULL_INGEST_SIZE_BOUND
     processor, cursor = _live_processor(tmp_path, root, source_name="inbox")
 
     result = run_ingest_files(processor, [source], emit_event=False)
