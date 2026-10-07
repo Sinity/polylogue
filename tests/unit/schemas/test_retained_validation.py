@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import gc
 import json
+import tracemalloc
 from pathlib import Path
 from typing import Any
 
@@ -274,6 +276,59 @@ def test_retained_reduces_many_invalid_records_and_closes_spill_on_cancellation(
         )
     assert captured["database"]
     assert not Path(captured["database"]).exists()
+
+
+def test_retained_invalid_record_peak_memory_does_not_track_error_count(tmp_path: Path) -> None:
+    registry = _registry(tmp_path, {"type": "string"})
+    resolution = _resolution("v2", explicit_reason="exact_structure")
+    counts = (256, 2048)
+    paths = {count: tmp_path / f"invalid-{count}.jsonl" for count in counts}
+    for count, path in paths.items():
+        with path.open("w", encoding="utf-8") as stream:
+            for index in range(count):
+                stream.write(json.dumps({"type": "record", "kind": index, f"added_{index}": True}) + "\n")
+
+    def validate(path: Path, count: int) -> int:
+        verdict = validate_retained_document(
+            "claude-code",
+            path,
+            mode=ValidationMode.ADVISORY,
+            raw_id=f"raw-{count}",
+            revision_sha256=f"{count:064x}",
+            evidence_id=f"raw-{count}",
+            jsonl=True,
+            schema_resolution=resolution,
+            schema_resolution_is_explicit=True,
+            registry=registry,
+        )
+        assert (verdict.sample_count, verdict.invalid_count, verdict.error_count, verdict.drift_count) == (
+            count,
+            count,
+            count,
+            count,
+        )
+        assert verdict.first_diagnostic is not None and "kind" in verdict.first_diagnostic
+        assert verdict.drift_observation is not None
+        assert verdict.drift_observation.classification == "field_changed"
+        assert verdict.drift_observation.unseen_key_signature == "added_0"
+        return verdict.invalid_count
+
+    validate(paths[256], 256)  # Warm package/schema caches before tracing the comparative runs.
+    peaks: list[int] = []
+    tracemalloc.start()
+    try:
+        for count in counts:
+            gc.collect()
+            tracemalloc.reset_peak()
+            baseline, _ = tracemalloc.get_traced_memory()
+            errors = validate(paths[count], count)
+            _, peak = tracemalloc.get_traced_memory()
+            peaks.append(peak - baseline)
+            assert errors == count
+        assert counts[1] == 8 * counts[0]
+        assert peaks[1] < peaks[0] * 2
+    finally:
+        tracemalloc.stop()
 
 
 def test_committed_schema_files_match_draft202012_validity() -> None:
