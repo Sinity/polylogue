@@ -1560,11 +1560,11 @@ class RawMaterializationDiscovery:
             # log a whale-schedule warning every 30 s on an empty root.
             return ()
         from polylogue.operations.raw_observation_derivation import (
-            raw_observation_frame,
+            raw_observation_inspection_frame,
         )
         from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN, RawObservationInspection
 
-        frame = raw_observation_frame(self._archive_root, validation_mode=None)
+        frame = raw_observation_inspection_frame(self._archive_root)
         binding = _RawDiscoveryBinding(
             archive_root=frame.archive_root,
             source_revision=frame.source_revision,

@@ -8721,7 +8721,7 @@ class PreparedSessionSourceRead:
 
     def raw_parser_confirmed_non_session(self, raw_id: str) -> bool:
         """Whether current parser authority terminally classifies this raw as non-session."""
-        from polylogue.storage.sqlite.archive_tiers.revision_governance import raw_authority_parser_fingerprint
+        from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
 
         self._load_matches("raw_membership_census", "SELECT rowid FROM raw_membership_census WHERE raw_id=?", (raw_id,))
         with self._seal.source_rows(

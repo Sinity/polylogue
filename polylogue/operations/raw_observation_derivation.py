@@ -100,7 +100,7 @@ def raw_observation_frame(
     *,
     raw_ids: Sequence[str] = (),
     index_db_path: Path | None = None,
-    validation_mode: ValidationMode | None = ValidationMode.ADVISORY,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
 ) -> DerivationFrame:
     index_path = index_db_path or ArchiveLocation.resolve(archive_root).active_index_path
     return DerivationFrame(
@@ -108,6 +108,22 @@ def raw_observation_frame(
         source_revision=str(index_path.resolve()),
         recipe_versions={RAW_OBSERVATION_DOMAIN: raw_observation_recipe_version(validation_mode)},
         scope=RawObservationScope(raw_ids=tuple(raw_ids)),
+    )
+
+
+def raw_observation_inspection_frame(
+    archive_root: Path,
+    *,
+    index_db_path: Path | None = None,
+) -> DerivationFrame:
+    """Bind read-only discovery to parser evidence without a validation policy."""
+    index_path = index_db_path or ArchiveLocation.resolve(archive_root).active_index_path
+    adapter = RawObservationInspection(archive_root, index_db_path=index_path)
+    return DerivationFrame(
+        archive_root=str(archive_root),
+        source_revision=str(index_path.resolve()),
+        recipe_versions={RAW_OBSERVATION_DOMAIN: adapter.recipe_version},
+        scope=RawObservationScope(),
     )
 
 
@@ -140,7 +156,7 @@ def raw_observation_backlog_snapshot(
         }
 
     adapter = RawObservationInspection(archive_root, index_db_path=index_db_path)
-    frame = raw_observation_frame(archive_root, index_db_path=index_db_path, validation_mode=None)
+    frame = raw_observation_inspection_frame(archive_root, index_db_path=index_db_path)
     from polylogue.sources.dispatch import is_stream_record_provider
 
     try:
