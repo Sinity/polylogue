@@ -124,8 +124,9 @@ def _fail_first_blob_copy(monkeypatch: pytest.MonkeyPatch, failure: OSError) -> 
 @pytest.fixture
 async def storage_env(workspace_env: dict[str, Path]) -> AsyncIterator[tuple[Polylogue, LiveWatcher, Path]]:
     root = workspace_env["data_root"] / "claude-projects"
-    root.mkdir(parents=True)
-    source_path = root / "session.jsonl"
+    project = root / "-home-user-repo"
+    project.mkdir(parents=True)
+    source_path = project / "session.jsonl"
     _write_session(source_path, "storage-fault")
     archive = Polylogue(
         archive_root=workspace_env["archive_root"],

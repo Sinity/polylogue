@@ -29,7 +29,7 @@ from polylogue.core.enums import BlockType, Origin, Provider, ToolOutcome, ToolR
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.dispatch import detect_provider
 from polylogue.sources.origin_specs import origin_specs, tool_outcome_unknown_reasons_for_origin
-from polylogue.sources.parsers.antigravity import looks_like_trajectory_db_path, parse_trajectory_db
+from polylogue.sources.parsers.antigravity import looks_like_trajectory_db_path
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.chatgpt import looks_like as chatgpt_looks_like
 from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
@@ -51,6 +51,7 @@ from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+from tests.infra.antigravity_parser import parse_trajectory_db
 from tests.infra.index_writer import write_fixture_index_session
 
 NOT_REPORTED = ToolResultUnknownReason.NOT_REPORTED.value

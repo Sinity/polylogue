@@ -35,7 +35,6 @@ from polylogue.browser_capture.capture_job_events import (
 from polylogue.browser_capture.capture_stream import (
     CaptureSummary,
     StagedCapture,
-    stage_capture_body,
     stage_capture_chunks,
     stage_retained_capture,
     summarize_capture_file,
@@ -167,71 +166,6 @@ def _canonical_checkpoint_digest(stream: BinaryIO) -> tuple[str, str | None]:
     for part in _canonical_checkpoint_parts(observed_events()):
         hasher.update(part)
     return "sha256:" + hasher.hexdigest(), conversation_ref
-
-
-def _stored_checkpoint_payload_events(stream: BinaryIO | sqlite3.Blob) -> Iterator[tuple[str, object]]:
-    """Select the payload from the shipped canonical checkpoint wrapper.
-
-    The complete wrapper is consumed even after its payload ends. A missing
-    or repeated payload is a refusal, so conversion cannot publish a selected
-    prefix of corrupt state and then retire its original row.
-    """
-    found = False
-    selecting = False
-    depth = 0
-    root_depth = 0
-    pending_payload = False
-    for event, value in ijson.basic_parse(stream):
-        if selecting:
-            yield event, value
-            if event in {"start_map", "start_array"}:
-                depth += 1
-            elif event in {"end_map", "end_array"}:
-                depth -= 1
-            if depth == 0:
-                selecting = False
-        elif pending_payload:
-            pending_payload = False
-            found = True
-            yield event, value
-            if event in {"start_map", "start_array"}:
-                selecting = True
-                depth = 1
-        elif event == "map_key" and root_depth == 1 and value == "payload":
-            if found:
-                raise CaptureJobError(500, "stored_checkpoint_invalid")
-            pending_payload = True
-        if event in {"start_map", "start_array"}:
-            if root_depth == 0 and event != "start_map":
-                raise CaptureJobError(500, "stored_checkpoint_invalid")
-            root_depth += 1
-        elif event in {"end_map", "end_array"}:
-            root_depth -= 1
-    if not found or selecting or pending_payload or root_depth:
-        raise CaptureJobError(500, "stored_checkpoint_invalid")
-
-
-class _CheckpointPartReader:
-    """Adapt canonical token parts to the existing bounded staging reader."""
-
-    def __init__(self, parts: Iterator[bytes]) -> None:
-        self._parts = parts
-        self._pending = memoryview(b"")
-
-    def read(self, size: int) -> bytes:
-        if size <= 0:
-            return b""
-        result = bytearray()
-        while len(result) < size:
-            if not self._pending:
-                try:
-                    self._pending = memoryview(next(self._parts))
-                except StopIteration:
-                    break
-            consumed = min(size - len(result), len(self._pending))
-            result.extend(self._pending[:consumed])
-            self._pending = self._pending[consumed:]
-        return bytes(result)
 
 
 def capture_job_database_path(spool_path: Path | None = None) -> Path:
@@ -397,26 +331,6 @@ class CaptureJobRegistry:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS capture_native_prepared_artifact ON capture_job_native_artifacts(sha256)"
         )
-        # Normalize diagnostic metadata once on database open. Original custody
-        # rows and messages survive; a historical message cannot prove errno.
-        for row in connection.execute("SELECT source_digest, diagnostic FROM capture_job_orphans"):
-            try:
-                diagnostic = json.loads(row["diagnostic"])
-            except (ValueError, TypeError):
-                diagnostic = None
-            if not (
-                isinstance(diagnostic, dict)
-                and set(diagnostic) == {"message", "errno_class"}
-                and isinstance(diagnostic["message"], str)
-                and (diagnostic["errno_class"] is None or isinstance(diagnostic["errno_class"], str))
-            ):
-                diagnostic = {"message": row["diagnostic"], "errno_class": None}
-            encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
-            if encoded != row["diagnostic"]:
-                connection.execute(
-                    "UPDATE capture_job_orphans SET diagnostic=? WHERE source_digest=?",
-                    (encoded, row["source_digest"]),
-                )
         connection.execute(
             """CREATE TABLE IF NOT EXISTS capture_job_update_receipts (
                 job_id TEXT NOT NULL, request_id TEXT NOT NULL, request_digest TEXT NOT NULL,
@@ -432,69 +346,9 @@ class CaptureJobRegistry:
                 UNIQUE(job_id, request_id), UNIQUE(job_id, event_revision)
             ) STRICT"""
         )
-        job_columns = {row[1] for row in connection.execute("PRAGMA table_info(capture_jobs)")}
-        if "account_scope" in job_columns:
-            # _connect owns the complete schema transaction. Publishing just
-            # this conversion would expose a partially initialized registry.
-            connection.execute("ALTER TABLE capture_jobs RENAME COLUMN account_scope TO scope_key")
-            connection.execute("ALTER TABLE capture_jobs ADD COLUMN scope_kind TEXT NOT NULL DEFAULT 'account'")
-            connection.execute("ALTER TABLE capture_jobs ADD COLUMN invocation_json TEXT")
-            job_columns = {row[1] for row in connection.execute("PRAGMA table_info(capture_jobs)")}
         connection.execute(
             "CREATE INDEX IF NOT EXISTS capture_job_discovery ON capture_jobs(provider, scope_key, created_at DESC, job_id DESC)"
         )
-        if "checkpoint_artifact_ref" not in job_columns:
-            connection.execute("ALTER TABLE capture_jobs ADD COLUMN checkpoint_artifact_ref TEXT")
-        if "checkpoint_size" not in job_columns:
-            connection.execute("ALTER TABLE capture_jobs ADD COLUMN checkpoint_size INTEGER")
-        if "checkpoint_json" in job_columns:
-            # This is shipped disposable job state. Publish immutable custody
-            # before the transaction retires its predecessor column. A failed
-            # conversion leaves the original row available on the next open.
-            for row in connection.execute(
-                "SELECT rowid, job_id, checkpoint_digest FROM capture_jobs WHERE checkpoint_json IS NOT NULL"
-            ):
-                with connection.blobopen("capture_jobs", "checkpoint_json", row["rowid"], readonly=True) as blob:
-                    digest = hashlib.sha256()
-                    size = 0
-                    for part in _canonical_checkpoint_parts(_stored_checkpoint_payload_events(blob)):
-                        digest.update(part)
-                        size += len(part)
-                    if "sha256:" + digest.hexdigest() != row["checkpoint_digest"]:
-                        raise CaptureJobError(500, "stored_checkpoint_digest_mismatch")
-                    blob.seek(0)
-                    reader = _CheckpointPartReader(_canonical_checkpoint_parts(_stored_checkpoint_payload_events(blob)))
-                    staged = stage_capture_body(reader.read, size, spool_root=self._spool_root())
-                    try:
-                        if reader.read(1):
-                            raise CaptureJobError(500, "stored_checkpoint_invalid")
-                        artifact_ref = self._publish_checkpoint_artifact(staged, row["checkpoint_digest"])
-                    finally:
-                        staged.discard()
-                connection.execute(
-                    "UPDATE capture_jobs SET checkpoint_artifact_ref=?, checkpoint_size=? WHERE job_id=?",
-                    (artifact_ref, size, row["job_id"]),
-                )
-            connection.execute("ALTER TABLE capture_jobs DROP COLUMN checkpoint_json")
-        if "retention_json" not in job_columns:
-            connection.execute(
-                'ALTER TABLE capture_jobs ADD COLUMN retention_json TEXT NOT NULL DEFAULT \'{"state":"active","hold_reason":null,"timeline_authoritative":true}\''
-            )
-
-        if "retention_declared" not in job_columns:
-            connection.execute("ALTER TABLE capture_jobs ADD COLUMN retention_declared INTEGER NOT NULL DEFAULT 0")
-            # Rows predating the bit may already hold a deliberate retention
-            # choice. Keep it from being replaced by retry-derived retention.
-            connection.execute(
-                # Compare the decoded retention, not its spelling: rows written by
-                # canonical_json use sorted keys.
-                "UPDATE capture_jobs SET retention_declared=1 WHERE CASE WHEN json_valid(retention_json) THEN NOT ("
-                "json_type(retention_json, '$.state') = 'text' AND json_extract(retention_json, '$.state') = 'active' "
-                "AND json_type(retention_json, '$.hold_reason') = 'null' "
-                "AND json_type(retention_json, '$.timeline_authoritative') = 'true' "
-                "AND (SELECT count(*) FROM json_each(retention_json)) = 3"
-                ") ELSE 1 END"
-            )
 
     def _spool_root(self) -> Path:
         return self.spool_path or browser_capture_spool_root()

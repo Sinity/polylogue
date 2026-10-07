@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import tomllib
 
 from devtools import cloud_sentinels, pytest_slot, worker_memory
 from devtools.pytest_slot import (
@@ -341,6 +342,22 @@ def test_the_client_environment_carries_only_the_allowed_keys(tmp_path: Path, mo
         assert recorded <= allowed, f"agentctl inherited {sorted(recorded - allowed)}"
     launch = _launch_document(tmp_path)
     assert launch["environment"]["ANTHROPIC_API_KEY"] == "secret", "pytest's own environment travels in the launch file"
+    assert "POLYLOGUE_ARCHIVE_ROOT" not in launch["environment"], (
+        "a queued test must not carry the operator archive path into its launch snapshot"
+    )
+
+
+def test_agentctl_jobs_do_not_inject_the_live_archive_root() -> None:
+    descriptor = Path(__file__).resolve().parents[3] / ".agentctl" / "project.toml"
+    payload = tomllib.loads(descriptor.read_text(encoding="utf-8"))
+    environment = payload["environment"]
+
+    assert "POLYLOGUE_ARCHIVE_ROOT" not in environment.get("inherit", [])
+    assert "POLYLOGUE_ARCHIVE_ROOT" in environment.get("unset", [])
+    assert "XDG_DATA_HOME" not in environment.get("inherit", [])
+    assert "XDG_DATA_HOME" in environment.get("unset", [])
+    assert "POLYLOGUE_ARCHIVE_ROOT" not in environment.get("require", [])
+    assert "POLYLOGUE_ARCHIVE_ROOT" not in environment.get("values", {})
 
 
 @pytest.mark.parametrize("prefix", ["AGENTCTL_", "SINNIXD_"])

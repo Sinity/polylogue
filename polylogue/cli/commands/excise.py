@@ -10,7 +10,7 @@ explicitly out of this command's scope (polylogue-303r.6); see
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import click
 
@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from polylogue.surfaces.payloads import MutationStatus
 
 from polylogue.cli.shared.types import AppEnv
-from polylogue.paths import archive_root
 
 
 def _submit(env: AppEnv, operation: str, payload: dict[str, object]) -> dict[str, object]:
@@ -79,6 +78,34 @@ def _receipt_summary(session_id: str, domain_receipt: dict[str, object], referen
     if domain_receipt.get("complete") is False:
         detail_message += "; INCOMPLETE"
     return detail_message
+
+
+def _read_excision_plan(env: AppEnv, session_id: str, *, cascade_lineage: bool) -> dict[str, Any]:
+    from polylogue.cli.operation_kernel import OperationKernelError, configured_read_operation
+
+    try:
+        result = configured_read_operation(
+            env.config,
+            "session.excision.plan",
+            {"session_id": session_id, "cascade_lineage": cascade_lineage},
+        ).value
+    except OperationKernelError as exc:
+        from polylogue.cli.render.outcome import exit_for_read_failure
+
+        exit_for_read_failure(exc)
+    if not isinstance(result, dict):
+        raise click.ClickException("session.excision.plan returned an invalid result")
+    if result.get("refused"):
+        detail = str(result.get("detail") or "lineage dependents prevent excision")
+        raise _LineagePlanRefusalError(detail)
+    plan = result.get("plan")
+    if not isinstance(plan, dict):
+        raise click.ClickException("session.excision.plan omitted its plan")
+    return plan
+
+
+class _LineagePlanRefusalError(ValueError):
+    """The pinned planner found dependents that the selected cascade omits."""
 
 
 def _emit_complete_receipt(env: AppEnv, result: dict[str, object], *, session_id: str, affected_count: int) -> None:
@@ -228,8 +255,6 @@ def excise_command(
       user.db (survives an ops.db reset) and stops there. Local content is
       NOT touched by this command in mirror/primary mode.
     """
-    root = archive_root()
-
     if mode != "standalone":
         target_ref = f"session:{session_id}"
         if dry_run:
@@ -290,12 +315,10 @@ def excise_command(
         )
         return
 
-    from polylogue.security.excision import LineageDependentsError, plan_session_excision
-
-    if dry_run:
-        try:
-            plan = plan_session_excision(root, session_id, cascade_lineage=cascade_lineage)
-        except LineageDependentsError as exc:
+    try:
+        plan = _read_excision_plan(env, session_id, cascade_lineage=cascade_lineage)
+    except _LineagePlanRefusalError as exc:
+        if dry_run:
             _emit(
                 env,
                 status="aborted",
@@ -306,7 +329,19 @@ def excise_command(
                 detail=str(exc),
             )
             return
-        if not plan.found:
+        else:
+            _emit(
+                env,
+                status="aborted",
+                session_id=session_id,
+                affected_count=0,
+                output_format=output_format,
+                plain_message=f"Refusing to excise {session_id!r}: {exc}",
+                detail=str(exc),
+            )
+            return
+    if dry_run:
+        if not plan.get("found"):
             _emit(
                 env,
                 status="not_found",
@@ -317,78 +352,69 @@ def excise_command(
             )
             return
         if output_format == "json":
-            click.echo(__import__("json").dumps({"status": "preview", "plan": plan.as_dict()}))
+            click.echo(__import__("json").dumps({"status": "preview", "plan": plan}))
             return
         env.ui.summary(
             f"Would excise session {session_id}",
             [
-                f"  source.db raw rows: {plan.source_raw_rows}"
-                + (f" (including {plan.source_fact_rows} fact/plan snapshot row(s))" if plan.source_fact_rows else "")
+                f"  source.db raw rows: {plan['source_raw_rows']}"
                 + (
-                    f" (including {plan.source_sidecar_rows} tool-output sidecar row(s))"
-                    if plan.source_sidecar_rows
+                    f" (including {plan['source_fact_rows']} fact/plan snapshot row(s))"
+                    if plan["source_fact_rows"]
+                    else ""
+                )
+                + (
+                    f" (including {plan['source_sidecar_rows']} tool-output sidecar row(s))"
+                    if plan["source_sidecar_rows"]
                     else ""
                 ),
-                f"  source.db hook events: {plan.source_hook_events}",
-                f"  source.db container members: {plan.source_container_members}"
+                f"  source.db hook events: {plan['source_hook_events']}",
+                f"  source.db container members: {plan['source_container_members']}"
                 + (
-                    f" (releasing {plan.source_container_items} container item(s))"
-                    if plan.source_container_items
+                    f" (releasing {plan['source_container_items']} container item(s))"
+                    if plan["source_container_items"]
                     else ""
                 ),
-                f"  source.db blob refs: {plan.source_blob_refs}",
-                f"  source.db marker carriers: {plan.source_marker_inputs_pending} pending, "
-                f"{plan.source_marker_inputs_accepted} accepted",
+                f"  source.db blob refs: {plan['source_blob_refs']}",
+                f"  source.db marker carriers: {plan['source_marker_inputs_pending']} pending, "
+                f"{plan['source_marker_inputs_accepted']} accepted",
                 *(
-                    [f"  marker carrier digests: {', '.join(plan.marker_input_digests)}"]
-                    if plan.marker_input_digests
+                    [f"  marker carrier digests: {', '.join(plan['marker_input_digests'])}"]
+                    if plan["marker_input_digests"]
                     else []
                 ),
-                f"  index.db sessions: {plan.index_sessions}",
-                f"  index.db messages: {plan.index_messages}",
-                f"  index.db blocks: {plan.index_blocks}",
-                f"  embeddings.db vectors: {plan.embeddings_vectors}",
-                f"  user.db assertions: {plan.user_assertions}",
+                f"  index.db sessions: {plan['index_sessions']}",
+                f"  index.db messages: {plan['index_messages']}",
+                f"  index.db blocks: {plan['index_blocks']}",
+                f"  embeddings.db vectors: {plan['embeddings_vectors']}",
+                f"  user.db assertions: {plan['user_assertions']}",
                 *(
                     [
                         "  WARNING container(s) retained for other live sessions, still holding these "
-                        f"bytes: {', '.join(plan.retained_source_containers)}"
+                        f"bytes: {', '.join(plan['retained_source_containers'])}"
                     ]
-                    if plan.retained_source_containers
+                    if plan["retained_source_containers"]
                     else []
                 ),
                 *(
-                    [f"  already excised blob hashes: {', '.join(plan.already_excised_blob_hashes)}"]
-                    if plan.already_excised_blob_hashes
+                    [f"  already excised blob hashes: {', '.join(plan['already_excised_blob_hashes'])}"]
+                    if plan["already_excised_blob_hashes"]
                     else []
                 ),
                 *(
                     [
-                        f"  WARNING lineage-dependent sessions ({len(plan.lineage_dependent_session_ids)}) would "
+                        f"  WARNING lineage-dependent sessions ({len(plan['lineage_dependent_session_ids'])}) would "
                         "lose composed content unless --cascade-lineage is also passed: "
-                        + ", ".join(plan.lineage_dependent_session_ids)
+                        + ", ".join(plan["lineage_dependent_session_ids"])
                     ]
-                    if plan.lineage_dependent_session_ids
+                    if plan["lineage_dependent_session_ids"]
                     else []
                 ),
             ],
         )
         return
 
-    try:
-        plan = plan_session_excision(root, session_id, cascade_lineage=cascade_lineage)
-    except LineageDependentsError as exc:
-        _emit(
-            env,
-            status="aborted",
-            session_id=session_id,
-            affected_count=0,
-            output_format=output_format,
-            plain_message=f"Refusing to excise {session_id!r}: {exc}",
-            detail=str(exc),
-        )
-        return
-    if not plan.found:
+    if not plan.get("found"):
         _emit(
             env,
             status="not_found",
@@ -411,12 +437,12 @@ def excise_command(
             )
             return
         confirm_message = (
-            f"Permanently excise session {session_id!r} ({plan.index_messages} message(s), "
-            f"{plan.source_raw_rows} raw row(s))? This cannot be undone by re-ingest."
+            f"Permanently excise session {session_id!r} ({plan['index_messages']} message(s), "
+            f"{plan['source_raw_rows']} raw row(s))? This cannot be undone by re-ingest."
         )
-        if plan.lineage_dependent_session_ids:
+        if plan["lineage_dependent_session_ids"]:
             confirm_message += (
-                f" This will ALSO permanently excise {len(plan.lineage_dependent_session_ids)} "
+                f" This will ALSO permanently excise {len(plan['lineage_dependent_session_ids'])} "
                 "lineage-dependent session(s) (--cascade-lineage)."
             )
         if not env.ui.confirm(confirm_message, default=False):

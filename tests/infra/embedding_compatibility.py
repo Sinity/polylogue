@@ -56,9 +56,6 @@ class _Documents:
         self.calls.append(tuple(texts))
         return [[0.1] * self.dimension for _ in texts]
 
-    def upsert(self, *args: object, **kwargs: object) -> None:
-        raise AssertionError("document protocol fixture uses the archive write owner")
-
     def query(self, *args: object, **kwargs: object) -> list[tuple[str, float]]:
         raise AssertionError("document protocol fixture does not query")
 

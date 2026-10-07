@@ -539,6 +539,7 @@ def _record_to_parsed_session(
         parent_session_provider_id=(str(session.parent_session_id) if session.parent_session_id is not None else None),
         branch_type=session.branch_type,
         reported_duration_ms=None,
+        reported_cost_usd=session.reported_cost_usd,
         working_directories=working_directories,
         git_branch=session.git_branch,
         git_repository_url=session.git_repository_url,
@@ -654,6 +655,10 @@ class SessionBuilder:
 
     def metadata(self, metadata: JSONRecord | None) -> SessionBuilder:
         self.conv = self.conv.model_copy(update={"metadata": metadata})
+        return self
+
+    def reported_cost_usd(self, cost_usd: float | None) -> SessionBuilder:
+        self.conv = self.conv.model_copy(update={"reported_cost_usd": cost_usd})
         return self
 
     def working_directories(self, paths: list[str]) -> SessionBuilder:

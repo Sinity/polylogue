@@ -7,9 +7,9 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.dispatch import require_positive_conversational_evidence
-from polylogue.sources.parsers.antigravity import parse_trajectory_db
 from polylogue.sources.parsers.base import AdmissionDisposition, AdmissionRefusalReason
 from polylogue.sources.sqlite_inspection import inspect_sqlite_source
+from tests.infra.antigravity_parser import parse_trajectory_db
 from tests.infra.source_parser_cases import trajectory_db
 
 

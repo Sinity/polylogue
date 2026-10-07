@@ -128,17 +128,22 @@ async def test_two_accepted_revisions_survive_one_periodic_profile_pass(tmp_path
     """
     archive_root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, archive_root)
+    from tests.infra.retained_jsonl import acquire_full_revision
+
+    source_path = tmp_path / "coalesced-profile.jsonl"
     for revision, note in ((1, "first retained note"), (2, "second retained note")):
 
         def acquire(revision: int = revision, note: str = note) -> str:
             with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-                return archive.write_raw_payload(
+                return acquire_full_revision(
+                    archive,
                     provider=Provider.CODEX,
+                    source_path=source_path,
                     payload=_codex_session(
                         "coalesced-profile", (("user", "question"), ("assistant", f"::note: {note}"))
                     ),
-                    source_path=f"coalesced-{revision}.jsonl",
-                    canonical_source_path=f"coalesced-{revision}.jsonl",
+                    native_id="coalesced-profile",
+                    generation=revision - 1,
                     acquired_at_ms=revision,
                 )
 

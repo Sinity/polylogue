@@ -1176,6 +1176,7 @@ class LiveBatchProcessor:
         source_payload_read_bytes = 0
         cursor_fingerprint_read_bytes = 0
         stale_cursor_write_count = 0
+        stale_cursor_paths: set[str] = set()
         parse_time_s = 0.0
         convergence_time_s = 0.0
         raw_compaction_runs = 0
@@ -1214,6 +1215,7 @@ class LiveBatchProcessor:
             nonlocal parse_time_s
             nonlocal pending_append_plans
             nonlocal stale_cursor_write_count
+            nonlocal stale_cursor_paths
             if not pending_append_plans:
                 return
             plans = pending_append_plans
@@ -1305,6 +1307,7 @@ class LiveBatchProcessor:
                 succeeded_paths.add(plan.path)
                 if not await self._run_ops_write("cursor_append", self._record_append_cursor, plan):
                     stale_cursor_write_count += 1
+                    stale_cursor_paths.add(str(plan.path))
                 cursor_fingerprint_read_bytes += self._last_append_cursor_proof_bytes
                 session_id = append_result.session_ids_by_path.get(plan.path)
                 if session_id:
@@ -1658,6 +1661,7 @@ class LiveBatchProcessor:
                         cursor_fingerprint_read_bytes += read_bytes
                         if stale:
                             stale_cursor_write_count += 1
+                            stale_cursor_paths.add(str(path))
                 for path in full_result.failed:
                     if path in full_result.excised_paths:
                         excluded_by_path[path] = "durably_excised"
@@ -1857,6 +1861,7 @@ class LiveBatchProcessor:
             cgroup_memory_peak_mb=read_cgroup_memory_peak_mb(),
             cgroup_memory_swap_current_mb=read_cgroup_memory_swap_current_mb(),
             stale_cursor_write_count=stale_cursor_write_count,
+            stale_cursor_paths=tuple(sorted(stale_cursor_paths)),
             raw_compaction_runs=raw_compaction_runs,
             stage_timings_s={name: round(elapsed, 6) for name, elapsed in stage_timings.items()},
             failed_paths=retry_paths,

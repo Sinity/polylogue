@@ -43,6 +43,8 @@ class SourceDeclaration:
     role: SourceRole
     root: Path
     mutable: bool = False
+    layout_name: str | None = None
+    exclude_coordinates: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.source_id.strip():
@@ -106,6 +108,8 @@ class SourceFrontier:
                     "role": declaration.role.value,
                     "root": str(declaration.root),
                     "mutable": declaration.mutable,
+                    "layout_name": declaration.layout_name,
+                    "exclude_coordinates": list(declaration.exclude_coordinates),
                 }
                 for declaration in self.declarations
             ],
@@ -142,7 +146,10 @@ class SourceFrontier:
         if any(member.size < 0 for member in self.members):
             raise SourceContinuityError("source frontier member size is negative")
         payload = {
-            "declarations": [(d.source_id, d.role.value, str(d.root), d.mutable) for d in self.declarations],
+            "declarations": [
+                (d.source_id, d.role.value, str(d.root), d.mutable, d.layout_name, d.exclude_coordinates)
+                for d in self.declarations
+            ],
             "members": [
                 (m.source_id, m.coordinate, m.identity, m.content_sha256, m.size, m.logical_sha256)
                 for m in self.members
@@ -230,7 +237,9 @@ def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFr
             for item in observed
         )
     payload = {
-        "declarations": [(d.source_id, d.role.value, str(d.root), d.mutable) for d in rows],
+        "declarations": [
+            (d.source_id, d.role.value, str(d.root), d.mutable, d.layout_name, d.exclude_coordinates) for d in rows
+        ],
         "members": [
             (m.source_id, m.coordinate, m.identity, m.content_sha256, m.size, m.logical_sha256) for m in members
         ],
@@ -239,6 +248,96 @@ def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFr
     }
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return SourceFrontier(rows, tuple(members), states, tuple(blockers), digest)
+
+
+def configured_source_frontier(archive_root: Path) -> SourceFrontier:
+    """Observe the configured provider layouts and Polylogue capture spools.
+
+    The denominator is assembled from the same resolved source roots used by
+    daemon intake, before consulting any acquisition ledger. Hook carriers,
+    hook pending envelopes, and browser captures are explicit source roots.
+    """
+    from polylogue.config import resolve_runtime_config
+    from polylogue.paths import archive_root as configured_archive_root
+    from polylogue.sources.hooks import hook_spool_sources
+    from polylogue.sources.origin_specs import database_capability_for_provider
+    from polylogue.sources.source_layout import source_layout_for
+    from polylogue.sources.source_walk import layout_source_candidates
+
+    runtime = resolve_runtime_config()
+    expected_archive = Path(archive_root).expanduser().resolve(strict=False)
+    if Path(configured_archive_root()).expanduser().resolve(strict=False) != expected_archive:
+        raise SourceContinuityError("archive root differs from the resolved source-spool configuration")
+
+    rows: list[SourceDeclaration] = []
+    for source in runtime.sources:
+        if source.path is None:
+            continue
+        path = Path(source.path)
+        if source.name == "hooks":
+            # The complete hook root is declared below so pending envelopes
+            # and provider carriers share the same spool owner.
+            continue
+        # The resolver omits optional local sources that are disabled or
+        # absent in configuration. Once a source is present in runtime.sources,
+        # its path is part of the denominator even if it disappears before this
+        # observation; build_source_frontier turns that race into a blocker.
+        name = source.name
+        layout_name = name if path.is_dir() else None
+        role = SourceRole.APPEND_JSONL if name == "claude-code-history" else SourceRole.DIRECTORY
+        sqlite_paths: list[Path] = []
+        if layout_name is not None:
+            layout = source_layout_for(layout_name)
+            provider = layout.provider
+            capability = database_capability_for_provider(provider) if provider is not None else None
+            accepted_members = (
+                {item.filename for item in capability.members if item.disposition != "out-of-scope"}
+                if capability is not None
+                else set()
+            )
+            if accepted_members:
+                sqlite_paths = [
+                    member
+                    for member in layout_source_candidates(layout_name, path)
+                    if member.name in accepted_members and member.is_file()
+                ]
+        excluded = tuple(sorted(member.relative_to(path).as_posix() for member in sqlite_paths))
+        rows.append(
+            SourceDeclaration(
+                f"configured:{name}",
+                role,
+                path,
+                True,
+                layout_name,
+                excluded,
+            )
+        )
+        rows.extend(
+            SourceDeclaration(
+                f"configured:{name}:sqlite:{member.relative_to(path).as_posix()}",
+                SourceRole.MUTABLE_SQLITE,
+                member,
+                True,
+            )
+            for member in sqlite_paths
+        )
+    for spec in hook_spool_sources():
+        spool_root = Path(spec.root)
+        for carrier_provider in ("claude-code", "codex", "hermes"):
+            carrier_root = spool_root / "carriers" / carrier_provider
+            rows.append(
+                SourceDeclaration(
+                    f"{spec.source_id}:carrier:{carrier_provider}",
+                    SourceRole.SPOOL,
+                    carrier_root,
+                    True,
+                    f"{carrier_provider}-hooks",
+                )
+            )
+        pending = spool_root / "pending"
+        rows.append(SourceDeclaration(f"{spec.source_id}:pending", SourceRole.SPOOL, pending, True))
+    unique: dict[str, SourceDeclaration] = {row.source_id: row for row in rows}
+    return build_source_frontier(unique.values())
 
 
 def canonical_source_declarations(
@@ -286,4 +385,14 @@ def canonical_source_declarations(
     # Resolved roots are for duplicate detection only; the declaration keeps the
     # configured absolute path so a symlinked root still reaches the source
     # snapshot's fail-closed root refusal instead of being replaced by its target.
-    return tuple(SourceDeclaration(row.source_id, row.role, Path(row.root).absolute(), row.mutable) for row in rows)
+    return tuple(
+        SourceDeclaration(
+            row.source_id,
+            row.role,
+            Path(row.root).absolute(),
+            row.mutable,
+            row.layout_name,
+            row.exclude_coordinates,
+        )
+        for row in rows
+    )

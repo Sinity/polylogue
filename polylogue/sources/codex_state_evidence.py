@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
+from polylogue.core.work_progress import advance_work_progress, reports_work_progress
 from polylogue.logging import emit
 from polylogue.sources import codex_state_projection
 from polylogue.sources.parsers import codex_state
@@ -144,6 +145,7 @@ def _upsert_codex_material_source(
     )
 
 
+@reports_work_progress("codex-state-materialization")
 def _materialize_codex_state_content(
     producer: MaterialSourceProducer,
     raw_id: str,
@@ -171,6 +173,7 @@ def _materialize_codex_state_content(
         raise ValueError("prepared state material kind changed")
     for _thread_id, _item_id, part_kind, byte_size, prepared in prepared_state.iter_codex_state_material():
         check_compute_cancelled()
+        advance_work_progress(messages=1, bytes=byte_size)
         if part_kind == "invalid":
             rows_available += 1
             continue

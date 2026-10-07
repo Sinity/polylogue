@@ -693,6 +693,7 @@ def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypa
         daemon_env={},
         interrupted=[],
         progress=lambda _line: None,
+        hook_preparation=None,
     )
 
     assert receipt["outcome"] == "terminal"
@@ -1046,6 +1047,7 @@ def _scripted_run(
         daemon_env={},
         interrupted=interrupted,
         progress=lambda _line: None,
+        hook_preparation=None,
     )
     captured["clock"] = clock
     captured["observe_kwargs"] = observe_kwargs
@@ -1885,6 +1887,7 @@ def test_shutdown_progress_ignores_the_stack_sampler_cpu(tmp_path: Path, monkeyp
         daemon_env={},
         interrupted=[],
         progress=lambda _line: None,
+        hook_preparation=None,
     )
     (probe,) = probes
     before = probe()
@@ -2505,3 +2508,21 @@ def test_actual_runtime_profile_environment_never_walks_free_threaded_frames(
     assert document["process_cpu_ticks"] is not None
     if free_threaded:
         assert document["stacks"] == []
+
+
+def test_explicit_corpus_seals_and_stages_hook_spool_tree(tmp_path: Path) -> None:
+    from devtools.fresh_build_bench.run import _prepare_paths
+
+    source = tmp_path / "operator-hooks"
+    (source / "carriers" / "codex").mkdir(parents=True)
+    (source / "carriers" / "codex" / "events.jsonl").write_text('{"event_id":"e1"}\n', encoding="utf-8")
+    (source / "pending").mkdir()
+    (source / "pending" / "e2.json").write_text('{"event_id":"e2"}', encoding="utf-8")
+    corpus = tmp_path / "corpus"
+    manifest = corpus_from_files(corpus, [], home=tmp_path / "empty-home", hooks=source)
+    verify_manifest(corpus, manifest)
+
+    paths = _prepare_paths(RunConfig(corpus, tmp_path / "run", Path(__file__).resolve().parents[3], "python", "test"))
+
+    assert (paths["archive"] / "hooks" / "carriers" / "codex" / "events.jsonl").read_text() == '{"event_id":"e1"}\n'
+    assert (paths["archive"] / "hooks" / "pending" / "e2.json").exists()

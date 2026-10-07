@@ -48,7 +48,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     read_session_agent_policies,
     read_session_tags,
     search_archive_blocks,
-    upsert_session_profile_costs,
     upsert_session_tag,
 )
 from polylogue.storage.sqlite.queries.session_events import sync_session_events_batch
@@ -985,12 +984,15 @@ def test_archive_tiers_writer_uses_identity_law_for_messages_without_native_ids(
     ]
 
 
-def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upsert(tmp_path: Path) -> None:
+def test_archive_tiers_writer_preserves_session_profile_defaults_with_reported_cost(tmp_path: Path) -> None:
+    """A provider-reported session cost lands on ``sessions`` without
+    disturbing the materialized profile defaults."""
     db_path = tmp_path / "index.db"
     conn = _connect(db_path)
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="codex-cost-1",
+        reported_cost_usd=0.056,
         messages=[
             ParsedMessage(
                 provider_message_id="m1",
@@ -1005,20 +1007,12 @@ def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upser
     from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 
     rebuild_session_insights_sync(conn, session_ids=[session_id])
-    upsert_session_profile_costs(
-        conn,
-        session_id,
-        cost_credits=12.34,
-        cost_usd=0.056,
-        cost_is_estimated=True,
-        cost_provenance="estimated",
-        priced_with="gpt-5-mini",
-        priced_at_ms=1_700_000_006_000,
-    )
     conn.close()
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    reported = conn.execute("SELECT reported_cost_usd FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    assert reported["reported_cost_usd"] == pytest.approx(0.056)
     profile = conn.execute(
         """
         SELECT workflow_shape, workflow_shape_method, workflow_shape_confidence, terminal_state,

@@ -12,7 +12,9 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from polylogue.core.sql_settlement import current_native_sql_lifetimes
@@ -23,6 +25,9 @@ from polylogue.sources.value_bounds import (
 )
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+
+if TYPE_CHECKING:
+    from polylogue.sources.parsers.base_models import AdmissionOutcome
 
 _TABLE = "prepared_parse_accounting_outcome"
 
@@ -76,10 +81,13 @@ class SpilledParseAccountingOutcomes:
         with _reader(self.path) as connection:
             return connection.execute(query, (self.accounting_id, unit, start, end)).fetchone() is not None
 
-    def __iter__(self) -> Iterator[dict[str, object]]:
+    def __iter__(self) -> Iterator[AdmissionOutcome]:
+        from polylogue.sources.parsers.base_models import AdmissionOutcome
+
         units = self.count_by_unit()
         for unit in sorted(units):
-            yield from self.iter_unit(unit)
+            for item in self.iter_unit(unit):
+                yield AdmissionOutcome.model_validate(item)
 
     @classmethod
     def from_prepared_reference(cls, path: Path, accounting_id: str, count: int) -> SpilledParseAccountingOutcomes:
@@ -160,8 +168,10 @@ def _iter_unit(connection: sqlite3.Connection, accounting_id: str, unit: str) ->
         cursor.close()
 
 
-def _reader(path: Path):
+def _reader(path: Path) -> AbstractContextManager[sqlite3.Connection]:
     class Reader:
+        owner: NativeSQLCustodyOwner
+
         def __enter__(self) -> sqlite3.Connection:
             connection = connect_measured(f"file:{quote(str(path))}?mode=ro", uri=True)
             self.owner = NativeSQLCustodyOwner(connection, lifetime_dependencies=current_native_sql_lifetimes())

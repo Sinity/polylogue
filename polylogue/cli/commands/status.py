@@ -133,6 +133,10 @@ def _status_operation_result(
     # An opted-out invocation contacts no daemon over either transport.
     url = daemon_url or getattr(env, "daemon_url", None) or polylogue_config.daemon_url or _BUILTIN_DAEMON_URL
     if url.rstrip("/") != _BUILTIN_DAEMON_URL and not daemon_disabled:
+        # Direct-capable transport exception: an explicitly configured remote
+        # URL has no local archive-scoped UDS identity. /api/status is the
+        # daemon's public status product, not the browser query reader or a
+        # CLI-built archive query.
         import urllib.request
 
         from polylogue.daemon.api_auth import resolve_api_auth_token

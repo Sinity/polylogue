@@ -1,41 +1,25 @@
-"""Canonical raw-record ingest applies provider assembly enrichment (polylogue-ih67).
-
-The daemon's raw-record worker historically bypassed the assembly layer that
-direct ingest runs, so every daemon-ingested Codex session kept its native
-UUID as title. These tests pin the parity contract: removing the
-``_enrich_parsed_sessions`` call from ``_run_parse_plan`` (the named
-production mutation) fails ``test_canonical_ingest_applies_thread_name``.
-"""
+"""Provider assembly values in retained parsing come from acquired evidence."""
 
 from __future__ import annotations
 
+import asyncio
 import json
-import threading
-import time
+import sqlite3
 import zipfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
+from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Provider, TitleSource
-from polylogue.pipeline.services import ingest_worker as ingest_worker_module
-from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.sources.live import WatchSource
 from polylogue.sources.source_layout import export_drop_layout
-from polylogue.storage.blob_store import BlobStore, reset_blob_store
-from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.repository import SessionRepository
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.archive_templates import run_off_event_loop
-
-
-@pytest.fixture
-def blob_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[BlobStore]:
-    root = tmp_path / "blobs"
-    store = BlobStore(root)
-    monkeypatch.setattr("polylogue.paths.blob_store_root", lambda: root)
-    reset_blob_store()
-    yield store
-    reset_blob_store()
+from tests.infra.retained_replay import publish_retained_payload
 
 
 def _codex_stream(session_id: str, *texts: str) -> bytes:
@@ -66,237 +50,178 @@ def _codex_runtime_root(tmp_path: Path, session_id: str, content: bytes) -> Path
     return rollout
 
 
-def _record(
-    store: BlobStore,
+async def _retained_session(
+    archive_root: Path,
+    provider: Provider,
     content: bytes,
-    *,
     source_path: str,
-    sidecar_snapshot: dict[str, object] | None = None,
-) -> RawSessionRecord:
-    raw_id, blob_size = store.write_from_bytes(content)
-    return RawSessionRecord(
-        raw_id=raw_id,
-        source_name="codex",
+) -> Session:
+    _raw_id, session_ids = await publish_retained_payload(
+        archive_root,
+        provider=provider,
+        payload=content,
         source_path=source_path,
-        canonical_source_path=source_path,
-        payload_provider=Provider.CODEX,
-        source_index=None,
-        blob_size=blob_size,
-        acquired_at="2026-01-01T00:00:00+00:00",
-        file_mtime=None,
-        sidecar_snapshot=sidecar_snapshot,
+        acquired_at_ms=1,
     )
+    assert session_ids, "retained payload must materialize a session"
+    repository = SessionRepository(
+        backend=SQLiteBackend(db_path=archive_root / "index.db"),
+        archive_root=archive_root,
+    )
+    try:
+        session = await repository.get(session_ids[0])
+        assert session is not None
+        return session
+    finally:
+        await repository.close()
 
 
-def _ingest_title(record: RawSessionRecord, tmp_path: Path, store: BlobStore) -> tuple[str | None, str | None]:
-    result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(store.root))
-    assert result.error is None, result.error
-    assert result.sessions, "expected one materializable session"
-    parsed = result.sessions[0].parsed_session
-    source = parsed.title_source
-    return parsed.title, str(source) if source is not None else None
+def _retained_session_sync(
+    archive_root: Path,
+    provider: Provider,
+    content: bytes,
+    source_path: str,
+) -> Session:
+    return run_off_event_loop(lambda: asyncio.run(_retained_session(archive_root, provider, content, source_path)))
 
 
-@pytest.mark.parametrize("late_session", [False, True])
-def test_canonical_worker_classifies_complete_checkpoint_stream_with_declared_path(
-    blob_store: BlobStore,
-    tmp_path: Path,
-    late_session: bool,
-) -> None:
+def _title_fields(session: Session) -> tuple[str | None, str | None]:
+    title = session.title
+    source = session.title_source
+    return title, str(source) if source is not None else None
+
+
+def test_retained_replay_classifies_complete_checkpoint_stream_with_declared_path(tmp_path: Path) -> None:
+    """A late real turn wins over a long prefix of non-session checkpoint rows."""
     rows: list[dict[str, object]] = [{"type": "file-history-snapshot"}] * 65
-    if late_session:
-        rows.append(
-            {
-                "type": "user",
-                "uuid": "message",
-                "sessionId": "session",
-                "timestamp": "2026-01-01T00:00:00Z",
-                "message": {"role": "user", "content": "preserve the actual late turn"},
-            }
-        )
+    rows.append(
+        {
+            "type": "user",
+            "uuid": "message",
+            "sessionId": "session",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": "user", "content": "preserve the actual late turn"},
+        }
+    )
     content = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
-    raw_id, size = blob_store.write_from_bytes(content)
-    record = RawSessionRecord(
-        raw_id=raw_id,
-        source_name=Provider.CLAUDE_CODE.value,
-        payload_provider=Provider.CLAUDE_CODE,
-        source_path=str(tmp_path / ".claude" / "projects" / "project" / "session.jsonl"),
-        canonical_source_path=str(tmp_path / ".claude" / "projects" / "project" / "session.jsonl"),
-        source_index=None,
-        blob_size=size,
-        acquired_at="2026-01-01T00:00:00+00:00",
-        file_mtime=None,
-    )
-    result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_store.root))
-    assert result.error is None
-    if late_session:
-        assert result.sessions
-        assert result.sessions[0].parsed_session.messages[0].text == "preserve the actual late turn"
-    else:
-        assert not result.sessions
-        assert result.evidence_ref == "artifact_not_session:file_history_snapshot"
-
-
-def test_canonical_ingest_applies_thread_name(blob_store: BlobStore, tmp_path: Path) -> None:
-    """The daemon worker resolves the provider thread name, like direct ingest."""
-    session_id = "aaaa1111-2222-3333-4444-555566667777"
-    content = _codex_stream(session_id, "please fix the ingest bug")
-    rollout = _codex_runtime_root(tmp_path, session_id, content)
-    (rollout.parents[2] / "session_index.jsonl").write_text(
-        json.dumps({"id": session_id, "thread_name": "Ingest bug hunt"}) + "\n",
-        encoding="utf-8",
-    )
-
-    record = _record(
-        blob_store,
+    session = _retained_session_sync(
+        tmp_path / "archive",
+        Provider.CLAUDE_CODE,
         content,
-        source_path=str(rollout),
-        sidecar_snapshot={"thread_names": {session_id: "Ingest bug hunt"}},
+        str(tmp_path / ".claude" / "projects" / "project" / "session.jsonl"),
     )
-    title, title_source = _ingest_title(record, tmp_path, blob_store)
-
-    assert title == "Ingest bug hunt"
-    assert title_source == TitleSource.ORIGIN.value
+    assert list(session.messages)[0].text == "preserve the actual late turn"
 
 
-def test_canonical_ingest_uses_history_title(blob_store: BlobStore, tmp_path: Path) -> None:
-    """Without a thread name, the authored history entry becomes the title."""
-    session_id = "bbbb1111-2222-3333-4444-555566667777"
-    content = _codex_stream(session_id, "opening prompt typed by the operator")
-    rollout = _codex_runtime_root(tmp_path, session_id, content)
-    (rollout.parents[2] / "history.jsonl").write_text(
-        json.dumps({"session_id": session_id, "ts": 1, "text": "Wire the Hermes bridge"}) + "\n",
-        encoding="utf-8",
+def test_retained_replay_applies_thread_name_from_acquired_evidence(tmp_path: Path) -> None:
+    """The retained root index titles a Codex session after source files disappear."""
+    from polylogue.sources.live import WatchSource
+    from tests.infra.live_batch import prepared_live_batch_processor
+
+    async def scenario() -> tuple[str | None, str | None]:
+        archive_root = tmp_path / "archive"
+        session_id = "aaaa1111-2222-3333-4444-555566667777"
+        content = _codex_stream(session_id, "please fix the ingest bug")
+        rollout = _codex_runtime_root(tmp_path, session_id, content)
+        root = rollout.parents[2]
+        index_path = root / "session_index.jsonl"
+        index_path.write_text(json.dumps({"id": session_id, "thread_name": "Ingest bug hunt"}) + "\n")
+        import polylogue.sources.live.watcher as live_watcher
+
+        async with prepared_live_batch_processor(
+            archive_root,
+            (WatchSource(name="codex-state", root=root),),
+            parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        ) as processor:
+            await processor.ingest_files([index_path], emit_event=False)
+        session = await _retained_session(archive_root, Provider.CODEX, content, str(rollout))
+        return _title_fields(session)
+
+    assert run_off_event_loop(lambda: asyncio.run(scenario())) == ("Ingest bug hunt", TitleSource.ORIGIN.value)
+
+
+def test_retained_replay_uses_history_title_without_thread_name(tmp_path: Path) -> None:
+    """Without a thread name, retained authored history supplies the title."""
+    from polylogue.sources.live import WatchSource
+    from tests.infra.live_batch import prepared_live_batch_processor
+
+    async def scenario() -> tuple[str | None, str | None]:
+        archive_root = tmp_path / "archive"
+        session_id = "bbbb1111-2222-3333-4444-555566667777"
+        content = _codex_stream(session_id, "opening prompt typed by the operator")
+        rollout = _codex_runtime_root(tmp_path, session_id, content)
+        history = rollout.parents[2] / "history.jsonl"
+        history.write_text(json.dumps({"session_id": session_id, "ts": 1, "text": "Wire the Hermes bridge"}) + "\n")
+        import polylogue.sources.live.watcher as live_watcher
+
+        async with prepared_live_batch_processor(
+            archive_root,
+            (WatchSource(name="codex-state", root=rollout.parents[2]),),
+            parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        ) as processor:
+            await processor.ingest_files([history], emit_event=False)
+        session = await _retained_session(archive_root, Provider.CODEX, content, str(rollout))
+        return _title_fields(session)
+
+    assert run_off_event_loop(lambda: asyncio.run(scenario())) == (
+        "Wire the Hermes bridge",
+        TitleSource.ORIGIN.value,
     )
 
-    record = _record(
-        blob_store,
-        content,
-        source_path=str(rollout),
-        sidecar_snapshot={"history_titles": {session_id: "Wire the Hermes bridge"}},
-    )
-    title, title_source = _ingest_title(record, tmp_path, blob_store)
 
-    assert title == "Wire the Hermes bridge"
-    assert title_source == TitleSource.ORIGIN.value
-
-
-def test_canonical_ingest_message_fallback_without_sidecars(blob_store: BlobStore, tmp_path: Path) -> None:
-    """A missing runtime root leaves only the human-authored message fallback."""
+def test_retained_replay_uses_message_fallback_when_no_sidecars_exist(tmp_path: Path) -> None:
     session_id = "cccc1111-2222-3333-4444-555566667777"
     content = _codex_stream(session_id, "refactor the daemon status loop")
-
-    record = _record(
-        blob_store,
-        content,
-        source_path=str(tmp_path / "gone" / "sessions" / f"rollout-{session_id}.jsonl"),
+    title, title_source = _title_fields(
+        _retained_session_sync(
+            tmp_path / "archive",
+            Provider.CODEX,
+            content,
+            str(tmp_path / "gone" / "sessions" / f"rollout-{session_id}.jsonl"),
+        )
     )
-    title, title_source = _ingest_title(record, tmp_path, blob_store)
-
     assert title == "refactor the daemon status loop"
     assert title_source == TitleSource.HEURISTIC.value
 
 
-def test_missing_snapshot_does_not_attempt_on_demand_enrichment(
-    blob_store: BlobStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_retained_replay_does_not_discover_sidecars_from_ambient_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A direct worker call treats absent acquisition evidence as ordinary absence."""
+    """Only acquired sidecar evidence can affect replay, even if a live tree exists."""
     from polylogue.sources import assembly_codex
 
     session_id = "eeee1111-2222-3333-4444-555566667777"
     content = _codex_stream(session_id, "please fix the ingest bug")
     rollout = _codex_runtime_root(tmp_path, session_id, content)
     (rollout.parents[2] / "session_index.jsonl").write_text(
-        json.dumps({"id": session_id, "thread_name": "Ingest bug hunt"}) + "\n",
+        json.dumps({"id": session_id, "thread_name": "Ambient title must be ignored"}) + "\n",
         encoding="utf-8",
     )
 
-    discovery_calls: list[object] = []
+    def reject_discovery(self: object, paths: object) -> object:
+        raise AssertionError("retained replay attempted ambient sidecar discovery")
 
-    def recording_discover(self: object, paths: object) -> object:
-        discovery_calls.append(paths)
-        raise OSError("on-demand discovery must never run inside a worker")
-
-    monkeypatch.setattr(assembly_codex.CodexAssemblySpec, "discover_sidecars", recording_discover)
-
-    record = _record(blob_store, content, source_path=str(rollout))
-    result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_store.root))
-
-    assert result.error is None
-    assert result.sessions, "expected the record to materialize without optional evidence"
-    assert discovery_calls == [], "worker consulted the ambient source tree for sidecars"
-    # The runtime root carries a session_index naming the thread "Ingest bug
-    # hunt"; only a worker that read it off disk could surface that title.
-    assert result.sessions[0].parsed_session.title == "please fix the ingest bug"
-
-
-def test_runtime_schema_registry_singleton_is_race_safe_under_concurrent_first_access(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Concurrent first access must construct exactly one SchemaRegistry (polylogue-xikl.1).
-
-    ``_runtime_schema_registry()``'s check-then-set on the module-global
-    ``_SCHEMA_REGISTRY`` used to be unguarded, and this is called once per
-    parsed record on the parse path that phase 2 plans to run on a
-    ThreadPoolExecutor. A short delay in the registry constructor forces the
-    interleaving window open: before the fix this reliably produced multiple
-    distinct registries (last writer wins); with the lock guarding the whole
-    check-then-construct section, exactly one thread ever constructs one.
-    """
-    original = ingest_worker_module._SCHEMA_REGISTRY
-    ingest_worker_module._SCHEMA_REGISTRY = None
-
-    from polylogue.schemas.runtime_registry import SchemaRegistry
-
-    original_init = SchemaRegistry.__init__
-    built: list[object] = []
-    built_lock = threading.Lock()
-
-    def delayed_init(self: SchemaRegistry, *args: object, **kwargs: object) -> None:
-        time.sleep(0.02)
-        original_init(self, *args, **kwargs)  # type: ignore[arg-type]
-        with built_lock:
-            built.append(self)
-
-    monkeypatch.setattr(SchemaRegistry, "__init__", delayed_init)
-
-    registries: list[object] = []
-    registries_lock = threading.Lock()
-
-    def worker() -> None:
-        registry = ingest_worker_module._runtime_schema_registry()
-        with registries_lock:
-            registries.append(registry)
-
-    try:
-        threads = [threading.Thread(target=worker) for _ in range(8)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=5)
-
-        assert len(registries) == 8
-        assert len(built) == 1, f"concurrent first access built {len(built)} registries, expected exactly 1"
-        assert len({id(registry) for registry in registries}) == 1
-    finally:
-        ingest_worker_module._SCHEMA_REGISTRY = original
+    monkeypatch.setattr(assembly_codex.CodexAssemblySpec, "discover_sidecars", reject_discovery)
+    title, title_source = _title_fields(
+        _retained_session_sync(tmp_path / "archive", Provider.CODEX, content, str(rollout))
+    )
+    assert title == "please fix the ingest bug"
+    assert title_source == TitleSource.HEURISTIC.value
 
 
 # ---------------------------------------------------------------------------
 # polylogue-ximhz: provider metadata and attachment joins resolve from
 # retained evidence, with the original files gone.
 #
-# Every case below acquires its evidence through the ordinary live route
-# (``LiveBatchProcessor.ingest_files``), unlinks every original path, and then
-# runs the canonical raw-record ingest. Nothing is hand-seeded into the source
-# tier, so the join under test is the production one.
+# Every case below acquires its evidence through the ordinary live route,
+# unlinks every original path, then publishes the provider bytes through the
+# retained replay owner. Nothing is hand-seeded into the source tier.
 #
 # Anti-vacuity: drop the retained map -- delete the ``sessions-index.json`` /
 # ``history.jsonl`` / ``conversation_asset_file_names.json`` raw row, as
 # ``test_dropping_the_retained_asset_map_loses_the_resolved_name`` does -- and
 # the matching fidelity assertion fails. Reverting the
-# ``resolve_retained_assembly_evidence`` call in ``_enrich_parsed_sessions``
-# fails all of them at once.
+# removing the retained assembly lookup makes the fidelity assertions fail.
 # ---------------------------------------------------------------------------
 
 _CLAUDE_SESSION_ID = "aaaaaaaa-1111-2222-3333-444444444444"
@@ -391,14 +316,14 @@ def _retained_artifact_kinds(archive_root: Path) -> dict[str, str]:
 
 @pytest.mark.asyncio
 async def test_codex_retained_root_sidecar_titles_survive_without_a_live_tree(
-    blob_store: BlobStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Retained Codex root sidecars title one rollout without minting another.
 
     The daemon's default ``codex-state`` source admits the two exact root
     coordinates despite having no JSONL suffix intake, and nothing else of
     JSONL shape under the install root. Once those bytes and the rollout
-    disappear, the canonical ingest worker must resolve the title from the
+    disappear, the retained replay owner must resolve the title from the
     archive itself.
 
     Anti-vacuity (polylogue-ez5b9, 11.F069): with the default source's
@@ -448,19 +373,13 @@ async def test_codex_retained_root_sidecar_titles_survive_without_a_live_tree(
 
     for path in (index_path, history_path, rollout):
         path.unlink()
-    record = _record(blob_store, content, source_path=str(rollout))
-    result = ingest_record(record, str(archive_root), "advisory", blob_root_str=str(blob_store.root))
-
-    assert result.error is None, result.error
-    assert len(result.sessions) == 1
-    assert result.sessions[0].parsed_session.title == "Retained curated title"
-    assert result.sessions[0].parsed_session.title_source is TitleSource.ORIGIN
+    parsed = await _retained_session(archive_root, Provider.CODEX, content, str(rollout))
+    assert parsed.title == "Retained curated title"
+    assert parsed.title_source is TitleSource.ORIGIN
 
 
 @pytest.mark.asyncio
-async def test_claude_index_and_history_resolve_with_the_original_tree_gone(
-    blob_store: BlobStore, tmp_path: Path
-) -> None:
+async def test_claude_index_and_history_resolve_with_the_original_tree_gone(tmp_path: Path) -> None:
     """The curated title and paste evidence come back from retained bytes."""
     from polylogue.sources.live import WatchSource
 
@@ -518,33 +437,24 @@ async def test_claude_index_and_history_resolve_with_the_original_tree_gone(
     assert kinds.get(str(history_path)) == "prompt_history_log"
 
     content = _claude_transcript()
-    raw_id, blob_size = blob_store.write_from_bytes(content)
     for path in (index_path, history_path, transcript):
         path.unlink()
 
-    record = RawSessionRecord(
-        raw_id=raw_id,
-        source_name="claude-code",
-        source_path=str(transcript),
-        canonical_source_path=str(transcript),
-        payload_provider=Provider.CLAUDE_CODE,
-        source_index=None,
-        blob_size=blob_size,
-        acquired_at="2026-07-20T10:00:00+00:00",
-        file_mtime=None,
-    )
-    result = ingest_record(record, str(archive_root), "advisory", blob_root_str=str(blob_store.root))
-
-    assert result.error is None, result.error
-    parsed = result.sessions[0].parsed_session
+    parsed = await _retained_session(archive_root, Provider.CLAUDE_CODE, content, str(transcript))
     assert parsed.title == "Curated index title"
     assert str(parsed.title_source) == TitleSource.ORIGIN.value
     user_message = next(message for message in parsed.messages if message.role == "user")
-    assert [span.source_marker for span in user_message.paste_spans] == ["1"]
+    assert user_message.has_paste
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        paste_markers = conn.execute(
+            "SELECT source_marker FROM paste_spans WHERE session_id = ? ORDER BY position",
+            (str(parsed.id),),
+        ).fetchall()
+    assert [row[0] for row in paste_markers] == ["1"]
 
 
 @pytest.mark.asyncio
-async def test_claude_retained_index_is_scoped_to_its_own_install(blob_store: BlobStore, tmp_path: Path) -> None:
+async def test_claude_retained_index_is_scoped_to_its_own_install(tmp_path: Path) -> None:
     """A second install's index never titles the first install's session."""
     from polylogue.sources.live import WatchSource
 
@@ -568,22 +478,7 @@ async def test_claude_retained_index_is_scoped_to_its_own_install(blob_store: Bl
 
     mine = tmp_path / "live" / "install-a" / ".claude" / "projects" / "-realm-project-x"
     transcript = mine / f"{_CLAUDE_SESSION_ID}.jsonl"
-    raw_id, blob_size = blob_store.write_from_bytes(_claude_transcript())
-    record = RawSessionRecord(
-        raw_id=raw_id,
-        source_name="claude-code",
-        source_path=str(transcript),
-        canonical_source_path=str(transcript),
-        payload_provider=Provider.CLAUDE_CODE,
-        source_index=None,
-        blob_size=blob_size,
-        acquired_at="2026-07-20T10:00:00+00:00",
-        file_mtime=None,
-    )
-    result = ingest_record(record, str(archive_root), "advisory", blob_root_str=str(blob_store.root))
-
-    assert result.error is None, result.error
-    parsed = result.sessions[0].parsed_session
+    parsed = await _retained_session(archive_root, Provider.CLAUDE_CODE, _claude_transcript(), str(transcript))
     assert parsed.title == "first prompt"
     assert str(parsed.title_source) == TitleSource.HEURISTIC.value
 
@@ -613,39 +508,45 @@ async def _acquire_chatgpt_export(archive_root: Path, root: Path) -> tuple[Path,
     return asset, library, names, conversations
 
 
-def _chatgpt_resolution_event(parsed: object) -> dict[str, object]:
-    events = [
-        event
-        for event in parsed.session_events  # type: ignore[attr-defined]
-        if event.event_type == "chatgpt_asset_resolution"
-    ]
+def _chatgpt_resolution_event(parsed: Session) -> dict[str, object]:
+    events = [event for event in parsed.session_events if event.event_type == "chatgpt_asset_resolution"]
     assert events, "expected one asset-resolution event"
     return dict(events[0].payload)
 
 
-def _chatgpt_replay(archive_root: Path, blob_store: BlobStore, conversations: Path) -> object:
-    raw_id, blob_size = blob_store.write_from_bytes(_chatgpt_export_document())
-    record = RawSessionRecord(
-        raw_id=raw_id,
-        source_name="chatgpt",
-        source_path=str(conversations),
-        canonical_source_path=str(conversations),
-        payload_provider=Provider.CHATGPT,
-        source_index=None,
-        blob_size=blob_size,
-        acquired_at="2026-07-20T10:00:00+00:00",
-        file_mtime=None,
-    )
-    result = ingest_record(record, str(archive_root), "advisory", blob_root_str=str(blob_store.root))
-    assert result.error is None, result.error
-    assert result.sessions, "expected one materializable session"
-    return result.sessions[0].parsed_session
+def _chatgpt_replay(archive_root: Path, conversations: Path) -> Session:
+    return _retained_session_sync(archive_root, Provider.CHATGPT, _chatgpt_export_document(), str(conversations))
+
+
+def _stored_chatgpt_asset_evidence(
+    archive_root: Path, session: Session
+) -> list[tuple[str, str | None, str, bytes | None]]:
+    """Read durable attachment identity and acquisition facts for one session."""
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT ids.native_id, attachments.display_name, attachments.acquisition_status, attachments.blob_hash
+            FROM attachment_refs AS refs
+            JOIN attachments USING (attachment_id)
+            JOIN attachment_native_ids AS ids USING (ref_id)
+            WHERE refs.session_id = ? AND ids.id_kind = 'attachment'
+            ORDER BY ids.native_id
+            """,
+            (str(session.id),),
+        ).fetchall()
+    return [
+        (
+            str(row[0]),
+            str(row[1]) if row[1] is not None else None,
+            str(row[2]),
+            bytes(row[3]) if row[3] is not None else None,
+        )
+        for row in rows
+    ]
 
 
 @pytest.mark.asyncio
-async def test_chatgpt_asset_identity_and_bytes_resolve_with_the_export_gone(
-    blob_store: BlobStore, tmp_path: Path
-) -> None:
+async def test_chatgpt_asset_identity_and_bytes_resolve_with_the_export_gone(tmp_path: Path) -> None:
     """Attachment name and payload come back from retained export evidence."""
     archive_root = tmp_path / "archive"
     root = tmp_path / "live" / "chatgpt-export"
@@ -659,21 +560,22 @@ async def test_chatgpt_asset_identity_and_bytes_resolve_with_the_export_gone(
     for path in (asset, library, names, conversations):
         path.unlink()
 
-    parsed = _chatgpt_replay(archive_root, blob_store, conversations)
-    attachment = parsed.attachments[0]  # type: ignore[attr-defined]
-    assert attachment.provider_file_id == _CHATGPT_ASSET_ID
+    parsed = _chatgpt_replay(archive_root, conversations)
+    [attachment] = parsed.attachments
     assert attachment.name == "diagram.png"
-    assert attachment.precomputed_blob is not None
-    blob_hash, size = attachment.precomputed_blob
-    assert size == len(_CHATGPT_ASSET_BYTES)
+    [(native_id, display_name, acquisition_status, blob_hash)] = _stored_chatgpt_asset_evidence(archive_root, parsed)
+    assert native_id == _CHATGPT_ASSET_ID
+    assert display_name == "diagram.png"
+    assert acquisition_status == "acquired"
+    assert blob_hash is not None
     # The payload is readable from the archive's own blob store, which is
     # where acquisition retained it -- not from the original export path.
-    assert BlobStore(archive_root / "blob").read_all(blob_hash) == _CHATGPT_ASSET_BYTES
+    assert BlobStore(archive_root / "blob").read_all(blob_hash.hex()) == _CHATGPT_ASSET_BYTES
     assert _chatgpt_resolution_event(parsed)["blob_acquired"] is True
 
 
 @pytest.mark.asyncio
-async def test_dropping_the_retained_asset_map_loses_the_resolved_name(blob_store: BlobStore, tmp_path: Path) -> None:
+async def test_dropping_the_retained_asset_map_loses_the_resolved_name(tmp_path: Path) -> None:
     """The retained map, not the original file, is what the name depends on."""
     import sqlite3
 
@@ -692,13 +594,13 @@ async def test_dropping_the_retained_asset_map_loses_the_resolved_name(blob_stor
     finally:
         conn.close()
 
-    parsed = _chatgpt_replay(archive_root, blob_store, conversations)
-    attachment = parsed.attachments[0]  # type: ignore[attr-defined]
+    parsed = _chatgpt_replay(archive_root, conversations)
+    [attachment] = parsed.attachments
     assert attachment.name != "diagram.png"
 
 
 @pytest.mark.asyncio
-async def test_the_same_asset_id_in_two_exports_never_cross_binds(blob_store: BlobStore, tmp_path: Path) -> None:
+async def test_the_same_asset_id_in_two_exports_never_cross_binds(tmp_path: Path) -> None:
     """Scope is identity: one export's map never names another export's asset."""
     archive_root = tmp_path / "archive"
     other_root = tmp_path / "live" / "other-export"
@@ -711,14 +613,17 @@ async def test_the_same_asset_id_in_two_exports_never_cross_binds(blob_store: Bl
     mine.mkdir(parents=True)
     conversations = mine / "conversations.json"
 
-    parsed = _chatgpt_replay(archive_root, blob_store, conversations)
-    attachment = parsed.attachments[0]  # type: ignore[attr-defined]
+    parsed = _chatgpt_replay(archive_root, conversations)
+    [attachment] = parsed.attachments
     assert attachment.name != "diagram.png"
-    assert attachment.precomputed_blob is None
+    [(_native_id, display_name, acquisition_status, blob_hash)] = _stored_chatgpt_asset_evidence(archive_root, parsed)
+    assert display_name is None
+    assert acquisition_status != "acquired"
+    assert blob_hash is None
 
 
 @pytest.mark.asyncio
-async def test_a_late_asset_map_resolves_on_the_next_convergence(blob_store: BlobStore, tmp_path: Path) -> None:
+async def test_a_late_asset_map_resolves_on_the_next_convergence(tmp_path: Path) -> None:
     """Late metadata is an attributable outcome, then an ordinary resolution.
 
     Convergence over the same retained conversation is idempotent and
@@ -733,21 +638,23 @@ async def test_a_late_asset_map_resolves_on_the_next_convergence(blob_store: Blo
     conversations = root / "conversations.json"
     conversations.write_bytes(_chatgpt_export_document())
 
-    before = _chatgpt_replay(archive_root, blob_store, conversations)
-    assert before.attachments[0].name != "diagram.png"  # type: ignore[attr-defined]
-    assert before.attachments[0].precomputed_blob is None  # type: ignore[attr-defined]
+    before = _chatgpt_replay(archive_root, conversations)
+    assert before.attachments[0].name != "diagram.png"
+    [before_asset] = _stored_chatgpt_asset_evidence(archive_root, before)
+    assert before_asset[3] is None
 
     asset, library, names, _conversations = await _acquire_chatgpt_export(archive_root, root)
     for path in (asset, library, names, conversations):
         path.unlink()
 
-    after = _chatgpt_replay(archive_root, blob_store, conversations)
-    assert after.attachments[0].name == "diagram.png"  # type: ignore[attr-defined]
-    assert after.attachments[0].precomputed_blob is not None  # type: ignore[attr-defined]
+    after = _chatgpt_replay(archive_root, conversations)
+    assert after.attachments[0].name == "diagram.png"
+    [after_asset] = _stored_chatgpt_asset_evidence(archive_root, after)
+    assert after_asset[3] is not None
 
 
 @pytest.mark.asyncio
-async def test_retained_replay_archives_every_duplicate_asset_rendition(blob_store: BlobStore, tmp_path: Path) -> None:
+async def test_retained_replay_archives_every_duplicate_asset_rendition(tmp_path: Path) -> None:
     """Replay from retained evidence keys renditions as live discovery does.
 
     Anti-vacuity: keep only the first retained member per asset id and replay
@@ -781,18 +688,19 @@ async def test_retained_replay_archives_every_duplicate_asset_rendition(blob_sto
     for path in (*renditions, library, names, conversations):
         path.unlink()
 
-    replayed = _chatgpt_replay(archive_root, blob_store, conversations)
-    attachments = list(replayed.attachments)  # type: ignore[attr-defined]
+    replayed = _chatgpt_replay(archive_root, conversations)
+    attachments = list(replayed.attachments)
     assert len(live_keys) == 2
     assert len(attachments) == 2
-    blobs = [attachment.precomputed_blob for attachment in attachments]
-    assert all(blob is not None for blob in blobs)
+    asset_rows = _stored_chatgpt_asset_evidence(archive_root, replayed)
+    assert len(asset_rows) == 2
+    assert all(row[3] is not None for row in asset_rows)
     stored = BlobStore(archive_root / "blob")
-    assert sorted(stored.read_all(blob[0]) for blob in blobs if blob is not None) == sorted(renditions.values())
+    assert sorted(stored.read_all(row[3].hex()) for row in asset_rows if row[3] is not None) == sorted(
+        renditions.values()
+    )
     # The retained route names each rendition by the same member coordinate.
-    assert {attachment.provider_attachment_id.rsplit("#", 1)[-1] for attachment in attachments} == {
-        key.rsplit("#", 1)[-1] for key in live_keys
-    }
+    assert {row[0].rsplit("#", 1)[-1] for row in asset_rows} == {key.rsplit("#", 1)[-1] for key in live_keys}
 
 
 def _write_chatgpt_zip(zip_path: Path, library_names: Sequence[str]) -> None:
@@ -850,7 +758,7 @@ def _resolved_library_names(archive_root: Path, zip_path: Path) -> tuple[str | N
 
 
 @pytest.mark.asyncio
-async def test_retained_zip_sidecar_binds_the_member_live_assembly_binds(blob_store: BlobStore, tmp_path: Path) -> None:
+async def test_retained_zip_sidecar_binds_the_member_live_assembly_binds(tmp_path: Path) -> None:
     """Replay binds the first duplicate member of one acquisition, as live does.
 
     A later acquisition of the export still supersedes the earlier one.

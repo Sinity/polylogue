@@ -462,7 +462,6 @@ class TestBackfillCommand:
         monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
         report = _make_report(pending_sessions=2, pending_messages=4)
         fake_provider = MagicMock()
-        fake_provider.upsert = MagicMock()
         from polylogue.storage.embeddings.materialization import (
             EmbedSessionOutcome,
             PendingSession,

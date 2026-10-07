@@ -556,6 +556,21 @@ def acquire_codex_revision_chain(
                             authority=RawRevisionAuthority.BYTE_PROVEN,
                         ),
                     )
+
+                async def publish_restored_planner_baseline() -> None:
+                    # The snapshots above intentionally restore the all-raw,
+                    # unpublished acquisition state. Re-establish the selected
+                    # full baseline on that state before asking the append
+                    # planner to classify suffixes; otherwise every append is
+                    # correctly deferred behind the unbound acquisition rows.
+                    async with prepared_live_convergence_owner(archive_root) as retained_owner:
+                        result = await retained_owner.converge_raw_id(raw_ids[0])
+                        while result.pending and not result.done and not result.failed:
+                            result = await retained_owner.converge_raw_id(raw_ids[0])
+                        if result.failed or result.pending or result.done != 1:
+                            raise AssertionError(f"restored planner baseline convergence did not settle: {result!r}")
+
+                asyncio.run(publish_restored_planner_baseline())
                 for plan in plans:
                     append_result = run_owned_append_plans(archive_root, owner, [plan])
                     if append_result.failed or (append_result.succeeded != [plan] and append_result.deferred != [plan]):

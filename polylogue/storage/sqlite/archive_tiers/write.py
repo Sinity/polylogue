@@ -2819,15 +2819,12 @@ def write_parsed_session_to_archive(
                 position_offset = 0
                 stale_attachment_ids: set[str] = set()
                 projection_carry_forward: _ProjectionCarryForward | None = None
-                append_has_new_messages = False
                 t0 = time.perf_counter()
                 if merge_append:
                     position_offset = _next_message_position(conn, session_id)
                     _assert_unique_message_coordinates(session_id, messages, position_offset=position_offset)
-                    append_has_new_messages = _append_has_new_native_messages(
-                        conn, session_id, prepared_rows_to_use.message_rows
-                    )
-                    if not event_only and append_has_new_messages:
+                    if not event_only:
+                        # An append without messages cannot move the active leaf.
                         conn.execute(
                             """
                             UPDATE messages
@@ -2909,14 +2906,27 @@ def write_parsed_session_to_archive(
                     add_timing("index.full_replace", t0)
                 if merge_append:
                     t0 = time.perf_counter()
-                    _write_append_messages_and_blocks(
+                    _write_messages(
                         conn,
                         session_id,
                         messages,
-                        message_rows=prepared_rows_to_use.message_rows,
-                        block_rows=prepared_rows_to_use.block_rows,
+                        position_offset=position_offset,
+                        duplicate_native_ids=duplicate_message_native_ids,
+                        rows=prepared_rows_to_use.message_rows,
+                        content_identities=content_identities,
                     )
-                    add_timing("index.messages_and_blocks", t0)
+                    add_timing("index.messages", t0)
+                    t0 = time.perf_counter()
+                    _write_blocks(
+                        conn,
+                        session_id,
+                        messages,
+                        position_offset=position_offset,
+                        duplicate_native_ids=duplicate_message_native_ids,
+                        rows=prepared_rows_to_use.block_rows,
+                        content_identities=content_identities,
+                    )
+                    add_timing("index.blocks", t0)
                     t0 = time.perf_counter()
                     _write_file_edits(
                         conn,
@@ -3316,32 +3326,6 @@ def _purge_session_message_fts_when_delete_trigger_missing(conn: sqlite3.Connect
     # "left-over ledger row" failure class ``message_identity_mismatch_sql``
     # detects).
     conn.execute(delete_session_identity_rows_sql(1), (session_id,))
-
-
-def upsert_session_profile_costs(
-    conn: sqlite3.Connection,
-    session_id: str,
-    *,
-    cost_credits: float | None = None,
-    cost_usd: float | None = None,
-    cost_is_estimated: bool = False,
-    cost_provenance: str | None = None,
-    priced_with: str | None = None,
-    priced_at_ms: int | None = None,
-) -> None:
-    """Seed canonical session-scoped money for legacy test callers.
-
-    The historical helper name is retained as a narrow compatibility shim for
-    fixtures while the profile columns are removed.  It deliberately writes
-    ``sessions.reported_cost_usd`` (the canonical provider-money evidence),
-    never ``session_profiles``.
-    """
-    conn.execute("PRAGMA foreign_keys = ON")
-    with conn:
-        conn.execute(
-            "UPDATE sessions SET reported_cost_usd = ? WHERE session_id = ?",
-            (cost_usd, session_id),
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -4267,58 +4251,6 @@ def _messages_insert_sql() -> str:
             {spec.insert_column_names}
         ) VALUES ({spec.insert_placeholder_string})
         """
-
-
-def _write_append_messages_and_blocks(
-    conn: sqlite3.Connection,
-    session_id: str,
-    messages: Sequence[ParsedMessage],
-    *,
-    message_rows: Iterable[tuple[object, ...]],
-    block_rows: Iterable[tuple[object, ...]],
-) -> None:
-    """Append only new normalized native IDs while keeping each message's blocks aligned.
-
-    The existence check must happen before inserting the message row. Doing
-    the two writes together avoids retaining a potentially large set of IDs
-    between message and block insertion, and still allows session metadata,
-    events, and attachments to follow their ordinary append paths.
-    """
-    message_columns = [
-        column.name
-        for column in archive_tiers_specs.MESSAGES_SPEC.writable_columns
-        if column.extract_placeholder == "?"
-    ]
-    native_index = message_columns.index("native_id")
-    message_iter = iter(message_rows)
-    block_iter = iter(block_rows)
-    pending_messages: list[tuple[object, ...]] = []
-    pending_blocks: list[tuple[object, ...]] = []
-
-    def flush() -> None:
-        if pending_messages:
-            conn.executemany(_messages_insert_sql(), pending_messages)
-            conn.executemany(_blocks_insert_sql(), pending_blocks)
-            pending_messages.clear()
-            pending_blocks.clear()
-
-    for message, message_row in zip(messages, message_iter, strict=True):
-        message_blocks = _message_blocks(message)
-        aligned_blocks = islice(block_iter, len(message_blocks))
-        if _stored_native_id_exists(conn, session_id, message_row[native_index]):
-            for _ in aligned_blocks:
-                pass
-            continue
-        pending_messages.append(message_row)
-        for block_row in aligned_blocks:
-            pending_blocks.append(block_row)
-            if len(pending_blocks) >= 4096:
-                flush()
-        if len(pending_messages) >= 256:
-            flush()
-    if next(block_iter, None) is not None or next(message_iter, None) is not None:
-        raise RuntimeError("prepared append rows exceeded their parsed message owners")
-    flush()
 
 
 def _write_messages(
@@ -11539,6 +11471,20 @@ def _last_agent_policy_values(
     return (row[0], row[1], row[2])
 
 
+_SessionEventInsertRow = tuple[
+    str,
+    str | None,
+    str | None,
+    int,
+    str | None,
+    str,
+    int | None,
+    int | None,
+    int | None,
+    str | None,
+]
+
+
 def _stored_event_payload(
     event: ParsedSessionEvent, sidecar_blob_locators: Mapping[str, Mapping[str, str]] | None
 ) -> Mapping[str, object]:
@@ -11618,7 +11564,7 @@ def _write_session_events(
                 by_native_id[message.provider_message_id] = message_id
         wrote_provider_usage_events = False
         position = event_position_offset
-        session_event_rows: list[tuple[object, ...]] = []
+        session_event_rows: list[_SessionEventInsertRow] = []
         agent_policy_rows: list[tuple[object, ...]] = []
         # polylogue-cuxz.11: the Codex wire restates the whole policy on every
         # turn_context, so a row per observation made this table a change-log of
@@ -11632,6 +11578,10 @@ def _write_session_events(
 
         def _flush_rows() -> None:
             if session_event_rows:
+                conn.executemany(
+                    "DELETE FROM session_event_array_items WHERE session_id = ? AND event_position = ?",
+                    ((str(row[0]), int(row[3])) for row in session_event_rows),
+                )
                 conn.executemany(
                     "INSERT OR REPLACE INTO session_events (session_id, source_message_id, "
                     "source_message_provider_id, position, event_type, payload_json, occurred_at_ms, "
@@ -11652,7 +11602,11 @@ def _write_session_events(
                 conn.executemany(_PROVIDER_USAGE_EVENT_INSERT_SQL, provider_usage_rows)
                 provider_usage_rows.clear()
 
-        def _insert_streamed_event(row: tuple[object, ...], arrays: Mapping[str, object]) -> None:
+        def _insert_streamed_event(row: _SessionEventInsertRow, arrays: Mapping[str, object]) -> None:
+            conn.execute(
+                "DELETE FROM session_event_array_items WHERE session_id = ? AND event_position = ?",
+                (str(row[0]), int(row[3])),
+            )
             conn.execute(
                 "INSERT OR REPLACE INTO session_events (session_id, source_message_id, "
                 "source_message_provider_id, position, event_type, payload_json, occurred_at_ms, "
@@ -11739,8 +11693,14 @@ def _write_session_events(
                 streamed_arrays = {
                     key: value for key, value in stored_payload.items() if isinstance(value, StreamedJsonArray)
                 }
-                ordinary_payload = {key: value for key, value in stored_payload.items() if key not in streamed_arrays}
-                row = (
+                ordinary_payload: dict[str, object] = {}
+                for key, value in stored_payload.items():
+                    if isinstance(value, StreamedJsonArray):
+                        if len(value) == 0:
+                            ordinary_payload[key] = []
+                    else:
+                        ordinary_payload[key] = value
+                row: _SessionEventInsertRow = (
                     session_id,
                     source_message_id,
                     _sqlite_text(source_message_provider_id),
@@ -11801,7 +11761,7 @@ def _write_session_events(
                     ambiguous_source_provider_ids=ambiguous_source_provider_ids,
                     duplicate_native_ids=duplicate_native_ids,
                 )
-                row = _provider_usage_event_row(
+                usage_row = _provider_usage_event_row(
                     session_id,
                     source_message_id,
                     position,
@@ -11809,8 +11769,8 @@ def _write_session_events(
                     source_message_provider_id=declared_provider_id,
                     source_message_resolution=resolution,
                 )
-                if _provider_usage_event_has_evidence(event, row):
-                    provider_usage_rows.append(row)
+                if _provider_usage_event_has_evidence(event, usage_row):
+                    provider_usage_rows.append(usage_row)
                     wrote_provider_usage_events = True
             position += 1
             if max(len(session_event_rows), len(agent_policy_rows), len(provider_usage_rows)) >= 128:
@@ -16670,31 +16630,6 @@ def _stored_message_native_id(message: ParsedMessage, duplicate_native_ids: froz
     return stripped or None
 
 
-def _stored_native_id_exists(conn: sqlite3.Connection, session_id: str, native_id: object) -> bool:
-    """Whether a normalized incoming ID already has a row in this session."""
-    return (
-        isinstance(native_id, str)
-        and bool(native_id)
-        and conn.execute(
-            "SELECT 1 FROM messages WHERE session_id = ? AND native_id = ? LIMIT 1",
-            (session_id, native_id),
-        ).fetchone()
-        is not None
-    )
-
-
-def _append_has_new_native_messages(
-    conn: sqlite3.Connection, session_id: str, rows: Iterable[tuple[object, ...]]
-) -> bool:
-    columns = [
-        column.name
-        for column in archive_tiers_specs.MESSAGES_SPEC.writable_columns
-        if column.extract_placeholder == "?"
-    ]
-    native_index = columns.index("native_id")
-    return any(not _stored_native_id_exists(conn, session_id, row[native_index]) for row in rows)
-
-
 def _block_type(block: ParsedContentBlock) -> BlockType:
     value = _enum_value(block.type)
     if value == "thinking":
@@ -17160,7 +17095,6 @@ __all__ = [
     "rebuild_archive_messages_fts",
     "replace_parser_ingest_flag_tags",
     "repo_identity_key",
-    "upsert_session_profile_costs",
     "upsert_parser_ingest_flag_tags",
     "upsert_session_tag",
     "raw_source_path",

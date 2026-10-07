@@ -4130,6 +4130,57 @@ async def test_a_caught_page_error_is_classified_like_an_escaped_one(
 
 
 @pytest.mark.asyncio
+async def test_stale_cursor_retries_only_its_path_and_settles_empty_sibling(tmp_path: Path) -> None:
+    """A stale cursor in one source file must not strand a stable empty peer."""
+    from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
+
+    root = tmp_path / "source"
+    root.mkdir()
+    empty = root / "empty.jsonl"
+    stale = root / "stale.jsonl"
+    empty.write_bytes(b"")
+    stale.write_text("{}\n", encoding="utf-8")
+    source = WatchSource(name="capture", root=root, layout=export_drop_layout((".jsonl",)))
+    cursor = CursorStore(tmp_path / "index.db")
+
+    async def ingest(paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+        assert paths == [empty, stale]
+        return SimpleNamespace(
+            stale_cursor_write_count=1,
+            stale_cursor_paths=(str(stale),),
+            succeeded_paths=(str(empty), str(stale)),
+            failed_paths=(),
+            deferred_paths=(),
+            excluded_paths={},
+            settled_exclusion_paths={str(empty): "no_sessions"},
+            partial_admission_paths={},
+            daemon_degraded_skip=False,
+            time_budget_exceeded=False,
+            source_payload_read_bytes=1,
+        )
+
+    watcher = SimpleNamespace(
+        has_write_coordinator=True,
+        _run_writer_sync=_inline_writer_sync,
+        _cursor=cursor,
+        intake_revision=lambda _source: 0,
+        _ingest_files=ingest,
+    )
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    empty_item = IntakeItem(item_id=f"file:{empty}", class_name="capture", payload=empty)
+    stale_item = IntakeItem(item_id=f"file:{stale}", class_name="capture", payload=stale)
+
+    outcomes = await adapter.admit_page((empty_item, stale_item))
+
+    assert outcomes[empty_item.item_id].outcome is AdmissionOutcome.EXCLUDED
+    assert outcomes[stale_item.item_id].outcome is AdmissionOutcome.RETRYABLE
+    assert outcomes[stale_item.item_id].reason == "source cursor write was stale"
+
+
+@pytest.mark.asyncio
 async def test_a_transient_failure_mid_window_breaks_the_isolation_streak() -> None:
     """Anti-vacuity (Codex): only the result on the cooldown boundary was
     examined, so two clean deterministic windows followed by a window of

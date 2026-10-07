@@ -253,7 +253,7 @@ def test_duplicate_equal_elements_never_resolve_to_an_unrelated_conversation(tmp
     resolution = resolve_member_candidate(
         candidates,
         expected_digest=hashlib.sha256(expected).hexdigest(),
-        hint_mode=None,
+        hint_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
         hint_index=0,
     )
     assert resolution.outcome == "duplicate_observations"
@@ -485,7 +485,9 @@ def test_equal_content_without_a_recorded_digest_is_one_logical_item() -> None:
         _candidate(MemberAddressingMode.ELEMENT_OF_CONTAINER, 0, b'{"a": 1, "b": 2}'),
         _candidate(MemberAddressingMode.ELEMENT_OF_CONTAINER, 1, b'{"b":2.0,"a":1.0}'),
     )
-    resolution = resolve_member_candidate(equal, expected_digest=None, hint_mode=None, hint_index=0)
+    resolution = resolve_member_candidate(
+        equal, expected_digest=None, hint_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER, hint_index=0
+    )
     assert resolution.outcome == "duplicate_observations"
     assert resolution.error is None
 
@@ -493,7 +495,9 @@ def test_equal_content_without_a_recorded_digest_is_one_logical_item() -> None:
         equal[0],
         _candidate(MemberAddressingMode.ELEMENT_OF_CONTAINER, 1, b'{"a": 1, "b": 3}'),
     )
-    refused = resolve_member_candidate(mixed, expected_digest=None, hint_mode=None, hint_index=0)
+    refused = resolve_member_candidate(
+        mixed, expected_digest=None, hint_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER, hint_index=0
+    )
     assert refused.candidate is None
     assert refused.error == "content_identity:unavailable"
 

@@ -40,9 +40,6 @@ import polylogue.security.excision as excision_module
 from polylogue.core.enums import AssertionKind
 from polylogue.security.excision import (
     LineageDependentsError,
-    find_lineage_dependents,
-    plan_session_excision,
-    resolve_session_excision_target,
 )
 from polylogue.storage.accepted_marker_inputs import (
     AcceptedMarkerInputExcisedError,
@@ -62,6 +59,11 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.excision import (
+    find_lineage_dependents_from_root,
+    plan_session_excision_from_root,
+    resolve_session_excision_target_from_root,
+)
 from tests.infra.excision_embeddings import seed_excision_session as _seed_session
 from tests.infra.excision_execution import execute_excision, recover_excision
 from tests.infra.sync_as_async import AsyncConnectionView
@@ -71,7 +73,7 @@ def _seed_marker_carriers(
     archive_root: Path, session_id: str
 ) -> tuple[PreparedAcceptedMarkerInput, PreparedAcceptedMarkerInput]:
     """Seed real pending/accepted carrier bytes plus their rebuildable witnesses."""
-    raw_id = resolve_session_excision_target(archive_root, session_id).raw_targets[0].raw_id
+    raw_id = resolve_session_excision_target_from_root(archive_root, session_id).raw_targets[0].raw_id
     pending = prepare_accepted_marker_input(
         raw_id, [{"session_id": session_id, "candidates": [{"body": "pending secret"}]}]
     )
@@ -94,12 +96,12 @@ class TestPlanSessionExcision:
     def test_not_found_for_unknown_session(self, tmp_path: Path) -> None:
         with write_lease("test.excision-unknown-session", archive_root=tmp_path):
             initialize_active_archive_root(tmp_path)
-        plan = plan_session_excision(tmp_path, "codex-session:does-not-exist")
+        plan = plan_session_excision_from_root(tmp_path, "codex-session:does-not-exist")
         assert plan.found is False
 
     def test_counts_every_tier(self, tmp_path: Path) -> None:
         session_id = _seed_session(tmp_path, native_id="plan-1", with_embedding=True)
-        plan = plan_session_excision(tmp_path, session_id)
+        plan = plan_session_excision_from_root(tmp_path, session_id)
         assert plan.found is True
         assert plan.source_raw_rows == 1
         assert plan.source_blob_refs == 1
@@ -110,9 +112,9 @@ class TestPlanSessionExcision:
 
     def test_dry_run_does_not_mutate(self, tmp_path: Path) -> None:
         session_id = _seed_session(tmp_path, native_id="plan-2")
-        plan_session_excision(tmp_path, session_id)
+        plan_session_excision_from_root(tmp_path, session_id)
         # Session must still be readable after a plan-only call.
-        target = resolve_session_excision_target(tmp_path, session_id)
+        target = resolve_session_excision_target_from_root(tmp_path, session_id)
         assert target.found is True
 
 
@@ -456,7 +458,7 @@ class TestApplySessionExcision:
         then permits a changed recipe to persist the same excised material.
         """
         session_id = _seed_session(tmp_path, native_id="pending-before-index")
-        raw_id = resolve_session_excision_target(tmp_path, session_id).raw_targets[0].raw_id
+        raw_id = resolve_session_excision_target_from_root(tmp_path, session_id).raw_targets[0].raw_id
         with sqlite3.connect(tmp_path / "index.db") as conn:
             conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         pending = prepare_accepted_marker_input(
@@ -468,7 +470,7 @@ class TestApplySessionExcision:
             conn.execute("BEGIN IMMEDIATE")
             persist_pending_marker_input_sync(conn, pending, expected_incarnation_id=str(uuid.uuid4()))
 
-        target = resolve_session_excision_target(tmp_path, session_id)
+        target = resolve_session_excision_target_from_root(tmp_path, session_id)
         assert target.session_exists is False
         assert tuple(raw.raw_id for raw in target.raw_targets) == (raw_id,)
         assert tuple(marker.identity for marker in target.marker_input_targets) == (pending.identity,)
@@ -531,7 +533,7 @@ class TestApplySessionExcision:
         assert failed
 
         # The durable marker exists while the rebuildable lookup key remains.
-        assert resolve_session_excision_target(tmp_path, session_id).found is True
+        assert resolve_session_excision_target_from_root(tmp_path, session_id).found is True
         source_conn = sqlite3.connect(tmp_path / "source.db")
         try:
             assert is_blob_hash_excised(source_conn, deterministic_blob_hash(b'{"native_id": "x"}')) is True
@@ -574,7 +576,7 @@ class TestApplySessionExcision:
         with sqlite3.connect(tmp_path / "embeddings.db") as conn:
             assert conn.execute("SELECT count(*) FROM message_embeddings_meta").fetchone() == (0,)
             assert conn.execute("SELECT count(*) FROM excision_embedding_completions").fetchone() == (1,)
-        assert resolve_session_excision_target(tmp_path, session_id).found is False
+        assert resolve_session_excision_target_from_root(tmp_path, session_id).found is False
 
     def test_source_first_retry_cleans_marker_witnesses_from_terminal_evidence(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -620,7 +622,7 @@ class TestApplySessionExcision:
                 (pending.identity, accepted.identity),
             ).fetchone() == (2,)
 
-        recovery_plan = plan_session_excision(tmp_path, session_id)
+        recovery_plan = plan_session_excision_from_root(tmp_path, session_id)
         assert recovery_plan.source_marker_inputs_pending == 1
         assert recovery_plan.source_marker_inputs_accepted == 1
         assert recovery_plan.marker_input_digests == (pending.payload_sha256, accepted.payload_sha256)
@@ -725,7 +727,7 @@ class TestApplySessionExcision:
                 "SELECT COUNT(*) FROM ingest_marker_witnesses WHERE request_key IN (?, ?)",
                 (pending.identity, accepted.identity),
             ).fetchone() == (0,)
-        assert resolve_session_excision_target(tmp_path, session_id).found is False
+        assert resolve_session_excision_target_from_root(tmp_path, session_id).found is False
 
     def test_reingest_does_not_resurrect_excised_content(self, tmp_path: Path) -> None:
         payload = b'{"native_id": "resurrect-me", "secret": "sk-ant-abc123"}'
@@ -1041,9 +1043,9 @@ class TestLineageSafety:
 
     def test_find_lineage_dependents_returns_prefix_sharing_child(self, tmp_path: Path) -> None:
         parent_id, child_id = self._seed_lineage(tmp_path)
-        assert find_lineage_dependents(tmp_path, parent_id) == (child_id,)
+        assert find_lineage_dependents_from_root(tmp_path, parent_id) == (child_id,)
         # The child is not itself a lineage parent of anything.
-        assert find_lineage_dependents(tmp_path, child_id) == ()
+        assert find_lineage_dependents_from_root(tmp_path, child_id) == ()
 
     def test_find_lineage_dependents_ignores_spawned_fresh(self, tmp_path: Path) -> None:
         parent_id = _seed_session(tmp_path, native_id="fresh-parent")
@@ -1065,17 +1067,17 @@ class TestLineageSafety:
         finally:
             index_conn.close()
         # spawned-fresh children don't share bytes with the parent.
-        assert find_lineage_dependents(tmp_path, parent_id) == ()
+        assert find_lineage_dependents_from_root(tmp_path, parent_id) == ()
 
     def test_plan_surfaces_lineage_dependents(self, tmp_path: Path) -> None:
         parent_id, child_id = self._seed_lineage(tmp_path)
         with pytest.raises(LineageDependentsError) as excinfo:
-            plan_session_excision(tmp_path, parent_id)
+            plan_session_excision_from_root(tmp_path, parent_id)
         assert excinfo.value.dependent_session_ids == (child_id,)
 
     def test_cascade_plan_and_apply_share_one_marker_carrier(self, tmp_path: Path) -> None:
         parent_id, child_id = self._seed_lineage(tmp_path)
-        raw_id = resolve_session_excision_target(tmp_path, parent_id).raw_targets[0].raw_id
+        raw_id = resolve_session_excision_target_from_root(tmp_path, parent_id).raw_targets[0].raw_id
         shared = prepare_accepted_marker_input(
             raw_id,
             [
@@ -1087,7 +1089,7 @@ class TestLineageSafety:
             conn.execute("BEGIN IMMEDIATE")
             persist_pending_marker_input_sync(conn, shared, expected_incarnation_id=str(uuid.uuid4()))
 
-        plan = plan_session_excision(tmp_path, parent_id, cascade_lineage=True)
+        plan = plan_session_excision_from_root(tmp_path, parent_id, cascade_lineage=True)
         assert plan.source_marker_inputs_pending == 1
         assert plan.source_marker_inputs_accepted == 0
         assert plan.marker_input_digests == (shared.payload_sha256,)
@@ -1098,7 +1100,7 @@ class TestLineageSafety:
     def test_cascade_plan_refuses_marker_carrier_shared_outside_the_lineage(self, tmp_path: Path) -> None:
         parent_id, child_id = self._seed_lineage(tmp_path)
         outsider_id = _seed_session(tmp_path, native_id="lineage-outsider")
-        raw_id = resolve_session_excision_target(tmp_path, parent_id).raw_targets[0].raw_id
+        raw_id = resolve_session_excision_target_from_root(tmp_path, parent_id).raw_targets[0].raw_id
         shared = prepare_accepted_marker_input(
             raw_id,
             [
@@ -1112,7 +1114,7 @@ class TestLineageSafety:
             persist_pending_marker_input_sync(conn, shared, expected_incarnation_id=str(uuid.uuid4()))
 
         with pytest.raises(MixedAcceptedMarkerInputError, match="retained sessions"):
-            plan_session_excision(tmp_path, parent_id, cascade_lineage=True)
+            plan_session_excision_from_root(tmp_path, parent_id, cascade_lineage=True)
         with sqlite3.connect(tmp_path / "index.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (3,)
 
@@ -1186,7 +1188,7 @@ class TestAttachmentBlobHashesAreExcisedToo:
         )
 
         session_id = _seed_session(tmp_path, native_id="attach-1")
-        target = resolve_session_excision_target(tmp_path, session_id)
+        target = resolve_session_excision_target_from_root(tmp_path, session_id)
         raw_id = target.raw_targets[0].raw_id
         raw_blob_hash = target.raw_targets[0].blob_hash
         attachment_blob_hash = deterministic_blob_hash(b"attachment bytes with a secret sk-ant-xyz")

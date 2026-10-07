@@ -14,9 +14,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from polylogue.core.enums import BlockType, Role
-from polylogue.pipeline.ids import session_content_hash
-from polylogue.pipeline.services.ingest_worker import SessionWritePayload
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage
 from polylogue.storage.derived.session.marker_domain import SessionMarkerDerivation
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
@@ -34,15 +32,6 @@ def _message(provider_id: str, role: Role, text: str, position: int) -> ParsedMe
         is_active_path=True,
         is_active_leaf=False,
         blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
-    )
-
-
-def _payload(parsed: ParsedSession) -> SessionWritePayload:
-    return SessionWritePayload(
-        session_id=f"codex-session:{parsed.provider_session_id}",
-        content_hash=str(session_content_hash(parsed)),
-        parsed_session=parsed,
-        message_count=len(parsed.messages),
     )
 
 

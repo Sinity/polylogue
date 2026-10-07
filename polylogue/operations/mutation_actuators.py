@@ -174,9 +174,11 @@ class SessionExcisionActuator(ConvergentReplay):
     required_confirmation: ConfirmationStrength = "confirm_flag"
 
     def prepare(self, args: SessionExcisionArgs) -> MutationPlan:
+        from polylogue.operations.operation_context import open_operation_read
         from polylogue.security.excision import excision_target_replay, plan_session_excision
 
-        plan = plan_session_excision(args.archive_root, args.session_id, cascade_lineage=args.cascade_lineage)
+        with open_operation_read(args.archive_root) as pinned:
+            plan = plan_session_excision(pinned.archive, args.session_id, cascade_lineage=args.cascade_lineage)
         target_refs = ((make_target_ref("session", args.session_id),) if plan.found else ()) + tuple(
             make_target_ref("session", sid) for sid in plan.lineage_dependent_session_ids
         )

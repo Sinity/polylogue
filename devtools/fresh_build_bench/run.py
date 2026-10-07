@@ -752,6 +752,12 @@ def _prepare_paths(config: RunConfig) -> dict[str, Path]:
                 if staged.exists():
                     raise ValueError(f"two corpus exports share the name {file.name!r}; rename one")
                 shutil.copyfile(file, staged)
+    # Hook carriers and legacy pending envelopes live under the archive root,
+    # so stage their sealed corpus copy into this run's isolated archive before
+    # the daemon starts. No live operator spool is ever opened by the daemon.
+    hook_spool = paths["home"] / ".polylogue-hook-spool"
+    if hook_spool.is_dir():
+        shutil.copytree(hook_spool, paths["archive"] / "hooks", copy_function=shutil.copy2)
     config_path = paths["xdg"] / "config" / "polylogue" / "polylogue.toml"
     config_path.parent.mkdir(parents=True)
     # Embeddings are external API work and stay off.
@@ -819,6 +825,7 @@ def _stop(
 def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> dict[str, Any]:
     manifest = load_manifest(config.corpus)
     paths = _prepare_paths(config)
+    hook_preparation = _prepare_hook_spool(paths, progress=progress)
     # Stamped before the identity is read, so an edit between the two is
     # still a changed stamp at the end.
     candidate_files = candidate_stamp(config.candidate)
@@ -846,6 +853,7 @@ def run_build(config: RunConfig, *, progress: Callable[[str], None] = print) -> 
             daemon_env=daemon_env,
             interrupted=interrupted,
             progress=progress,
+            hook_preparation=hook_preparation,
         )
     finally:
         for sig, handler in previous_handlers.items():
@@ -864,6 +872,7 @@ def _measure_and_write_receipt(
     daemon_env: dict[str, str],
     interrupted: list[int],
     progress: Callable[[str], None],
+    hook_preparation: dict[str, Any] | None,
 ) -> dict[str, Any]:
     from devtools.fresh_build_bench.report import build_receipt
 
@@ -1031,11 +1040,40 @@ def _measure_and_write_receipt(
         clock_step_s=max([*clock_steps, (finished_wall - started_wall) - (finished - started)], key=abs),
         cancelled=lambda: bool(interrupted),
     )
+    if hook_preparation is not None:
+        receipt["hook_preparation"] = hook_preparation
+        receipt["hook_end_to_end_s"] = float(receipt["timing_s"]["wall"]) + hook_preparation["compaction_s"]
     # Atomic: a receipt is either absent or complete.
     staging = paths["receipt"].with_name(paths["receipt"].name + ".tmp")
     staging.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(staging, paths["receipt"])
     return receipt
+
+
+def _prepare_hook_spool(paths: dict[str, Path], *, progress: Callable[[str], None] = print) -> dict[str, Any] | None:
+    """Run the production legacy-spool compactor in the isolated archive."""
+    root = paths["archive"] / "hooks"
+    pending = root / "pending"
+    if not pending.is_dir():
+        return None
+    from polylogue.sources.hook_producer import compact_legacy_spool
+
+    started = time.monotonic()
+    result = compact_legacy_spool(root)
+    compaction_s = time.monotonic() - started
+    summary = {"compaction_s": compaction_s, "result": result}
+    refused = result.get("refused", {})
+    refused_count = (
+        sum(value for value in refused.values() if isinstance(value, int)) if isinstance(refused, dict) else 0
+    )
+    progress(
+        "hook spool compaction "
+        f"seconds={compaction_s:.3f} "
+        f"scanned={result.get('scanned', 0)} "
+        f"folded={result.get('folded', 0)} "
+        f"refused={refused_count}"
+    )
+    return summary
 
 
 __all__ = ["Observation", "RunConfig", "TreeSampler", "observe", "run_build"]

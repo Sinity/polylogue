@@ -6,6 +6,9 @@ from polylogue.core.enums import Provider, Role
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.excision import (
+    resolve_session_excision_target_from_root,
+)
 from tests.infra.live_ingest import write_index_session
 from tests.infra.retained_jsonl import prepared_source_fixture
 
@@ -245,7 +248,6 @@ def test_session_excision_reaches_its_retained_work_events(tmp_path: Path) -> No
     work-event seed from excision resolution and neither the transcript's
     revision closure nor ``sessions.raw_id`` reaches the event raw.
     """
-    from polylogue.security.excision import resolve_session_excision_target
 
     with ArchiveStore(tmp_path, initialize=True, read_only=False) as archive:
         session_ids = [
@@ -271,7 +273,7 @@ def test_session_excision_reaches_its_retained_work_events(tmp_path: Path) -> No
             event_raw_by_session[session_id] = str(admitted["raw_id"])
 
     _converge_work_events(tmp_path, tuple(event_raw_by_session.values()))
-    target = resolve_session_excision_target(tmp_path, session_ids[0])
+    target = resolve_session_excision_target_from_root(tmp_path, session_ids[0])
 
     raw_ids = {raw.raw_id for raw in target.raw_targets}
     assert event_raw_by_session[session_ids[0]] in raw_ids

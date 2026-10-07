@@ -31,13 +31,11 @@ from polylogue.maintenance.archive_verification import (
     passes_strict_acceptance,
     verify_archive,
 )
-from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.repository import SessionRepository
-from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
     initialize_active_archive_root,
@@ -2876,26 +2874,34 @@ def _closure_fixture(tmp_path: Path) -> tuple[Path, sqlite3.Connection, sqlite3.
         ("raw-closure", "conversations.json", bytes.fromhex(blob_hash), blob_size),
     )
     source.commit()
-    record = RawSessionRecord(
-        raw_id="raw-closure",
-        source_name=Provider.CLAUDE_AI.value,
-        payload_provider=Provider.CLAUDE_AI,
-        source_path="conversations.json",
-        canonical_source_path="conversations.json",
-        source_index=0,
-        blob_size=blob_size,
-        blob_hash=blob_hash,
-        acquired_at="2026-01-01T00:00:00+00:00",
+    attachment = ParsedAttachment(
+        provider_attachment_id="closure-attachment-1",
+        message_provider_id="m0",
+        name="notes.md",
+        mime_type="text/markdown",
+        size_bytes=11,
+        inline_bytes=b"hello notes",
     )
-    parsed = ingest_record(record, str(root), "advisory", blob_root_str=str(blob_store.root))
-    assert parsed.error is None
-    session = parsed.sessions[0]
-    attachment = session.parsed_session.attachments[0]
+    parsed = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="closure-session-1",
+        title="Closure test",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m0",
+                role=Role.USER,
+                text="here is a file",
+                position=0,
+            )
+        ],
+        attachments=[attachment],
+    )
     attachment_hash, attachment_size = blob_store.write_from_bytes(attachment.inline_bytes or b"")
     write_fixture_index_session(
         index,
-        session.parsed_session,
-        raw_id=record.raw_id,
+        parsed,
+        raw_id="raw-closure",
+        source_conn=source,
         preacquired_attachment_blobs={id(attachment): (bytes.fromhex(attachment_hash), attachment_size, "acquired")},
     )
     attachment_id = str(index.execute("SELECT attachment_id FROM attachments").fetchone()[0])

@@ -10,7 +10,9 @@ from polylogue.sources.parsers.base import ParsedSessionEvent
 from polylogue.sources.parsers.base_models import (
     AdmissionDisposition,
     AdmissionOutcome,
+    AdmissionRefusalReason,
     AdmissionUnit,
+    AdmissionUnknownReason,
     ParseAccounting,
 )
 from polylogue.sources.prepared_message_sink import SqliteMessageStore
@@ -53,6 +55,16 @@ def test_streamed_event_payload_replays_hashes_and_prepared_event_round_trips(tm
         assert _event_payload_hash(restored.event_type, restored.payload) == _event_payload_hash(
             event.event_type, event.payload
         )
+        empty_writer = SqliteJsonArrayWriter(store.conn)
+        empty = empty_writer.finish()
+        empty_event = ParsedSessionEvent(event_type="antigravity_parent_reference", payload={"references": empty})
+        events.append(empty_event)
+        empty_restored = events[1]
+        assert isinstance(empty_restored.payload["references"], StreamedJsonArray)
+        assert len(empty_restored.payload["references"]) == 0
+        assert _event_payload_hash(empty_event.event_type, empty_event.payload) == _event_payload_hash(
+            empty_event.event_type, {"references": []}
+        )
     finally:
         store.close()
 
@@ -63,23 +75,38 @@ def test_parse_accounting_spill_preserves_complete_outcomes_and_conservation(tmp
         total = 5000
         writer = SqliteParseAccountingWriter(store.conn, {AdmissionUnit.PART: total})
         for ordinal in range(total):
-            disposition = (AdmissionDisposition.MATERIALIZED, "typed_unknown", "typed_refusal")[ordinal % 3]
+            disposition = (
+                AdmissionDisposition.MATERIALIZED,
+                AdmissionDisposition.TYPED_UNKNOWN,
+                AdmissionDisposition.TYPED_REFUSAL,
+            )[ordinal % 3]
+            reason = (
+                AdmissionUnknownReason.UNSUPPORTED_SHAPE
+                if disposition is AdmissionDisposition.TYPED_UNKNOWN
+                else AdmissionRefusalReason.MALFORMED
+                if disposition is AdmissionDisposition.TYPED_REFUSAL
+                else None
+            )
             writer.append(
                 AdmissionOutcome(
                     unit=AdmissionUnit.PART,
                     ordinal=ordinal,
                     key=f"part-{ordinal}",
                     disposition=disposition,
-                    reason=("unsupported_shape" if disposition == "typed_unknown" else "malformed")
-                    if disposition != AdmissionDisposition.MATERIALIZED
-                    else None,
+                    reason=reason,
                 )
             )
         accounting = ParseAccounting(expected={AdmissionUnit.PART: total}, outcomes=writer.finish())
         accounting.assert_conserved()
         assert len(accounting.outcomes) == total
-        assert sum(outcome.disposition == "typed_unknown" for outcome in accounting.iter_outcomes()) == 1667
-        assert sum(outcome.disposition == "typed_refusal" for outcome in accounting.iter_outcomes()) == 1666
+        assert (
+            sum(outcome.disposition is AdmissionDisposition.TYPED_UNKNOWN for outcome in accounting.iter_outcomes())
+            == 1667
+        )
+        assert (
+            sum(outcome.disposition is AdmissionDisposition.TYPED_REFUSAL for outcome in accounting.iter_outcomes())
+            == 1666
+        )
         store.conn.commit()
         restored = ParseAccounting.from_prepared_payload(accounting.to_prepared_payload(), store.path)
         restored.assert_conserved()
@@ -92,6 +119,7 @@ def test_parse_accounting_spill_preserves_complete_outcomes_and_conservation(tmp
 
 def test_session_event_reads_restore_streamed_payload_keys(tmp_path: Path) -> None:
     connection = sqlite3.connect(tmp_path / "index.sqlite")
+    connection.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
     try:
         connection.row_factory = sqlite3.Row
         connection.executescript(
@@ -113,6 +141,10 @@ def test_session_event_reads_restore_streamed_payload_keys(tmp_path: Path) -> No
         connection.execute(
             "INSERT INTO session_events VALUES ('s-1:4', 's-1', NULL, NULL, 4, "
             "'antigravity_parent_reference', '{\"parent_observed\":true}', NULL, NULL, NULL, NULL)"
+        )
+        connection.executemany(
+            "INSERT INTO session_events VALUES (?, 's-1', NULL, NULL, ?, 'ordinary', '{}', NULL, NULL, NULL, NULL)",
+            ((f"s-1:{position}", position) for position in range(5, 1005)),
         )
         connection.executemany(
             "INSERT INTO session_event_array_items VALUES ('s-1', 4, ?, ?, ?)",
@@ -176,13 +208,44 @@ def test_archive_writer_stores_streamed_event_arrays_and_reader_restores_them(tm
         assert json.loads(stored) == {"observed": True}
         assert destination.execute("SELECT COUNT(*) FROM session_event_array_items").fetchone()[0] == 2000
         restored = read_session_events(destination, "s-1")[0].payload
-        assert restored["references"][0] == {"provider_id": "parent-0"}
-        assert restored["references"][-1] == {"provider_id": "parent-999"}
-        assert restored["parent_provider_ids"] == restored["references"]
+        references = restored["references"]
+        parent_provider_ids = restored["parent_provider_ids"]
+        assert isinstance(references, list)
+        assert isinstance(parent_provider_ids, list)
+        assert references[0] == {"provider_id": "parent-0"}
+        assert references[-1] == {"provider_id": "parent-999"}
+        assert parent_provider_ids == references
         from polylogue.operations.orchestration import iter_orchestration_events
 
         orchestration_event = next(iter_orchestration_events(destination, "s-1"))
-        assert orchestration_event.payload["references"] == restored["references"]
+        orchestration_references = orchestration_event.payload["references"]
+        assert isinstance(orchestration_references, list)
+        assert orchestration_references == references
+
+        _write_session_events(
+            destination,
+            "s-1",
+            [],
+            [ParsedSessionEvent(event_type="antigravity_parent_reference", payload={"ordinary": True})],
+            owner_resolution=empty_owners,
+            content_identities=[],
+        )
+        assert read_session_events(destination, "s-1")[0].payload == {"ordinary": True}
+        assert destination.execute("SELECT COUNT(*) FROM session_event_array_items").fetchone()[0] == 0
+
+        empty_writer = SqliteJsonArrayWriter(store.conn)
+        empty = empty_writer.finish()
+        _write_session_events(
+            destination,
+            "s-1",
+            [],
+            [ParsedSessionEvent(event_type="antigravity_parent_reference", payload={"references": empty})],
+            owner_resolution=empty_owners,
+            content_identities=[],
+        )
+        empty_payload = read_session_events(destination, "s-1")[0].payload
+        assert empty_payload == {"references": []}
+        assert destination.execute("SELECT COUNT(*) FROM session_event_array_items").fetchone()[0] == 0
     finally:
         destination.close()
         store.close()

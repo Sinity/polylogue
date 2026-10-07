@@ -59,7 +59,7 @@ async def test_actual_ingest_publication_leaves_upkeep_to_its_owner(
     result = ParseResult()
     async with prepared_live_convergence_owner(root) as owner:
         service = ParsingService(repository, root, config, retained_runner=owner.replay_retained_raw_ids)
-        observation = await process_ingest_batch(service, backend, [raw_id], result, None)
+        observation = await process_ingest_batch(service, [raw_id], result, None)
     assert observation is not None
     assert observation["records"] == 1
     assert observation["sessions"] == 1

@@ -6,11 +6,13 @@ session and inspects the stored archive rows.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
+from collections.abc import Sequence
 from contextlib import closing
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -25,6 +27,7 @@ from polylogue.storage.blob_store import BlobStore
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.raw_owner_routes import (
     converge_pending_raws_with_owner,
+    ingest_files_with_owners,
     inspect_raw_observations,
     run_ingest_files,
 )
@@ -253,6 +256,10 @@ def _claude_project(root: Path) -> tuple[Path, Path, Path]:
 
 
 def _claude_ingest(archive_root: Path, project: Path, paths: list[Path]) -> None:
+    asyncio.run(_claude_ingest_async(archive_root, project, paths))
+
+
+async def _claude_ingest_async(archive_root: Path, project: Path, paths: list[Path]) -> None:
 
     archive_root.mkdir(parents=True, exist_ok=True)
     bootstrap_archive_root(archive_root)
@@ -267,8 +274,126 @@ def _claude_ingest(archive_root: Path, project: Path, paths: list[Path]) -> None
         cursor=CursorStore(archive_root / "index.db"),
         parser_fingerprint=_PARSER_FINGERPRINT,
     )
-    metrics = run_ingest_files(processor, paths, emit_event=False)
+    metrics = await ingest_files_with_owners(processor, paths, emit_event=False)
     assert metrics.failed_file_count == 0
+
+
+def _claude_tool_result_project(root: Path) -> tuple[Path, Path, Path]:
+    """Build one Claude Code transcript whose overflow sidecar may arrive later."""
+    session_id = "eeeeeeee-1111-2222-3333-444444444440"
+    project = root / ".claude" / "projects" / "-synthetic-project"
+    transcript = project / f"{session_id}.jsonl"
+    sidecar = project / session_id / "tool-results" / "toolu_synthetic.txt"
+    pointer = (
+        "<persisted-output>\n"
+        f"Output too large. Full output saved to: {sidecar}\n\n"
+        "Preview (first 2KB):\nshort synthetic preview\n"
+        "</persisted-output>"
+    )
+    records = (
+        {
+            "type": "user",
+            "uuid": "u1",
+            "sessionId": session_id,
+            "timestamp": "2026-07-20T10:00:00Z",
+            "message": {"role": "user", "content": "run it"},
+        },
+        {
+            "type": "assistant",
+            "uuid": "a1",
+            "parentUuid": "u1",
+            "sessionId": session_id,
+            "timestamp": "2026-07-20T10:00:01Z",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "toolu_synthetic", "name": "Bash", "input": {}}],
+            },
+        },
+        {
+            "type": "user",
+            "uuid": "u2",
+            "parentUuid": "a1",
+            "sessionId": session_id,
+            "timestamp": "2026-07-20T10:00:02Z",
+            "message": {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_synthetic", "content": pointer}],
+            },
+        },
+    )
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    return project, transcript, sidecar
+
+
+def _write_claude_tool_result_sidecar(path: Path, marker: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text((f"{marker} synthetic persisted output\n") * 400, encoding="utf-8")
+
+
+def _tool_result_texts(archive_root: Path) -> list[str]:
+    with sqlite3.connect(archive_root / "index.db") as connection:
+        return [str(row[0]) for row in connection.execute("SELECT text FROM blocks WHERE block_type = 'tool_result'")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("initial_sidecar", [None, "older"])
+async def test_live_claude_tool_sidecar_replays_its_owner_from_retained_bytes(
+    tmp_path: Path, initial_sidecar: str | None
+) -> None:
+    """A later sidecar revision replaces the owner's preview or older output.
+
+    The second watcher batch offers only the raw-only sidecar. The test removes
+    its source file after acquisition and before retained replay, so success
+    requires owner selection and parsing to use the retained Source rows and
+    bytes held by the production writer route.
+    """
+    from tests.infra.raw_owner_routes import live_owner_set
+
+    project, transcript, sidecar = _claude_tool_result_project(tmp_path / "live")
+    archive_root = tmp_path / "archive"
+    if initial_sidecar is not None:
+        _write_claude_tool_result_sidecar(sidecar, initial_sidecar)
+        await _claude_ingest_async(archive_root, project, [transcript, sidecar])
+        assert _tool_result_texts(archive_root)[0].startswith(f"{initial_sidecar} synthetic")
+    else:
+        await _claude_ingest_async(archive_root, project, [transcript])
+        assert "short synthetic preview" in _tool_result_texts(archive_root)[0]
+
+    before = _session_rows(archive_root)
+    _write_claude_tool_result_sidecar(sidecar, "newer")
+    processor = LiveBatchProcessor(
+        Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
+        (WatchSource(name="claude-code", root=project.parent),),
+        cursor=CursorStore(archive_root / "index.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+    )
+
+    async def ingest_after_sidecar_capture() -> None:
+        async with live_owner_set(archive_root) as owners:
+            processor._sqlite_capture_stage = owners.stage
+            processor._sync_runner = owners.coordinator.run_sync
+            processor._append_runner = owners.raw_owner.ingest_append_plans
+            processor._convergence_runner = owners.raw_owner.run_convergence_sync
+            original_replay = owners.raw_owner.ingest_retained_raw_ids
+
+            async def remove_source_then_replay(raw_ids: Sequence[str], **kwargs: Any) -> Any:
+                sidecar.unlink()
+                return await original_replay(raw_ids, **kwargs)
+
+            processor._retained_runner = remove_source_then_replay
+            metrics = await processor.ingest_files([sidecar], emit_event=False)
+            assert metrics.failed_file_count == 0
+
+    await ingest_after_sidecar_capture()
+
+    assert not sidecar.exists(), "replay should have consumed the captured Source bytes"
+    [text] = _tool_result_texts(archive_root)
+    assert text.startswith("newer synthetic persisted output")
+    after = _session_rows(archive_root)
+    assert len(after) == 1, "a tool-results sidecar must not create another session"
+    assert after[0][0] == before[0][0]
+    assert after[0][2] != before[0][2], "the owner transcript must be republished with the new sidecar"
 
 
 def _session_rows(archive_root: Path) -> list[tuple[object, ...]]:

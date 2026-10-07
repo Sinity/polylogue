@@ -890,6 +890,8 @@ SESSIONS_SPEC = _make_table_spec(
     -- actually assigns and this CHECK is now generated from it like the
     -- other enum-backed columns instead of hand-listing the values.
     title_source            TEXT CHECK({nullable_check("title_source", TitleSource)})""",
+            record_name="title_source",
+            domain_name="title_source",
             conflict_update="excluded.title_source",
         ),
         _raw_column(
@@ -899,6 +901,8 @@ SESSIONS_SPEC = _make_table_spec(
     -- "codex-history:<id>", "message:<provider_message_id>").
     -- Derived/rebuildable, never hand-edited.
     title_ref               TEXT""",
+            record_name="title_ref",
+            domain_name="title_ref",
             conflict_update="excluded.title_ref",
         ),
         _raw_column(

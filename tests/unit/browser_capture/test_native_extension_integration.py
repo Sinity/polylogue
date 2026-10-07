@@ -1,12 +1,15 @@
 """Actual extension background to canonical receiver parity, outside Vitest.
 
 Run through ``devtools test tests/unit/browser_capture/test_native_extension_integration.py``
-in the existing Python development environment with extension npm dependencies.
+in the declared Nix development environment. The harness places the extension
+sources and its pinned IndexedDB test dependency in a temporary package tree.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 from pathlib import Path
 from threading import Thread
@@ -38,6 +41,19 @@ def test_extension_background_publishes_canonical_complete_artifact(
 ) -> None:
     root = Path(__file__).parents[3]
     source = root / "tests" / "fixtures" / fixture
+    extension_root = root / "browser-extension"
+    test_tree = tmp_path / "browser-extension"
+    test_tree.mkdir()
+    shutil.copy2(extension_root / "package.json", test_tree / "package.json")
+    shutil.copytree(extension_root / "src", test_tree / "src")
+    test_infra = test_tree / "tests" / "infra"
+    test_infra.mkdir(parents=True)
+    for filename in ("native-receiver-integration.mjs", "capture-staging.js"):
+        shutil.copy2(extension_root / "tests" / "infra" / filename, test_infra / filename)
+    indexeddb_package = Path(os.environ["POLYLOGUE_FAKE_INDEXEDDB_PACKAGE"])
+    dependency = test_tree / "node_modules" / "fake-indexeddb"
+    dependency.parent.mkdir(parents=True)
+    dependency.symlink_to(indexeddb_package, target_is_directory=True)
     token = "synthetic-native-integration-token"
     server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=token)
     server.daemon_threads = False
@@ -48,14 +64,14 @@ def test_extension_background_publishes_canonical_complete_artifact(
         result = subprocess.run(
             [
                 "node",
-                str(root / "browser-extension/tests/infra/native-receiver-integration.mjs"),
+                str(test_infra / "native-receiver-integration.mjs"),
                 f"http://127.0.0.1:{server.server_port}",
                 token,
                 str(source),
                 provider,
                 native_id,
             ],
-            cwd=root,
+            cwd=test_tree,
             capture_output=True,
             text=True,
             check=False,

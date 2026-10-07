@@ -150,6 +150,11 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/schemas/retained_validation.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/schemas/source_cache.py",
     "tiers": []
   },
@@ -224,6 +229,11 @@
   },
   {
     "file": "polylogue/sources/live/tool_result_sidecars.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parse_accounting_spool.py",
     "tiers": [],
     "authority": "scratch"
   },
@@ -311,6 +321,11 @@
   {
     "file": "polylogue/sources/sqlite_export.py",
     "tiers": []
+  },
+  {
+    "file": "polylogue/sources/streamed_event_payload.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/sources/tool_outcomes.py",

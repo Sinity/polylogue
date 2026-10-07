@@ -1627,7 +1627,6 @@ class _VectorSpy:
 
     def __init__(self) -> None:
         self.query_calls: list[tuple[str, int]] = []
-        self.upsert_calls: list[tuple[str, list[MessageRecord]]] = []
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         self.query_calls.append((text, limit))
@@ -1635,16 +1634,6 @@ class _VectorSpy:
 
     def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
         return [("msg-1", 0.125)]
-
-    def upsert(
-        self,
-        session_id: str,
-        messages: list[MessageRecord],
-        *,
-        origin: str | None = None,
-    ) -> None:
-        del origin
-        self.upsert_calls.append((session_id, messages))
 
     def scoped_query(
         self,
@@ -1715,33 +1704,6 @@ class TestRepositoryVectorAsyncBoundary:
         assert observed == [(backend.db_path, "semantic query", 4)]
         assert len(worker_threads) == 1
         assert worker_threads[0] != creator
-
-    async def test_embed_session_offloads_vector_upsert(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        messages = [make_message("msg-embed", "conv-embed", text="Message long enough to embed.")]
-        backend = SQLiteBackend(db_path=tmp_path / "vectors.db")
-        repo = SessionRepository(backend=backend)
-        monkeypatch.setattr(repo.queries, "get_messages", AsyncMock(return_value=messages))
-        provider = _VectorSpy()
-
-        to_thread_calls: list[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]] = []
-
-        async def fake_to_thread(func: Callable[..., object], /, *args: object, **kwargs: object) -> object:
-            to_thread_calls.append((func, args, kwargs))
-            return func(*args, **kwargs)
-
-        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
-
-        result = await repo.embed_session("conv-embed", vector_provider=provider)
-
-        assert result == 1
-        assert provider.upsert_calls == [("conv-embed", messages)]
-        assert len(to_thread_calls) == 1
-        assert getattr(to_thread_calls[0][0], "__self__", None) is provider
-        assert getattr(to_thread_calls[0][0], "__name__", "") == "upsert"
 
     async def test_similarity_search_offloads_vector_query(
         self,

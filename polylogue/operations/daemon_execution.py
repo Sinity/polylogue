@@ -28,7 +28,6 @@ from polylogue.operations.daemon_protocol import (
 )
 from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.operations.operation_context import (
-    OperationContext,
     OperationControlRead,
     OperationControlResult,
     PinnedOperationRead,
@@ -36,6 +35,7 @@ from polylogue.operations.operation_context import (
     observe_embedding_mutation_authority,
     open_operation_read,
 )
+from polylogue.operations.operation_context_types import OperationContext
 from polylogue.sources.revision_backfill import RetainedReplayOutcome
 from polylogue.storage.embeddings.generations import EmbeddingGenerationBusyError
 from polylogue.version import POLYLOGUE_VERSION

@@ -498,7 +498,13 @@ def _identity(info: os.stat_result) -> str:
 
 
 def _walk_files(
-    root: Path, anchor: int, root_info: os.stat_result, physical_root: Path
+    root: Path,
+    anchor: int,
+    root_info: os.stat_result,
+    physical_root: Path,
+    *,
+    layout_name: str | None = None,
+    exclude_coordinates: tuple[str, ...] = (),
 ) -> Iterator[tuple[str, Path, os.stat_result, int | None, Path]]:
     """Enumerate every member, propagating scan and stat faults to the root owner."""
     try:
@@ -507,10 +513,15 @@ def _walk_files(
             return
         if not stat.S_ISDIR(root_info.st_mode):
             raise SourceSnapshotError(f"source root is not a directory: {root}")
-        directories = [(root, root_info)]
+        layout = None
+        if layout_name is not None:
+            from polylogue.sources.source_layout import source_layout_for
+
+            layout = source_layout_for(layout_name)
+        directories: list[tuple[Path, os.stat_result, tuple[str, ...]]] = [(root, root_info, ())]
         while directories:
             check_compute_cancelled()
-            directory, expected = directories.pop()
+            directory, expected, relative = directories.pop()
             with (
                 _open_source_file(
                     anchor,
@@ -526,9 +537,15 @@ def _walk_files(
                     check_compute_cancelled()
                     path = directory / entry.name
                     info = entry.stat(follow_symlinks=False)
+                    child_parts = (*relative, entry.name)
                     if stat.S_ISDIR(info.st_mode):
-                        directories.append((path, info))
+                        if layout is None or layout.admits_directory(child_parts):
+                            directories.append((path, info, child_parts))
                     elif stat.S_ISREG(info.st_mode):
+                        if "/".join(child_parts) in exclude_coordinates:
+                            continue
+                        if layout is not None and layout.artifact_kind(child_parts) is None:
+                            continue
                         yield (
                             path.relative_to(root).as_posix(),
                             path,
@@ -536,7 +553,11 @@ def _walk_files(
                             descriptor,
                             (physical_root / path.relative_to(root)).parent,
                         )
-                    else:
+                    elif (
+                        layout is None
+                        or layout.admits_directory(child_parts)
+                        or layout.artifact_kind(child_parts) is not None
+                    ):
                         raise SourceSnapshotError(f"source member is not a regular file: {path}")
     except OSError as exc:
         raise SourceSnapshotError(f"source root inventory failed: {root}") from exc
@@ -549,7 +570,17 @@ def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:
             raise SourceMutationError(f"source root identity changed: {root}")
         if binding.root_identity.kind == "directory":
             with _open_source_root(binding) as (anchor, root_info, physical_root):
-                result = _observe_sqlite_members(binding, _walk_files(root, anchor, root_info, physical_root))
+                result = _observe_sqlite_members(
+                    binding,
+                    _walk_files(
+                        root,
+                        anchor,
+                        root_info,
+                        physical_root,
+                        layout_name=binding.source.layout_name,
+                        exclude_coordinates=binding.source.exclude_coordinates,
+                    ),
+                )
         else:
             result = _observe_sqlite_members(binding, ((root.name, root, root.stat(), None, root.parent),))
         if _root_identity(root) != binding.root_identity:
@@ -639,7 +670,12 @@ def _observe_root(
             raise SourceSnapshotError(f"archive member inventory failed: {root}") from exc
     result: list[CutItem] = []
     for coordinate, path, member_info, _parent_anchor, _semantic_parent in _walk_files(
-        root, anchor, root_info, physical_root
+        root,
+        anchor,
+        root_info,
+        physical_root,
+        layout_name=binding.source.layout_name,
+        exclude_coordinates=binding.source.exclude_coordinates,
     ):
         content_sha256, captured_size, identity = _snapshot_regular_file(
             path,
@@ -941,7 +977,14 @@ class _SpoolHandoffStrategy(_FilesystemStrategy):
         active_binding = SourceCutBinding(binding.source, _root_identity(root), binding.policy)
         _fsync_directory(root.parent)
         retired_binding = SourceCutBinding(
-            SourceDeclaration(binding.source.source_id, binding.source.role, retired, binding.source.mutable),
+            SourceDeclaration(
+                binding.source.source_id,
+                binding.source.role,
+                retired,
+                binding.source.mutable,
+                binding.source.layout_name,
+                binding.source.exclude_coordinates,
+            ),
             _root_identity(retired),
             binding.policy,
         )

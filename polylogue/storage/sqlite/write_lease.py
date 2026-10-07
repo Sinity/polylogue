@@ -9,15 +9,19 @@ Enforcement is armed by the owner of the process's writer discipline (the
 daemon) and is off elsewhere. One-shot CLI and API mutation owners still acquire
 the same physical custody through their root-bound write scope.
 
-**Contexts do not isolate threads on this interpreter** (polylogue-1oa7o).
-This checkout runs a free-threading CPython build, and a new
-``threading.Thread`` or ``ThreadPoolExecutor.submit`` reads the *creating*
-thread's ``ContextVar`` values rather than the declared defaults. So every
-thread spawned while a lease is held inherits ``_ACTIVE`` -- the lease object
-itself, not a copy. Authority therefore rests entirely on explicit thread
-identity: ``WriteLease.bound_thread_ids`` and the ``owner_task`` check in
-:func:`require_write_lease`, never on "the context did not carry it". Every
-place that widens ``bound_thread_ids`` or hands back an existing lease
+**Contexts are not a thread boundary** (polylogue-1oa7o). Whether a new
+``threading.Thread`` starts with a copy of its creator's context depends on
+the interpreter: ``sys.flags.thread_inherit_context`` is on by default on
+free-threading builds and off on GIL builds, and either can be overridden
+with ``-X thread_inherit_context``. Where it is on, every thread spawned while
+a lease is held sees ``_ACTIVE`` -- the lease object itself, not a copy;
+where it is off, the thread sees the default ``None``. ``ThreadPoolExecutor``
+workers are started on demand and may be reused across submissions, so their
+ambient context is not a reliable signal either way. Authority therefore
+rests on explicit thread identity in both modes: ``WriteLease.bound_thread_ids``
+(widened only by a single-use owner grant) and the ``owner_task`` check in
+:func:`require_write_lease`, never on whether the context carried the lease.
+Every place that widens ``bound_thread_ids`` or hands back an existing lease
 re-checks that identity, because an inheriting thread would otherwise pass by
 default. Physical-custody context is thread-local and additionally bound to
 the exact owning task and thread; it cannot be borrowed merely because a
@@ -1362,9 +1366,9 @@ def bind_write_lease_thread(grant: WriteLeaseThreadGrant) -> None:
     lease = grant.lease
     _THREAD_GRANT_CONTEXT.grant = grant
     if _ACTIVE.get() is None:
-        # Some supported Python builds do not inherit contextvars into a
-        # newly-created worker thread. The single-use owner grant carries the
-        # exact lease and is the authority for installing it here.
+        # Without thread_inherit_context a new worker thread starts with an
+        # empty context. The single-use owner grant carries the exact lease
+        # and is the authority for installing it here.
         _ACTIVE.set(lease)
     lease.authorize_thread(threading.get_ident())
 

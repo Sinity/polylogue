@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -169,7 +170,7 @@ def _schema_branch_for_value(
     value: object,
     root: Mapping[str, object] | None = None,
     *,
-    connection: object | None = None,
+    connection: sqlite3.Connection | None = None,
 ) -> object:
     schema = _resolve_local_ref(schema, root)
     if not isinstance(schema, Mapping):
@@ -226,7 +227,9 @@ def _schema_branch_for_value(
     return schema
 
 
-def _schema_accepts_value(schema: Mapping[str, object], value: object, *, connection: object | None = None) -> bool:
+def _schema_accepts_value(
+    schema: Mapping[str, object], value: object, *, connection: sqlite3.Connection | None = None
+) -> bool:
     """Return whether an individual union branch accepts ``value``.
 
     This is deliberately a branch-selection aid only.  The complete schema
@@ -252,7 +255,7 @@ def _schema_for_property(
     value: object,
     root: Mapping[str, object] | None = None,
     *,
-    connection: object | None = None,
+    connection: sqlite3.Connection | None = None,
 ) -> object:
     if not isinstance(schema, Mapping):
         return None
@@ -457,7 +460,7 @@ def _iter_drift_paths(
     schema: Mapping[str, object],
     path: str,
     root: Mapping[str, object] | None = None,
-    connection: object | None = None,
+    connection: sqlite3.Connection | None = None,
 ) -> Iterable[str]:
     """Yield every unexpected-field path without collecting warning strings."""
     root = root if root is not None else schema
@@ -493,7 +496,7 @@ def _iter_nested_drift_paths(
     schema: object,
     path: str,
     root: Mapping[str, object],
-    connection: object | None,
+    connection: sqlite3.Connection | None,
 ) -> Iterable[str]:
     selected_schema = _schema_branch_for_value(schema, value, root, connection=connection)
     if not isinstance(selected_schema, Mapping):
@@ -681,7 +684,7 @@ class SchemaValidator:
             should_detect_drift = self.strict if include_drift is None else include_drift
             sample = _sample_payload(normalized)
             drift_warnings = (
-                list(_iter_drift_paths(sample, self.schema, "", self.schema, conn))
+                [f"Unexpected field: {path}" for path in _iter_drift_paths(sample, self.schema, "", self.schema, conn)]
                 if should_detect_drift and sample is not None
                 else []
             )

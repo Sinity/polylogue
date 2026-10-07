@@ -92,6 +92,8 @@ def _tool_result_blocks(path: Path, *, tool_contents: list[str]) -> list[ParsedC
 def test_state_db_iterator_uses_caller_sinks_and_cleans_scratch_on_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from itertools import zip_longest
+
     from polylogue.pipeline.ids import session_content_hash
     from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
 
@@ -122,9 +124,21 @@ def test_state_db_iterator_uses_caller_sinks_and_cleans_scratch_on_close(
 
         materialized = parse_state_db(path)
         assert session_content_hash(streamed) == session_content_hash(materialized[0])
-        assert streamed.provider_session_id == materialized[0].provider_session_id
-        assert streamed.messages[0].is_active_leaf is False
-        assert streamed.messages[-1].is_active_leaf is True
+        sentinel = object()
+        for field_name in type(streamed).model_fields:
+            actual = getattr(streamed, field_name)
+            expected = getattr(materialized[0], field_name)
+            if field_name in {"messages", "session_events"}:
+                # Compare the disk sink and public list incrementally. This
+                # covers full message/event fields while keeping the parity
+                # check bounded for large retained sessions.
+                for actual_item, expected_item in zip_longest(actual, expected, fillvalue=sentinel):
+                    assert actual_item is not sentinel and expected_item is not sentinel
+                    assert actual_item == expected_item
+            else:
+                # Includes excluded hash metadata such as provenance,
+                # accounting, enrichment and parser identity carriers.
+                assert actual == expected
     finally:
         store.close()
 

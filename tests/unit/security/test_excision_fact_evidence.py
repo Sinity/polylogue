@@ -17,10 +17,6 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.security.excision import (
-    plan_session_excision,
-    resolve_session_excision_target,
-)
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
@@ -29,6 +25,10 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.excision import (
+    plan_session_excision_from_root,
+    resolve_session_excision_target_from_root,
+)
 from tests.infra.excision_execution import execute_excision
 
 _SESSION_UUID = "11111111-2222-3333-4444-555555555555"
@@ -145,11 +145,11 @@ def test_excision_removes_the_session_todo_plan_evidence(tmp_path: Path) -> None
     before = _readable_todo_session_ids(tmp_path)
     assert before == {_SESSION_UUID, _OTHER_UUID}
 
-    target = resolve_session_excision_target(tmp_path, session_id)
+    target = resolve_session_excision_target_from_root(tmp_path, session_id)
     assert target.fact_raw_ids == ("raw-todo",)
     assert {raw.raw_id for raw in target.raw_targets} == {"raw-todo"}
 
-    plan = plan_session_excision(tmp_path, session_id)
+    plan = plan_session_excision_from_root(tmp_path, session_id)
     assert plan.source_fact_rows == 1
     assert plan.source_raw_rows == 1
 
@@ -213,7 +213,7 @@ def test_subagent_todo_snapshot_is_excised_with_its_parent_session(tmp_path: Pat
     finally:
         conn.close()
 
-    target = resolve_session_excision_target(tmp_path, session_id)
+    target = resolve_session_excision_target_from_root(tmp_path, session_id)
     assert set(target.fact_raw_ids) == {"raw-todo", "raw-todo-agent"}
 
     execute_excision(tmp_path, session_id, reason="test", actor="user:local")

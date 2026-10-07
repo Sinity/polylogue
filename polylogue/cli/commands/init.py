@@ -212,7 +212,7 @@ def init_command(
     console.print(f"\n[green]Wrote starter config to {target}[/green]")
     console.print(
         "\nNext steps:\n"
-        "  1. [bold]polylogue demo seed[/bold]   — try it now with a private-data-free demo archive\n"
+        "  1. [bold]polylogue demo tour --root ./polylogue-demo-tour/archive[/bold]   — try it now with a scratch archive\n"
         "  2. [bold]polylogued run[/bold]   — start the ingest daemon against the sources above\n"
         "  3. [bold]polylogue find 'query terms' then read[/bold] — search\n"
     )

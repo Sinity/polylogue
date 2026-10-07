@@ -19,10 +19,6 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.security.excision import (
-    plan_session_excision,
-    resolve_session_excision_target,
-)
 from polylogue.security.excision_carriers import (
     SESSION_CARRIERS,
     CarrierReach,
@@ -41,6 +37,10 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.excision import (
+    plan_session_excision_from_root,
+    resolve_session_excision_target_from_root,
+)
 from tests.infra.excision_execution import execute_excision
 from tests.infra.sync_as_async import AsyncConnectionView
 
@@ -208,7 +208,7 @@ def test_excision_erases_marker_carriers_and_keeps_only_terminal_evidence(tmp_pa
             "SELECT * FROM ingest_marker_witnesses WHERE request_key=?", (other.identity,)
         ).fetchone()
         assert outside_marker is not None
-    plan = plan_session_excision(tmp_path, session_id)
+    plan = plan_session_excision_from_root(tmp_path, session_id)
     assert plan.source_marker_inputs_pending == 1
     assert plan.source_marker_inputs_accepted == 1
     receipt = execute_excision(tmp_path, session_id, reason="marker secret", actor="user:local")
@@ -315,7 +315,7 @@ def test_an_undeclared_session_keyed_table_makes_excision_refuse(tmp_path: Path)
     assert not audit.ok
 
     with pytest.raises(UnclassifiedSessionCarrierError) as excinfo:
-        resolve_session_excision_target(tmp_path, session_id)
+        resolve_session_excision_target_from_root(tmp_path, session_id)
     assert "raw_future_evidence" in str(excinfo.value)
 
     with pytest.raises(UnclassifiedSessionCarrierError):
@@ -378,7 +378,7 @@ def test_container_membership_is_excised_per_member(tmp_path: Path) -> None:
     session_id, other_session_id = _seed_archive(tmp_path)
     _seed_container(tmp_path)
 
-    plan = plan_session_excision(tmp_path, session_id)
+    plan = plan_session_excision_from_root(tmp_path, session_id)
     assert plan.source_container_members == 1
     assert plan.source_container_items == 0
     assert plan.retained_source_containers == ("gen-1:item-1",)
@@ -418,7 +418,6 @@ def test_lineage_cascade_releases_container_shared_only_by_cascade_targets(tmp_p
     Anti-vacuity: resolving each session independently leaves the shared item
     retained because the other cascade member still appears live at preflight.
     """
-    from polylogue.security.excision import plan_session_excision
 
     parent_id, child_id = _seed_archive(tmp_path)
     _seed_container(tmp_path)
@@ -435,7 +434,7 @@ def test_lineage_cascade_releases_container_shared_only_by_cascade_targets(tmp_p
     finally:
         index.close()
 
-    plan = plan_session_excision(tmp_path, parent_id, cascade_lineage=True)
+    plan = plan_session_excision_from_root(tmp_path, parent_id, cascade_lineage=True)
     assert plan.source_container_items == 1
     assert plan.retained_source_containers == ()
     receipt = execute_excision(tmp_path, parent_id, reason="lineage", actor="user:local", cascade_lineage=True)

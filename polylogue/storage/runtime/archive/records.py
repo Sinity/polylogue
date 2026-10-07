@@ -37,6 +37,8 @@ class SessionRecord(BaseModel):
     native_id: str
     origin: Origin
     title: str | None = None
+    title_source: str | None = None
+    title_ref: str | None = None
     session_kind: SessionKind = SessionKind.STANDARD
     created_at: str | None = None
     updated_at: str | None = None
