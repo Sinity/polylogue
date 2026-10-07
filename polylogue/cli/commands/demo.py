@@ -185,7 +185,21 @@ def receipts_command(
 ) -> None:
     """Compare a demo assistant claim with structural tool evidence."""
 
-    resolved_root = _require_scratch_target(root, purpose="archive root")
+    from polylogue.cli.shared.helpers import DaemonRequiredError
+
+    try:
+        resolved_root = _require_scratch_target(root, purpose="archive root")
+    except DaemonRequiredError as exc:
+        if output_format != "json":
+            raise
+        from polylogue.cli.shared.machine_errors import error_daemon_required
+
+        error_daemon_required(
+            str(exc),
+            command=["demo", "receipts"],
+            operation=exc.operation,
+            archive_root=exc.archive_root,
+        ).emit()
 
     should_seed = False if seed is None else seed
     if should_seed:

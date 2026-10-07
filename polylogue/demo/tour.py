@@ -211,7 +211,7 @@ def _run_cli_step(
     output = completed.stdout
     if completed.stderr:
         output = output + ("\n" if output else "") + completed.stderr
-    output = _sanitize_public_output(output, archive_root=archive_root)
+    output = _sanitize_public_output(output, archive_root=archive_root, output_dir=output_path.parent.parent)
     output_path.write_text(output, encoding="utf-8")
     step = DemoTourStep(
         name=name,
@@ -233,15 +233,20 @@ def _run_cli_step(
     return step, rendered
 
 
-def _sanitize_public_output(output: str, *, archive_root: Path) -> str:
-    """Remove machine-local archive paths from committed proof artifacts.
+def _sanitize_public_output(output: str, *, archive_root: Path, output_dir: Path) -> str:
+    """Remove machine-local archive and tour paths from public proof artifacts.
 
     The live command remains free to show its configured archive path. The public
-    tour, however, is regenerated on many machines and must be byte-stable and
-    safe to commit. Public refs and content digests remain unchanged.
+    tour, however, is regenerated on many machines and must not expose the
+    machine-local scratch root. Public refs and content digests remain unchanged.
     """
 
-    candidates = {str(archive_root), archive_root.as_posix()}
+    candidates = {
+        str(archive_root),
+        archive_root.as_posix(),
+        str(output_dir),
+        output_dir.as_posix(),
+    }
     sanitized = output
     for candidate in sorted(candidates, key=len, reverse=True):
         if candidate:
