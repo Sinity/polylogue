@@ -338,6 +338,10 @@ def test_default_watch_sources_include_the_codex_memories_root(
     by_name = {source.name: source for source in default_sources()}
     memories = by_name["codex-memories"]
     assert memories.root == workspace_env["home_dir"] / ".codex" / "memories"
-    assert memories.suffixes == ()
-    assert by_name["codex"].suffixes == (".jsonl",)
-    assert by_name["codex-state"].suffixes == (".sqlite", ".db")
+    memories_root = memories.root
+    assert memories.accepts(memories_root / "MEMORY.md")
+    assert memories.accepts(memories_root / "rollout_summaries" / "summary.md")
+    # Neither Codex root admits memory documents: the layouts never widen.
+    assert not by_name["codex"].accepts(by_name["codex"].root / "notes.md")
+    assert not by_name["codex-state"].accepts(by_name["codex-state"].root / "notes.md")
+    assert not by_name["codex-state"].accepts(memories_root / "MEMORY.md")

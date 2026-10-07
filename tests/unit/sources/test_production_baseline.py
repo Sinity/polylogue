@@ -28,6 +28,7 @@ from polylogue.sources.live.production_baseline import (
     unretained_source_material,
 )
 from polylogue.sources.live.watcher import WatchSource
+from polylogue.sources.source_layout import declared_source_layout
 from polylogue.sources.sqlite_snapshot import sqlite_member_revision
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -336,8 +337,8 @@ def test_history_rule_and_codex_sqlite_use_their_typed_revisions(tmp_path: Path)
         conn.close()
     baseline = capture_production_source_baseline(
         (
-            WatchSource("claude-code-history", claude, suffixes=()),
-            WatchSource("codex-state", codex, suffixes=(".sqlite",), path_artifact_kinds=frozenset()),
+            WatchSource("claude-code-history", claude, layout=declared_source_layout("claude-code-history")),
+            WatchSource("codex-state", codex, layout=declared_source_layout("codex-state")),
         ),
         operation_id="build-6",
     )
@@ -371,7 +372,7 @@ def test_temporarily_unopenable_sqlite_source_remains_a_retryable_baseline_fault
 
     monkeypatch.setattr(production_baseline, "sqlite_member_revision_and_size", unavailable_revision)
     baseline = capture_production_source_baseline(
-        (WatchSource("codex-state", codex, suffixes=(".sqlite",), path_artifact_kinds=frozenset()),),
+        (WatchSource("codex-state", codex, layout=declared_source_layout("codex-state")),),
         operation_id="temporary-sqlite-open",
     )
     assert any(
@@ -1079,15 +1080,16 @@ def test_the_default_codex_state_source_baselines_only_its_declared_jsonl_sideca
 ) -> None:
     """The install-level Codex sidecars are demanded; other root JSONL is not claimed.
 
-    Anti-vacuity (polylogue-ez5b9, 11.F069): close the default ``codex-state``
-    path-rule escape hatch and neither sidecar is accepted; open it to every
-    rule, or to the suffix, and ``other.jsonl`` or the nested log joins them.
+    Anti-vacuity (polylogue-ez5b9, 11.F069): drop the two sidecar entries
+    from the declared ``codex-state`` layout and neither is accepted; widen
+    the layout to the suffix, or to any depth, and ``other.jsonl`` or the
+    nested log joins them.
     """
     from polylogue.sources.live.watcher import default_sources
 
     monkeypatch.setenv("HOME", str(tmp_path))
     codex = tmp_path / ".codex"
-    rollout = codex / "sessions" / "2026" / "rollout-2026-06-02T00-00-00-grow.jsonl"
+    rollout = codex / "sessions" / "2026" / "06" / "02" / "rollout-2026-06-02T00-00-00-grow.jsonl"
     rollout.parent.mkdir(parents=True)
     rollout.write_bytes(_CODEX_META + _codex_turn(1))
     index = codex / "session_index.jsonl"

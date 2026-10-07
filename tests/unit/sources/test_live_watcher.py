@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 import time
 import zipfile
@@ -1599,23 +1600,31 @@ def test_hermes_profile_retarget_reopens_same_inode_cursor(
     external = tmp_path / "external"
     for root in (first, second, external):
         root.mkdir()
-    for root in (first, second):
-        (root / "sessions").symlink_to(external, target_is_directory=True)
-    name = "state.db" if sqlite_input else "session_shared.jsonl"
-    actual = external / name
+    # Both profiles hold the one physical input at its declared Hermes
+    # position: the database at the home root (a hard link, so the inode is
+    # shared), the ATOF stream below a shared observability tree.
     if sqlite_input:
+        relative = Path("state.db")
+        actual = external / "state.db"
         with sqlite3.connect(actual) as connection:
             connection.execute("CREATE TABLE state (value TEXT)")
             connection.execute("INSERT INTO state VALUES ('same accepted input')")
+        for root in (first, second):
+            os.link(actual, root / relative)
     else:
+        relative = Path("observability") / "nemo-relay" / "atof" / "events.jsonl"
+        actual = external / relative
+        actual.parent.mkdir(parents=True)
         # A genuine Hermes ATOF event stream: a session-shaped record from
         # another harness at a Hermes location is refused as foreign origin.
         actual.write_bytes(
             (Path(__file__).parents[2] / "fixtures" / "origin-capability" / "hermes-session.jsonl").read_bytes()
         )
+        for root in (first, second):
+            (root / "observability").symlink_to(external / "observability", target_is_directory=True)
     alias = tmp_path / "profile"
     alias.symlink_to(first, target_is_directory=True)
-    path = alias / "sessions" / name
+    path = alias / relative
     # The production Hermes source admits its SQLite ledgers as well as JSONL.
     hermes = next(source for source in default_sources(hermes_root=alias) if source.name == "hermes")
     watcher, _ = _make_watcher(tmp_path, alias, sources=(hermes,))
@@ -1697,10 +1706,11 @@ def test_hermes_sqlite_profile_retarget_between_probe_and_bound_gate_requires_ac
     profiles = (tmp_path / "profile-a", tmp_path / "profile-b")
     for profile in profiles:
         profile.mkdir()
-        (profile / "sessions").symlink_to(external, target_is_directory=True)
+        # The declared home-root position, sharing one inode across profiles.
+        os.link(actual, profile / "state.db")
     alias = tmp_path / "profile"
     alias.symlink_to(profiles[0], target_is_directory=True)
-    declared = alias / "sessions" / "state.db"
+    declared = alias / "state.db"
     hermes = next(source for source in default_sources(hermes_root=alias) if source.name == "hermes")
     watcher, _ = _make_watcher(tmp_path, alias, sources=(hermes,))
     store = BlobStore(tmp_path / "blobs")
@@ -4032,20 +4042,25 @@ def test_inbox_source_accepts_zip_and_archive_formats() -> None:
     from polylogue.sources.live.watcher import default_sources
 
     inbox = next(s for s in default_sources() if s.name == "inbox")
-    assert ".zip" in inbox.suffixes
-    assert ".json" in inbox.suffixes
-    assert ".jsonl" in inbox.suffixes
-    assert ".ndjson" in inbox.suffixes
+    for name in ("export.zip", "conversations.json", "session.jsonl", "events.ndjson"):
+        assert inbox.accepts(inbox.root / name)
+        assert inbox.accepts(inbox.root / "export" / name)
+    assert not inbox.accepts(inbox.root / "readme.txt")
 
 
-def test_claude_default_source_projects_originspec_suffixes() -> None:
-    """Claude live admission must follow the OriginSpec artifact contract."""
+def test_claude_default_source_admits_only_its_declared_layout() -> None:
+    """Claude live admission follows the declared layout the OriginSpec rules anchor to."""
     from polylogue.sources.live.watcher import default_sources
 
     claude = next(source for source in default_sources() if source.name == "claude-code")
-    assert set(claude.suffixes) == {".json", ".jsonl", ".ndjson"}
-    assert claude.accepts(claude.root / "workflows" / "wf.json")
-    assert claude.accepts(claude.root / "project" / "session.jsonl")
+    session = "138e259e-435f-4259-8c68-dbd5aa9f9837"
+    assert claude.accepts(claude.root / "-home-user-repo" / f"{session}.jsonl")
+    assert claude.accepts(claude.root / "-home-user-repo" / session / "workflows" / "wf.json")
+    # Unanchored, the workflow rule used to admit this at any depth.
+    assert not claude.accepts(claude.root / "workflows" / "wf.json")
+    assert not claude.accepts(
+        claude.root / ".claude" / "worktrees" / "agent-1" / "-home-user-repo" / f"{session}.jsonl"
+    )
 
 
 def test_claude_todos_default_source_watches_its_own_sibling_root() -> None:
@@ -4057,8 +4072,8 @@ def test_claude_todos_default_source_watches_its_own_sibling_root() -> None:
 
     assert todos.root != claude.root
     assert todos.root.name == "todos"
-    assert todos.suffixes == (".json",)
     assert todos.accepts(todos.root / "138e259e-435f-4259-8c68-dbd5aa9f9837.json")
+    assert not todos.accepts(todos.root / "nested" / "138e259e-435f-4259-8c68-dbd5aa9f9837.json")
 
 
 def test_claude_history_source_only_walks_direct_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4074,7 +4089,7 @@ def test_claude_history_source_only_walks_direct_files(tmp_path: Path, monkeypat
     monkeypatch.setattr(polylogue_paths, "claude_code_path", lambda: claude_root / "projects")
     source = next(source for source in live_watcher.default_sources() if source.name == "claude-code-history")
 
-    assert source.recursive is False
+    assert not source.admits_directory(claude_root / "other")
     assert _bounded_source_paths(source, (source,), limit=8, after=None) == [history]
 
 
@@ -4097,6 +4112,7 @@ def test_browser_capture_spool_is_default_json_source(
     assert browser_capture.root == spool
     assert browser_capture.accepts(spool / "chatgpt" / "capture.json") is True
     assert browser_capture.accepts(spool / "chatgpt" / "capture.jsonl") is False
+    assert browser_capture.accepts(spool / "browser-actions" / "a1" / "action.json") is False
 
 
 # --- end-to-end via watchfiles -------------------------------------------------

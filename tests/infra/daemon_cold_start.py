@@ -38,14 +38,27 @@ def _proc_children_supported(proc_root: Path = Path("/proc")) -> bool:
     return probe.is_file()
 
 
+#: The fixture is presented as Claude Code's projects directory, so it uses
+#: that declared layout: sessions sit directly in a project directory (named,
+#: as Claude Code names them, after a working directory with ``-`` for ``/``).
+#: The rejected prefix is root-level files whose names sort before every
+#: project (``+`` sorts below ``-``), and the third session lives in a second
+#: project that sorts after the first.
+FIXTURE_PROJECT = "-a-cold-qualification"
+FIXTURE_NESTED_PROJECT = "-z-cold-qualification"
+FIXTURE_NESTED_SESSION = f"{FIXTURE_NESTED_PROJECT}/z-session-2.jsonl"
+
+
 def write_fixture(root: Path, *, rejected: int, malformed_last: bool = False) -> str:
     root.mkdir(parents=True)
+    project = root / FIXTURE_PROJECT
+    project.mkdir()
     for i in range(rejected):
-        path = root / f"a-rejected-{i:05d}.txt"
+        path = root / f"+rejected-{i:05d}.txt"
         data = b"synthetic rejected entry\n"
         path.write_bytes(data)
     for i, session_id in enumerate(SESSION_IDS):
-        path = (root / "nested" if i == 2 else root) / f"z-session-{i}.jsonl"
+        path = (root / FIXTURE_NESTED_PROJECT if i == 2 else project) / f"z-session-{i}.jsonl"
         path.parent.mkdir(exist_ok=True)
         if malformed_last and i == 2:
             data = b'{"sessionId": "invalid", "message": \n'
@@ -864,8 +877,8 @@ def qualify(
                             break
                     if malformed_last and durable_raw_count_max >= 3:
                         parse_error = _durable_parse_error(
-                            archive, projects / "nested" / "z-session-2.jsonl"
-                        ) or _durable_parse_error(archive, source / "nested" / "z-session-2.jsonl")
+                            archive, projects / FIXTURE_NESTED_SESSION
+                        ) or _durable_parse_error(archive, source / FIXTURE_NESTED_SESSION)
                         candidate_sessions = _unpublished_candidate_session_count(archive)
                         catchup = latest_status.get("catchup") if isinstance(latest_status, dict) else None
                         failed_count = (
@@ -883,7 +896,7 @@ def qualify(
                                 )
                             expected_malformed_refusal = True
                             receipt["parse_refusal"] = {
-                                "source": "nested/z-session-2.jsonl",
+                                "source": FIXTURE_NESTED_SESSION,
                                 "error": parse_error[:500],
                             }
                             receipt["candidate_sessions_unpublished"] = candidate_sessions
