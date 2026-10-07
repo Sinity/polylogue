@@ -464,6 +464,12 @@ _MANAGED_VERIFY_ENV = frozenset(
     }
 )
 
+# The native browser-extension integration test needs the pinned package from
+# the Nix development environment. It is a test dependency path, not operator
+# archive configuration, so keep this one declared value through the POLYLOGUE
+# host-configuration scrub below.
+_TEST_RUNTIME_ENV = frozenset({"POLYLOGUE_FAKE_INDEXEDDB_PACKAGE"})
+
 _BROAD_PREWARM_ENV = "POLYLOGUE_BROAD_PREWARM"
 
 
@@ -751,7 +757,11 @@ def _clear_polylogue_env(
         # config) for lanes that intentionally run without packaged provider
         # schema data; it must survive this sweep or it could never take
         # effect inside the test suite that is its only consumer.
-        if key.startswith("POLYLOGUE_") and key not in {ALLOW_MISSING_SCHEMAS_ENV, *_MANAGED_VERIFY_ENV}:
+        if key.startswith("POLYLOGUE_") and key not in {
+            ALLOW_MISSING_SCHEMAS_ENV,
+            *_MANAGED_VERIFY_ENV,
+            *_TEST_RUNTIME_ENV,
+        }:
             monkeypatch.delenv(key, raising=False)
 
     for key in (
