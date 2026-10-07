@@ -43,6 +43,8 @@ def test_extension_background_publishes_canonical_complete_artifact(
     source = root / "tests" / "fixtures" / fixture
     extension_root = root / "browser-extension"
     test_tree = tmp_path / "browser-extension"
+    test_tree.mkdir()
+    shutil.copy2(extension_root / "package.json", test_tree / "package.json")
     shutil.copytree(extension_root / "src", test_tree / "src")
     test_infra = test_tree / "tests" / "infra"
     test_infra.mkdir(parents=True)
