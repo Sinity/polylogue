@@ -61,7 +61,7 @@ from polylogue.archive.session_revision_membership import (
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel_requested
-from polylogue.core.enums import PolylogueStrEnum, Provider
+from polylogue.core.enums import PolylogueStrEnum, Provider, ValidationMode
 from polylogue.core.json import JSONValue
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.core.raw_failure_evidence import (
@@ -755,6 +755,7 @@ def prepare_retained_jsonl_artifact(
     *,
     directory: Path,
     allow_generic_object_alias: bool = False,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
 ) -> PreparedJsonl:
     """Seal JSON sessions using this creator's actual selected Source inputs.
 
@@ -901,7 +902,55 @@ def prepare_retained_jsonl_artifact(
                 "retained JSON refusal and artifact cleanup failed", [blob_refusal, cleanup]
             ) from None
         raise blob_refusal
+    if artifact.error is None and artifact.resolved_provider is not None:
+        from polylogue.schemas import validate_retained_document
+
+        validation_jsonl = is_jsonl_source_path(source_path)
+        validation_prefix = (
+            artifact.parsed_prefix_size if validation_jsonl and validation_mode is not ValidationMode.OFF else None
+        )
+        with _retained_validation_input(blob_path, validation_prefix, directory) as validation_path:
+            verdict = validate_retained_document(
+                artifact.resolved_provider,
+                validation_path,
+                mode=validation_mode,
+                raw_id=raw_id,
+                revision_sha256=blob_hash,
+                evidence_id=raw_id,
+                source_path=source_path,
+                jsonl=validation_jsonl,
+            )
+        artifact = dataclasses.replace(artifact, validation_verdict=verdict)
     return artifact
+
+
+@contextmanager
+def _retained_validation_input(
+    blob_path: Path,
+    prefix_size: int | None,
+    directory: Path,
+) -> Iterator[Path]:
+    """Expose exactly the parsed JSONL frontier to the spill-backed validator."""
+    if prefix_size is None or prefix_size == blob_path.stat().st_size:
+        yield blob_path
+        return
+    if prefix_size < 0:
+        raise RetainedPreparationRetryableError("retained JSONL parser returned a negative prefix")
+    fd, raw_path = tempfile.mkstemp(prefix="validation-", suffix=".jsonl", dir=directory)
+    path = Path(raw_path)
+    try:
+        remaining = prefix_size
+        with os.fdopen(fd, "wb") as target, blob_path.open("rb") as source:
+            while remaining:
+                check_compute_cancelled()
+                chunk = source.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise RetainedPreparationRetryableError("retained JSONL parser prefix exceeds source bytes")
+                target.write(chunk)
+                remaining -= len(chunk)
+        yield path
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def prepare_retained_non_json_artifact(
@@ -909,6 +958,7 @@ def prepare_retained_non_json_artifact(
     raw_id: str,
     *,
     directory: Path,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
 ) -> PreparedJsonl:
     """Seal non-JSON sessions through the same original retained read owner."""
     from polylogue.core.compute import DaemonBackpressureError
@@ -949,12 +999,15 @@ def prepare_retained_non_json_artifact(
                     raw_id,
                     directory=directory,
                     allow_generic_object_alias=True,
+                    validation_mode=validation_mode,
                 )
     if path_declaration_refuses_session(provider, source_path):
         # A raw-only member (an export's binary asset) is evidence whatever its
         # suffix: the sealed preparation records its path classification
         # without decoding the bytes, exactly as for a JSON-suffixed member.
-        return prepare_retained_jsonl_artifact(evidence_reader, raw_id, directory=directory)
+        return prepare_retained_jsonl_artifact(
+            evidence_reader, raw_id, directory=directory, validation_mode=validation_mode
+        )
     publisher = ArchiveBlobPublisher(
         evidence_reader.archive_root / "source.db",
         evidence_reader.archive_root / "blob",
@@ -3467,6 +3520,24 @@ def prepare_revision_source_census(
         sessions, _payload_bytes, _parsed_kind = outcome
         prepared = prepared_inputs.get(raw_id)
         artifact = prepared.prepared_artifact if prepared is not None else None
+        verdict = artifact.validation_verdict if artifact is not None else None
+        if verdict is not None:
+            if (
+                verdict.raw_id != raw_id
+                or verdict.revision_sha256 != evidence_reader.raw_revision_descriptor(raw_id)[1]
+            ):
+                raise RetainedPreparationRetryableError(f"retained validation evidence changed for {raw_id}")
+            prepare_raw_state_update(
+                seal,
+                raw_id,
+                state=RawSessionStateUpdate(
+                    validation_status=verdict.status,
+                    validation_error=verdict.first_diagnostic,
+                    validation_drift_count=verdict.drift_count,
+                    validation_provider=artifact.resolved_provider,
+                    validation_mode=verdict.mode,
+                ),
+            )
         if artifact is not None and artifact.codex_state_kind is not None:
             prepare_codex_state_source_terminal(
                 seal,

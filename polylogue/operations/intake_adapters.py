@@ -1564,7 +1564,7 @@ class RawMaterializationDiscovery:
         )
         from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN, RawObservationInspection
 
-        frame = raw_observation_frame(self._archive_root)
+        frame = raw_observation_frame(self._archive_root, validation_mode=None)
         binding = _RawDiscoveryBinding(
             archive_root=frame.archive_root,
             source_revision=frame.source_revision,

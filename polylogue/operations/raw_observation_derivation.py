@@ -8,14 +8,19 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
+from polylogue.core.enums import ValidationMode
 from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.derivation import (
     DerivationFrame,
 )
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN as _RAW_OBSERVATION_DOMAIN
-from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationInspection, RawObservationScope
+from polylogue.storage.derived.raw import (
+    RawObservationDerivation,
+    RawObservationInspection,
+    RawObservationScope,
+    raw_observation_recipe_version,
+)
 
 if TYPE_CHECKING:
     from polylogue.storage.index_generation import IndexGeneration
@@ -30,6 +35,7 @@ def make_raw_observation_derivation(
     prepaid_blob_inputs: tuple[tuple[str, bytes, int], ...] = (),
     index_db_path: Path | None = None,
     owned_generation: IndexGeneration | None = None,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
 ) -> RawObservationDerivation:
     """Construct the storage-owned raw adapter from the operations boundary.
 
@@ -46,6 +52,7 @@ def make_raw_observation_derivation(
         prepaid_blob_inputs=prepaid_blob_inputs,
         index_db_path=index_db_path,
         owned_generation=owned_generation,
+        validation_mode=validation_mode,
     )
 
 
@@ -93,12 +100,13 @@ def raw_observation_frame(
     *,
     raw_ids: Sequence[str] = (),
     index_db_path: Path | None = None,
+    validation_mode: ValidationMode | None = ValidationMode.ADVISORY,
 ) -> DerivationFrame:
     index_path = index_db_path or ArchiveLocation.resolve(archive_root).active_index_path
     return DerivationFrame(
         archive_root=str(archive_root),
         source_revision=str(index_path.resolve()),
-        recipe_versions={RAW_OBSERVATION_DOMAIN: raw_authority_parser_fingerprint()},
+        recipe_versions={RAW_OBSERVATION_DOMAIN: raw_observation_recipe_version(validation_mode)},
         scope=RawObservationScope(raw_ids=tuple(raw_ids)),
     )
 
@@ -132,7 +140,7 @@ def raw_observation_backlog_snapshot(
         }
 
     adapter = RawObservationInspection(archive_root, index_db_path=index_db_path)
-    frame = raw_observation_frame(archive_root, index_db_path=index_db_path)
+    frame = raw_observation_frame(archive_root, index_db_path=index_db_path, validation_mode=None)
     from polylogue.sources.dispatch import is_stream_record_provider
 
     try:
