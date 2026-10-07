@@ -4792,15 +4792,16 @@ def test_cold_build_cursor_corroboration_reads_the_candidate_index(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("moved_after_hash", [False, True], ids=["unchanged", "appended-after-hash"])
+@pytest.mark.parametrize("moved_after_hash", [False, True], ids=["unchanged", "appended-before-admission"])
 async def test_cursor_reconciliation_hashes_off_the_writer_and_rechecks_under_it(
     tmp_path: Path, moved_after_hash: bool
 ) -> None:
     """Intake selection hashes source bytes without the writer.
 
     Only the cursor restore is admitted, and under the writer it re-checks the
-    file it hashed: a file appended after the hash refuses the restore and is
-    selected for ingest instead. Anti-vacuity: running selection through the
+    file it hashed: a file appended while the restore awaits the writer (after
+    every read the decision made) refuses the restore and is selected for
+    ingest instead. Anti-vacuity: running selection through the
     writer (the old ``watcher.intake.select`` admission) holds the lease
     around the hash and fails the first assertion in ``observed_hash``; a
     restore without the re-check records a cursor for bytes it never proved.
@@ -4853,6 +4854,11 @@ async def test_cursor_reconciliation_hashes_off_the_writer_and_rechecks_under_it
 
         async def run_sync(self, actor: str, function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
             admitted.append(actor)
+            if moved_after_hash:
+                # The source's writer appends while the restore waits for
+                # admission: after every read the decision made.
+                with source_path.open("ab") as handle:
+                    handle.write(b'{"native_id":"off-writer","turn":2}\n')
 
             def leased() -> Any:
                 with write_lease(actor, archive_root=tmp_path):
@@ -4873,11 +4879,7 @@ async def test_cursor_reconciliation_hashes_off_the_writer_and_rechecks_under_it
     def observed_hash(path: Path, **kwargs: Any) -> Any:
         assert current_write_lease() is None, "the reconciliation hash ran under the writer"
         hashed.append(path)
-        result = real_hash(path, **kwargs)
-        if moved_after_hash:
-            with path.open("ab") as handle:
-                handle.write(b'{"native_id":"off-writer","turn":2}\n')
-        return result
+        return real_hash(path, **kwargs)
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(live_watcher, "sha256_range_from_path", observed_hash)
