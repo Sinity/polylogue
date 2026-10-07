@@ -680,7 +680,7 @@ def _diagnostic(error: ValidationError) -> str:
 
 
 def _validation_value_size(value: object) -> int:
-    """Count the scalar JSON content actually reached by schema traversal."""
+    """Count decoded JSON bytes reached by schema traversal, including container delimiters."""
     if isinstance(value, str):
         return utf8_byte_length(value)
     if value is None:
@@ -689,6 +689,8 @@ def _validation_value_size(value: object) -> int:
         return 4 if value else 5
     if isinstance(value, (int, float, Decimal)):
         return len(str(value).encode("ascii"))
+    if isinstance(value, Mapping) or (isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))):
+        return 2
     return 0
 
 

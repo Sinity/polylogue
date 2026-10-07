@@ -1797,12 +1797,6 @@ class RawObservationDerivation(RawObservationInspection):
         neutral_by_raw: dict[str, PreparedJsonl] = {}
         captured_sidecar_resolver = CapturedSidecarResolver(captured_sidecar_scopes)
 
-        def sidecar_signature(raw_id: str) -> tuple[object, ...] | None:
-            scope = sidecar_scope_by_raw.get(raw_id)
-            if scope is None:
-                return None
-            return (scope.scope_key, scope.available, scope.witness)
-
         def prepare_neutral(raw_id: str) -> PreparedJsonl:
             cached = carry.neutral_artifacts.get(neutral_keys[raw_id])
             if cached is not None:
@@ -1843,6 +1837,8 @@ class RawObservationDerivation(RawObservationInspection):
                 parse_prefix_size=parse_prefix_size,
                 sidecar_resolver=captured_sidecar_resolver,
             )
+            # Transfer ownership before validation or checkpoint work can fail.
+            carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
             if neutral.error is None and neutral.resolved_provider is not None:
                 from polylogue.sources.revision_backfill import _retained_validation_input
 
@@ -1859,28 +1855,20 @@ class RawObservationDerivation(RawObservationInspection):
                         jsonl=True,
                     )
                 neutral = dataclasses.replace(neutral, validation_verdict=verdict)
+                carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
             return neutral
 
+        cohort_identity: tuple[object, ...] = (
+            original_selection,
+            tuple((raw_id, operands[raw_id]) for raw_id in raw_ids),
+        )
         for raw_id in raw_ids:
-            captured = captures[raw_id]
-            descriptor = captured.descriptor
-            profile = captured.profile_identity
-            fallback_timestamp = captured.fallback_timestamp
-            native_id = captured.native_id
-            provider, blob_hash, source_path, _kind, _raw_size = descriptor
             artifact_key: tuple[object, ...] = (
                 raw_id,
-                provider,
-                blob_hash,
-                source_path,
-                descriptor[3].value == "append",
-                native_id,
-                fallback_timestamp,
-                profile,
+                operands[raw_id],
                 self._validation_mode,
+                cohort_identity,
             )
-            if provider is Provider.CLAUDE_CODE:
-                artifact_key = (*artifact_key, sidecar_signature(raw_id))
             neutral_keys[raw_id] = artifact_key
 
         reusable_keys = set(neutral_keys.values())
@@ -1931,7 +1919,9 @@ class RawObservationDerivation(RawObservationInspection):
                 continue
             first_id, second_id, head_id = group_ids[0], group_ids[1], group_ids[-1]
             first, second, head = (prepare_neutral(raw_id) for raw_id in (first_id, second_id, head_id))
-            neutral_by_raw.update({first_id: first, second_id: second, head_id: head})
+            for endpoint_id, endpoint in zip((first_id, second_id, head_id), (first, second, head), strict=True):
+                neutral_by_raw[endpoint_id] = endpoint
+                carry.neutral_artifacts[neutral_keys[endpoint_id]] = endpoint
             if any(artifact.error is not None or artifact.deferred for artifact in (first, second, head)):
                 continue
             head_classification = head.stream_classification()
@@ -1976,7 +1966,9 @@ class RawObservationDerivation(RawObservationInspection):
                 artifact_options=checkpoint_options,
             ) as checkpoint:
                 if checkpoint.disposition is CodexCheckpointDisposition.READY:
-                    neutral_by_raw.update(checkpoint.iter_artifacts())
+                    for checkpoint_raw_id, checkpoint_artifact in checkpoint.iter_artifacts():
+                        neutral_by_raw[checkpoint_raw_id] = checkpoint_artifact
+                        carry.neutral_artifacts[neutral_keys[checkpoint_raw_id]] = checkpoint_artifact
 
         for raw_id in raw_ids:
             neutral = neutral_by_raw.get(raw_id)

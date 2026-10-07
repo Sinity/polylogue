@@ -6,6 +6,7 @@ import copy
 import gc
 import hashlib
 import json
+import sqlite3
 import tracemalloc
 from collections.abc import Sequence
 from pathlib import Path
@@ -14,7 +15,7 @@ from typing import Any, TypedDict
 import pytest
 
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.schemas import observation_spill
 from polylogue.schemas.packages import SchemaResolution, SchemaResolutionReason
 from polylogue.schemas.retained_validation import PrefixValidationState, _bounded_validator, _normalized
@@ -213,10 +214,16 @@ def test_retained_validation_reports_real_nested_schema_traversal_progress(
     monkeypatch.setattr(work_progress, "emit", lambda event, **fields: events.append((event, fields)))
 
     path = tmp_path / "raw.jsonl"
-    record = {"type": "record", "kind": "session", **{f"field-{i}": "payload" * 12 for i in range(40)}}
+    record = {
+        "type": "record",
+        "kind": "session",
+        "empty-containers": [{}, {}, {}, {}],
+        **{f"field-{i}": "payload" * 12 for i in range(40)},
+    }
     _write_jsonl(path, [record])
     schema = _schema({"type": "string"})
     schema["additionalProperties"] = {"type": "string"}
+    schema["properties"] = {"empty-containers": {"type": "array", "items": {"type": "object"}}}
     registry = _registry(tmp_path, schema)
 
     verdict = validate_retained_document(
@@ -235,8 +242,16 @@ def test_retained_validation_reports_real_nested_schema_traversal_progress(
     assert verdict.sample_count == 1
     progress = [fields for event, fields in events if event == "daemon.work.progress"]
     assert len(progress) > 3
-    assert [int(fields["bytes"]) for fields in progress] == sorted(int(fields["bytes"]) for fields in progress)
-    assert progress[-1]["bytes"] > 40 * len("payload" * 12)
+
+    def bytes_count(fields: dict[str, object]) -> int:
+        value = fields["bytes"]
+        assert isinstance(value, int)
+        return value
+
+    progress_bytes = [bytes_count(fields) for fields in progress]
+    assert progress_bytes == sorted(progress_bytes)
+    assert progress_bytes[-1] > 40 * len("payload" * 12)
+    assert progress_bytes[-1] >= 2 * 4
 
 
 def test_spilled_object_membership_checks_only_the_key_index(tmp_path: Path) -> None:
@@ -255,7 +270,7 @@ def test_spilled_object_membership_checks_only_the_key_index(tmp_path: Path) -> 
         assert "missing" not in payload
         assert "surrogate\ud800" in payload
         assert None not in payload
-        assert 1 not in payload
+        assert payload.__contains__(1) is False
 
         membership_sql = statements[before:]
         assert len(membership_sql) == 3
@@ -309,11 +324,11 @@ def test_retained_schema_validation_membership_does_not_decode_spilled_values(
         finally:
             inside_membership = previous
 
-    def load_node(connection: object, node_id: int) -> object:
+    def load_node(connection: sqlite3.Connection, node_id: int) -> JSONValue:
         nonlocal membership_node_loads
         if inside_membership:
             membership_node_loads += 1
-        return original_load_node(connection, node_id)  # type: ignore[arg-type,return-value]
+        return original_load_node(connection, node_id)
 
     monkeypatch.setattr(observation_spill.SpilledObject, "__contains__", contains)
     monkeypatch.setattr(observation_spill, "_load_node", load_node)

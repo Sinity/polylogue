@@ -724,9 +724,11 @@ def test_codex_neutral_parse_survives_unrelated_source_commit(
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (inserted[0],)).fetchone() == (1,)
 
 
+@pytest.mark.parametrize("replace_sidecar", [False, True])
 def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    replace_sidecar: bool,
 ) -> None:
     """Claude's detached parser consumes captured CAS sidecars, then binds current Source."""
     from polylogue.schemas import validate_retained_document as validate_original
@@ -759,7 +761,7 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     sibling_payload = (
         json.dumps(
             {
-                "type": "assistant",
+                "type": "user",
                 "uuid": "a-sibling",
                 "sessionId": session_id,
                 "timestamp": "2026-07-20T10:00:03Z",
@@ -832,6 +834,7 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     validation_raw_ids: list[str] = []
     neutral_sidecar_events: list[tuple[str, dict[str, object]]] = []
     inserted: list[str] = []
+    replacement_sidecars: list[str] = []
     enrichment_calls = 0
     prepare_original = cast(Callable[..., PreparedJsonl], prepared_jsonl_module.prepare_jsonl_blob)
     validate_call = cast(Callable[..., object], validate_original)
@@ -856,6 +859,17 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
         enrichment_calls += 1
         yield from enrich_original(*args, **kwargs)
         if not inserted:
+            if replace_sidecar:
+                replacement_sidecars.append(
+                    _admit(
+                        tmp_path,
+                        (),
+                        provider=Provider.UNKNOWN,
+                        path=sidecar_path.as_posix(),
+                        payload=b"new retained output after rebind",
+                        acquired_at_ms=4,
+                    )
+                )
             inserted.append(
                 _admit(
                     tmp_path,
@@ -884,12 +898,13 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
 
     assert report.failed == 0, report.outcomes
     assert report.done == 1
-    assert parse_calls == 1
-    assert validation_raw_ids == [target], validation_raw_ids
+    expected_parser_calls = 2 if replace_sidecar else 1
+    assert parse_calls == expected_parser_calls
+    assert validation_raw_ids == [target] * expected_parser_calls, validation_raw_ids
     assert enrichment_calls == 2
-    assert sum(event_type == "claude_tool_result_sidecar" for event_type, _ in neutral_sidecar_events) == 1, (
-        neutral_sidecar_events
-    )
+    assert sum(event_type == "claude_tool_result_sidecar" for event_type, _ in neutral_sidecar_events) == (
+        expected_parser_calls
+    ), neutral_sidecar_events
     assert len(inserted) == 1
     with sqlite3.connect(tmp_path / "index.db") as conn:
         rows = conn.execute(
@@ -898,7 +913,7 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
             (target,),
         ).fetchall()
         assert len(rows) == 1
-        assert rows[0][0] == sidecar_text
+        assert rows[0][0] == ("new retained output after rebind" if replace_sidecar else sidecar_text)
         assert conn.execute(
             "SELECT COUNT(*) FROM session_events e JOIN sessions s ON s.session_id = e.session_id "
             "WHERE s.raw_id = ? AND e.event_type = 'claude_tool_result_sidecar'",
@@ -909,6 +924,10 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sibling_sidecar,)).fetchone() == (1,)
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sibling_raw,)).fetchone() == (1,)
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (inserted[0],)).fetchone() == (1,)
+        assert all(
+            conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)
+            for raw_id in replacement_sidecars
+        )
 
 
 def test_canonical_split_root_route_uses_the_explicit_archive_root(tmp_path: Path) -> None:

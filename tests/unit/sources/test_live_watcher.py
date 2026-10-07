@@ -30,6 +30,7 @@ from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
 from polylogue.daemon.intake import AdmissionOutcome, IntakeItem
 from polylogue.daemon.status import _archive_live_ingest_attempt_summary_info
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+from polylogue.logging import WARNING
 from polylogue.operations.intake_adapters import (
     DaemonIntakeContext,
     FileIntakeAdapter,
@@ -46,6 +47,7 @@ from polylogue.sources.live.batch import (
     last_complete_newline_from_tail,
 )
 from polylogue.sources.live.batch_support import (
+    LiveRetainedRunner,
     encode_cursor_hash_authority,
     tail_hash_from_path,
 )
@@ -3906,7 +3908,7 @@ async def test_retryable_retained_preparation_event_keeps_error_detail(
         (),
         cursor=cast(CursorStore, SimpleNamespace(_db_path=tmp_path / "cursor.sqlite")),
         parser_fingerprint="test",
-        retained_runner=retained_runner,
+        retained_runner=cast(LiveRetainedRunner, retained_runner),
     )
     await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     monkeypatch.setattr(processor, "_run_source_writer", source_writer)
@@ -3924,7 +3926,7 @@ async def test_retryable_retained_preparation_event_keeps_error_detail(
         (
             "live.ingest.retained_preparation_failed",
             {
-                "level": live_batch.WARNING,
+                "level": WARNING,
                 "outcome": "error",
                 "reason": "retryable_preparation",
                 "raw_id": "raw-1",

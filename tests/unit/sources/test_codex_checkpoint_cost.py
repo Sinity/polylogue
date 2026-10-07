@@ -11,6 +11,7 @@ import pytest
 from polylogue.core.enums import ValidationMode
 from polylogue.schemas import retained_validation
 from polylogue.sources import prepared_jsonl
+from polylogue.sources.prepared_jsonl import PreparedJsonl
 from tests.infra.retained_replay import replay_retained_components
 from tests.infra.revision_backfill_benchmark import build_revision_chain_corpus
 
@@ -95,3 +96,46 @@ def test_codex_prefix_checkpoint_cost_is_constant_and_each_capture_gets_a_verdic
     assert all(row[2] is not None and row[3] is not None for row in rows)
     assert all(row[4] == "byte_proven" for row in rows[2:-1])
     assert set(raw_ids).issubset(census_ids)
+
+
+def test_neutral_endpoint_artifacts_are_owned_before_later_parse_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A later endpoint failure closes the earlier parsed endpoint owners."""
+    raw_ids = build_revision_chain_corpus(
+        tmp_path,
+        superseded_count=4,
+        final_payload_bytes=5,
+        native_singleton=True,
+    )
+    original_prepare = prepared_jsonl.prepare_jsonl_blob
+    original_discard = PreparedJsonl.discard
+    created: list[PreparedJsonl] = []
+    discarded: list[int] = []
+
+    def fail_on_head(
+        blob_path: str,
+        source_path: str,
+        provider_value: str,
+        fallback_id: str,
+        **kwargs: Any,
+    ) -> PreparedJsonl:
+        if len(created) == 2:
+            raise RuntimeError("injected head preparation failure")
+        artifact = original_prepare(blob_path, source_path, provider_value, fallback_id, **kwargs)
+        created.append(artifact)
+        return artifact
+
+    def count_discard(self: PreparedJsonl) -> None:
+        discarded.append(id(self))
+        original_discard(self)
+
+    monkeypatch.setattr(prepared_jsonl, "prepare_jsonl_blob", fail_on_head)
+    monkeypatch.setattr(PreparedJsonl, "discard", count_discard)
+
+    with pytest.raises(RuntimeError, match="injected head preparation failure"):
+        replay_retained_components(tmp_path, selected_raw_ids=raw_ids)
+
+    assert len(created) == 2
+    assert set(discarded) == {id(artifact) for artifact in created}
