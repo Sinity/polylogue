@@ -1053,7 +1053,7 @@ def prepare_retained_non_json_artifact(
             store = SqliteMessageStore(sessions_path)
             with closing(SessionShardBuilder(Path(directory) / f"shard-{uuid.uuid4().hex}.db")) as builder:
 
-                def prepared_sessions() -> Iterator[ParsedSession]:
+                def prepared_sessions() -> Generator[ParsedSession, None, None]:
                     assert store is not None
                     with closing(
                         _iter_sqlite_path(
