@@ -739,16 +739,20 @@ def _source_recoverability_proofs(
         )
     ) as conn:
         from polylogue.storage.io_phase_metrics import connection_cursor
-        from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+        from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_VERSION_BY_TIER, ARCHIVE_VERSION_BY_TIER
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-        # Slot 004 introduced captured_coordinate, the newest field this
-        # recovery reader interprets. Later additive trains do not invalidate
-        # the authenticated predecessor's acquisition coordinates. Older
-        # snapshots remain opaque evidence, never guessed current coordinates.
+        # The Source baseline carries captured_coordinate, the newest field
+        # this recovery reader interprets. Later additive trains do not
+        # invalidate the authenticated predecessor's acquisition coordinates.
+        # Other versions remain opaque evidence, never guessed current coordinates.
         with connection_cursor(conn, "PRAGMA user_version") as cursor:
             version = int(cursor.fetchone()[0])
-        if not 4 <= version <= ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]:
+        if (
+            not ARCHIVE_BASELINE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+            <= version
+            <= ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+        ):
             raise SchemaSkew(ArchiveTier.SOURCE.value, ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE], version)
         reference_rows = _raw_session_reference_rows(conn)
         for row in reference_rows:

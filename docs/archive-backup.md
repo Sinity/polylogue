@@ -102,9 +102,10 @@ polylogue ops maintenance restore-verified-backup \
 `maintenance.restore_verified_backup` verifies the complete signed package,
 blob closure, and original released train bindings. The production archive
 population owner creates the destination with the immutable six-tier v1
-baseline. A Source1 package populates its exact rows before the normal
-Source002 train runs; a Source2 package populates a destination whose own
-train has completed. SQLite backup preserves destination-owned inodes.
+baseline. A package whose durable tiers sit below the runtime versions
+populates its exact rows before the destination's own numbered trains run; a
+package at the runtime versions needs none. SQLite backup preserves
+destination-owned inodes.
 Startup checks that destination's actual train authority. Original
 format and train receipts remain byte-for-byte detached provenance under
 `.archive-population-provenance`; they are never rebound or admitted by

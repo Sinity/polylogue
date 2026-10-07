@@ -19,9 +19,10 @@ def test_inventory_covers_all_string_membership_checks_and_declares_exclusions()
 
     # Runtime canonical DDL, not a remembered source-text count, is the
     # denominator: numeric and NOT IN checks are intentionally excluded.
-    # 87 since the ops route_observations table and its three checks retired (#5907).
-    assert inventory.denominator == 87
-    assert inventory.durable_exclusions == 38
+    # 86 since the Source baseline absorbed its numbered chain: the replaced
+    # blob_refs table no longer carries the ref_type check the old text did.
+    assert inventory.denominator == 86
+    assert inventory.durable_exclusions == 37
     assert inventory.unknown_ownership == inventory.unverified_owner_bindings
     assert inventory.unknown_ownership > 0
     assert {item.tier.value for item in inventory.checks} == {

@@ -15,13 +15,12 @@ from polylogue.core.errors import SchemaSkew
 from polylogue.core.write_lease import write_lease
 from polylogue.storage import backup_package as backup
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
-from polylogue.storage.blob_integrity import classify_blob_reference_debt
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.io_phase_metrics import _MeasuredConnection, _MeasuredCursor
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.durable_tier_fixtures import bootstrap_baseline_archive, seed_durable_tier
+from tests.infra.durable_tier_fixtures import seed_durable_tier
 
 
 def _seed(root: Path, source: Path, *, retain: bool) -> tuple[bytes, str]:
@@ -49,59 +48,6 @@ def _package(root: Path, destination: Path) -> backup.BackupResult:
             return backup.create_backup_package(
                 output_dir=destination, archive_root_path=root, profile="rebuildable_cache_exclude", archive_owner=owner
             )
-
-
-def test_pre003_complete_backup_is_verified_without_current_coordinate_read(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "archive"
-    bootstrap_baseline_archive(root, monkeypatch)
-    payload, digest = _seed(root, tmp_path / "source.json", retain=True)
-
-    def forbidden(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("opaque complete backup interpreted current coordinates")
-
-    monkeypatch.setattr(backup, "_raw_session_reference_rows", forbidden)
-    result = _package(root, tmp_path / "package")
-    assert result.ok and result.verified, result.error
-    assert result.output_path is not None
-    package = Path(result.output_path)
-    assert (package / "blob" / digest[:2] / digest[2:]).read_bytes() == payload
-    with closing(sqlite3.connect(package / "source.db")) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
-    assert result.verification["missing_canonical_blob_count"] == 0
-
-
-def test_pre003_missing_bytes_refuse_before_current_coordinate_sql(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "archive"
-    bootstrap_baseline_archive(root, monkeypatch)
-    _payload, digest = _seed(root, tmp_path / "source.json", retain=False)
-
-    def forbidden(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("incompatible snapshot reached current coordinate SQL")
-
-    monkeypatch.setattr(backup, "_raw_session_reference_rows", forbidden)
-    with pytest.raises(SchemaSkew) as refused:
-        _package(root, tmp_path / "package")
-    assert refused.value.tier == "source" and refused.value.found == 1
-    assert refused.value.expected == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
-    partial_packages = list((tmp_path / "package").iterdir())
-    assert len(partial_packages) == 1
-    assert partial_packages[0].name.startswith("polylogue-archive-")
-    assert not (partial_packages[0] / "verification-receipt.json").exists()
-    assert not BlobStore(root / "blob").exists(digest)
-    with closing(sqlite3.connect(root / "source.db")) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
-        assert conn.execute("SELECT count(*) FROM raw_sessions").fetchone()[0] == 1
-    with pytest.raises(SchemaSkew):
-        classify_blob_reference_debt(root / "source.db")
-    renamed = tmp_path / "source-evidence.sqlite"
-    renamed.write_bytes((root / "source.db").read_bytes())
-    with pytest.raises(SchemaSkew) as renamed_refusal:
-        classify_blob_reference_debt(renamed)
-    assert renamed_refusal.value.tier == "source" and renamed_refusal.value.found == 1
 
 
 @pytest.mark.parametrize("source_state", ["exact", "missing", "changed"])
@@ -173,12 +119,13 @@ def test_current_coordinate_schema_read_failure_settles_original_connection(
         handles[0].cursor()
 
 
-@pytest.mark.parametrize("source_version", [3, 4, 5, 7])
-def test_recovery_reader_uses_declared_coordinate_schema_across_additive_trains(
-    tmp_path: Path, source_version: int
-) -> None:
-    from importlib import resources
+@pytest.mark.parametrize("source_version", [0, 1, 2])
+def test_recovery_reader_interprets_only_the_declared_coordinate_schema(tmp_path: Path, source_version: int) -> None:
+    """Only a Source tier at a version this runtime declares has coordinates to replay.
 
+    A version outside the baseline-to-runtime range is opaque evidence: the
+    reader refuses it with a typed skew instead of guessing current coordinates.
+    """
     from polylogue.core.enums import Origin, Provider
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_DDL_BY_TIER
     from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
@@ -188,18 +135,8 @@ def test_recovery_reader_uses_declared_coordinate_schema_across_additive_trains(
     payload = b'{"messages":[]}\n'
     original.write_bytes(payload)
     digest = hashlib.sha256(payload).hexdigest()
-    migrations = resources.files("polylogue.storage.sqlite.migrations.source")
     with closing(sqlite3.connect(source_db)) as conn:
         conn.executescript(ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.SOURCE])
-        for name in (
-            "002_raw_artifact_failure_identity.sql",
-            "003_attachment_coordinate_identity.sql",
-            "004_captured_profile_identity.sql",
-            "005_raw_byte_revision_dependents.sql",
-            "006_raw_frontier_dependency_journal.sql",
-        ):
-            if int(name[:3]) <= source_version:
-                conn.executescript(migrations.joinpath(name).read_text(encoding="utf-8"))
         conn.execute(f"PRAGMA user_version={source_version}")
         raw_id = write_source_raw_session(
             conn,
@@ -212,7 +149,7 @@ def test_recovery_reader_uses_declared_coordinate_schema_across_additive_trains(
             acquired_at_ms=1,
         )
         conn.commit()
-    if source_version in (3, 7):
+    if source_version != ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]:
         with pytest.raises(SchemaSkew) as refused:
             backup._source_recoverability_proofs(source_db, root=tmp_path, missing_hashes={digest})
         assert refused.value.found == source_version

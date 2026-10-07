@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sqlite3
 import stat
@@ -238,7 +239,11 @@ def _populate_authenticated_archive(
                 for item in source_files
                 if Path(item[0]).is_relative_to(_HISTORY) or item[0] == ARCHIVE_FORMAT_MARKER_NAME
             )
-            if retained_artifact_reference:
+            if not os.path.lexists(original_history):
+                # A source that copied no released train and no bootstrap
+                # receipt carries no history directory; nothing is detached.
+                pass
+            elif retained_artifact_reference:
                 # Cached recipes already retain these immutable bytes in their
                 # authenticated artifact owner; keep its reference rather than a
                 # separate per-clone copy of the complete train history.

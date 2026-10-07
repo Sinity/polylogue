@@ -1017,21 +1017,7 @@ def _initialize_active_archive_root(root: Path, *, population_stage: _Population
                             remedy="the next numbered migration must have a declared train",
                         )
                     backup_manifest = None
-                    pristine_source_step = False
-                    if tier is ArchiveTier.SOURCE and current == 2 and claim.target_version == 3:
-                        from polylogue.storage.sqlite.migration_runner import (
-                            MigrationError,
-                            _require_pristine_source_attachment_baseline,
-                        )
-
-                        with contextlib.closing(open_readonly_connection(path, validate_schema=False)) as probe:
-                            try:
-                                _require_pristine_source_attachment_baseline(probe, tier)
-                            except MigrationError:
-                                pass
-                            else:
-                                pristine_source_step = True
-                    if claim.requires_backup and not pristine_source_step:
+                    if claim.requires_backup:
                         from polylogue.storage.backup_package import create_pre_migration_backup
 
                         backup_manifest = create_pre_migration_backup(
@@ -1047,7 +1033,6 @@ def _initialize_active_archive_root(root: Path, *, population_stage: _Population
                         backup_manifest=backup_manifest,
                         daemon_stopped_evidence_ref="proof:bootstrap-before-runtime-open",
                         single_writer_evidence_ref="proof:bootstrap-owned-archive",
-                        allow_pristine_source_baseline=pristine_source_step,
                         release_archive_ownership=lambda: None,
                     )
                     with contextlib.closing(open_readonly_connection(path, validate_schema=False)) as probe:

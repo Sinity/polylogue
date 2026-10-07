@@ -141,7 +141,6 @@ def execute_durable_change_train(
     runtime_consumer_results: tuple[DurableRuntimeConsumerResult, ...] | None = None,
     schema_replay_proof: DurableMigrationReplayProof | None = None,
     release_archive_ownership: Callable[[], None],
-    allow_pristine_source_baseline: bool = False,
 ) -> DurableChangeTrainExecution:
     """Run one durable migration through the storage authority contract."""
     return _execute_durable_change_train(
@@ -153,7 +152,6 @@ def execute_durable_change_train(
         runtime_consumer_results=runtime_consumer_results,
         schema_replay_proof=schema_replay_proof,
         release_archive_ownership=release_archive_ownership,
-        allow_pristine_source_baseline=allow_pristine_source_baseline,
     )
 
 

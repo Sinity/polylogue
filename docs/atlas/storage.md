@@ -147,41 +147,39 @@ Archive reads submit their exact UTF-8 request-byte demand to the shared bounded
 The immutable fresh archive baseline creates all six tiers at version 1.
 `initialize_active_archive_root` records that baseline's pending intent,
 format marker and bootstrap receipt before advancing durable tiers through
-their declared numbered trains. Source runtime version 2 replaces the two
-raw-artifact partition indexes through `002_raw_artifact_failure_identity.sql`;
-it retains every row and lets two missing-coordinate refusals at the same
-source coordinate remain attached to their distinct raw acquisitions.
-The index replacement claim is checked against SQLite's actual keys,
-collations, order, uniqueness and complementary literal predicates in both
-rehearsal and live execution; exact row values, primary keys, foreign keys
-and integrity must survive the owned transaction. Other non-additive changes
-still require verified backup authority (`storage/sqlite/migration_runner.py`).
-### Attachment coordinate migration
+their declared numbered trains. The `polylogue.archive-format.v6` lineage
+folded the predecessor's Source slots 002-006 into the Source v1 baseline, so
+Source, User and Audit currently have no numbered migrations and a fresh
+bootstrap replays no train. The folded baseline's durable schema inventory is
+pinned in `tests/unit/storage/test_fresh_archive_format.py`; a later durable
+change is a numbered migration, not an edit of the baseline.
 
-Source slot 003 replaces `blob_refs` identity while copying every retained value
-and its original rowid. Attachment references include their provider coordinate
-in the unique key, so identical bytes under two file IDs retain two references.
-Other reference kinds keep their raw or hook owner key. Raw attribution still
-owns liveness and retirement; coordinate identity never encodes a different raw.
-Deferred, inline and prepared attachment acquisition use the same provider file
-coordinate (or the provider attachment ID when no file ID exists).
+A row-preserving index replacement claim is checked against SQLite's actual
+keys, collations, order, uniqueness and complementary literal predicates in
+both rehearsal and live execution; exact row values, primary keys, foreign
+keys and integrity must survive the owned transaction. Other non-additive
+changes require verified backup authority (`storage/sqlite/migration_runner.py`).
 
-Populated Source tiers require the existing authenticated, scratch-verified
-backup and numbered daemon train before slot 003 applies. This code change does
-not migrate a live archive. Fresh owned bootstrap and isolated runtime probes
-may instead prove the exact pristine Source v2 schema and literal rows using
-existing evidence owners, including every Source table and canonical seed row.
-The runner rechecks that source-specific authority under its apply lock; an
-empty blob ledger alone is insufficient. No backup receipt is claimed for this
-mode. Coordinates already erased by the predecessor cannot be reconstructed.
+### Source identity partitions
 
-Source runtime version 4 (`004_captured_profile_identity.sql`) adds `raw_profile_identity_receipts`, captured-input
-identity columns in prepared manifests and accepted source items, and the
-complementary failure partition for missing profile evidence. This mixed
-table/column/index migration requires the authenticated pre-migration package,
-including on an empty fresh archive after Source002. Existing raws keep their
-IDs, byte custody and absent historical receipts; replay reports the explicit
-profile gap instead of discovering a qualifier from current source paths.
+`raw_artifacts` carries two complementary unique partitions: ordinary
+artifacts are unique per source coordinate, while deferred and terminal
+refusals (including missing coordinates, missing profile evidence and
+unproved retained ZIP membership) are unique per raw acquisition, so two
+refusals at one coordinate stay attached to their distinct raws.
+
+`blob_refs` has no single primary key. Attachment references include their
+provider coordinate in the unique key, so identical bytes under two file IDs
+retain two references; other reference kinds keep their raw or hook owner key.
+Raw attribution still owns liveness and retirement; coordinate identity never
+encodes a different raw. Deferred, inline and prepared attachment acquisition
+use the same provider file coordinate (or the provider attachment ID when no
+file ID exists).
+
+`raw_profile_identity_receipts` records a raw's captured profile identity, and
+prepared manifest members and accepted source items carry their captured-input
+identity. A raw without a receipt reports the explicit profile gap instead of
+discovering a qualifier from current source paths.
 New ingest acceptance stages physical inputs pagewise through
 `prepare_source_manifest` and carries a sealed reference into the audit plan.
 Immutable pending commands retain their original inline evidence for restart;
@@ -195,11 +193,17 @@ the daemon streams those witnesses into its existing private receipt spool and
 authenticates each historical raw page without retaining all pages. Private
 spool files remain under their exact Native lifetime until every opened owner
 settles, including failed reader or writer closes.
+
+Every write that can change a raw's existence evidence (the raw row, its
+artifacts, memberships, census rows, payload blob refs, and blob receipts or
+GC members keyed by its blob) records the raw key in `raw_existence_changes`
+through Source triggers in the same transaction, including external writers.
+
 Writable canonical bootstrap admits installed trains before runtime version
-validation. Read-only and acquisition-only opens refuse a baseline Source
-tier without applying migrations. A crash after baseline publication resumes
-the same persisted train rather than restamping the baseline as current
-(`storage/sqlite/archive_tiers/bootstrap.py`;
+validation. Read-only and acquisition-only opens refuse a durable tier below
+the runtime version without applying migrations. A crash after baseline
+publication resumes the same persisted train rather than restamping the
+baseline as current (`storage/sqlite/archive_tiers/bootstrap.py`;
 `storage/sqlite/durable_change_train.py`).
 The format marker retains immutable baseline birth versions and fingerprints
 after migration. Isolated runtime consumer probes and canonical schema census
