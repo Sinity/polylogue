@@ -712,7 +712,7 @@ def test_codex_neutral_parse_survives_unrelated_source_commit(
     assert report.failed == 0, report.outcomes
     assert report.done == 1
     assert parse_calls == 1
-    assert validation_calls == 1
+    assert validation_calls == 1, validation_calls
     assert len(inserted) == 1
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall() == [("neutral-target",)]
