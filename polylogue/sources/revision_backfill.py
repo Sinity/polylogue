@@ -3116,6 +3116,51 @@ def _persist_terminal_non_session_artifact(
     return True
 
 
+def _persist_strict_session_refusal_artifact(
+    producer: SourceRawOutcomeProducer,
+    raw_id: str,
+    *,
+    provider: Provider,
+    source_path: str,
+    source_index: int,
+    observed_at_ms: int,
+    stream_classification: ArtifactStreamClassification | None,
+    manage_transaction: bool,
+) -> bool:
+    """Retain positive session evidence when strict schema validation refuses it."""
+    if (
+        stream_classification is None
+        or not stream_classification.classification.parse_as_session
+        or stream_classification.classification.provider is not provider
+    ):
+        return False
+    classification = stream_classification.classification
+    origin = origin_from_provider(provider)
+    _upsert_raw_artifact(
+        producer,
+        raw_id,
+        ArchiveSourceArtifact(
+            artifact_id=artifact_observation_id(
+                source_name=origin.value,
+                source_path=source_path,
+                source_index=source_index,
+            ),
+            origin=origin,
+            source_path=source_path,
+            source_index=source_index,
+            artifact_kind=classification.cohort,
+            classification_reason=f"{classification.reason}; strict schema validation refused",
+            support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
+            parse_as_session=True,
+            schema_eligible=True,
+            first_observed_at_ms=observed_at_ms,
+            last_observed_at_ms=observed_at_ms,
+        ),
+        manage_transaction=manage_transaction,
+    )
+    return True
+
+
 def _persist_codex_state_artifact(
     producer: SourceRawOutcomeProducer,
     raw_id: str,
@@ -3820,15 +3865,29 @@ def prepare_revision_source_census(
             return
         if sessions:
             parsed_provider = Provider.from_string(sessions[0].source_name)
-            record_session_artifact_observation(
-                producer,
-                raw_id=raw_id,
-                provider=parsed_provider,
-                source_path=source_path,
-                source_index=source_index,
-                observed_at_ms=observed_at_ms,
-                manage_transaction=False,
-            )
+            strict_refusal = verdict is not None and verdict.strict_refusal
+            artifact_observed = False
+            if strict_refusal and artifact is not None:
+                artifact_observed = _persist_strict_session_refusal_artifact(
+                    producer,
+                    raw_id,
+                    provider=parsed_provider,
+                    source_path=source_path,
+                    source_index=source_index,
+                    observed_at_ms=observed_at_ms,
+                    stream_classification=artifact.stream_classification(),
+                    manage_transaction=False,
+                )
+            if not artifact_observed:
+                record_session_artifact_observation(
+                    producer,
+                    raw_id=raw_id,
+                    provider=parsed_provider,
+                    source_path=source_path,
+                    source_index=source_index,
+                    observed_at_ms=observed_at_ms,
+                    manage_transaction=False,
+                )
             if provider is Provider.UNKNOWN:
                 prepare_raw_state_update(seal, raw_id, state=RawSessionStateUpdate(payload_provider=parsed_provider))
             refine_prepared_raw_origin(seal, raw_id, origin_from_provider(parsed_provider))

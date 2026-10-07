@@ -16,6 +16,7 @@ from polylogue.daemon import cli as daemon_cli
 from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.schemas import RetainedValidationVerdict
+from polylogue.schemas.drift_sentinel import SchemaDriftObservation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.raw_owner_routes import converge_pending_raws_with_owner, replay_retained_raws
@@ -170,17 +171,25 @@ async def test_strict_retained_validation_refusal_does_not_publish_marker_inputs
             drift_count=0,
             first_diagnostic="synthetic strict schema refusal",
             schema_resolution=None,
-            drift_observation=None,
+            drift_observation=SchemaDriftObservation(
+                origin="codex-session",
+                element_kind="session_record",
+                classification="new_field",
+                unseen_key_signature="payload.synthetic",
+                native_id_example="strict-marker",
+                raw_id=raw_id,
+            ),
             strict_refusal=True,
         )
 
     monkeypatch.setattr("polylogue.schemas.validate_retained_document", refuse_retained_document)
-    await asyncio.to_thread(
-        converge_pending_raws_with_owner,
-        archive_root,
-        limit=1,
-        validation_mode=ValidationMode.STRICT,
-    )
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async with prepared_live_convergence_owner(archive_root, validation_mode=ValidationMode.STRICT) as owner:
+        first = await owner.converge_raw_id(raw_id)
+        second = await owner.converge_raw_id(raw_id)
+    assert first.failed == second.failed == 0, (first.outcomes, second.outcomes, validations)
+    assert second.pending == 0, (first.outcomes, second.outcomes, validations)
 
     assert len(validations) == 1
     assert validations[0][0] == raw_id
@@ -192,6 +201,13 @@ async def test_strict_retained_validation_refusal_does_not_publish_marker_inputs
         assert source.execute("SELECT COUNT(*) FROM accepted_marker_inputs WHERE raw_id=?", (raw_id,)).fetchone() == (
             0,
         )
+        assert source.execute(
+            "SELECT COUNT(*) FROM raw_artifacts WHERE raw_id=? AND parse_as_session=1 AND schema_eligible=1",
+            (raw_id,),
+        ).fetchone() == (1,)
+    with sqlite3.connect(archive_root / "ops.db") as ops:
+        assert ops.execute("SELECT COUNT(*) FROM schema_drift_samples WHERE raw_id=?", (raw_id,)).fetchone() == (1,)
+    assert len(validations) == 1
 
 
 @pytest.mark.asyncio
