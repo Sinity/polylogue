@@ -1762,13 +1762,12 @@ class DaemonIntakeService:
         self.budget = max(1, budget)
         self.idle_delay_s = max(0.05, idle_delay_s)
         self._wakeup = wakeup if wakeup is not None else asyncio.Event()
-        # polylogue-b7dkb: the one moment a cold build can be declared
-        # finished is a pass that found nothing to do AFTER a pass that did
-        # something. Fired once; a later backlog is ordinary live ingest.
+        # Settlement follows a fully observed quiescent pass. Candidate
+        # writes can arrive through the operation route without any successful
+        # watched-file admission. The callback owns promotion versus discard.
         self._on_backlog_drained = on_backlog_drained
         self._has_pending_backlog = has_pending_backlog
         self._on_pass_complete = on_pass_complete
-        self._progressed_once = False
         self._settlement: ColdBuildSettlement | None = None
         self._settlement_revision = settlement_revision
         self._settlement_external_revision = settlement_external_revision
@@ -1799,7 +1798,6 @@ class DaemonIntakeService:
                 # but keep the progress it did commit, which later cold-build
                 # settlement depends on.
                 if result.progressed:
-                    self._progressed_once = True
                     self._progress_since_blocked = True
                 continue
             schedulable = self.dispatcher.schedulable_classes()
@@ -1808,18 +1806,13 @@ class DaemonIntakeService:
                 delay for spec in schedulable if (delay := getattr(spec.adapter, "retry_due_in_s", None)) is not None
             )
             if result.progressed:
-                self._progressed_once = True
                 self._progress_since_blocked = True
                 if self._on_pass_complete is not None:
                     outcome = self._on_pass_complete(result)
                     if isinstance(outcome, Awaitable):
                         await outcome
             elif (
-                self._progressed_once
-                and result.quiescent
-                and not discovery_pending
-                and not retry_delays
-                and self._on_backlog_drained is not None
+                result.quiescent and not discovery_pending and not retry_delays and self._on_backlog_drained is not None
             ):
                 pending = self._has_pending_backlog() if self._has_pending_backlog is not None else False
                 if isinstance(pending, Awaitable):

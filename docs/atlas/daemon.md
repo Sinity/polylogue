@@ -235,3 +235,10 @@ planning are declared operations; tutorial counts and summary aggregates use
 Composed context images carry their selected read views through
 `read.context-image`, so the daemon compiles messages, temporal evidence, and
 chronicle excerpts on the same selected archive view.
+
+Cold-build settlement runs after a complete quiescent fair-intake pass with no
+pending discovery, local retry deadline, or durable intake retry. It does not
+require a successful watched-file admission: operation imports may already
+have written the inactive candidate. The settlement owner checks candidate
+coverage and promotes a nonempty candidate or discards an empty one. Blocked
+and retryable settlement retain their existing evidence and retry conditions.

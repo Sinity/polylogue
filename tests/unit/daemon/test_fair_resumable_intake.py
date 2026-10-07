@@ -1421,7 +1421,6 @@ async def test_intake_service_keeps_scanning_before_declaring_backlog_drained(
         drained.set()
 
     service = DaemonIntakeService(dispatcher, idle_delay_s=5.0, on_backlog_drained=on_drained)
-    service._progressed_once = True
     task = asyncio.create_task(service.run())
     try:
         await asyncio.wait_for(drained.wait(), timeout=2.0)
@@ -1482,7 +1481,6 @@ async def test_cold_build_waits_for_local_retry_debt_without_cursor_row(
         on_backlog_drained=on_drained,
         has_pending_backlog=lambda: False,
     )
-    service._progressed_once = True
     task = asyncio.create_task(service.run())
     try:
         await asyncio.wait_for(drained.wait(), timeout=2.0)
@@ -3989,7 +3987,6 @@ async def test_degraded_intake_service_parks_without_passes_or_settlement() -> N
     service = DaemonIntakeService(
         cast(Any, dispatcher), idle_delay_s=0.05, on_backlog_drained=lambda: drained.append(True)
     )
-    service._progressed_once = True
     set_degraded(DegradedReason(code="schema_version_mismatch", message="v12 vs v9"))
     task = asyncio.create_task(service.run())
     try:
