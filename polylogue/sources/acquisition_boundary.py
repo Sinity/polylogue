@@ -666,11 +666,20 @@ def capture_bound_path(
     The fresh reader owns the source descriptor through final proof. The
     parent's sink validates bytes before its private blob writer can complete.
     A caller capturing a page of inputs lends its own ``byte_page`` so the
-    whole page shares one reader process; otherwise one is lent per capture.
+    whole page shares one reader process; otherwise one page serves this
+    capture's binding and bytes.
     """
     from polylogue.sources.source_staging import bind_source_input, write_bound_input
 
     if source_binding is None:
+        if byte_page is None:
+            from polylogue.sources.sqlite_export import source_byte_page
+
+            # One reader proves the binding and serves the bytes; binding
+            # first through a fresh process paid a second interpreter start
+            # for every captured file.
+            with source_byte_page() as page:
+                return capture_bound_path(blob_store, path, location, heartbeat=heartbeat, byte_page=page)
         with bind_source_input(Path(path), byte_page=byte_page) as binding:
             return capture_bound_path(
                 blob_store, path, location, heartbeat=heartbeat, source_binding=binding, byte_page=byte_page
