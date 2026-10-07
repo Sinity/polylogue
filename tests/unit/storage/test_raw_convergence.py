@@ -870,7 +870,7 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     assert report.done == 1
     assert parse_calls == 1
     assert validation_raw_ids == [target], validation_raw_ids
-    assert neutral_sidecar_events.count("claude_tool_result_sidecar") == 1
+    assert neutral_sidecar_events.count("claude_tool_result_sidecar") == 1, neutral_sidecar_events
     assert len(inserted) == 1
     with sqlite3.connect(tmp_path / "index.db") as conn:
         rows = conn.execute(
