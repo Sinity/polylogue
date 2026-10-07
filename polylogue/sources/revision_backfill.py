@@ -1084,9 +1084,10 @@ def prepare_retained_non_json_artifact(
                                     append_session_to_shard(builder, enriched)
                                     yield enriched
 
-                _write_artifact(
-                    store, blob_hash, prepared_sessions(), enrichment_digest=None, enrichment_index_path=None
-                )
+                with closing(prepared_sessions()) as selected_sessions:
+                    _write_artifact(
+                        store, blob_hash, selected_sessions, enrichment_digest=None, enrichment_index_path=None
+                    )
                 shard_path = builder.seal().path
             parsed = True
             _prepare_attachment_publications(store, publisher, Path(directory))
@@ -3253,7 +3254,7 @@ def _iter_sqlite_path(
     *,
     fallback_id: str,
     profile_identity: str | None,
-) -> Iterator[ParsedSession]:
+) -> Generator[ParsedSession, None, None]:
     """Replay logical SQLite material through the preparation owner's sinks."""
     if provider is Provider.HERMES:
         if profile_identity is None:
@@ -3265,8 +3266,9 @@ def _iter_sqlite_path(
                 provider, path, store, fallback_id=fallback_id, profile_identity=profile_identity
             )
         elif hermes_verification.looks_like_verification_evidence_db_path(path, immutable=True):
-            sessions = iter(
-                hermes_verification.parse_verification_evidence_db(
+            sessions = (
+                session
+                for session in hermes_verification.parse_verification_evidence_db(
                     path,
                     fallback_id=fallback_id,
                     profile_identity=profile_identity,

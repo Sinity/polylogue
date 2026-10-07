@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import closing
 from pathlib import Path
 
@@ -20,7 +20,10 @@ from polylogue.sources.streamed_event_payload import iter_json_value
 class _AccountingBuilder:
     def __init__(self, store: SqliteMessageStore, expected: dict[AdmissionUnit, int]) -> None:
         self.expected = expected
-        self.writer = SqliteParseAccountingWriter(store.conn, dict(expected))
+        writer_expected: dict[object, int] = {}
+        for unit, count in expected.items():
+            writer_expected[unit] = count
+        self.writer = SqliteParseAccountingWriter(store.conn, writer_expected)
 
     def append(self, outcome: AdmissionOutcome) -> None:
         self.writer.append(outcome)
@@ -37,7 +40,7 @@ def iter_sqlite_sessions(
     fallback_id: str,
     profile_root: Path | None = None,
     profile_identity: str | None = None,
-) -> Iterator[ParsedSession]:
+) -> Generator[ParsedSession, None, None]:
     """Keep all parser streams on the preparation owner's live connection.
 
     The caller consumes, hashes, and writes each session before closing its
