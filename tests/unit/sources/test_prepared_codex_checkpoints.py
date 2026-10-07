@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from contextlib import contextmanager
+from io import BytesIO
+
+import pytest
+
+from polylogue.archive.revision_authority import RawRevisionKind
+from polylogue.core.enums import Provider
+from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.parsers import codex
+from polylogue.sources.parsers.base_models import AdmissionUnit
+from polylogue.sources.prepared_codex_checkpoints import (
+    _finalize_codex_prefix,
+    _plain_text_header,
+    _plain_text_message,
+    _prefix_accounting,
+    _read_head_and_prove,
+)
+from polylogue.sources.prepared_jsonl import PreparedJsonl
+
+
+def _records(count: int) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = [
+        {"type": "session_meta", "payload": {"id": "prefix-session", "timestamp": "2026-06-01T00:00:00Z"}}
+    ]
+    for index in range(count):
+        rows.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": f"message-{index}",
+                    "role": "user" if index % 2 == 0 else "assistant",
+                    "content": [{"type": "input_text", "text": f"content-{index}"}],
+                },
+            }
+        )
+    return rows
+
+
+def test_every_checkpoint_prefix_matches_ordinary_codex_parse(tmp_path) -> None:
+    records = _records(8)
+    head = codex.parse_stream(records, "fallback")
+
+    assert head.source_name is Provider.CODEX
+    for record_count in range(1, len(records) + 1):
+        ordinary = codex.parse_stream(records[:record_count], "fallback")
+        message_count = record_count - 1
+        updated_pair = codex.parse_timestamp_pair(head.created_at)
+        for message in head.messages[:message_count]:
+            updated_pair = codex._newer_timestamp_pair(updated_pair, codex.parse_timestamp_pair(message.timestamp))
+        checkpoint = _finalize_codex_prefix(
+            head,
+            head.messages,
+            message_count,
+            _prefix_accounting(message_count),
+            updated_pair[1] if updated_pair is not None else None,
+        )
+
+        checkpoint_value = checkpoint.model_copy(update={"messages": list(checkpoint.messages)})
+        assert checkpoint_value.model_dump(mode="json", exclude={"unit_accounting"}) == ordinary.model_dump(
+            mode="json", exclude={"unit_accounting"}
+        )
+        assert checkpoint.unit_accounting is not None
+        assert ordinary.unit_accounting is not None
+        assert checkpoint.unit_accounting.model_dump(mode="json") == ordinary.unit_accounting.model_dump(mode="json")
+        assert checkpoint.active_leaf_message_provider_id == ordinary.active_leaf_message_provider_id
+
+        if record_count == 5:
+            artifact_dir = tmp_path / "private-artifact"
+            artifact_dir.mkdir()
+            checkpoint.content_hash = session_content_hash(checkpoint)
+            artifact = PreparedJsonl.from_sessions(
+                (checkpoint,),
+                blob_hash="a" * 64,
+                artifact_directory=artifact_dir,
+                publication_publisher=None,
+            )
+            try:
+                retained = list(artifact.iter_sessions())
+                assert len(retained) == 1
+                retained_value = retained[0].model_copy(
+                    update={
+                        "messages": list(retained[0].messages),
+                        "session_events": list(retained[0].session_events),
+                    }
+                )
+                assert retained_value.model_dump(mode="json", exclude={"unit_accounting"}) == ordinary.model_dump(
+                    mode="json", exclude={"unit_accounting"}
+                )
+            finally:
+                artifact.discard()
+
+
+def test_header_only_checkpoint_has_zero_messages_and_no_part_denominator() -> None:
+    session = codex.parse_stream(_records(0), "fallback")
+    accounting = _prefix_accounting(0)
+
+    assert session.messages == []
+    assert session.unit_accounting is not None
+    assert accounting.model_dump(mode="json") == session.unit_accounting.model_dump(mode="json")
+    assert AdmissionUnit.PART not in accounting.expected
+    assert AdmissionUnit.BLOCK not in accounting.expected
+
+
+def test_checkpoint_grammar_falls_back_for_future_sensitive_codex_shapes() -> None:
+    assert _plain_text_header(_records(0)[0]) == "prefix-session"
+    message = _records(1)[1]
+    assert _plain_text_message(message) == ("message-0", "user", "content-0")
+
+    event_msg = {"type": "event_msg", "payload": {"type": "exec_command_end", "id": "event"}}
+    code_mode_call = {
+        "type": "response_item",
+        "payload": {"type": "function_call", "id": "call", "name": "exec", "arguments": "{}"},
+    }
+    compacted = {"type": "compacted", "payload": {"message": "summary"}}
+    turn_context = {"type": "turn_context", "payload": {"model": "x"}}
+    repeated_header = _records(0)[0]
+
+    for record in (event_msg, code_mode_call, compacted, turn_context, repeated_header):
+        assert _plain_text_message(record) is None
+
+    assert _plain_text_message({**message, "extra": "unknown"}) is None
+    assert (
+        _plain_text_message(
+            {"type": "response_item", "payload": {**message["payload"], "content": [{"type": "image", "url": "x"}]}}
+        )
+        is None
+    )
+
+
+class _SourceRead:
+    def __init__(self, payloads: list[bytes]) -> None:
+        self.payloads = {f"raw-{index}": payload for index, payload in enumerate(payloads)}
+
+    def raw_revision_descriptor(self, raw_id: str):
+        payload = self.payloads[raw_id]
+        return (
+            Provider.CODEX,
+            hashlib.sha256(payload).hexdigest(),
+            "same/path.jsonl",
+            RawRevisionKind.FULL,
+            len(payload),
+        )
+
+    def raw_profile_identity(self, _raw_id: str) -> str:
+        return "captured-profile"
+
+    @contextmanager
+    def open_raw_revision_material(self, raw_id: str):
+        yield Provider.CODEX, BytesIO(self.payloads[raw_id]), "same/path.jsonl", RawRevisionKind.FULL
+
+
+def test_source_read_proof_checks_hash_prefix_and_complete_record_boundaries() -> None:
+    records = _records(3)
+    captures = []
+    for count in range(1, 5):
+        text = "\n".join(json.dumps(row, separators=(",", ":")) for row in records[:count]) + "\n"
+        captures.append(text.encode())
+    source_read = _SourceRead(captures)
+    head_blob, counts, hashes, header, message_count = _read_head_and_prove(source_read, tuple(source_read.payloads))
+    try:
+        assert counts == [1, 2, 3, 4]
+        assert header == "prefix-session"
+        assert message_count == 3
+        assert hashes[-1] == hashlib.sha256(captures[-1]).hexdigest()
+    finally:
+        head_blob.close()
+
+    replaced = list(captures)
+    replaced[2] = captures[2].replace(b"content-1", b"changed-1")
+    with pytest.raises(ValueError, match="exact byte prefixes"):
+        _read_head_and_prove(_SourceRead(replaced), tuple(source_read.payloads))
+
+    incomplete = list(captures)
+    incomplete[1] = captures[1][:-1]
+    with pytest.raises(ValueError, match="ends inside a JSONL record"):
+        _read_head_and_prove(_SourceRead(incomplete), tuple(source_read.payloads))
