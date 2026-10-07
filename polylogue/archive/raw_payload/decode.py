@@ -604,9 +604,8 @@ def _hermes_sqlite_marker_payload(
     Binary-capable detection BEFORE any text decode, mirroring the rebuild
     path's provider dispatch (``sources.revision_backfill._parse_one``, which
     probes ``looks_like_sqlite_bytes`` then the same per-artifact
-    ``looks_like_*_path`` structural checks used here). ``ingest_record``
-    (``pipeline/services/ingest_worker.py``) calls ``build_raw_payload_envelope``
-    for every raw, including binary ones, so this is the single place that
+    ``looks_like_*_path`` structural checks used here). ``build_raw_payload_envelope``
+    runs for every raw, including binary ones, so this is the single place that
     must recognize a SQLite-backed Hermes artifact before the generic
     JSON/JSONL decode path runs and rejects the bytes as invalid UTF-8
     (polylogue-zoc3: ingest and rebuild previously disagreed here for

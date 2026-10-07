@@ -86,6 +86,7 @@ from polylogue.sources.dispatch import (
     parse_payload,
     parse_stream_payload,
 )
+from polylogue.sources.fallback_identity import fallback_session_id
 from polylogue.sources.live.batch_support import (
     jsonl_complete_prefix,
     jsonl_parse_input_of_handle,
@@ -753,6 +754,7 @@ def prepare_retained_jsonl_artifact(
     raw_id: str,
     *,
     directory: Path,
+    allow_generic_object_alias: bool = False,
 ) -> PreparedJsonl:
     """Seal JSON sessions using this creator's actual selected Source inputs.
 
@@ -767,6 +769,7 @@ def prepare_retained_jsonl_artifact(
         is_jsonl_source_path(source_path)
         or Path(source_path).suffix.lower() == ".json"
         or path_declaration_refuses_session(provider, source_path)
+        or allow_generic_object_alias
     ):
         raise RetainedPreparationRetryableError(f"retained JSON worker cannot parse {raw_id}")
     blob_path = evidence_reader.raw_revision_blob_path(raw_id)
@@ -789,7 +792,7 @@ def prepare_retained_jsonl_artifact(
                 f"retained UNKNOWN provider has no recognized complete input shape: {source_path}"
             )
             return PreparedJsonl(None, None, None, f"{type(refusal).__name__}: {refusal}", unsupported_shape=True)
-    fallback_id = Path(source_path).stem
+    fallback_id = fallback_session_id(source_path, raw_id)
     if kind is RawRevisionKind.APPEND:
         fallback_id = (
             _append_session_native_id(
@@ -926,6 +929,27 @@ def prepare_retained_non_json_artifact(
     from polylogue.storage.sqlite.reference_seal import ReferenceSealError
 
     provider, blob_hash, source_path, _kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
+    # Some providers arrive under neutral or mislabeled filenames. A simple
+    # top-level message envelope has an existing ijson-to-SQLite route in
+    # prepare_jsonl_blob; route by that complete shape before the collecting
+    # non-JSON replay below. The probe validates through EOF and leaves the
+    # retained blob untouched.
+    if provider in {Provider.DRIVE, Provider.GEMINI} and not (
+        is_jsonl_source_path(source_path) or Path(source_path).suffix.lower() == ".json"
+    ):
+        from polylogue.sources.decoder_json import generic_message_object_envelope
+
+        blob_path = evidence_reader.raw_revision_blob_path(raw_id)
+        if blob_path is not None:
+            with blob_path.open("rb") as handle:
+                generic_envelope = generic_message_object_envelope(handle)
+            if generic_envelope is not None:
+                return prepare_retained_jsonl_artifact(
+                    evidence_reader,
+                    raw_id,
+                    directory=directory,
+                    allow_generic_object_alias=True,
+                )
     if path_declaration_refuses_session(provider, source_path):
         # A raw-only member (an export's binary asset) is evidence whatever its
         # suffix: the sealed preparation records its path classification
@@ -2733,7 +2757,7 @@ def parse_retained_raw_sessions(archive: RetainedRawRead, raw_id: str) -> list[P
                     provider,
                     sqlite_path,
                     source_path,
-                    fallback_id=Path(source_path).stem,
+                    fallback_id=fallback_session_id(source_path, raw_id),
                     profile_identity=profile_identity,
                 )
             )
@@ -3000,7 +3024,7 @@ def _parse_one_raw(
             )
         return admit_parsed_sessions_for_publication(sessions, provider=provider, source_path=source_path)
     source_name = Path(source_path).name
-    fallback_id = fallback_id_override or Path(source_path).stem
+    fallback_id = fallback_id_override or fallback_session_id(source_path, source_path)
     if provider is Provider.HERMES and looks_like_logical_source_bytes(payload):
         with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
             if not (
@@ -3203,7 +3227,7 @@ def _parse_stream_raw(
         raise MissingProfileIdentityError("retained Hermes input has no captured profile identity receipt")
 
     source_name = Path(source_path).name
-    fallback_id = fallback_id_override or Path(source_path).stem
+    fallback_id = fallback_id_override or fallback_session_id(source_path, source_path)
     stream = _retained_jsonl_stream(payload, source_name, source_path)
     return parse_stream_payload(
         provider,

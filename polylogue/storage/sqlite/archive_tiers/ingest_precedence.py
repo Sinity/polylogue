@@ -44,14 +44,11 @@ def should_skip_stale_replace(
     """Return whether an incoming full-replace write is strictly staler than what is stored.
 
     This is the ONE freshness-tie policy for whether an incoming session
-    write should be skipped as stale, consolidated from three previously
-    independent copies (polylogue-t83e): ``write_parsed_session_to_archive``
-    in ``archive_tiers/write.py``, the daemon batch-write path in
-    ``pipeline/services/ingest_batch/_core.py``, and
+    write should be skipped as stale (polylogue-t83e): its callers are
+    ``write_parsed_session_to_archive`` in ``archive_tiers/write.py`` and
     ``revision_governance.py``'s raw-parsed write path. Each call site keeps
-    its own surrounding guard conditions (``force_write``/``force_replace``,
-    browser-capture precedence, append-only, revision-authority membership,
-    ``source_index`` gating) — those decide *whether this check applies at
+    its own surrounding guard conditions (``force_replace``, browser-capture
+    precedence, revision-authority membership, ``source_index`` gating) — those decide *whether this check applies at
     all*, not the comparison itself.
 
     Deliberately a strict ``<``, not ``<=``: a genuine tie (same
@@ -189,16 +186,9 @@ def revision_authority_refuses_write(
 ) -> bool:
     """The ONE revision-authority refusal gate for a retained-raw session write.
 
-    Consolidated from two independently hand-maintained copies of the exact
-    same two checks (polylogue-c737: PR #3397 fixed
-    ``_write_parsed_precedence_result``
-    (``revision_governance.py``), then PR #3398 had to separately re-apply
-    the identical fix to the daemon batch-ingest path's ``_write_session``
-    (``pipeline/services/ingest_batch/_core.py``) -- "the signature of
-    duplicated semantics rather than a missing check". polylogue-aggz
-    Invariant 2 makes this the only implementation; both write paths call it
-    before falling through to their own freshness/browser-capture precedence
-    logic, and neither may reimplement it locally.
+    polylogue-aggz Invariant 2 makes this the only implementation: every
+    session write path calls it before its freshness/browser-capture
+    precedence logic, and none may reimplement it locally.
 
     Two independent refusals, checked in order:
 

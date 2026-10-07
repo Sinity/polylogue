@@ -23,7 +23,6 @@ from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.pipeline.payload_types import ParseBatchObservation
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.acquisition_records import ScanResult
-from polylogue.pipeline.services.ingest_worker import _fallback_id
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.pipeline.services.planning import PlanningService
 from polylogue.pipeline.services.planning_backlog import collect_parse_backlog
@@ -43,24 +42,6 @@ pytestmark = pytest.mark.uses_real_clock("Same as test_async_index: acquired_at 
 WorkspacePaths = dict[str, Path]
 SessionPayload = dict[str, JSONValue]
 VisitSourcesCallback = Callable[[RawSessionRecord], Awaitable[None]]
-
-
-def test_fallback_id_preserves_drive_cache_hash_suffix() -> None:
-    fallback_id = _fallback_id(
-        "/home/sinity/.local/share/polylogue/drive-cache/gemini/Branch_of_Br-144383b77f2f293fb94ec8647f3632e4.json",
-        "raw-id",
-    )
-
-    assert fallback_id == "Branch_of_Br-144383b77f2f293fb94ec8647f3632e4"
-
-
-def test_fallback_id_preserves_subagent_stems() -> None:
-    fallback_id = _fallback_id(
-        "/home/sinity/.claude/projects/project/session/subagents/agent-aba750c3c29cb63e0.jsonl",
-        "raw-id",
-    )
-
-    assert fallback_id == "agent-aba750c3c29cb63e0"
 
 
 def _parse_batch_observation(
@@ -340,9 +321,7 @@ class TestParsingServiceParseSources:
         mock_collect_validate.assert_awaited_once()
         mock_collect_parse.assert_awaited_once()
         # The parse step receives exactly the raw ids acquisition returned.
-        mock_parse.assert_awaited_once_with(
-            raw_ids=["raw-1", "raw-2"], progress_callback=None, force_write=False, max_pass_seconds=None
-        )
+        mock_parse.assert_awaited_once_with(raw_ids=["raw-1", "raw-2"], progress_callback=None, max_pass_seconds=None)
 
     async def test_ingest_sources_surfaces_batch_diagnostics_only(self) -> None:
         mock_repository = MagicMock()
@@ -434,7 +413,6 @@ class TestParsingServiceParseSources:
         mock_parse.assert_awaited_once_with(
             raw_ids=["raw-1", "raw-2", "raw-3", "raw-4"],
             progress_callback=None,
-            force_write=False,
             max_pass_seconds=None,
         )
 
@@ -506,9 +484,7 @@ class TestParsingServiceParseSources:
             drive_config=mock_config.drive_config,
         )
         # In unified ingest, validation is inline — callback passed to parse_from_raw
-        mock_parse.assert_awaited_once_with(
-            raw_ids=["raw-1"], progress_callback=callback, force_write=False, max_pass_seconds=None
-        )
+        mock_parse.assert_awaited_once_with(raw_ids=["raw-1"], progress_callback=callback, max_pass_seconds=None)
 
     async def test_backend_not_initialized_raises(self) -> None:
         mock_repository = MagicMock()
@@ -656,7 +632,28 @@ class TestParsingServiceStreaming:
 
         with patch(
             "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
-            new=AsyncMock(side_effect=[None, None]),
+            new=AsyncMock(
+                side_effect=[
+                    {
+                        "records": 1,
+                        "sessions": 0,
+                        "messages": 0,
+                        "changed_sessions": 0,
+                        "failed_raw_count": 0,
+                        "converged": True,
+                        "elapsed_ms": 0.0,
+                    },
+                    {
+                        "records": 2,
+                        "sessions": 0,
+                        "messages": 0,
+                        "changed_sessions": 0,
+                        "failed_raw_count": 0,
+                        "converged": True,
+                        "elapsed_ms": 0.0,
+                    },
+                ]
+            ),
         ) as mock_process:
             await service.parse_from_raw(
                 raw_ids=["raw-1", "raw-2", "raw-3"],
@@ -664,10 +661,8 @@ class TestParsingServiceStreaming:
             )
 
         repository.get_raw_blob_sizes.assert_awaited_once_with(["raw-1", "raw-2", "raw-3"])
-        assert mock_process.await_args_list[0].args[2] == ["raw-1"]
-        assert mock_process.await_args_list[1].args[2] == ["raw-2", "raw-3"]
-        assert mock_process.await_args_list[0].kwargs["suspend_fts_triggers"] is True
-        assert mock_process.await_args_list[1].kwargs["suspend_fts_triggers"] is True
+        assert mock_process.await_args_list[0].args[1] == ["raw-1"]
+        assert mock_process.await_args_list[1].args[1] == ["raw-2", "raw-3"]
         assert "Ingesting batch 1 (0/3 raw, batch 1 raw, 96.0 MiB)" in progress_events
         assert "Ingesting batch 2 (1/3 raw, batch 2 raw, 104.0 MiB)" in progress_events
 
@@ -691,7 +686,28 @@ class TestParsingServiceStreaming:
 
         with patch(
             "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
-            new=AsyncMock(side_effect=[None, None]),
+            new=AsyncMock(
+                side_effect=[
+                    {
+                        "records": 1,
+                        "sessions": 0,
+                        "messages": 0,
+                        "changed_sessions": 0,
+                        "failed_raw_count": 0,
+                        "converged": True,
+                        "elapsed_ms": 0.0,
+                    },
+                    {
+                        "records": 2,
+                        "sessions": 0,
+                        "messages": 0,
+                        "changed_sessions": 0,
+                        "failed_raw_count": 0,
+                        "converged": True,
+                        "elapsed_ms": 0.0,
+                    },
+                ]
+            ),
         ) as mock_process:
             await service.parse_from_raw(
                 provider="chatgpt",
@@ -699,8 +715,8 @@ class TestParsingServiceStreaming:
             )
 
         repository.iter_raw_headers.assert_called_once_with(source_name="chatgpt")
-        assert mock_process.await_args_list[0].args[2] == ["raw-1"]
-        assert mock_process.await_args_list[1].args[2] == ["raw-2", "raw-3"]
+        assert mock_process.await_args_list[0].args[1] == ["raw-1"]
+        assert mock_process.await_args_list[1].args[1] == ["raw-2", "raw-3"]
         assert "Ingesting batch 1 (0/3 raw, batch 1 raw, 96.0 MiB)" in progress_events
         assert "Ingesting batch 2 (1/3 raw, batch 2 raw, 104.0 MiB)" in progress_events
 
@@ -720,8 +736,17 @@ class TestParsingServiceStreaming:
         config = Config(archive_root=tmp_path / "archive", render_root=tmp_path / "render", sources=[])
         service = ParsingService(repository=repository, archive_root=config.archive_root, config=config)
 
-        async def _process(*_args: object, **_kwargs: object) -> None:
+        async def _process(*_args: object, **_kwargs: object) -> dict[str, object]:
             events.append("batch-write")
+            return {
+                "records": 1,
+                "sessions": 0,
+                "messages": 0,
+                "changed_sessions": 0,
+                "failed_raw_count": 0,
+                "converged": True,
+                "elapsed_ms": 0.0,
+            }
 
         with patch(
             "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
@@ -776,7 +801,20 @@ class TestParsingServiceStreaming:
 
         with patch(
             "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
-            new=AsyncMock(side_effect=[None, None, None]),
+            new=AsyncMock(
+                side_effect=[
+                    {
+                        "records": 1,
+                        "sessions": 0,
+                        "messages": 0,
+                        "changed_sessions": 0,
+                        "failed_raw_count": 0,
+                        "converged": True,
+                        "elapsed_ms": 0.0,
+                    }
+                    for _ in range(3)
+                ]
+            ),
         ) as mock_process:
             bounded = await service.parse_from_raw(
                 raw_ids=["raw-1", "raw-2", "raw-3"],
@@ -789,7 +827,20 @@ class TestParsingServiceStreaming:
         monkeypatch.undo()
         with patch(
             "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
-            new=AsyncMock(side_effect=[None, None]),
+            new=AsyncMock(
+                side_effect=[
+                    {
+                        "records": 1,
+                        "sessions": 0,
+                        "messages": 0,
+                        "changed_sessions": 0,
+                        "failed_raw_count": 0,
+                        "converged": True,
+                        "elapsed_ms": 0.0,
+                    }
+                    for _ in range(2)
+                ]
+            ),
         ) as mock_process_remainder:
             remainder = await service.parse_from_raw(raw_ids=["raw-2", "raw-3"])
 

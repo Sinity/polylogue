@@ -86,7 +86,6 @@ from polylogue.pipeline.ingest_outcomes import (
     non_session_artifact_disposition,
     success_disposition,
 )
-from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.acquisition_boundary import (
     admit_bound_bytes,
     capture_bound_path,
@@ -110,7 +109,6 @@ from polylogue.sources.live.batch_observability import (
 from polylogue.sources.live.batch_support import (
     _DEFER_APPEND,
     _MAX_APPEND_PLAN_PAYLOAD_BYTES,
-    _STREAMING_FULL_INGEST_BYTES,
     JsonlBoundary,
     JsonlFrontier,
     LiveRetainedRunner,
@@ -1939,11 +1937,10 @@ class LiveBatchProcessor:
                 evidence_ref="batch:partial_admission" if metrics.partial_admission_paths else None
             )
         else:
-            # Per-record failures (validation/corrupt-input/unsupported-shape)
-            # are already classified where they occur -- see
-            # ``ingest_worker.py``'s ``IngestRecordResult.outcome_code`` --
-            # but aggregating them up to this attempt-level row is deferred
-            # follow-up work (polylogue-cnu3 PR body). Reporting SUCCESS here
+            # Per-record failures are settled by the retained owner as typed
+            # refusals or retryable preparation failures, but aggregating them
+            # up to this attempt-level row is deferred follow-up work
+            # (polylogue-cnu3 PR body). Reporting SUCCESS here
             # would be dishonest given ``retry_paths`` is non-empty, so this
             # falls back to the explicit "not yet classified" bucket rather
             # than guessing.
@@ -3808,7 +3805,6 @@ class LiveBatchProcessor:
                 )
                 raw_source_revisions.setdefault(path, raw_id)
                 raw_by_record[_full_record_key(raw_records[-1])] = path
-        summary: _IngestBatchSummary | None = None
         archive_write: _ArchiveFullWriteResult | None = None
         raw_deferred_paths: list[Path] = []
         skipped_paths: set[Path] = set()
@@ -3896,13 +3892,6 @@ class LiveBatchProcessor:
                     },
                     force=True,
                 )
-            summary = _IngestBatchSummary(
-                worker_count=1,
-                total_convos=archive_write.session_count,
-                total_msgs=archive_write.message_count,
-                changed_session_ids=archive_write.session_ids,
-                stage_timings_s=archive_write.stage_timings_s,
-            )
             time_budget_exceeded = time_budget_exceeded or archive_write.time_budget_exceeded
         failed_set = set(failed)
         retained_records = (
@@ -3959,7 +3948,7 @@ class LiveBatchProcessor:
             succeeded=succeeded_paths,
             failed=failed,
             preparation_deferred=preparation_deferred_paths,
-            raw_deferred=raw_deferred_paths if raw_records and summary is not None else [],
+            raw_deferred=raw_deferred_paths if raw_records and archive_write is not None else [],
             source_payload_read_bytes=source_payload_read_bytes,
             excluded=excluded_paths,
             detection_fallbacks={
@@ -3982,7 +3971,7 @@ class LiveBatchProcessor:
             },
             captured_file_observations=captured_file_observations,
             captured_observation_times_ns=captured_observation_times_ns,
-            summary=summary,
+            archive_write=archive_write,
             excised_skips=archive_write.excised_skips if archive_write is not None else 0,
             excised_paths=(
                 *(archive_write.excised_paths if archive_write is not None else ()),
@@ -5996,7 +5985,6 @@ __all__ = [
     "_FULL_PARSE_PROGRESS_MAX_BYTES",
     "_FULL_PARSE_PROGRESS_MAX_FILES",
     "_MAX_APPEND_PLAN_PAYLOAD_BYTES",
-    "_STREAMING_FULL_INGEST_BYTES",
     "_full_parse_progress_groups",
     "append_capability_receipt",
     "fingerprint_file",

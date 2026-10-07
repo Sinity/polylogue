@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterable, MutableSequence
 from contextlib import closing
 from io import BytesIO
 from pathlib import Path
@@ -14,6 +15,9 @@ from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisi
 from polylogue.core.enums import Provider
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.sources import revision_backfill
+from polylogue.sources.dispatch import PayloadRecord
+from polylogue.sources.fallback_identity import fallback_session_id
+from polylogue.sources.parsers.base import ParsedMessage
 from polylogue.sources.prepared_jsonl import DecodeFailure, PreparedDecodeError, terminal_decode_evidence
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
@@ -29,6 +33,29 @@ from tests.infra.retained_parser_payloads import (
     _relationship_index_jsonl_bytes,
     _single_session_state_db_bytes,
 )
+
+
+@pytest.mark.parametrize(
+    ("source_path", "expected"),
+    [
+        (
+            "/archive/drive-cache/gemini/Branch_of_Br-144383b77f2f293fb94ec8647f3632e4.json",
+            "Branch_of_Br-144383b77f2f293fb94ec8647f3632e4",
+        ),
+        (
+            "/project/session/subagents/agent-aba750c3c29cb63e0.jsonl",
+            "agent-aba750c3c29cb63e0",
+        ),
+        ("/exports/conversation-0123456789abcdef.json", "conversation"),
+        ("/exports/archive.zip:conversation-0123456789abcdef.jsonl", "conversation"),
+    ],
+)
+def test_retained_fallback_identity_preserves_provider_path_contract(source_path: str, expected: str) -> None:
+    assert fallback_session_id(source_path, "raw-id") == expected
+
+
+def test_retained_fallback_identity_uses_raw_id_without_source_path() -> None:
+    assert fallback_session_id(None, "raw-id") == "raw-id"
 
 
 def test_parse_one_replays_single_session_state_db_bytes_via_temp_spill(tmp_path: Path) -> None:
@@ -53,6 +80,86 @@ def test_parse_one_replays_single_session_state_db_bytes_via_temp_spill(tmp_path
         assert len(sessions) == 1
         assert sessions[0].messages
         assert sessions[0].messages[0].text == "hi"
+
+
+@pytest.mark.parametrize("suffix", ["json", "txt"])
+def test_retained_generic_message_object_alias_uses_streaming_message_sink(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, suffix: str
+) -> None:
+    """A generic single-object Drive export streams even under a neutral filename."""
+    from polylogue.sources import prepared_jsonl
+
+    bootstrap_archive_root(tmp_path)
+    messages = [
+        {"role": "user" if index % 2 == 0 else "assistant", "content": f"neutral message {index}"}
+        for index in range(400)
+    ]
+    payload = json.dumps({"id": "neutral-drive-object", "title": "Neutral export", "messages": messages}).encode()
+    blob_hash, _size = BlobStore(tmp_path / "blob").write_from_bytes(payload)
+
+    def refuse_collecting_replay(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("single-object JSON alias used collecting retained replay")
+
+    monkeypatch.setattr(revision_backfill, "parse_retained_raw_sessions", refuse_collecting_replay)
+    streamed_records = 0
+    original_parse = prepared_jsonl.parse_generic_messages_stream
+
+    def observe_stream(
+        provider: Provider,
+        envelope: PayloadRecord,
+        records: Iterable[object],
+        fallback_id: str,
+        *,
+        message_sink: MutableSequence[ParsedMessage],
+    ):
+        nonlocal streamed_records
+
+        def count_records():
+            nonlocal streamed_records
+            for record in records:
+                streamed_records += 1
+                yield record
+
+        return original_parse(provider, envelope, count_records(), fallback_id, message_sink=message_sink)
+
+    monkeypatch.setattr(prepared_jsonl, "parse_generic_messages_stream", observe_stream)
+    prepare = (
+        revision_backfill.prepare_retained_jsonl_artifact
+        if suffix == "json"
+        else revision_backfill.prepare_retained_non_json_artifact
+    )
+    with retained_parser_fixture(
+        root=tmp_path,
+        provider=Provider.DRIVE,
+        blob_hash=blob_hash,
+        source_path=f"neutral-drive.{suffix}",
+        directory=tmp_path / f"prepared-{suffix}",
+        prepare=prepare,
+    ) as (artifact, _reader):
+        assert artifact.error is None
+        (session,) = artifact.iter_sessions()
+        assert session.provider_session_id == "neutral-drive-object"
+        assert [message.text for message in session.messages] == [item["content"] for item in messages]
+        assert session.content_hash is not None
+    assert streamed_records == len(messages)
+
+
+def test_retained_generic_message_object_alias_rejects_invalid_suffix_before_publish(tmp_path: Path) -> None:
+    """The shape probe and streamed preparation both require complete JSON EOF."""
+    bootstrap_archive_root(tmp_path)
+    payload = b'{"id":"neutral-drive-object","messages":[{"role":"user","content":"kept?"}]} trailing'
+    blob_hash, _size = BlobStore(tmp_path / "blob").write_from_bytes(payload)
+    with retained_parser_fixture(
+        root=tmp_path,
+        provider=Provider.DRIVE,
+        blob_hash=blob_hash,
+        source_path="neutral-drive.txt",
+        directory=tmp_path / "prepared",
+        prepare=revision_backfill.prepare_retained_non_json_artifact,
+    ) as (artifact, _reader):
+        assert artifact.error is not None
+        assert artifact.sessions_path is None
+        assert artifact.shard_path is None
 
 
 def test_unknown_retained_stream_replay_scans_past_oversized_first_record_without_eager_payload(

@@ -6,10 +6,8 @@ Sources acquire bytes and identify their material source. Detection chooses a
 provider parser by input shape; the pipeline normalizes provider records into
 parsed sessions before the storage writer lowers them
 (`polylogue/sources/dispatch.py:1-80`; `CompiledDetectorRegistry.detect` in `polylogue/sources/detection.py:88-105`;
-`ingest_record` in
-`polylogue/pipeline/services/ingest_worker.py:1137-1226`; `_run_parse_plan`
-in the same file at `1037-1089`;
-`_materialize_parsed_sessions` in the same file at `896-959`).
+retained preparation in `polylogue/sources/revision_backfill.py`, driven by
+`RawObservationDerivation` in `polylogue/operations/raw_observation_derivation.py`).
 
 Document arrays use the same tightness-ordered document predicates for every
 member, including streamed detection. An unrelated fragment cannot claim a
@@ -230,22 +228,11 @@ provider (`docs/provider-origin-identity.md:15-30`;
   parser evidence before short admitted publication; the matching writer
   consumes attachment reservations with the same prepared receipt. Physical
   cleanup stays with that preparation creator through publication and failure.
-- Batch ingest keeps source membership and precedence checks read-only:
-  `_core.py` opens one read-only `source.db` handle per batch, and
-  `revision_authority_refuses_write` reads `raw_session_memberships` through
-  it, while index publication and later blob-publication receipt consumption
-  each open their own archive-root-bound write connection
-  (`_process_ingest_batch_sync` in
-  `polylogue/pipeline/services/ingest_batch/_core.py:3528-3543`;
-  `revision_authority_refuses_write` in
-  `polylogue/storage/sqlite/archive_tiers/ingest_precedence.py:182-277`;
-  `_open_sync_connection` in
-  `polylogue/pipeline/services/ingest_batch/_core.py:215-245`). After index
-  commit, `_process_ingest_batch_sync` opens the source-tier transaction with
-  `archive_root=archive_root` and calls `consume_blob_publication_receipt`
-  for each pending attachment receipt
-  (`polylogue/pipeline/services/ingest_batch/_core.py:3656-3673`;
-  `polylogue/storage/blob_publication.py:553-564`).
+- Raw preparation and publication are owned by `RawObservationConvergenceOwner`;
+  it validates retained membership and precedence before publication and
+  consumes attachment reservations using the prepared receipt. The parsed
+  session writer remains the shared lowering choke point for ordinary ingest,
+  replay and reindex.
 
 ## Gotchas
 

@@ -2206,8 +2206,7 @@ class _ArchiveNeighborRuntime:
 def _actions_for_session(session: Session) -> tuple[Action, ...]:
     """Derive ordered actions from an archive session's tool blocks.
 
-    Mirrors the ingest-time derivation (``pipeline/services/ingest_worker``):
-    each message's content blocks are parsed into tool calls, then promoted
+    Each message's content blocks are parsed into tool calls, then promoted
     to ``Action`` records. No storage round-trip — the domain
     session already carries the content blocks the actions are built from.
     """

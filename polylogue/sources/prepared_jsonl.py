@@ -70,13 +70,13 @@ from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
     BundleCandidateDrift,
+    admit_parsed_sessions_for_publication,
     bundle_member_sessions,
     is_drive_chunk_sequence,
     is_jsonl_source_path,
     iter_parsed_payload,
     iter_parsed_stream,
     parse_generic_messages_stream,
-    require_positive_conversational_evidence,
 )
 from polylogue.sources.origin_specs import path_declaration_refuses_session
 from polylogue.sources.parsers import (
@@ -2465,7 +2465,7 @@ def prepare_jsonl_blob(
     original fact classification.
 
     Every sealed session is admitted: the positive-conversational-evidence
-    rule (``require_positive_conversational_evidence``) runs here, before any
+    rule (``admit_parsed_sessions_for_publication``) runs here, before any
     ``prepare_session``/``prepare_sessions`` callback, on every provider
     branch. A caller consuming the artifact does not apply it again.
 
@@ -2743,12 +2743,7 @@ def prepare_jsonl_blob(
                 if scanned is not None:
                     stream_prefix = record_container
                     bundle_count = scanned
-        if (
-            input_admitted
-            and not is_stream
-            and provider in {Provider.DRIVE, Provider.GEMINI, Provider.UNKNOWN}
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if input_admitted and not is_stream and provider in {Provider.DRIVE, Provider.GEMINI, Provider.UNKNOWN}:
             with source.open("rb") as handle:
                 candidate = generic_message_object_envelope(handle)
             asserted_id = candidate.get("id") if candidate is not None else None
@@ -2904,7 +2899,7 @@ def prepare_jsonl_blob(
                             gemini_session.messages[position] = message.model_copy(update={"blocks": updated_blocks})
                     index.close()
             store.conn.execute("DROP TABLE gemini_raw_message")
-            if gemini_session is not None and require_positive_conversational_evidence(
+            if gemini_session is not None and admit_parsed_sessions_for_publication(
                 [gemini_session], provider=provider, source_path=source_path
             ):
                 if prepare_session is not None and prepare_sessions is None:
@@ -2945,7 +2940,7 @@ def prepare_jsonl_blob(
                 if chatgpt_admitted
                 else None
             )
-            if session is not None and not require_positive_conversational_evidence(
+            if session is not None and not admit_parsed_sessions_for_publication(
                 [session], provider=provider, source_path=source_path
             ):
                 session = None
@@ -3036,7 +3031,7 @@ def prepare_jsonl_blob(
                         profile_identity=profile_identity,
                     )
             session_count = 0
-            if session is not None and require_positive_conversational_evidence(
+            if session is not None and admit_parsed_sessions_for_publication(
                 [session], provider=provider, source_path=source_path
             ):
                 if prepare_session is not None and prepare_sessions is None:
@@ -3075,7 +3070,7 @@ def prepare_jsonl_blob(
                         message_sink=store.new_sink(),
                     )
             session_count = 0
-            if session is not None and require_positive_conversational_evidence(
+            if session is not None and admit_parsed_sessions_for_publication(
                 [session], provider=provider, source_path=source_path
             ):
                 if prepare_session is not None and prepare_sessions is None:
@@ -3115,7 +3110,7 @@ def prepare_jsonl_blob(
                         attachment_sink=store.new_attachment_sink(),
                     )
             session_count = 0
-            if session is not None and require_positive_conversational_evidence(
+            if session is not None and admit_parsed_sessions_for_publication(
                 [session], provider=provider, source_path=source_path
             ):
                 if prepare_session is not None and prepare_sessions is None:
@@ -3151,7 +3146,7 @@ def prepare_jsonl_blob(
                 else None
             )
             session_count = 0
-            if session is not None and require_positive_conversational_evidence(
+            if session is not None and admit_parsed_sessions_for_publication(
                 [session], provider=provider, source_path=source_path
             ):
                 if prepare_session is not None and prepare_sessions is None:
@@ -3230,7 +3225,7 @@ def prepare_jsonl_blob(
                     record_stream=drive_record_stream,
                 )
             session_count = 0
-            if session is not None and require_positive_conversational_evidence(
+            if session is not None and admit_parsed_sessions_for_publication(
                 [session], provider=provider, source_path=source_path
             ):
                 if prepare_session is not None and prepare_sessions is None:
@@ -3338,9 +3333,7 @@ def prepare_jsonl_blob(
                     for _ in steps:  # The parser still owes any unconsumed original steps a scan.
                         pass
                     [session] = admit_parsed_sessions("hermes", {**atif_envelope, "steps": unknown_steps}, [session])
-                    if not require_positive_conversational_evidence(
-                        [session], provider=provider, source_path=source_path
-                    ):
+                    if not admit_parsed_sessions_for_publication([session], provider=provider, source_path=source_path):
                         continue
                     if prepare_session is not None and prepare_sessions is None:
                         session = prepare_session(session)
@@ -3399,7 +3392,7 @@ def prepare_jsonl_blob(
                 else ()
             ):
                 session = admit_parsed_sessions(provider.value.replace("-", "_"), otel_admission_payload, [session])[0]
-                if not require_positive_conversational_evidence([session], provider=provider, source_path=source_path):
+                if not admit_parsed_sessions_for_publication([session], provider=provider, source_path=source_path):
                     continue
                 if prepare_session is not None and prepare_sessions is None:
                     session = prepare_session(session)
@@ -3491,7 +3484,7 @@ def prepare_jsonl_blob(
                                 "unit_accounting": admitted.unit_accounting,
                             }
                         )
-                        if not require_positive_conversational_evidence(
+                        if not admit_parsed_sessions_for_publication(
                             [session], provider=provider, source_path=source_path
                         ):
                             continue
@@ -3574,7 +3567,7 @@ def prepare_jsonl_blob(
                         )
                         del record
                     for session in member_sessions:
-                        if not require_positive_conversational_evidence(
+                        if not admit_parsed_sessions_for_publication(
                             [session], provider=provider, source_path=source_path
                         ):
                             continue
@@ -3659,7 +3652,7 @@ def prepare_jsonl_blob(
                 with closing(sessions) as selected_sessions:
                     for session in selected_sessions:
                         check_compute_cancelled()
-                        if not require_positive_conversational_evidence(
+                        if not admit_parsed_sessions_for_publication(
                             [session], provider=provider, source_path=source_path
                         ):
                             continue

@@ -50,16 +50,12 @@ class ParsingService:
         archive_root: Path,
         config: Config,
         *,
-        ingest_workers: int | None = None,
         execution: IngestExecution | None = None,
         retained_runner: IngestRetainedRunner | None = None,
     ) -> None:
-        if ingest_workers is not None and ingest_workers <= 0:
-            raise ValueError("ingest_workers must be a positive integer")
         self.repository = repository
         self.archive_root = archive_root
         self.config = config
-        self._ingest_workers = ingest_workers
         self.execution = execution
         self.retained_runner = retained_runner
 
@@ -94,7 +90,6 @@ class ParsingService:
         progress_callback: ProgressCallback | None = None,
         parse_records: bool = True,
         skip_acquire: bool = False,
-        force_write: bool = False,
         max_pass_seconds: float | None = None,
     ) -> IngestResult:
         return await ingest_sources(
@@ -105,7 +100,6 @@ class ParsingService:
             progress_callback=progress_callback,
             parse_records=parse_records,
             skip_acquire=skip_acquire,
-            force_write=force_write,
             max_pass_seconds=max_pass_seconds,
         )
 
@@ -113,17 +107,12 @@ class ParsingService:
     def raw_batch_blob_limit_bytes(self) -> int:
         return self.DEFAULT_RAW_BATCH_BLOB_LIMIT_BYTES
 
-    @property
-    def ingest_workers(self) -> int | None:
-        return self._ingest_workers
-
     async def parse_from_raw(
         self,
         *,
         raw_ids: list[str] | None = None,
         provider: str | None = None,
         progress_callback: ProgressCallback | None = None,
-        force_write: bool = False,
         max_pass_seconds: float | None = None,
     ) -> ParseResult:
         return await parse_from_raw(
@@ -131,7 +120,6 @@ class ParsingService:
             raw_ids=raw_ids,
             provider=provider,
             progress_callback=progress_callback,
-            force_write=force_write,
             max_pass_seconds=max_pass_seconds,
         )
 

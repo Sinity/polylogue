@@ -280,7 +280,7 @@ class ChatGPTAssemblySpec:
         requiring the sidecar filenames to appear verbatim in
         ``source_paths``: a full source-directory walk already includes them
         as siblings, but a daemon single-file catch-up re-parse
-        (``ingest_batch/_core.py``'s ``discover_sidecars([Path(source_path)])``)
+        (which discovers sidecars for one source path)
         passes only the one shard being reprocessed. Climbing to that shard's
         parent directory and globbing for the two known sidecar filenames
         there covers both call shapes with the same code, mirroring how
@@ -553,7 +553,7 @@ def _resolve_asset_attachment(
         # sidecar discovery (`_read_chatgpt_zip_sidecars` /
         # `_acquire_asset_blobs_from_directory`).
         # Recording the (hash, size) pair here -- rather than re-reading the
-        # source bytes -- lets `ingest_batch/_core.py` mark the attachment
+        # source bytes -- lets the session writer mark the attachment
         # acquired without re-hashing already-written bytes.
         update["precomputed_blob"] = blob
         if attachment.size_bytes is None:

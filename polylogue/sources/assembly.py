@@ -56,7 +56,7 @@ class _ChatGPTSidecarData(TypedDict, total=False):
     # export member or sibling file whose bytes were streamed into the blob
     # store during sidecar discovery. Attachment resolution joins against this
     # so previously-acquired asset bytes are marked "acquired" without
-    # re-hashing (see ``ingest_batch/_core.py``'s ``preacquired_attachment_blobs``).
+    # re-hashing (the session writer's ``preacquired_attachment_blobs``).
     chatgpt_asset_blobs: Mapping[str, tuple[str, int]]
 
 

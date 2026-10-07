@@ -141,13 +141,6 @@
     "authority": "scratch"
   },
   {
-    "file": "polylogue/pipeline/services/ingest_batch/_core.py",
-    "tiers": [
-      "index",
-      "source"
-    ]
-  },
-  {
     "file": "polylogue/schemas/generation/observation_journal.py",
     "tiers": []
   },

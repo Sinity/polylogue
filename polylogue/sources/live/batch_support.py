@@ -45,9 +45,6 @@ from polylogue.sources.sqlite_snapshot import is_sqlite_path
 
 _FULL_PARSE_PROGRESS_MAX_BYTES = 64 * 1024 * 1024
 _FULL_PARSE_PROGRESS_MAX_FILES = 64
-# Retained for callers that synthesize former-threshold fixtures. Production
-# JSON/JSONL admission and preparation no longer consult this value.
-_STREAMING_FULL_INGEST_BYTES = 8 * 1024 * 1024
 _MAX_APPEND_PLAN_PAYLOAD_BYTES = 64 * 1024 * 1024
 _MAX_APPEND_PLAN_GROUP_PAYLOAD_BYTES = 64 * 1024 * 1024
 _MAX_APPEND_PLAN_GROUP_FILES = 64
@@ -305,6 +302,22 @@ class _DeferredAppend:
 _DEFER_APPEND = _DeferredAppend()
 
 
+class _ArchiveWriteCounts(Protocol):
+    """What one full-ingest archive write reports to its path result."""
+
+    @property
+    def session_ids(self) -> Sequence[str]: ...
+
+    @property
+    def session_count(self) -> int: ...
+
+    @property
+    def message_count(self) -> int: ...
+
+    @property
+    def stage_timings_s(self) -> dict[str, float]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class _FullIngestResult:
     succeeded: list[Path]
@@ -354,8 +367,8 @@ class _FullIngestResult:
     excised_paths: tuple[Path, ...] = ()
     stage_timings_s: dict[str, float] = field(default_factory=dict)
     # Real session ids materialized by this full-ingest group (polylogue-20d.13),
-    # threaded from ``_IngestBatchSummary.changed_session_ids`` so callers can
-    # emit identity-scoped SSE events instead of an unscoped aggregate.
+    # threaded from the archive write's ``session_ids`` so callers can emit
+    # identity-scoped SSE events instead of an unscoped aggregate.
     changed_session_ids: tuple[str, ...] = ()
     # polylogue-11cg9: True when a declared ``max_pass_seconds`` budget cut
     # this group short of its full input. Paths left out of both
@@ -390,7 +403,7 @@ def _full_ingest_result_from_summary(
     captured_profile_keys: dict[Path, str] | None = None,
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] | None = None,
     captured_observation_times_ns: dict[Path, int] | None = None,
-    summary: object | None,
+    archive_write: _ArchiveWriteCounts | None,
     excised_skips: int = 0,
     excised_paths: tuple[Path, ...] = (),
     time_budget_exceeded: bool = False,
@@ -416,14 +429,14 @@ def _full_ingest_result_from_summary(
         captured_profile_keys=captured_profile_keys or {},
         captured_file_observations=captured_file_observations or {},
         captured_observation_times_ns=captured_observation_times_ns or {},
-        worker_count=int(getattr(summary, "worker_count", 0)) if summary is not None else 0,
-        ingested_session_count=int(getattr(summary, "total_convos", 0)) if summary is not None else 0,
-        ingested_message_count=int(getattr(summary, "total_msgs", 0)) if summary is not None else 0,
-        changed_session_count=len(getattr(summary, "changed_session_ids", ())) if summary is not None else 0,
+        worker_count=0 if archive_write is None else 1,
+        ingested_session_count=0 if archive_write is None else archive_write.session_count,
+        ingested_message_count=0 if archive_write is None else archive_write.message_count,
+        changed_session_count=0 if archive_write is None else len(archive_write.session_ids),
         excised_skips=excised_skips,
         excised_paths=excised_paths,
-        changed_session_ids=tuple(getattr(summary, "changed_session_ids", ()) or ()) if summary is not None else (),
-        stage_timings_s=dict(getattr(summary, "stage_timings_s", {})) if summary is not None else {},
+        changed_session_ids=() if archive_write is None else tuple(archive_write.session_ids),
+        stage_timings_s={} if archive_write is None else dict(archive_write.stage_timings_s),
         time_budget_exceeded=time_budget_exceeded,
     )
 

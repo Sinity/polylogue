@@ -135,20 +135,6 @@ sites:
     scope: "read_only_module"
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
-    function: "_ensure_ingest_index_incarnation"
-    subject: "ingest_index_incarnation"
-    kind: "state_selected_subject"
-    scope: "state_predicate"
-    classification: producer_scoped_transaction
-    reason: "the SELECT reads only the singleton physical-index identity row, whose CHECK constraint permits exactly one row. It is not a content subject or archive sweep; the ingest publisher compares the recorded device/inode with the connection's actual index file before binding new witnesses to that file instance"
-  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
-    function: "_ensure_ingest_index_incarnation"
-    subject: "ingest_index_incarnation"
-    kind: "unbound_rewrite"
-    scope: "state_predicate"
-    classification: producer_scoped_transaction
-    reason: "the singleton incarnation row is inserted on first use or replaced only when the currently open index file's device/inode differs from the recorded physical instance. This is producer-owned witness scoping metadata; it does not correct session content or select archive rows for a sweep"
   - file: "polylogue/sources/assembly_chatgpt.py"
     function: "_resolve_attachment_renditions"
     subject: "mime_type"
