@@ -14,7 +14,6 @@ from polylogue.storage.fts.derivation import FtsDerivationAdapter
 from polylogue.storage.sqlite.archive_tiers import write as archive_write
 from polylogue.storage.sqlite.connection_profile import open_connection
 from tests.infra.convergence_harness import (
-    assert_archive_verification_green,
     build_converged_archive,
     converge_convergence_archive,
     ingest_composed_sources,
@@ -67,23 +66,22 @@ def test_convergence_property_insight_repair_mutation_red_twin(tmp_path: Path, m
         converge_convergence_archive(archive)
 
 
-def test_convergence_property_raw_replay_mutation_red_twin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Archive verification catches bypassed durable raw acquisition."""
+def test_retained_writer_refuses_session_when_raw_acquisition_is_bypassed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retained writer refuses a session when its source producer returns no acquired Raw."""
     composed = rich_convergence_sources()
     mutated_root = tmp_path / "mutated"
     initialize_active_archive(mutated_root)
 
     monkeypatch.setattr(convergence_harness, "write_source_raw_session", lambda *_args, **_kwargs: "bypassed-raw")
-    mutated = ingest_composed_sources(
-        mutated_root,
-        composed,
-        session_indexes=tuple(range(len(composed.sessions))),
-        converge_after_each=False,
-    )
-    converge_convergence_archive(mutated)
-
-    with pytest.raises(AssertionError, match="archive verification registry is not green"):
-        assert_archive_verification_green(mutated.root)
+    with pytest.raises(KeyError, match="unknown raw revision bypassed-raw"):
+        ingest_composed_sources(
+            mutated_root,
+            composed,
+            session_indexes=tuple(range(len(composed.sessions))),
+            converge_after_each=False,
+        )
 
 
 def test_convergence_harness_binds_raw_receipt_before_equal_attachment(
