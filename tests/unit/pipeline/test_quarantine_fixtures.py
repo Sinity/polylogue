@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 
@@ -75,8 +76,7 @@ async def test_validation_api_persists_malformed_jsonl_quarantine_without_payloa
         (Provider.GEMINI, "json"),
     ],
 )
-@pytest.mark.asyncio
-async def test_zero_length_retained_raw_is_terminal_for_every_provider_and_validation_mode(
+def test_zero_length_retained_raw_is_terminal_for_every_provider_and_validation_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: Provider, suffix: str
 ) -> None:
     """Empty acquired bytes are terminal decoder evidence, regardless of schema mode or provider."""
@@ -95,13 +95,17 @@ async def test_zero_length_retained_raw_is_terminal_for_every_provider_and_valid
     ) as (_source_read, raw_id):
         pass
 
-    refused: list[str] = []
-    async with prepared_live_convergence_owner(root) as owner:
-        receipts = (
-            await owner.replay_retained_raw_ids(
-                (raw_id,), on_terminal_refusal=lambda _keys, refusal: refused.append(refusal.raw_id)
-            )
-        ).require_complete()
+    async def replay() -> tuple[object, list[str]]:
+        refused: list[str] = []
+        async with prepared_live_convergence_owner(root) as owner:
+            receipts = (
+                await owner.replay_retained_raw_ids(
+                    (raw_id,), on_terminal_refusal=lambda _keys, refusal: refused.append(refusal.raw_id)
+                )
+            ).require_complete()
+            return receipts, refused
+
+    receipts, refused = asyncio.run(replay())
 
     assert receipts == ()
     assert refused == [raw_id]
@@ -121,8 +125,7 @@ async def test_zero_length_retained_raw_is_terminal_for_every_provider_and_valid
 
 
 @pytest.mark.parametrize("mode", ["off", "advisory", "strict"])
-@pytest.mark.asyncio
-async def test_complete_malformed_jsonl_is_terminal_without_publishing_a_session_in_every_mode(
+def test_complete_malformed_jsonl_is_terminal_without_publishing_a_session_in_every_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     """Schema mode changes validation only; it never makes complete malformed JSONL publishable."""
@@ -147,13 +150,17 @@ async def test_complete_malformed_jsonl_is_terminal_without_publishing_a_session
     ) as (_source_read, raw_id):
         pass
 
-    refused: list[str] = []
-    async with prepared_live_convergence_owner(root) as owner:
-        receipts = (
-            await owner.replay_retained_raw_ids(
-                (raw_id,), on_terminal_refusal=lambda _keys, refusal: refused.append(refusal.raw_id)
-            )
-        ).require_complete()
+    async def replay() -> tuple[object, list[str]]:
+        refused: list[str] = []
+        async with prepared_live_convergence_owner(root) as owner:
+            receipts = (
+                await owner.replay_retained_raw_ids(
+                    (raw_id,), on_terminal_refusal=lambda _keys, refusal: refused.append(refusal.raw_id)
+                )
+            ).require_complete()
+            return receipts, refused
+
+    receipts, refused = asyncio.run(replay())
 
     assert receipts == ()
     assert refused == [raw_id]
