@@ -681,7 +681,7 @@ class SchemaValidator:
             should_detect_drift = self.strict if include_drift is None else include_drift
             sample = _sample_payload(normalized)
             drift_warnings = (
-                list(_iter_drift_paths(sample, self.schema, "", self.schema, conn))
+                [f"Unexpected field: {path}" for path in _iter_drift_paths(sample, self.schema, "", self.schema, conn)]
                 if should_detect_drift and sample is not None
                 else []
             )

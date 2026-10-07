@@ -49,7 +49,7 @@ def _write_jsonl(path: Path, rows: list[object]) -> None:
 def test_retained_strict_counts_late_failure_and_advisory_accepts(tmp_path: Path) -> None:
     path = tmp_path / "raw.jsonl"
     _write_jsonl(path, [{"type": "record", "kind": "first"}, {"type": "record", "kind": 17}])
-    registry = _registry(tmp_path, "string")
+    registry = _registry(tmp_path, {"type": "string"})
     args = {
         "provider": "claude-code",
         "path": path,
@@ -82,7 +82,11 @@ def test_retained_strict_counts_late_failure_and_advisory_accepts(tmp_path: Path
 def test_retained_historical_fallback_replays_every_jsonl_record(tmp_path: Path) -> None:
     path = tmp_path / "raw.jsonl"
     _write_jsonl(path, [{"type": "record", "kind": "text"}, {"type": "record", "kind": 17}])
-    registry = _registry(tmp_path, "string", {"anyOf": [{"type": "string"}, {"type": "integer"}]})
+    registry = _registry(
+        tmp_path,
+        {"type": "string"},
+        {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+    )
 
     verdict = validate_retained_document(
         "claude-code",
@@ -105,7 +109,7 @@ def test_retained_historical_fallback_replays_every_jsonl_record(tmp_path: Path)
 
 
 def test_retained_drift_reduction_is_order_independent(tmp_path: Path) -> None:
-    registry = _registry(tmp_path, "string")
+    registry = _registry(tmp_path, {"type": "string"})
     resolution = _resolution("v2", explicit_reason="exact_structure")
 
     def run(name: str, rows: list[object]):
@@ -137,7 +141,7 @@ def test_retained_drift_reduction_is_order_independent(tmp_path: Path) -> None:
 
 
 def test_retained_drift_classifies_default_and_known_unread(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    registry = _registry(tmp_path, "string")
+    registry = _registry(tmp_path, {"type": "string"})
     path = tmp_path / "record.json"
     path.write_text(json.dumps({"type": "record", "kind": "value"}), encoding="utf-8")
     monkeypatch.setattr("polylogue.schemas.retained_validation.unread_field_names", lambda _provider: {"kind"})
