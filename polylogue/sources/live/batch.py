@@ -3087,13 +3087,28 @@ class LiveBatchProcessor:
         def settle_terminal_refusal(_keys: tuple[str, ...], refusal: RetainedRawDecodeRefusalError) -> None:
             terminal_refusals[refusal.raw_id] = refusal
 
-        outcomes = await self._retained_runner(result.acquired_raw_ids, on_terminal_refusal=settle_terminal_refusal)
+        replay = await self._retained_runner(result.acquired_raw_ids, on_terminal_refusal=settle_terminal_refusal)
+        outcomes = replay.receipts
         written = tuple(dict.fromkeys(sid for outcome in outcomes for sid in outcome.written_session_ids))
         changed = tuple(dict.fromkeys(sid for outcome in outcomes for sid in outcome.changed_session_ids))
         stage_timings = dict(result.stage_timings_s)
         for outcome in outcomes:
             _accumulate_stage_timings(stage_timings, _full_publication_stage_timings(outcome.stage_timings_s))
-        retry_failed = self._retained_retryable_failures(result)
+        # A raw whose preparation failed retryably stays retained and
+        # unpublished; its path fails so the cursor retries it next pass,
+        # while its siblings' receipts above still count.
+        failed_raw_ids = {failure.raw_id for failure in replay.failures}
+        for failure in replay.failures:
+            emit(
+                "live.ingest.retained_preparation_failed",
+                level=WARNING,
+                outcome="error",
+                raw_id=failure.raw_id,
+                error_type=type(failure.error).__name__,
+            )
+        retry_failed = self._retained_retryable_failures(result) | {
+            path for path, raw_id in result.raw_fingerprints.items() if raw_id in failed_raw_ids
+        }
         return replace(
             result,
             stage_timings_s=stage_timings,

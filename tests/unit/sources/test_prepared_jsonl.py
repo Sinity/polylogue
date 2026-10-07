@@ -15,7 +15,7 @@ from typing import IO, BinaryIO, cast
 import ijson
 import pytest
 
-from polylogue.core.enums import Provider, Role
+from polylogue.core.enums import BlockType, Provider, Role
 from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
@@ -28,6 +28,7 @@ from polylogue.sources.dispatch import parse_payload, require_positive_conversat
 from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 from polylogue.sources.parsers import chatgpt, local_agent
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.sources.parsers.base_models import ParsedContentBlock
 from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
 from polylogue.sources.prepared_jsonl import PreparedJsonl, PreparedSessionSequence, _write_artifact, prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import (
@@ -398,6 +399,84 @@ def test_oversized_session_walks_replay_a_spool_not_the_json(tmp_path: Path, mon
     prepared_message_sink.discard_decoded_sessions(artifact.sessions_path)
     list(session.messages)
     assert decodes[0] == 2 * len(first)
+
+
+def _tool_turn(session: int, index: int) -> ParsedMessage:
+    return ParsedMessage(
+        provider_message_id=f"s{session}-m{index}",
+        role=Role.ASSISTANT,
+        text=f"turn {index}",
+        blocks=[
+            ParsedContentBlock(type=BlockType.TEXT, text="neutral narration " * 4),
+            ParsedContentBlock(
+                type=BlockType.TOOL_USE,
+                tool_name="shell",
+                tool_id=f"s{session}-t{index}",
+                tool_input={"command": "ls", "options": {"long": True, "paths": ["a", "b", "c"]}},
+            ),
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT, tool_id=f"s{session}-t{index}", text="out " * 40, is_error=False
+            ),
+        ],
+    )
+
+
+def test_decoded_session_cache_holds_no_more_memory_than_its_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The decoded-session LRU's real resident memory stays within its declared budget.
+
+    Sessions are walked until the LRU has evicted; the traced memory that
+    clearing it releases is what it held.
+
+    Anti-vacuity: charge each retained message its sealed JSON bytes instead
+    of :func:`_decoded_size` and the LRU keeps about four times its budget of
+    decoded messages.
+    """
+    import gc
+    import tracemalloc
+
+    from polylogue.sources import prepared_message_sink
+
+    budget = 1024 * 1024
+    path = tmp_path / "prepared.db"
+    store = SqliteMessageStore(path)
+    sessions: list[ParsedSession] = []
+    for ordinal in range(16):
+        messages = store.new_sink()
+        for index in range(30):
+            messages.append(_tool_turn(ordinal, index))
+        session = ParsedSession(
+            source_name=Provider.CODEX, provider_session_id=f"session-{ordinal}", messages=[]
+        ).model_copy(update={"messages": messages, "session_events": store.new_event_sink()})
+        session.content_hash = session_content_hash(session)
+        sessions.append(session)
+    shard = prepare_session_shard(tmp_path, sessions)
+    _write_artifact(store, "b" * 64, sessions, enrichment_digest="c" * 64, enrichment_index_path="/index.db")
+    store.close()
+    artifact = PreparedJsonl.seal(
+        "b" * 64, path, shard.path, enrichment_digest="c" * 64, enrichment_index_path="/index.db"
+    )
+    sealed = list(artifact.iter_sessions())
+    monkeypatch.setattr(prepared_message_sink._DECODED_SESSIONS, "budget_bytes", budget)
+    prepared_message_sink._DECODED_SESSIONS.clear()
+    gc.collect()
+    tracemalloc.start()
+    try:
+        for session in sealed:
+            for _message in session.messages:
+                pass
+        gc.collect()
+        retained_entries = len(prepared_message_sink._DECODED_SESSIONS._entries)
+        holding = tracemalloc.get_traced_memory()[0]
+        prepared_message_sink._DECODED_SESSIONS.clear()
+        gc.collect()
+        held = holding - tracemalloc.get_traced_memory()[0]
+    finally:
+        tracemalloc.stop()
+    # The LRU retained sessions and evicted others, so it ran at its budget.
+    assert 0 < retained_entries < len(sealed), retained_entries
+    assert budget // 4 < held <= budget, (held, budget, retained_entries)
 
 
 def _claude_document(session_id: str) -> dict[str, object]:

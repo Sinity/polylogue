@@ -73,7 +73,7 @@ async def test_parent_and_fork_retained_together_publish_parent_then_tail(tmp_pa
     raw_ids = await run_archive_fixture_write(tmp_path, acquire)
     # Live intake publishes everything one batch acquired as one retained unit.
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        receipts = await owner.ingest_retained_raw_ids(raw_ids)
+        receipts = (await owner.ingest_retained_raw_ids(raw_ids)).require_complete()
 
     written = {session_id for receipt in receipts for session_id in receipt.written_session_ids}
     assert written == {"codex-session:zparent", "codex-session:afork"}

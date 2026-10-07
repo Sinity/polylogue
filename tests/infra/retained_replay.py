@@ -227,6 +227,6 @@ async def publish_retained_payload(
 
     raw_id = await run_archive_fixture_write(archive_root, acquire)
     async with prepared_live_convergence_owner(archive_root) as owner:
-        receipts = await owner.replay_retained_raw_ids((raw_id,))
+        receipts = (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
     written = tuple(sorted({key for receipt in receipts for key in receipt.written_session_ids}))
     return raw_id, written

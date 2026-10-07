@@ -91,7 +91,7 @@ class TestFrontierObligationReopen:
 
         raw_id = await run_archive_fixture_write(root, acquire)
         async with prepared_live_convergence_owner(root) as owner:
-            receipts = await owner.ingest_retained_raw_ids((raw_id,))
+            receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
             assert sum(len(receipt.written_session_ids) for receipt in receipts) == 1
             blob = BlobStore(root / "blob").blob_path(hashlib.sha256(payload).hexdigest())
             blob.write_bytes(payload + b"neutral-corruption")

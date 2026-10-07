@@ -8,6 +8,7 @@ exercise retained source evidence and component isolation.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sqlite3
@@ -27,14 +28,11 @@ from polylogue.daemon.derivation import (
     Budget,
     DerivationRegistry,
     DerivationReport,
-    PassCursor,
     converge,
 )
 from polylogue.daemon.status import raw_failure_info_for_root
-from polylogue.operations.raw_observation_derivation import (
-    converge_raw_observations,
-    raw_observation_frame,
-)
+from polylogue.operations.intake_adapters import RawMaterializationDiscovery
+from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -47,7 +45,9 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.reference_seal import ReferenceSealError, ReferenceSealStaleError
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.live_ingest import prepared_live_convergence_owner
 from tests.infra.prepared_replay import run_on_convergence_owner
+from tests.infra.raw_owner_routes import converge_pending_raws_async
 
 
 def _codex_conversation_bytes(session_id: str = "session", text: str = "hi") -> bytes:
@@ -123,20 +123,25 @@ def _admit(
 def _derive(
     root: Path,
     *,
-    source_roots: tuple[Path, ...] = (),
     limit: int = 128,
-    cursor: PassCursor | None = None,
+    discovery: RawMaterializationDiscovery | None = None,
 ) -> DerivationReport:
-    return run_on_convergence_owner(
-        root,
-        "test.raw.converge",
-        lambda compute: converge_raw_observations(
-            root,
-            source_roots=source_roots,
-            compute_adapter=compute,
-            limit=limit,
-            cursor=cursor,
-        ),
+    """One fair-intake pass: the daemon's discovery page, each raw through ``converge_raw_id``."""
+
+    async def run() -> DerivationReport:
+        async with prepared_live_convergence_owner(root) as owner:
+            return await converge_pending_raws_async(owner, root, limit=limit, discovery=discovery)
+
+    return asyncio.run(run())
+
+
+def _converge_raw(root: Path, compute: BoundedComputeAdapter, raw_id: str) -> DerivationReport:
+    """Converge one raw on the admitted creator exactly as ``converge_raw_id`` does."""
+    return converge(
+        DerivationRegistry((RawObservationDerivation(root, compute_adapter=compute),)),
+        raw_observation_frame(root, raw_ids=(raw_id,)),
+        budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
+        publisher=admit_stage_write,
     )
 
 
@@ -274,49 +279,6 @@ def test_canonical_replay_cleans_orphaned_messages_before_replacement(tmp_path: 
         assert conn.execute(
             "SELECT native_id, position FROM messages WHERE session_id = ? ORDER BY position", (foreign_id,)
         ).fetchall() == [("foreign-0", 0)]
-
-
-def test_canonical_scope_does_not_certify_or_rewrite_outside_observations(tmp_path: Path) -> None:
-    """A bounded source pass owns only its declared source-root scope."""
-    bootstrap_archive_root(tmp_path)
-    source = tmp_path / "selected"
-    selected = _admit(tmp_path, ("selected",), path=str(source / "one.json"))
-    outside = _admit(tmp_path, ("outside",), path=str(tmp_path / "outside.json"))
-
-    report = _derive(tmp_path, source_roots=(source,), limit=1)
-    assert report.failed == 0
-    assert _inspect(tmp_path, selected) == "valid"
-    assert _inspect(tmp_path, outside) == "missing"
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("selected",)]
-
-
-@pytest.mark.parametrize(
-    ("selected_directory", "outside_directory"),
-    (("100%", "1000"), ("Case", "case")),
-)
-def test_canonical_source_root_scope_is_literal_and_case_sensitive(
-    tmp_path: Path,
-    selected_directory: str,
-    outside_directory: str,
-) -> None:
-    """A source root selects its actual descendants, never a LIKE-expanded sibling.
-
-    Anti-vacuity: replacing the canonical source-path interval with a LIKE
-    prefix admits the ``1000`` or case-folded sibling into this scoped pass.
-    """
-    bootstrap_archive_root(tmp_path)
-    selected_root = tmp_path / selected_directory
-    selected = _admit(tmp_path, ("selected",), path=str(selected_root / "member.json"))
-    outside = _admit(tmp_path, ("outside",), path=str(tmp_path / outside_directory / "member.json"))
-
-    report = _derive(tmp_path, source_roots=(selected_root,), limit=2)
-
-    assert report.done == 1 and report.failed == report.pending == 0
-    assert _inspect(tmp_path, selected) == "valid"
-    assert _inspect(tmp_path, outside) == "missing"
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall() == [("selected",)]
 
 
 def test_canonical_authority_refusal_blocks_only_its_raw_observation(
@@ -834,19 +796,21 @@ def test_canonical_replay_refreshes_only_the_touched_derived_component(
 
 
 def test_canonical_bounded_passes_reach_each_independent_component(tmp_path: Path) -> None:
-    """A bounded cursor advances across independent components without starvation."""
+    """The intake's bounded discovery advances across independent components without starvation.
+
+    A page whose raw just published is re-inspected once (valid) before the
+    traversal moves on, so ``2 * len(names)`` one-raw passes reach every
+    component.
+    """
     bootstrap_archive_root(tmp_path)
     names = tuple(f"bounded-{index}" for index in range(4))
     for name in names:
         _admit(tmp_path, (name,), path=f"{name}.json")
 
-    cursor: PassCursor | None = None
-    reports = []
-    for _ in names:
-        report = _derive(tmp_path, limit=1, cursor=cursor)
-        reports.append(report)
-        cursor = report.cursor
-    assert all(report.failed == 0 for report in reports)
+    discovery = RawMaterializationDiscovery(tmp_path)
+    reports = [_derive(tmp_path, limit=1, discovery=discovery) for _ in range(2 * len(names))]
+    assert all(report.failed == 0 and report.done <= 1 for report in reports)
+    assert sum(report.done for report in reports) == len(names)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall() == [
             (name,) for name in names
@@ -854,22 +818,20 @@ def test_canonical_bounded_passes_reach_each_independent_component(tmp_path: Pat
 
 
 def test_canonical_fairness_survives_ops_reset_with_a_process_cursor(tmp_path: Path) -> None:
-    """Deleting disposable ops state cannot reset the canonical bounded cursor."""
+    """Deleting disposable ops state cannot reset the intake's process-local discovery."""
     bootstrap_archive_root(tmp_path)
     names = tuple(f"ops-reset-{index}" for index in range(4))
     for name in names:
         _admit(tmp_path, (name,), path=f"{name}.json")
 
-    cursor: PassCursor | None = None
+    discovery = RawMaterializationDiscovery(tmp_path)
     reports = []
-    for _ in names:
-        report = _derive(tmp_path, limit=1, cursor=cursor)
-        reports.append(report)
-        cursor = report.cursor
+    for _ in range(2 * len(names)):
+        reports.append(_derive(tmp_path, limit=1, discovery=discovery))
         (tmp_path / "ops.db").unlink(missing_ok=True)
 
-    assert [report.done for report in reports] == [1, 1, 1, 1]
-    assert all(report.failed == 0 for report in reports)
+    assert all(report.failed == 0 and report.done <= 1 for report in reports)
+    assert sum(report.done for report in reports) == len(names)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall() == [
             (name,) for name in names
@@ -981,7 +943,7 @@ def test_canonical_replay_does_not_replace_newer_index_authority(tmp_path: Path)
             acquired_at_ms=2,
         )
         # Source classification re-prepares the new raw within one pass.
-        report = converge_raw_observations(tmp_path, source_roots=(), compute_adapter=compute, limit=128)
+        report = _converge_raw(tmp_path, compute, new_raw_id)
         assert report.failed == report.pending == 0, report.outcomes
         assert adapter.inspect(raw_observation_frame(tmp_path), (new_raw_id,))[new_raw_id] == "valid"
 

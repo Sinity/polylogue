@@ -43,7 +43,7 @@ async def test_original_prepared_deferral_keeps_incomparable_index_and_no_accept
 
     raw_id, session_id, original_hash = await run_archive_fixture_write(root, acquire)
     async with prepared_live_convergence_owner(root) as owner:
-        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert sum(len(receipt.written_session_ids) for receipt in receipts) == 0
         assert sum(receipt.written_message_count for receipt in receipts) == 0
     with ArchiveStore.open_existing(root, read_only=True) as archive:
@@ -85,13 +85,13 @@ async def test_original_replay_validation_failure_retires_carrier_before_same_ow
 
     async with prepared_live_convergence_owner(root) as owner:
         with pytest.raises(RuntimeError) as raised:
-            await owner.replay_retained_raw_ids((raw_id,), before_publication=refuse)
+            (await owner.replay_retained_raw_ids((raw_id,), before_publication=refuse)).require_complete()
         assert raised.value is original
         with ArchiveStore.open_existing(root, read_only=True) as archive:
             index = archive.index_connection
             assert index is not None
             assert index.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
-        receipts = await owner.replay_retained_raw_ids((raw_id,))
+        receipts = (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
         assert sum(len(receipt.written_session_ids) for receipt in receipts) == 1
         assert sum(receipt.written_message_count for receipt in receipts) == 1
 
@@ -125,7 +125,7 @@ async def test_original_suppressed_byte_outcome_needs_no_membership_plan(tmp_pat
 
     raw_id = await run_archive_fixture_write(root, acquire)
     async with prepared_live_convergence_owner(root) as owner:
-        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert sum(len(receipt.written_session_ids) for receipt in receipts) == 0
         assert sum(receipt.written_message_count for receipt in receipts) == 0
     with ArchiveStore.open_existing(root, read_only=True) as archive:

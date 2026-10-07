@@ -26,7 +26,7 @@ from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
-from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
+from polylogue.sources.revision_backfill import RetainedReplayOutcome
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.live_ingest import prepared_live_convergence_owner
@@ -449,7 +449,7 @@ async def test_watcher_queues_behind_daemon_maintenance_writer(tmp_path: Path) -
                 raw_ids: Sequence[str],
                 *,
                 on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
-            ) -> Sequence[PreparedRevisionReplayResult]:
+            ) -> RetainedReplayOutcome:
                 preparation_started.set()
                 await release_preparation.wait()
                 return await raw_owner.ingest_retained_raw_ids(raw_ids, on_terminal_refusal=on_terminal_refusal)

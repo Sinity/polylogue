@@ -11,12 +11,7 @@ from typing import TYPE_CHECKING, Any
 from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
 from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.derivation import (
-    Budget,
     DerivationFrame,
-    DerivationRegistry,
-    DerivationReport,
-    PassCursor,
-    converge,
 )
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN as _RAW_OBSERVATION_DOMAIN
@@ -96,7 +91,6 @@ def raw_observation_payload_bytes(archive_root: Path, raw_id: str) -> int:
 def raw_observation_frame(
     archive_root: Path,
     *,
-    source_roots: Sequence[Path] = (),
     raw_ids: Sequence[str] = (),
     index_db_path: Path | None = None,
 ) -> DerivationFrame:
@@ -105,7 +99,7 @@ def raw_observation_frame(
         archive_root=str(archive_root),
         source_revision=str(index_path.resolve()),
         recipe_versions={RAW_OBSERVATION_DOMAIN: raw_authority_parser_fingerprint()},
-        scope=RawObservationScope(source_roots=tuple(source_roots), raw_ids=tuple(raw_ids)),
+        scope=RawObservationScope(raw_ids=tuple(raw_ids)),
     )
 
 
@@ -209,26 +203,6 @@ def raw_observation_backlog_snapshot(
         "page_limit": limit,
         "page_complete": next_cursor is None,
     }
-
-
-def converge_raw_observations(
-    archive_root: Path,
-    *,
-    source_roots: Sequence[Path],
-    compute_adapter: BoundedComputeAdapter,
-    limit: int,
-    cursor: PassCursor | None = None,
-) -> DerivationReport:
-    adapter = make_raw_observation_derivation(archive_root, compute_adapter=compute_adapter)
-    return converge(
-        DerivationRegistry((adapter,)),
-        raw_observation_frame(archive_root, source_roots=source_roots),
-        # Each discovered key needs inspection before compute and again to
-        # certify publication. Discovery alone must not exhaust that budget.
-        budget=Budget(page=min(128, limit), discovery=limit, inspection=2 * limit, compute=limit, publication=limit),
-        cursor=cursor,
-        publisher=admit_stage_write,
-    )
 
 
 def publish_raw_observation_once(

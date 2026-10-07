@@ -75,7 +75,7 @@ def test_retained_complete_document_array_publishes_every_same_origin_document(
 
     async def replay() -> None:
         async with prepared_live_convergence_owner(tmp_path) as owner:
-            results = await owner.replay_retained_raw_ids((raw_id,))
+            results = (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
             assert results and all(result.quarantined == 0 for result in results)
 
     asyncio.run(replay())

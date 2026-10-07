@@ -33,7 +33,6 @@ import pytest
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
 from polylogue.core.compute import BoundedComputeAdapter
-from polylogue.core.stage_admission import stage_write_admission
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
@@ -954,7 +953,7 @@ async def test_codex_state_title_does_not_depend_on_admission_order(tmp_path: Pa
     Anti-vacuity: make ``RawObservationDerivation._enrichment_evidence_moved``
     return ``False`` and the rollout-first order keeps the first-prompt title.
     """
-    from polylogue.operations.raw_observation_derivation import converge_raw_observations
+    from tests.infra.raw_owner_routes import converge_pending_raws_async
 
     install = tmp_path / "codex-home"
     sessions = install / "sessions"
@@ -983,13 +982,9 @@ async def test_codex_state_title_does_not_depend_on_admission_order(tmp_path: Pa
     finally:
         await archive.close()
 
-    def converge(compute_adapter: BoundedComputeAdapter) -> None:
-        with stage_write_admission(_lease_writer(archive_root)):
-            converge_raw_observations(archive_root, source_roots=(install,), compute_adapter=compute_adapter, limit=64)
-
     async with prepared_live_convergence_owner(archive_root) as owner:
         for _attempt in range(3):
-            await owner.run_convergence_sync("test.codex-state.converge", converge, owner._compute_adapter)
+            await converge_pending_raws_async(owner, archive_root, limit=64)
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         rows = conn.execute("SELECT session_id, title FROM sessions").fetchall()
@@ -1015,7 +1010,7 @@ async def test_codex_state_title_does_not_depend_on_admission_order(tmp_path: Pa
 
     def inspect(compute_adapter: BoundedComputeAdapter) -> Mapping[str, str]:
         return make_raw_observation_derivation(archive_root, compute_adapter=compute_adapter).inspect(
-            raw_observation_frame(archive_root, source_roots=(install,)), rollout_raws
+            raw_observation_frame(archive_root), rollout_raws
         )
 
     async with prepared_live_convergence_owner(archive_root) as owner:

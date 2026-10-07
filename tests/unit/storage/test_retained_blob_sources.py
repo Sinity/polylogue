@@ -355,7 +355,7 @@ async def test_an_absent_zip_member_blob_is_restored_and_materialized(tmp_path: 
 
     async with prepared_live_convergence_owner(tmp_path) as owner:
         with pytest.raises(RetainedPreparationRetryableError, match=r"not restorable from its source \(\w+\)"):
-            await owner.replay_retained_raw_ids((raw_id,))
+            (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
         assert not blob_path.exists()
         assert not any(store.staging_root.iterdir())
         with zipfile.ZipFile(container, "w") as bundle:
@@ -363,7 +363,7 @@ async def test_an_absent_zip_member_blob_is_restored_and_materialized(tmp_path: 
         restoring = await owner.converge_raw_id(raw_id)
         assert restoring.failed == 0, restoring.outcomes
         assert blob_path.read_bytes() == member
-        receipts = await owner.replay_retained_raw_ids((raw_id,))
+        receipts = (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
         assert sum(receipt.replayed_logical_sources for receipt in receipts) == 1
 
     with closing(sqlite3.connect(f"file:{tmp_path / 'index.db'}?mode=ro", uri=True)) as conn:

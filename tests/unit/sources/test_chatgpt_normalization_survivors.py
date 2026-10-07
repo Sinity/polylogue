@@ -373,7 +373,7 @@ async def test_chatgpt_media_pointers_survive_archive_write_public_read_and_repl
                 )
 
         first_raw_id = await run_archive_fixture_write(root, acquire_0)
-        first = await owner.ingest_retained_raw_ids((first_raw_id,))
+        first = (await owner.ingest_retained_raw_ids((first_raw_id,))).require_complete()
         assert any(receipt.changed_session_ids for receipt in first)
 
         def acquire_1() -> str:
@@ -389,7 +389,7 @@ async def test_chatgpt_media_pointers_survive_archive_write_public_read_and_repl
                 )
 
         clean_result_raw_id = await run_archive_fixture_write(root, acquire_1)
-        clean_result = await owner.ingest_retained_raw_ids((clean_result_raw_id,))
+        clean_result = (await owner.ingest_retained_raw_ids((clean_result_raw_id,))).require_complete()
 
         def acquire_2() -> str:
             with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -404,7 +404,7 @@ async def test_chatgpt_media_pointers_survive_archive_write_public_read_and_repl
                 )
 
         incremental_result_raw_id = await run_archive_fixture_write(root, acquire_2)
-        incremental_result = await owner.ingest_retained_raw_ids((incremental_result_raw_id,))
+        incremental_result = (await owner.ingest_retained_raw_ids((incremental_result_raw_id,))).require_complete()
     with ArchiveStore.open_existing(root, read_only=True) as archive:
         envelope = archive.read_session(session_id)
 
@@ -721,7 +721,7 @@ async def test_native_full_fidelity_replaces_or_resists_longer_dom_fallback_and_
                     )
 
             raw_ids[kind] = await run_archive_fixture_write(root, acquire)
-            outcomes[kind] = await owner.ingest_retained_raw_ids((raw_ids[kind],))
+            outcomes[kind] = (await owner.ingest_retained_raw_ids((raw_ids[kind],))).require_complete()
 
         def acquire_fallback() -> str:
             with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -736,7 +736,7 @@ async def test_native_full_fidelity_replaces_or_resists_longer_dom_fallback_and_
                 )
 
         fallback_raw_id = await run_archive_fixture_write(root, acquire_fallback)
-        final_fallback = await owner.ingest_retained_raw_ids((fallback_raw_id,))
+        final_fallback = (await owner.ingest_retained_raw_ids((fallback_raw_id,))).require_complete()
     native_raw_id = raw_ids["native"]
     session_id = str(make_session_id(parsed["native"].source_name, parsed["native"].provider_session_id))
     with ArchiveStore.open_existing(root, read_only=True) as archive:

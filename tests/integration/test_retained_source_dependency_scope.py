@@ -148,7 +148,7 @@ async def test_source_census_codex_artifact_enrolls_original_projected_titles(tm
 
     state_raw = await run_archive_fixture_write(root, acquire_state)
     async with prepared_live_convergence_owner(root) as owner:
-        await owner.replay_retained_raw_ids((state_raw,))
+        (await owner.replay_retained_raw_ids((state_raw,))).require_complete()
 
         def acquire_rollout() -> str:
             rollout_path.parent.mkdir()
@@ -218,7 +218,7 @@ async def test_source_census_codex_artifact_enrolls_original_projected_titles(tm
                 "SELECT title,title_source FROM sessions WHERE native_id='codex-state-thread'"
             ).fetchone()
             assert row is not None and tuple(row) == (title, TitleSource.ORIGIN.value)
-        await owner.replay_retained_raw_ids((raw_id,))
+        (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
     with ArchiveStore.open_existing(root, read_only=True) as archive:
         index = archive.index_connection
         assert index is not None

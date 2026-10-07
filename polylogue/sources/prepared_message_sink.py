@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import threading
 import uuid
 from bisect import bisect_left
@@ -23,13 +24,15 @@ from collections.abc import (
     Sequence,
     Set,
 )
-from contextlib import contextmanager
-from dataclasses import asdict
+from contextlib import closing, contextmanager
+from dataclasses import asdict, fields, is_dataclass
+from enum import Enum
 from pathlib import Path
 from typing import BinaryIO, TypeVar, cast, overload
 from urllib.parse import quote
 
 import ijson
+from pydantic import BaseModel
 
 from polylogue.core.enums import Origin
 from polylogue.core.hashing import hash_text
@@ -135,10 +138,48 @@ def _write_row(conn: sqlite3.Connection, sql: str, parameters: tuple[object, ...
         raise value_bounds.ValueBoundRefusedError(kind, observed, value_bounds.MAX_STORABLE_VALUE_BYTES) from exc
 
 
-#: Byte budget, counted in sealed ``message_json`` bytes, for decoded sessions
-#: kept across passes. A session larger than half of it is never retained and
-#: keeps streaming from disk, so whale memory stays bounded as before.
+#: Byte budget for decoded sessions kept across passes, counted in the
+#: memory their decoded messages hold (:func:`_decoded_size`), not in their
+#: sealed JSON bytes: a decoded message holds several times its JSON. A
+#: session larger than half of it is never retained and keeps streaming from
+#: disk, so whale memory stays bounded.
 DECODED_SESSION_BUDGET_BYTES = 64 * 1024 * 1024
+
+
+def _decoded_size(root: object) -> int:
+    """Bytes one decoded message holds: the deep ``sys.getsizeof`` of its object graph.
+
+    The shared singletons a decode never allocates (``None``, booleans, enum
+    members) and the interned field names of a model's attribute dictionary
+    are not charged.
+    """
+    total = 0
+    stack = [root]
+    while stack:
+        value = stack.pop()
+        if value is None or isinstance(value, (bool, Enum)):
+            continue
+        total += sys.getsizeof(value)
+        if isinstance(value, BaseModel):
+            state = value.__dict__
+            total += sys.getsizeof(state) + sys.getsizeof(value.__pydantic_fields_set__)
+            stack.extend(state.values())
+            if value.__pydantic_extra__:
+                stack.append(value.__pydantic_extra__)
+            if value.__pydantic_private__:
+                stack.append(value.__pydantic_private__)
+        elif isinstance(value, Mapping):
+            for key, item in value.items():
+                stack.append(key)
+                stack.append(item)
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            stack.extend(value)
+        elif is_dataclass(value):
+            if hasattr(value, "__dict__"):
+                total += sys.getsizeof(value.__dict__)
+            stack.extend(getattr(value, field.name) for field in fields(value))
+    return total
+
 
 _DecodedKey = tuple[str, int, int, int, int, int, int]
 
@@ -870,13 +911,13 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             self.path,
             table="prepared_message",
             ordinal="message_ordinal",
-            columns="message_json, length(CAST(message_json AS BLOB))",
+            columns="message_json",
             session=self.session_ordinal,
             start=start,
         ):
             message = _from_text_json(ParsedMessage, cast(str, row[0]))
             if retained is not None:
-                retained_bytes += int(cast(int, row[1]))
+                retained_bytes += _decoded_size(message)
                 if retained_bytes > _DECODED_SESSIONS.budget_bytes // 2:
                     # Too large to keep decoded in memory: the rest of
                     # this walk goes to a spool the next walks replay.
@@ -1526,24 +1567,48 @@ def _prepared_reader(path: Path) -> Iterator[sqlite3.Connection]:
         owner.close()
 
 
+#: Serialized payload characters one page of prepared rows holds at most
+#: (beyond its first row): a memory bound on paging, never on what is read.
+_PAGE_PAYLOAD_CHARS = 1024 * 1024
+
+
 def _prepared_ordinal_rows(
     path: Path, *, table: str, ordinal: str, columns: str, session: int | None, start: int = 0
 ) -> Iterator[tuple[object, ...]]:
-    """Read indexed immutable pages and close SQL before yielding any row."""
+    """Read indexed immutable pages and close SQL before yielding any row.
+
+    A page ends at 512 rows or once its rows' last column (the serialized
+    payload) reaches :data:`_PAGE_PAYLOAD_CHARS`, so a page of large messages
+    holds no more than one of small ones. Each row is released as it is
+    yielded, so the next page is never read while the previous one is held.
+    """
     after = start - 1
     while True:
-        with _prepared_reader(path) as connection:
-            rows = connection.execute(
-                f"SELECT {ordinal}, {columns} FROM {table} WHERE "
-                + ("session_ordinal = ? AND " if session is not None else "")
-                + f"{ordinal} > ? ORDER BY {ordinal} LIMIT 512",
-                (session, after) if session is not None else (after,),
-            ).fetchall()
+        rows: list[tuple[object, ...]] = []
+        held = 0
+        with (
+            _prepared_reader(path) as connection,
+            closing(
+                connection.execute(
+                    f"SELECT {ordinal}, {columns} FROM {table} WHERE "
+                    + ("session_ordinal = ? AND " if session is not None else "")
+                    + f"{ordinal} > ? ORDER BY {ordinal} LIMIT 512",
+                    (session, after) if session is not None else (after,),
+                )
+            ) as cursor,
+        ):
+            while held < _PAGE_PAYLOAD_CHARS and (fetched := cursor.fetchone()) is not None:
+                rows.append(tuple(fetched))
+                payload = fetched[-1]
+                held += len(payload) if isinstance(payload, (str, bytes)) else 0
         if not rows:
             return
-        after = int(rows[-1][0])
-        for row in rows:
+        after = int(cast(int, rows[-1][0]))
+        rows.reverse()
+        while rows:
+            row = rows.pop()
             yield tuple(row[1:])
+            del row
 
 
 class SqliteMessageStore:

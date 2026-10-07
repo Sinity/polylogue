@@ -24,7 +24,6 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
 from polylogue.storage.sqlite.archive_tiers.source_items import SourceItemAdmission, publish_source_generation
 from polylogue.storage.sqlite.archive_tiers.source_write import bind_source_raw_revision
 from polylogue.storage.sqlite.write_lease import write_lease
-from tests.infra.prepared_replay import run_on_convergence_owner
 
 _PAYLOAD = b'{"synthetic":"source-item"}\n'
 _BLOB_HASH = hashlib.sha256(_PAYLOAD).digest()
@@ -270,7 +269,7 @@ def test_duplicate_member_keeps_refined_origin_and_renews_exact_raw_receipt(tmp_
 
 
 def test_duplicate_member_preserves_revision_refined_by_actual_retained_parser(tmp_path: Path) -> None:
-    from polylogue.operations.raw_observation_derivation import converge_raw_observations
+    from tests.infra.raw_owner_routes import converge_pending_raws_with_owner
 
     payload = (
         b'{"sessionId":"accepted-session","uuid":"native-message","type":"user",'
@@ -284,11 +283,7 @@ def test_duplicate_member_preserves_revision_refined_by_actual_retained_parser(t
         execute_source_item_admission(conn, plan, _member(item_id))
     conn.close()
     archive_root = tmp_path / "archive"
-    report = run_on_convergence_owner(
-        archive_root,
-        "test.source-item.converge",
-        lambda compute: converge_raw_observations(archive_root, source_roots=(), compute_adapter=compute, limit=32),
-    )
+    report = converge_pending_raws_with_owner(archive_root, limit=32)
     assert report.failed == 0
     with sqlite3.connect(tmp_path / "archive" / "source.db") as source:
         before = source.execute(

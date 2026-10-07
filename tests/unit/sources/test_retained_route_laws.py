@@ -202,10 +202,6 @@ def _traced_preparation(
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    strict=True,
-    reason="polylogue-1o8tb: the JSON detection projection's python ijson lexer retains the whole projected document",
-)
 def test_large_hermes_snapshot_preparation_memory_does_not_track_session_size(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -218,28 +214,29 @@ def test_large_hermes_snapshot_preparation_memory_does_not_track_session_size(
     production. Twice the messages may not cost as much extra traced
     memory as the extra input bytes themselves.
 
-    Currently violated: ``classify_artifact_stream`` lexes the document
-    through ``ijson.backends.python`` over ``_PrefixStringReader``, whose
-    lexer buffer keeps every consumed chunk, so the peak grows about two bytes
-    per input byte. Lexing that projection with a bounded lexer makes this
-    test pass; any change that keeps a whole decoded session or document
-    resident turns it red again.
+    Anti-vacuity: lex the detection projection without
+    ``LexemeAlignedReader`` and ``ijson.backends.python``'s buffer keeps every
+    consumed chunk, so the peak grows about two bytes per input byte; any
+    change that keeps a whole decoded session or document resident turns it
+    red as well.
     """
     from polylogue.sources import prepared_message_sink
 
     monkeypatch.setattr(prepared_message_sink._DECODED_SESSIONS, "budget_bytes", 64 * 1024)
     measured: dict[str, tuple[int, int]] = {}
     with _traced_preparation(monkeypatch) as peaks:
-        # Both snapshots exceed the route's fixed 1 MiB read buffers, so what
-        # remains to differ is memory that tracks the session.
-        for label, messages in (("small", 400), ("large", 800)):
+        # Both snapshots fill every fixed 1 MiB read buffer the detection
+        # projection stacks (decoder, prefix and lexeme-aligned readers) and
+        # the sink's bounded row pages, so what remains to differ is memory
+        # that tracks the session.
+        for label, messages in (("small", 800), ("large", 1600)):
             prepared_message_sink._DECODED_SESSIONS.clear()
             prepared_message_sink._DECODED_SPOOLS.clear()
             sessions = tmp_path / label / "profile" / "sessions"
             sessions.mkdir(parents=True)
             source = sessions / "session_large.json"
             _write_hermes_snapshot(source, messages=messages, text_bytes=3000)
-            assert source.stat().st_size > 1024 * 1024
+            assert source.stat().st_size > 2 * 1024 * 1024
             archive_root = tmp_path / label / "archive"
             peaks.clear()
             metrics = _live_ingest(archive_root, [source], source_name=Provider.HERMES.value)
@@ -485,10 +482,6 @@ def _contains_fault(failure: BaseException, message: str) -> bool:
     return message in str(failure) or (failure.__cause__ is not None and _contains_fault(failure.__cause__, message))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="polylogue-yeke9: an untyped preparation failure aborts the whole retained replay page",
-)
 @pytest.mark.asyncio
 @pytest.mark.parametrize("identified", [False, True], ids=["identity-opaque", "native-identified"])
 async def test_one_raw_preparation_failure_does_not_block_its_replay_page_siblings(
@@ -498,16 +491,16 @@ async def test_one_raw_preparation_failure_does_not_block_its_replay_page_siblin
 
     The live pass hands every acquired raw to one retained replay
     (``replay_retained_raw_ids``). A raw whose preparation raises is that
-    raw's retryable outcome; the healthy raws offered beside it -- before and
-    after it -- still publish, and the failure still reaches the caller.
+    raw's retryable outcome, returned with its error beside the receipts of
+    the healthy raws offered before and after it, which still publish.
     ``identity-opaque`` raws carry no native id, so the replay censuses the
     page's envelopes together before any of them replays; ``native-identified``
     raws prepare one by one.
 
-    Currently violated: ``retained_replay_operation`` re-raises at the broken
-    raw, so later siblings never prepare (only ``page-before`` publishes), and
-    census-first selection pulls every opaque envelope of the page into the
-    first seed's preparation, so nothing publishes.
+    Anti-vacuity: re-raise an untyped preparation failure in
+    ``retained_replay_operation`` and ``page-after`` never prepares; drop the
+    single-raw frame scope of the failed census and the opaque seeds' census
+    keeps pulling ``broken`` in, so nothing publishes.
     """
     from polylogue.sources import revision_backfill
 
@@ -536,11 +529,15 @@ async def test_one_raw_preparation_failure_does_not_block_its_replay_page_siblin
 
     monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", failing)
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        with pytest.raises(Exception) as raised:
-            await owner.replay_retained_raw_ids(tuple(acquired.values()))
-    assert _contains_fault(raised.value, "synthetic preparation fault"), raised.value
+        outcome = await owner.replay_retained_raw_ids(tuple(acquired.values()))
+    assert [failure.raw_id for failure in outcome.failures] == [acquired["broken"]], outcome
+    assert _contains_fault(outcome.failures[0].error, "synthetic preparation fault"), outcome.failures
     published = {str(native_id) for (native_id,) in _rows(tmp_path / "index.db", "SELECT native_id FROM sessions")}
     assert published == {"page-before", "page-after"}, published
+    receipt_sessions = {sid for receipt in outcome.receipts for sid in receipt.written_session_ids}
+    assert len(receipt_sessions) == 2, outcome.receipts
+    with pytest.raises(RuntimeError, match="synthetic preparation fault"):
+        outcome.require_complete()
 
 
 @pytest.mark.asyncio
@@ -606,7 +603,7 @@ async def test_raw_owner_keeps_one_preparation_in_flight(tmp_path: Path, monkeyp
         async with prepared_live_convergence_owner(tmp_path, compute_adapter=compute) as owner:
             reports = await asyncio.gather(*(owner.converge_raw_id(raw_id) for raw_id in raw_ids[:3]))
             assert [(report.done, report.failed) for report in reports] == [(1, 0)] * 3
-            results = await owner.replay_retained_raw_ids(raw_ids[3:])
+            results = (await owner.replay_retained_raw_ids(raw_ids[3:])).require_complete()
             assert len(results) == 3
     finally:
         await asyncio.to_thread(compute.shutdown, wait=True)

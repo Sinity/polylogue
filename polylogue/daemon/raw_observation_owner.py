@@ -46,10 +46,10 @@ if TYPE_CHECKING:
         AppendIngestOwner,
         AppendPlan,
         AppendResult,
-        PreparedRevisionReplayResult,
         PreparedSessionSourceRead,
         RawObservationDerivation,
         RawObservationReplacement,
+        RetainedReplayOutcome,
     )
 
 T = TypeVar("T")
@@ -219,7 +219,7 @@ class RawObservationConvergenceOwner:
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None] | None = None,
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None = None,
         before_publication: Callable[[], None] | None = None,
-    ) -> tuple[PreparedRevisionReplayResult, ...]:
+    ) -> RetainedReplayOutcome:
         acquired = tuple(raw_ids)
         await self._write_coordinator.run_sync(
             "live.retained.destination", self._archive.retained_destination(before_publication)
@@ -242,7 +242,7 @@ class RawObservationConvergenceOwner:
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None] | None = None,
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None = None,
         before_publication: Callable[[], None] | None = None,
-    ) -> tuple[PreparedRevisionReplayResult, ...]:
+    ) -> RetainedReplayOutcome:
         """Settle real selected replay receipts, including preparatory Source phases."""
         selected = tuple(dict.fromkeys(raw_ids))
         if any(not raw_id for raw_id in selected):

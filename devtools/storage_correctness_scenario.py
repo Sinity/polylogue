@@ -625,7 +625,7 @@ async def _retained_lab_ingest(
                                 observation[3] // 1_000_000,
                             ),
                         )
-                    outcomes.append(await owner.ingest_retained_raw_ids((raw_id,)))
+                    outcomes.append((await owner.ingest_retained_raw_ids((raw_id,))).require_complete())
                 return tuple(outcomes), expected_hash
             finally:
                 await _wait_for_coordinator_idle(coordinator)

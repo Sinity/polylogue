@@ -44,7 +44,7 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
-from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
+from polylogue.sources.revision_backfill import RetainedReplayOutcome
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.io_phase_metrics import connect_measured
@@ -2893,11 +2893,9 @@ async def test_process_ingest_batch_refuses_sinex_publication_before_the_retaine
     _publication_mode(monkeypatch, mode)
     calls: list[tuple[str, ...]] = []
 
-    async def owner_must_not_run(
-        raw_ids: Sequence[str], **_refusal_handlers: object
-    ) -> tuple[PreparedRevisionReplayResult, ...]:
+    async def owner_must_not_run(raw_ids: Sequence[str], **_refusal_handlers: object) -> RetainedReplayOutcome:
         calls.append(tuple(raw_ids))
-        return ()
+        return RetainedReplayOutcome()
 
     repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
     service = ParsingService(

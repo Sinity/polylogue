@@ -10,6 +10,7 @@ workers. It never imports the daemon: the daemon passes its collaborators in.
 from __future__ import annotations
 
 import pickle
+import sqlite3
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Sequence
 from functools import partial
@@ -32,7 +33,11 @@ if TYPE_CHECKING:
     from polylogue.core.sql_settlement import SQLCustodyOwner
     from polylogue.sources.live.append_ingest import _AppendIngestOwner
     from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
-    from polylogue.sources.revision_backfill import PreparedRevisionReplayResult, RevisionCensusResult
+    from polylogue.sources.revision_backfill import (
+        PreparedRevisionReplayResult,
+        RetainedReplayOutcome,
+        RevisionCensusResult,
+    )
     from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
 
@@ -67,6 +72,26 @@ def _receive_phase(
     receipt: RevisionCensusResult | PreparedRevisionReplayResult,
 ) -> None:
     received.append((phase, receipt))
+
+
+def _isolates_as_raw_failure(failure: Exception) -> bool:
+    """Whether a preparation failure belongs to its raw rather than to the whole page.
+
+    Cancellation, compute backpressure, a missing writer, archive storage
+    faults, SQLite state and failed physical cleanup hold for every raw of the
+    page alike, so they stop it. Any other failure is that raw's own retryable
+    outcome.
+    """
+    from polylogue.core.compute import DaemonBackpressureError, DaemonOperationCancelled
+    from polylogue.core.storage_faults import storage_fault_kind
+    from polylogue.storage.sqlite.write_lease import UnleasedWriteError
+
+    if isinstance(
+        failure,
+        (BaseExceptionGroup, DaemonOperationCancelled, DaemonBackpressureError, UnleasedWriteError, sqlite3.Error),
+    ):
+        return False
+    return storage_fault_kind(failure) is None
 
 
 class RawObservationArchiveWork:
@@ -209,22 +234,31 @@ class RawObservationArchiveWork:
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None] | None,
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None,
         before_publication: Callable[[], None] | None,
-    ) -> Callable[[], tuple[PreparedRevisionReplayResult, ...]]:
+    ) -> Callable[[], RetainedReplayOutcome]:
         """Settle real selected replay receipts, including preparatory Source phases.
 
         The selector borrows each canonical Raw preparation's original reader;
         it never returns an archive handle or substitutes publication authority.
         The original semantic inputs detect an unchanged preparatory phase. Actual
         Source receipts and the new phase's original witnesses own every effect.
+
+        One raw's failed preparation does not stop its page. A preparation that
+        fails while censusing its page's identity-opaque siblings is prepared
+        again with a frame scope of that raw alone, so a sibling's fault cannot
+        block it; a raw that fails on its own (with the cohort its selection
+        needs) is that raw's retryable failure, returned beside the receipts
+        its siblings published.
         """
         archive_root = self._archive_root
 
-        def replay() -> tuple[PreparedRevisionReplayResult, ...]:
+        def replay() -> RetainedReplayOutcome:
             from polylogue.core.compute_cancel import check_compute_cancelled
             from polylogue.core.stage_admission import admit_stage_write
             from polylogue.sources.revision_backfill import (
                 PreparedRevisionReplayResult,
                 RetainedPreparationRetryableError,
+                RetainedRawRetryableFailure,
+                RetainedReplayOutcome,
             )
 
             adapter, index_path = destination()
@@ -241,14 +275,19 @@ class RawObservationArchiveWork:
                 retained.remove(current)
 
             results: list[PreparedRevisionReplayResult] = []
+            failures: list[RetainedRawRetryableFailure] = []
             visited: set[str] = set()
             refused_ids: set[str] = set()
             dependency_blocked_ids: set[str] = set()
+            failed_ids: set[str] = set()
             selected = pickle.loads(scope_operand)
             for raw_id in selected:
                 if raw_id in visited:
                     continue
                 require_authority(raw_id)
+                # Set once this raw's page-scoped preparation has failed: it
+                # prepares again with a frame scope of itself alone.
+                isolated = False
                 previous_progress: tuple[str, tuple[object, ...]] | None = None
                 # After a lineage-deferral pass only its deferred children are
                 # re-prepared; the keys that pass published are not replayed again.
@@ -287,7 +326,7 @@ class RawObservationArchiveWork:
                                     *(select_retained_raw_ids(reader) if select_retained_raw_ids else ()),
                                 )
                             )
-                            if item not in refused_ids and item not in dependency_blocked_ids
+                            if item not in refused_ids and item not in dependency_blocked_ids and item not in failed_ids
                         )
                         expanded, _member_keys = reader.expand_raw_membership_selection(selected_ids)
                         for dependency_id in expanded:
@@ -318,16 +357,19 @@ class RawObservationArchiveWork:
 
                     # The frame scope is the whole selection, so an opaque
                     # envelope's census can cover its unreplayed siblings --
-                    # except inputs this operation already settled as refused
-                    # or dependency-blocked, which a sibling's census must not
-                    # pull back in.
-                    frame = raw_observation_frame(
-                        archive_root,
-                        raw_ids=tuple(
-                            item for item in selected if item not in refused_ids and item not in dependency_blocked_ids
-                        ),
-                        index_db_path=index_path,
+                    # except inputs this operation already settled as refused,
+                    # dependency-blocked or failed, which a sibling's census
+                    # must not pull back in.
+                    frame_scope = (
+                        (raw_id,)
+                        if isolated
+                        else tuple(
+                            item
+                            for item in selected
+                            if item not in refused_ids and item not in dependency_blocked_ids and item not in failed_ids
+                        )
                     )
+                    frame = raw_observation_frame(archive_root, raw_ids=frame_scope, index_db_path=index_path)
                     try:
                         replacement = adapter.compute(
                             frame, raw_id, replay_current=True, select_retained_raw_ids=select_original
@@ -351,6 +393,20 @@ class RawObservationArchiveWork:
                             raise refusal.dependency from refusal
                         on_dependency_refusal(refusal)
                         dependency_blocked_ids.add(raw_id)
+                        visited.add(raw_id)
+                        break
+                    except Exception as failure:
+                        # compute settles its original parent before
+                        # propagating; nothing of this attempt is retained.
+                        if not _isolates_as_raw_failure(failure):
+                            raise
+                        if not isolated and frame_scope != (raw_id,):
+                            # A census of the page's opaque siblings may have
+                            # failed on one of them: prepare this raw alone.
+                            isolated = True
+                            continue
+                        failures.append(RetainedRawRetryableFailure(raw_id, failure))
+                        failed_ids.add(raw_id)
                         visited.add(raw_id)
                         break
                     retained.append(replacement)
@@ -458,7 +514,7 @@ class RawObservationArchiveWork:
                             "retained publication deferred without accepted Source progress"
                         )
                     previous_progress = progress_operand
-            return tuple(results)
+            return RetainedReplayOutcome(tuple(results), tuple(failures))
 
         return replay
 
@@ -472,5 +528,6 @@ __all__ = [
     "RawObservationArchiveWork",
     "RawObservationDerivation",
     "RawObservationReplacement",
+    "RetainedReplayOutcome",
     "retained_settlement_owners",
 ]

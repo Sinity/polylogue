@@ -58,7 +58,7 @@ async def test_original_refused_dependency_does_not_claim_subject_decode_failure
     bad = await run_archive_fixture_write(root, acquire_bad)
     async with prepared_live_convergence_owner(root) as owner:
         with pytest.raises(RetainedRawDecodeRefusalError) as strict:
-            await owner.ingest_retained_raw_ids((bad,))
+            (await owner.ingest_retained_raw_ids((bad,))).require_complete()
         assert strict.value.raw_id == bad
 
         def acquire_good() -> tuple[str, str]:
@@ -82,11 +82,13 @@ async def test_original_refused_dependency_does_not_claim_subject_decode_failure
         dependent, independent = await run_archive_fixture_write(root, acquire_good)
         refusals: list[RetainedRawDecodeRefusalError] = []
         dependencies: list[RetainedRawDependencyRefusalError] = []
-        results = await owner.ingest_retained_raw_ids(
-            (bad, dependent, independent),
-            on_terminal_refusal=lambda _keys, refusal: refusals.append(refusal),
-            on_dependency_refusal=dependencies.append,
-        )
+        results = (
+            await owner.ingest_retained_raw_ids(
+                (bad, dependent, independent),
+                on_terminal_refusal=lambda _keys, refusal: refusals.append(refusal),
+                on_dependency_refusal=dependencies.append,
+            )
+        ).require_complete()
         assert [refusal.raw_id for refusal in refusals] == [bad]
         assert len(dependencies) == 1
         assert dependencies[0].subject_raw_id == dependent
@@ -166,7 +168,7 @@ async def test_original_per_key_output_refusal_preserves_independent_publication
 
     monkeypatch.setattr("polylogue.sources.revision_backfill.prepare_retained_jsonl_artifact", worker)
     async with prepared_live_convergence_owner(root) as owner:
-        original = await owner.ingest_retained_raw_ids((selected, independent))
+        original = (await owner.ingest_retained_raw_ids((selected, independent))).require_complete()
         assert sum(len(receipt.written_session_ids) for receipt in original) == (
             3 if healthy_location == "same-raw" else 2
         )
@@ -180,14 +182,16 @@ async def test_original_per_key_output_refusal_preserves_independent_publication
         else:
             outputs[independent] = [session("independent", "changed")]
         with pytest.raises(CohortMembershipRefusalError) as strict:
-            await owner.ingest_retained_raw_ids((selected, independent))
+            (await owner.ingest_retained_raw_ids((selected, independent))).require_complete()
         assert strict.value.raw_id == selected
         assert strict.value.logical_source_key == "codex-session:selected"
         refusals: list[CohortMembershipRefusalError] = []
-        receipts = await owner.ingest_retained_raw_ids(
-            (selected, independent),
-            on_membership_refusal=refusals.append,
-        )
+        receipts = (
+            await owner.ingest_retained_raw_ids(
+                (selected, independent),
+                on_membership_refusal=refusals.append,
+            )
+        ).require_complete()
         assert len(refusals) == 1
         assert refusals[0].raw_id == selected
         assert refusals[0].logical_source_key == "codex-session:selected"

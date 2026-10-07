@@ -175,7 +175,7 @@ async def _seed_acquired(root: Path) -> tuple[str, str]:
 
     raw_id = await run_archive_fixture_write(root, acquire)
     async with prepared_live_convergence_owner(root) as owner:
-        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
     session_id = "codex-session:orchestration-example"
     assert session_id in {identity for receipt in receipts for identity in receipt.changed_session_ids}
     return session_id, raw_id

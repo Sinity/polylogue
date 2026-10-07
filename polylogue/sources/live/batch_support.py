@@ -18,7 +18,7 @@ from typing import IO, TYPE_CHECKING, Any, Protocol, cast
 import ijson
 
 if TYPE_CHECKING:
-    from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
+    from polylogue.sources.revision_backfill import RetainedReplayOutcome
     from polylogue.sources.source_staging import SourceInputBinding
     from polylogue.sources.sqlite_inspection import SQLiteClassification
 
@@ -295,7 +295,7 @@ class LiveRetainedRunner(Protocol):
         raw_ids: Sequence[str],
         *,
         on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
-    ) -> Awaitable[Sequence[PreparedRevisionReplayResult]]: ...
+    ) -> Awaitable[RetainedReplayOutcome]: ...
 
 
 class _DeferredAppend:

@@ -78,7 +78,7 @@ async def test_owned_empty_generation_uses_cold_build_policy_and_finishes_ready(
     register_cold_build_generation(generation)
     try:
         async with prepared_live_convergence_owner(root) as owner:
-            receipts = await owner.replay_retained_raw_ids((raw_id,))
+            receipts = (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
             assert {key for receipt in receipts for key in receipt.written_session_ids} == {
                 "chatgpt-export:cold-generation"
             }
@@ -121,7 +121,7 @@ async def test_retained_replay_terminal_fts_verifies_nonempty_membership(tmp_pat
 
     raw_id = await run_archive_fixture_write(tmp_path, acquire)
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        receipts = await owner.replay_retained_raw_ids((raw_id,))
+        receipts = (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
         assert {key for receipt in receipts for key in receipt.written_session_ids} == {
             "chatgpt-export:retained-readiness"
         }
@@ -181,7 +181,7 @@ async def test_backfill_resumes_after_index_receipt_commits_before_source_termin
     monkeypatch.setattr(archive_revision_governance, "publish_prepared_revision_source", crash_after_index_commit)
     with pytest.raises(RuntimeError, match="crash after index receipt"):
         async with prepared_live_convergence_owner(tmp_path) as owner:
-            await owner.replay_retained_raw_ids((raw_id,))
+            (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
     assert reached
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0] == 1
@@ -190,7 +190,7 @@ async def test_backfill_resumes_after_index_receipt_commits_before_source_termin
 
     monkeypatch.setattr(archive_revision_governance, "publish_prepared_revision_source", original_publish)
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        resumed = await owner.replay_retained_raw_ids((raw_id,))
+        resumed = (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
     assert sum(receipt.replayed_logical_sources for receipt in resumed) == 1
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute(

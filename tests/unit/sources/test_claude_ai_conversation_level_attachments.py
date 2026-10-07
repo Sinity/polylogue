@@ -63,7 +63,7 @@ def _write(root: Path, payload: dict[str, Any]) -> tuple[int, int]:
                     )
 
             raw_id = await owner._write_coordinator.run_sync("fixture.claude.attachments.acquire", acquire)
-            await owner.replay_retained_raw_ids((raw_id,))
+            (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
 
     asyncio.run(publish())
     conn = sqlite3.connect(root / "index.db")

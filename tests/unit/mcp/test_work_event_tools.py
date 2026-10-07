@@ -18,9 +18,9 @@ def _converge_work_events(root: Path, raw_ids: tuple[str, ...], *, retained_repl
     async def converge() -> None:
         async with prepared_live_convergence_owner(root) as owner:
             receipts = (
-                await owner.replay_retained_raw_ids(raw_ids)
+                (await owner.replay_retained_raw_ids(raw_ids)).require_complete()
                 if retained_replay
-                else await owner.ingest_retained_raw_ids(raw_ids)
+                else (await owner.ingest_retained_raw_ids(raw_ids)).require_complete()
             )
             assert receipts
 

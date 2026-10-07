@@ -36,7 +36,7 @@ from polylogue.operations.operation_context import (
     observe_embedding_mutation_authority,
     open_operation_read,
 )
-from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
+from polylogue.sources.revision_backfill import RetainedReplayOutcome
 from polylogue.storage.embeddings.generations import EmbeddingGenerationBusyError
 from polylogue.version import POLYLOGUE_VERSION
 
@@ -67,7 +67,7 @@ class OperationRuntime(Protocol):
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None],
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None],
         before_publication: Callable[[], None],
-    ) -> tuple[PreparedRevisionReplayResult, ...]: ...
+    ) -> RetainedReplayOutcome: ...
 
     async def compute_phase(self, work: Callable[[], _T]) -> _T: ...
 

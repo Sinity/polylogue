@@ -288,7 +288,7 @@ def test_unknown_retained_document_scans_past_oversized_leading_value(tmp_path: 
 
     async def replay() -> tuple[revision_backfill.PreparedRevisionReplayResult, ...]:
         async with prepared_live_convergence_owner(tmp_path) as owner:
-            return await owner.replay_retained_raw_ids((raw_id,))
+            return (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
 
     results = asyncio.run(replay())
     _assert_complete_original_parser_receipt(tmp_path, raw_id)
@@ -361,7 +361,7 @@ def test_unknown_retained_array_ignores_fragment_only_mapping_before_real_provid
 
     async def replay() -> tuple[revision_backfill.PreparedRevisionReplayResult, ...]:
         async with prepared_live_convergence_owner(tmp_path) as owner:
-            return await owner.replay_retained_raw_ids((raw_id,))
+            return (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
 
     results = asyncio.run(replay())
     _assert_complete_original_parser_receipt(tmp_path, raw_id)
@@ -403,7 +403,7 @@ def test_prepared_session_spill_uses_its_actual_owned_index_directory(tmp_path: 
 
     async def establish_source() -> None:
         async with prepared_live_convergence_owner(archive_root) as owner:
-            await owner.replay_retained_raw_ids((raw_id,))
+            (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
 
     asyncio.run(establish_source())
     store = IndexGenerationStore.for_archive_root(archive_root)
@@ -598,7 +598,7 @@ def test_backfill_scans_declared_stream_past_non_session_prefix(tmp_path: Path) 
 
     async def replay() -> tuple[revision_backfill.PreparedRevisionReplayResult, ...]:
         async with prepared_live_convergence_owner(tmp_path) as owner:
-            return await owner.replay_retained_raw_ids((raw_id,))
+            return (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
 
     results = asyncio.run(replay())
     _assert_complete_original_parser_receipt(tmp_path, raw_id)
@@ -823,7 +823,7 @@ def test_historical_backfill_replays_single_session_state_db(tmp_path: Path) -> 
 
     async def replay() -> tuple[revision_backfill.PreparedRevisionReplayResult, ...]:
         async with prepared_live_convergence_owner(tmp_path) as owner:
-            return await owner.replay_retained_raw_ids((raw_id,))
+            return (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
 
     results = asyncio.run(replay())
     _assert_complete_original_parser_receipt(tmp_path, raw_id)
@@ -865,7 +865,7 @@ def test_historical_backfill_streams_codex_raw_without_eager_blob_read(
 
     async def replay() -> tuple[revision_backfill.PreparedRevisionReplayResult, ...]:
         async with prepared_live_convergence_owner(tmp_path) as owner:
-            return await owner.replay_retained_raw_ids((raw_id,))
+            return (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
 
     monkeypatch.setattr(
         ArchiveBlobPublisher,
@@ -905,9 +905,11 @@ def test_retained_replay_refuses_a_malformed_middle_record_with_a_terminal_censu
     async def replay() -> None:
         async with prepared_live_convergence_owner(tmp_path) as owner:
             refused: list[str] = []
-            result = await owner.replay_retained_raw_ids(
-                (raw_id,), on_terminal_refusal=lambda _keys, refusal: refused.append(refusal.raw_id)
-            )
+            result = (
+                await owner.replay_retained_raw_ids(
+                    (raw_id,), on_terminal_refusal=lambda _keys, refusal: refused.append(refusal.raw_id)
+                )
+            ).require_complete()
             assert result == ()
             assert refused == [raw_id]
 
@@ -958,9 +960,11 @@ def test_retained_replay_settles_an_undecodable_json_document_as_terminal(tmp_pa
     async def replay() -> None:
         async with prepared_live_convergence_owner(tmp_path) as owner:
             refused: list[str] = []
-            result = await owner.replay_retained_raw_ids(
-                (raw_id,), on_terminal_refusal=lambda _keys, refusal: refused.append(refusal.raw_id)
-            )
+            result = (
+                await owner.replay_retained_raw_ids(
+                    (raw_id,), on_terminal_refusal=lambda _keys, refusal: refused.append(refusal.raw_id)
+                )
+            ).require_complete()
             assert result == ()
             assert refused == [raw_id]
 

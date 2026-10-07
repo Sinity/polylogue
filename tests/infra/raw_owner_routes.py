@@ -14,7 +14,7 @@ import sys
 from builtins import BaseExceptionGroup
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, closing
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from polylogue.daemon.derivation import DerivationReport
     from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+    from polylogue.operations.intake_adapters import RawMaterializationDiscovery
     from polylogue.sources.live.batch import LiveBatchProcessor
     from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
     from polylogue.sources.live.metrics import LiveBatchMetrics
@@ -70,7 +71,7 @@ async def replay_retained_raws_async(
     """Replay retained raws into the active Index through the owner's replay route."""
     selected = retained_raw_ids(archive_root) if raw_ids is None else tuple(raw_ids)
     async with prepared_live_convergence_owner(archive_root) as raw_owner:
-        return await raw_owner.replay_retained_raw_ids(selected)
+        return (await raw_owner.replay_retained_raw_ids(selected)).require_complete()
 
 
 def replay_retained_raws(
@@ -101,7 +102,7 @@ async def cold_rebuilt_index(archive_root: Path) -> AsyncIterator[Path]:
     register_cold_build_generation(generation)
     try:
         async with prepared_live_convergence_owner(archive_root) as raw_owner:
-            await raw_owner.replay_retained_raw_ids(raws)
+            (await raw_owner.replay_retained_raw_ids(raws)).require_complete()
         await run_archive_fixture_write(archive_root, generation.prepare_promotion_candidate)
         yield Path(generation.generation.index_path)
     finally:
@@ -306,41 +307,82 @@ def _lease_writer(root: Path) -> Callable[[str, Callable[[], bool]], bool]:
     return writer
 
 
-def converge_raw_observations_with_owner(
-    archive_root: Path, *, source_roots: Sequence[Path], limit: int, passes: int = 1
+async def converge_pending_raws_async(
+    raw_owner: RawObservationConvergenceOwner,
+    archive_root: Path,
+    *,
+    limit: int,
+    discovery: RawMaterializationDiscovery | None = None,
 ) -> DerivationReport:
-    """Run canonical raw-observation convergence ``passes`` times on the raw owner; return the last report."""
-    from polylogue.core.stage_admission import stage_write_admission
-    from polylogue.operations.raw_observation_derivation import converge_raw_observations
+    """One fair-intake pass, as the daemon runs it, folded into one report.
 
-    def converge(compute_adapter: BoundedComputeAdapter) -> DerivationReport:
-        with stage_write_admission(_lease_writer(archive_root)):
-            return converge_raw_observations(
-                archive_root, source_roots=source_roots, compute_adapter=compute_adapter, limit=limit
+    The daemon's ``RawMaterializationDiscovery`` offers a bounded page of
+    pending raws and each is converged by ``converge_raw_id``. A raw whose
+    convergence raises is the intake's retryable admission: it is reported
+    pending with its error. Pass the same ``discovery`` to continue its
+    traversal across passes, as the daemon's intake lifetime does.
+    """
+    from polylogue.daemon.derivation import (
+        DerivationKey,
+        DerivationReport,
+        KeyOutcome,
+        Outcome,
+        PendingReason,
+        WorkCounters,
+    )
+    from polylogue.operations.intake_adapters import RawMaterializationDiscovery
+    from polylogue.operations.raw_observation_derivation import RAW_OBSERVATION_DOMAIN, raw_observation_frame
+
+    discovery = RawMaterializationDiscovery(archive_root) if discovery is None else discovery
+    page = await asyncio.to_thread(discovery.discover_pending_raw_ids, limit)
+    outcomes: list[KeyOutcome] = []
+    counts = dict.fromkeys(Outcome, 0)
+    work: dict[str, int] = {}
+    for raw_id, _cost in page:
+        try:
+            report = await raw_owner.converge_raw_id(raw_id)
+        except Exception as failure:
+            outcomes.append(
+                KeyOutcome(
+                    DerivationKey(RAW_OBSERVATION_DOMAIN, raw_id),
+                    Outcome.PENDING,
+                    reason=PendingReason.BLOCKED,
+                    error=f"{type(failure).__name__}: {failure}",
+                )
             )
+            counts[Outcome.PENDING] += 1
+            continue
+        outcomes.extend(report.outcomes)
+        for outcome in Outcome:
+            counts[outcome] += report.count(outcome)
+        for counter in fields(WorkCounters):
+            work[counter.name] = work.get(counter.name, 0) + int(getattr(report.work, counter.name))
+    return DerivationReport(raw_observation_frame(archive_root), tuple(outcomes), counts, WorkCounters(**work))
+
+
+def converge_pending_raws_with_owner(archive_root: Path, *, limit: int = 128, passes: int = 1) -> DerivationReport:
+    """Run ``passes`` fair-intake passes on one raw owner and discovery; return the last report."""
+    from polylogue.operations.intake_adapters import RawMaterializationDiscovery
 
     async def run() -> DerivationReport:
         report: DerivationReport | None = None
+        discovery = RawMaterializationDiscovery(archive_root)
         async with prepared_live_convergence_owner(archive_root) as raw_owner:
             for _ in range(passes):
-                report = await raw_owner.run_convergence_sync(
-                    "test.raw-observation.converge", converge, raw_owner._compute_adapter
-                )
+                report = await converge_pending_raws_async(raw_owner, archive_root, limit=limit, discovery=discovery)
         assert report is not None
         return report
 
     return asyncio.run(run())
 
 
-def inspect_raw_observations(
-    archive_root: Path, raw_ids: Sequence[str], *, source_roots: Sequence[Path]
-) -> Mapping[str, str]:
+def inspect_raw_observations(archive_root: Path, raw_ids: Sequence[str]) -> Mapping[str, str]:
     """Inspect retained raws through the canonical adapter on the raw owner's creator."""
     from polylogue.operations.raw_observation_derivation import make_raw_observation_derivation, raw_observation_frame
 
     def inspect(compute_adapter: BoundedComputeAdapter) -> Mapping[str, str]:
         return make_raw_observation_derivation(archive_root, compute_adapter=compute_adapter).inspect(
-            raw_observation_frame(archive_root, source_roots=source_roots), list(raw_ids)
+            raw_observation_frame(archive_root), list(raw_ids)
         )
 
     async def run() -> Mapping[str, str]:
@@ -401,7 +443,8 @@ def _publish_source_preparation(
 
 
 __all__ = [
-    "converge_raw_observations_with_owner",
+    "converge_pending_raws_async",
+    "converge_pending_raws_with_owner",
     "inspect_raw_observations",
     "LiveOwnerSet",
     "cold_rebuilt_index",

@@ -619,7 +619,7 @@ async def test_claude_timestamped_idless_edit_keeps_axis_and_persists_content(tm
                 )
 
         first_raw_id = await run_archive_fixture_write(root, acquire_0)
-        first = await owner.ingest_retained_raw_ids((first_raw_id,))
+        first = (await owner.ingest_retained_raw_ids((first_raw_id,))).require_complete()
 
         def acquire_1() -> str:
             with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -634,7 +634,7 @@ async def test_claude_timestamped_idless_edit_keeps_axis_and_persists_content(tm
                 )
 
         second_raw_id = await run_archive_fixture_write(root, acquire_1)
-        second = await owner.ingest_retained_raw_ids((second_raw_id,))
+        second = (await owner.ingest_retained_raw_ids((second_raw_id,))).require_complete()
 
     conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
     try:
@@ -706,7 +706,7 @@ async def test_claude_attachment_owner_stays_stable_across_idless_body_edit(tmp_
                 )
 
         first_raw_id = await run_archive_fixture_write(root, acquire_0)
-        first = await owner.ingest_retained_raw_ids((first_raw_id,))
+        first = (await owner.ingest_retained_raw_ids((first_raw_id,))).require_complete()
 
         def acquire_1() -> str:
             with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -721,7 +721,7 @@ async def test_claude_attachment_owner_stays_stable_across_idless_body_edit(tmp_
                 )
 
         second_raw_id = await run_archive_fixture_write(root, acquire_1)
-        second = await owner.ingest_retained_raw_ids((second_raw_id,))
+        second = (await owner.ingest_retained_raw_ids((second_raw_id,))).require_complete()
 
     assert any(receipt.changed_session_ids for receipt in first)
     assert any(receipt.changed_session_ids for receipt in second)
@@ -901,7 +901,7 @@ async def test_claude_idless_file_reassignment_changes_owner_hash_and_reingests(
                 )
 
         initial_raw_id = await run_archive_fixture_write(root, acquire_0)
-        initial = await owner.ingest_retained_raw_ids((initial_raw_id,))
+        initial = (await owner.ingest_retained_raw_ids((initial_raw_id,))).require_complete()
 
         def acquire_1() -> str:
             with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -916,7 +916,7 @@ async def test_claude_idless_file_reassignment_changes_owner_hash_and_reingests(
                 )
 
         reassigned_raw_id = await run_archive_fixture_write(root, acquire_1)
-        reassigned = await owner.ingest_retained_raw_ids((reassigned_raw_id,))
+        reassigned = (await owner.ingest_retained_raw_ids((reassigned_raw_id,))).require_complete()
 
     assert any(receipt.changed_session_ids for receipt in initial)
     assert any(receipt.changed_session_ids for receipt in reassigned)
@@ -961,7 +961,7 @@ async def test_claude_duplicate_native_owner_move_changes_real_ingest_hash_and_o
                 )
 
         first_raw_id = await run_archive_fixture_write(root, acquire_0)
-        first = await owner.ingest_retained_raw_ids((first_raw_id,))
+        first = (await owner.ingest_retained_raw_ids((first_raw_id,))).require_complete()
 
         def acquire_1() -> str:
             with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -976,7 +976,7 @@ async def test_claude_duplicate_native_owner_move_changes_real_ingest_hash_and_o
                 )
 
         second_raw_id = await run_archive_fixture_write(root, acquire_1)
-        second = await owner.ingest_retained_raw_ids((second_raw_id,))
+        second = (await owner.ingest_retained_raw_ids((second_raw_id,))).require_complete()
 
     conn = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
     try:

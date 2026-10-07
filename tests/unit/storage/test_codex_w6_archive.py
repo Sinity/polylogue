@@ -114,7 +114,7 @@ async def test_work_event_payload_cannot_override_validated_identity(tmp_path: P
     raw_id = admitted["raw_id"]
     assert isinstance(raw_id, str)
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert raw_id in {selected for receipt in receipts for selected in receipt.writer_changed_raw_ids}
     with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
         stored = archive._conn.execute(

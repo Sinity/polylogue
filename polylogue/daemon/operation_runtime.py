@@ -72,7 +72,7 @@ if TYPE_CHECKING:
     from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance
     from polylogue.operations.audit import CanonicalAuditLiteral
     from polylogue.operations.insight_acceptance import AcceptedInsightPart, SessionInsightPartReceipt
-    from polylogue.operations.raw_observation_owner import PreparedRevisionReplayResult
+    from polylogue.operations.raw_observation_owner import RetainedReplayOutcome
 
 _T = TypeVar("_T")
 
@@ -188,7 +188,7 @@ class DaemonOperationRuntime:
         on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None],
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None],
         before_publication: Callable[[], None],
-    ) -> tuple[PreparedRevisionReplayResult, ...]:
+    ) -> RetainedReplayOutcome:
         owner = self.raw_observation_owner
         if (
             owner._archive_root.resolve() != self.archive_root

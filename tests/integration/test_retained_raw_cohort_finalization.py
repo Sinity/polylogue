@@ -44,11 +44,11 @@ async def test_resident_raw_owner_finalizes_each_real_retained_cohort_member(tmp
     raw_id = await run_archive_fixture_write(root, acquire)
     expected = {f"chatgpt-export:cohort-{ordinal}" for ordinal in range(3)}
     async with prepared_live_convergence_owner(root) as owner:
-        first = await owner.ingest_retained_raw_ids((raw_id,))
+        first = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert {key for receipt in first for key in receipt.written_session_ids} == expected
         assert {key for receipt in first for key in receipt.changed_session_ids} == expected
         assert sum(receipt.written_message_count for receipt in first) == 3
-        repeated = await owner.ingest_retained_raw_ids((raw_id,))
+        repeated = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert not any(receipt.changed_session_ids for receipt in repeated)
         assert all(before == after for receipt in repeated for _key, before, after, _count in receipt.session_outputs)
     with ArchiveStore.open_existing(root, read_only=True) as archive:
@@ -93,10 +93,10 @@ async def test_resident_raw_owner_preserves_published_attachment_receipts_after_
 
     raw_id = await run_archive_fixture_write(root, acquire)
     async with prepared_live_convergence_owner(root) as owner:
-        first = await owner.ingest_retained_raw_ids((raw_id,))
+        first = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert sum(receipt.written_message_count for receipt in first) == expected_messages
         assert len({session_id for receipt in first for session_id in receipt.written_session_ids}) == 1
-        repeated = await owner.ingest_retained_raw_ids((raw_id,))
+        repeated = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert not any(receipt.changed_session_ids for receipt in repeated)
     with ArchiveStore.open_existing(root, read_only=True) as archive:
         index = archive.index_connection
@@ -209,10 +209,10 @@ async def test_resident_byte_aggregate_consumes_the_original_full_and_append_car
 
     baseline_raw_id, append_raw_id = await run_archive_fixture_write(root, acquire)
     async with prepared_live_convergence_owner(root) as owner:
-        first = await owner.ingest_retained_raw_ids((append_raw_id,))
+        first = (await owner.ingest_retained_raw_ids((append_raw_id,))).require_complete()
         assert {value for receipt in first for value in receipt.written_session_ids} == {key}
         assert sum(receipt.written_message_count for receipt in first) == 2
-        repeated = await owner.ingest_retained_raw_ids((append_raw_id,))
+        repeated = (await owner.ingest_retained_raw_ids((append_raw_id,))).require_complete()
         assert not any(receipt.changed_session_ids for receipt in repeated)
         assert sum(receipt.written_message_count for receipt in repeated) == 0
     with ArchiveStore.open_existing(root, read_only=True) as archive:
@@ -380,12 +380,12 @@ async def test_resident_byte_aggregate_preserves_acquired_claims_from_both_origi
             if replacement == "arrival_reverse"
             else (append_raw_id,)
         )
-        first = await owner.ingest_retained_raw_ids(selected)
+        first = (await owner.ingest_retained_raw_ids(selected)).require_complete()
         assert {value for receipt in first for value in receipt.written_session_ids} == {key}
         # APPEND contains a second complete provider document. The canonical
         # byte cohort retains each declared occurrence from both acquired ranges.
         assert sum(receipt.written_message_count for receipt in first) == original_messages + cumulative_messages
-        repeated = await owner.ingest_retained_raw_ids((append_raw_id,))
+        repeated = (await owner.ingest_retained_raw_ids((append_raw_id,))).require_complete()
         assert not any(receipt.changed_session_ids for receipt in repeated)
         assert sum(receipt.written_message_count for receipt in repeated) == 0
         if replacement in {"equivalent", "move"}:
@@ -410,13 +410,13 @@ async def test_resident_byte_aggregate_preserves_acquired_claims_from_both_origi
 
             replacement_full_id, replacement_append_id = await run_archive_fixture_write(root, acquire_replacement)
             assert replacement_full_id != baseline_raw_id and replacement_append_id != append_raw_id
-            replaced = await owner.ingest_retained_raw_ids((replacement_append_id,))
+            replaced = (await owner.ingest_retained_raw_ids((replacement_append_id,))).require_complete()
             assert not any(receipt.changed_session_ids for receipt in replaced)
             assert sum(receipt.written_message_count for receipt in replaced) == 0
             assert all(
                 before == after for receipt in replaced for _key, before, after, _count in receipt.session_outputs
             )
-            replayed = await owner.ingest_retained_raw_ids((replacement_append_id,))
+            replayed = (await owner.ingest_retained_raw_ids((replacement_append_id,))).require_complete()
             assert not any(receipt.changed_session_ids for receipt in replayed)
     with ArchiveStore.open_existing(root, read_only=True) as archive:
         index = archive.index_connection
@@ -496,7 +496,7 @@ async def test_failed_real_cohort_preparation_releases_original_scratch_after_se
     monkeypatch.setattr(prepared_merge, "session_content_hash", fail_reached_aggregate)
     async with prepared_live_convergence_owner(root) as owner:
         with pytest.raises(BaseException) as failure:
-            await owner.ingest_retained_raw_ids((raw_id,))
+            (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         leaves = [failure.value]
         while any(isinstance(item, BaseExceptionGroup) for item in leaves):
             leaves = [

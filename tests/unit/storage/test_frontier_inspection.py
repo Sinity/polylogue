@@ -214,7 +214,7 @@ async def test_real_retained_head_records_blob_proof_and_current_coverage(
 
     raw_id = await run_archive_fixture_write(root, acquire)
     async with prepared_live_convergence_owner(root) as owner:
-        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert receipts and sum(len(receipt.written_session_ids) for receipt in receipts) == 1
         from polylogue.storage.blob_store import BlobStore
 

@@ -54,7 +54,7 @@ from polylogue.sources.live.cursor import CursorPathAuthority, CursorRecord, Cur
 from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, LiveBatchMetrics
 from polylogue.sources.live.watcher import WriteCoordinator, default_sources
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
+from polylogue.sources.revision_backfill import RetainedReplayOutcome
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -3834,9 +3834,9 @@ def test_page_admission_acquires_source_without_reading_unavailable_index(
         raw_ids: Sequence[str],
         *,
         on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
-    ) -> tuple[PreparedRevisionReplayResult, ...]:
+    ) -> RetainedReplayOutcome:
         prepared.append(tuple(raw_ids))
-        return ()
+        return RetainedReplayOutcome()
 
     watcher = LiveWatcher(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),

@@ -48,7 +48,7 @@ def _seed_target(root: Path) -> None:
 
     async def replay() -> None:
         async with prepared_live_convergence_owner(root) as owner:
-            await owner.replay_retained_raw_ids((raw_id,))
+            (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
 
     asyncio.run(replay())
 

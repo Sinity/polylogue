@@ -58,9 +58,9 @@ async def test_resident_raw_writes_registered_candidate_without_active_index_eff
     try:
         async with prepared_live_convergence_owner(root) as owner:
             receipts = (
-                await owner.ingest_retained_raw_ids((raw_id,))
+                (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
                 if route == "ingest"
-                else await owner.replay_retained_raw_ids((raw_id,))
+                else (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
             )
             assert {key for receipt in receipts for key in receipt.written_session_ids} == {
                 "chatgpt-export:candidate-session"

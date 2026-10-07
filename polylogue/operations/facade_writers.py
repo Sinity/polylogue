@@ -492,13 +492,14 @@ async def facade_record_work_event(
     def refuse_one(failure: BaseException) -> None:
         raise failure
 
-    receipts = await runtime.materialize_retained_raw_ids(
+    replay = await runtime.materialize_retained_raw_ids(
         (str(admitted["raw_id"]),),
         on_terminal_refusal=refuse,
         on_dependency_refusal=refuse_one,
         on_membership_refusal=refuse_one,
         before_publication=lambda: None,
     )
+    receipts = replay.require_complete()
     result = _daemon_writer_result(
         request,
         {

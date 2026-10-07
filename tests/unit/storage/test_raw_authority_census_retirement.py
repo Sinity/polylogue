@@ -242,7 +242,7 @@ async def test_terminal_supersessions_remain_readable_without_creating_obligatio
 
     old_raw, new_raw = await run_archive_fixture_write(tmp_path, acquire)
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        receipts = await owner.ingest_retained_raw_ids((old_raw, new_raw))
+        receipts = (await owner.ingest_retained_raw_ids((old_raw, new_raw))).require_complete()
         assert receipts
         outcome = await owner.run_convergence_sync(
             "fixture.retirement.terminal",
