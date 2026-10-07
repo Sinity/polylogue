@@ -82,6 +82,22 @@ def _historical_schemas(
         yield package.version, schema
 
 
+def _choose_retained_schema(
+    base_version: str,
+    base_schema: JSONDocument,
+    historical_schemas: Iterator[tuple[str, JSONDocument]],
+    *,
+    schema_accepts: Callable[[JSONDocument], bool],
+) -> tuple[str, JSONDocument]:
+    """Apply the shared retained current-then-historical acceptance order."""
+    if schema_accepts(base_schema):
+        return base_version, base_schema
+    for historical_version, historical_schema in historical_schemas:
+        if schema_accepts(historical_schema):
+            return historical_version, historical_schema
+    return base_version, base_schema
+
+
 def reset_registry_cache() -> None:
     """Clear shared runtime-registry instances used by schema validation."""
     _shared_registry.cache_clear()
@@ -209,23 +225,15 @@ def resolve_retained_schema(
         package_version=package_version,
         element_kind=element_kind,
     )
-    if (
-        (schema_resolution is not None and schema_resolution_is_explicit)
-        or schema_accepts is None
-        or schema_accepts(schema)
-    ):
+    if (schema_resolution is not None and schema_resolution_is_explicit) or schema_accepts is None:
         key = (str(canonical), package_version, element_kind)
         return canonical, schema, key, _replace_resolution(resolution, canonical, key)
-
-    for historical_version, historical_schema in _historical_schemas(
-        registry,
-        canonical,
-        element_kind=element_kind,
-    ):
-        if schema_accepts(historical_schema):
-            key = (str(canonical), historical_version, element_kind)
-            return canonical, historical_schema, key, _replace_resolution(resolution, canonical, key)
-
+    package_version, schema = _choose_retained_schema(
+        package_version,
+        schema,
+        _historical_schemas(registry, canonical, element_kind=element_kind),
+        schema_accepts=schema_accepts,
+    )
     key = (str(canonical), package_version, element_kind)
     return canonical, schema, key, _replace_resolution(resolution, canonical, key)
 

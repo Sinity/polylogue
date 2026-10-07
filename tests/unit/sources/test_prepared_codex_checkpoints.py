@@ -6,11 +6,12 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import replace
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 
 from polylogue.archive.revision_authority import RawRevisionKind
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, ValidationMode
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers import codex
@@ -172,7 +173,7 @@ class _SourceRead:
         yield Provider.CODEX, BytesIO(self.payloads[raw_id]), "same/path.jsonl", RawRevisionKind.FULL
 
 
-def test_source_read_proof_checks_hash_prefix_and_complete_record_boundaries() -> None:
+def test_source_read_proof_checks_hash_prefix_and_complete_record_boundaries(tmp_path: Path) -> None:
     records = _records(3)
     captures = []
     for count in range(1, 5):
@@ -180,14 +181,19 @@ def test_source_read_proof_checks_hash_prefix_and_complete_record_boundaries() -
         captures.append(text.encode())
     source_read = _SourceRead(captures)
     head_blob = tempfile.TemporaryFile(mode="w+b")
-    head_blob, counts, hashes, header, message_count = _read_head_and_prove(
-        source_read, tuple(source_read.payloads), head_blob
+    head_blob, counts, hashes, header, message_count, verdicts = _read_head_and_prove(
+        source_read,
+        tuple(source_read.payloads),
+        head_blob,
+        validation_mode=ValidationMode.ADVISORY,
+        validation_directory=tmp_path,
     )
     try:
         assert counts == [1, 2, 3, 4]
         assert header == "prefix-session"
         assert message_count == 3
         assert hashes[-1] == hashlib.sha256(captures[-1]).hexdigest()
+        assert set(verdicts) == set(tuple(source_read.payloads)[2:-1])
     finally:
         head_blob.close()
 
@@ -196,7 +202,13 @@ def test_source_read_proof_checks_hash_prefix_and_complete_record_boundaries() -
     replaced_blob = tempfile.TemporaryFile(mode="w+b")
     try:
         with pytest.raises(ValueError, match="exact byte prefixes"):
-            _read_head_and_prove(_SourceRead(replaced), tuple(source_read.payloads), replaced_blob)
+            _read_head_and_prove(
+                _SourceRead(replaced),
+                tuple(source_read.payloads),
+                replaced_blob,
+                validation_mode=ValidationMode.ADVISORY,
+                validation_directory=tmp_path,
+            )
     finally:
         replaced_blob.close()
 
@@ -205,7 +217,13 @@ def test_source_read_proof_checks_hash_prefix_and_complete_record_boundaries() -
     incomplete_blob = tempfile.TemporaryFile(mode="w+b")
     try:
         with pytest.raises(ValueError, match="ends inside a JSONL record"):
-            _read_head_and_prove(_SourceRead(incomplete), tuple(source_read.payloads), incomplete_blob)
+            _read_head_and_prove(
+                _SourceRead(incomplete),
+                tuple(source_read.payloads),
+                incomplete_blob,
+                validation_mode=ValidationMode.ADVISORY,
+                validation_directory=tmp_path,
+            )
     finally:
         incomplete_blob.close()
 
@@ -282,6 +300,7 @@ def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path, monkeypat
             raw_ids,
             head_artifact=head_artifact,
             artifact_directory=interior_dir,
+            validation_mode=ValidationMode.ADVISORY,
             publication_publisher=None,
             publication_source_read=None,
             prepare_sessions=lambda _raw_id, sessions: sessions,
@@ -296,6 +315,11 @@ def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path, monkeypat
         assert raw_id == raw_ids[2]
         assert artifact.blob_hash == expected_hash
         assert artifact.captured_profile_key == "captured-profile"
+        assert artifact.validation_verdict is not None
+        assert artifact.validation_verdict.raw_id == raw_id
+        assert artifact.validation_verdict.revision_sha256 == expected_hash
+        assert artifact.validation_verdict.evidence_id == raw_id
+        assert artifact.validation_verdict.mode is ValidationMode.ADVISORY
         sessions = list(artifact.iter_sessions())
         assert len(sessions) == 1
         expected = normalize_session_timestamps(
@@ -339,6 +363,7 @@ def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path, monkeypat
             raw_ids,
             head_artifact=normalized_head_artifact,
             artifact_directory=interior_dir,
+            validation_mode=ValidationMode.ADVISORY,
             publication_publisher=None,
             publication_source_read=None,
             prepare_sessions=lambda _raw_id, sessions: sessions,
