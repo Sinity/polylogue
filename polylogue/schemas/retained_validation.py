@@ -12,6 +12,7 @@ import hashlib
 import re
 import sqlite3
 from collections.abc import Iterator, KeysView, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -40,6 +41,44 @@ from polylogue.schemas.validator_resolution import resolve_retained_schema
 
 if TYPE_CHECKING:
     pass
+
+
+_ACTIVE_VALIDATION_CONNECTION: ContextVar[sqlite3.Connection | None] = ContextVar(
+    "retained_validation_connection", default=None
+)
+_BOUNDED_VALIDATOR_CLASS: Any = None
+
+
+class _ConnectionBoundValidator:
+    """Run one shared validator class with its caller-owned spill connection."""
+
+    def __init__(self, validator: Any, connection: sqlite3.Connection) -> None:
+        self._validator = validator
+        self._connection = connection
+
+    def iter_errors(self, instance: object) -> Iterator[ValidationError]:
+        token = _ACTIVE_VALIDATION_CONNECTION.set(self._connection)
+        try:
+            yield from self._validator.iter_errors(instance)
+        finally:
+            _ACTIVE_VALIDATION_CONNECTION.reset(token)
+
+    def is_valid(self, instance: object) -> bool:
+        token = _ACTIVE_VALIDATION_CONNECTION.set(self._connection)
+        try:
+            return bool(self._validator.is_valid(instance))
+        finally:
+            _ACTIVE_VALIDATION_CONNECTION.reset(token)
+
+    def evolve(self, **kwargs: object) -> _ConnectionBoundValidator:
+        return _ConnectionBoundValidator(self._validator.evolve(**kwargs), self._connection)
+
+
+def _active_validation_connection() -> sqlite3.Connection:
+    connection = _ACTIVE_VALIDATION_CONNECTION.get()
+    if connection is None:
+        raise RuntimeError("bounded schema keyword ran without an active spill connection")
+    return connection
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,7 +327,7 @@ def _schema_accepts_document(
     for sample in _validation_samples(payload, schema, provider):
         check_compute_cancelled()
         validator = _bounded_validator(schema, connection)
-        if next(validator.iter_errors(_normalized(sample, schema, schema, connection)), None) is not None:
+        if not validator.is_valid(_normalized(sample, schema, schema, connection)):
             return False
     return True
 
@@ -426,6 +465,11 @@ class _NormalizedArray(list[object]):
 
 
 def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connection) -> Any:
+    global _BOUNDED_VALIDATOR_CLASS
+
+    _ensure_reducer_tables(connection)
+    if _BOUNDED_VALIDATOR_CLASS is not None:
+        return _ConnectionBoundValidator(_BOUNDED_VALIDATOR_CLASS(schema), connection)
 
     def any_of(
         validator: Any, schemas: Sequence[object], instance: object, schema_node: object
@@ -479,6 +523,7 @@ def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connect
     ) -> Iterator[ValidationError]:
         if enabled is not True or not validator.is_type(instance, "array") or not isinstance(instance, Sequence):
             return
+        connection = _active_validation_connection()
         scope = _new_scope(connection)
         try:
             for index, item in enumerate(instance):
@@ -501,6 +546,7 @@ def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connect
     ) -> Iterator[ValidationError]:
         if not validator.is_type(instance, "object") or not isinstance(instance, Mapping):
             return
+        connection = _active_validation_connection()
         scope = _new_scope(connection)
         try:
             for key in _evaluated_property_keys(validator, instance, schema_node):
@@ -521,6 +567,7 @@ def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connect
     ) -> Iterator[ValidationError]:
         if not validator.is_type(instance, "array") or not isinstance(instance, Sequence):
             return
+        connection = _active_validation_connection()
         scope = _new_scope(connection)
         try:
             for index in _evaluated_item_indexes(validator, instance, schema_node):
@@ -536,7 +583,7 @@ def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connect
             connection.execute("DELETE FROM retained_eval_items WHERE scope=?", (scope,))
             connection.execute("DELETE FROM retained_scope WHERE id=?", (scope,))
 
-    custom = validators.extend(
+    _BOUNDED_VALIDATOR_CLASS = validators.extend(
         Draft202012Validator,
         validators={
             "anyOf": any_of,
@@ -547,8 +594,7 @@ def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connect
             "unevaluatedItems": unevaluated_items,
         },
     )
-    _ensure_reducer_tables(connection)
-    return custom(schema)
+    return _ConnectionBoundValidator(_BOUNDED_VALIDATOR_CLASS(schema), connection)
 
 
 def _ensure_reducer_tables(connection: sqlite3.Connection) -> None:
