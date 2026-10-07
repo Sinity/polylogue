@@ -3,16 +3,12 @@
 from __future__ import annotations
 
 import sqlite3
-import sys
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
-from polylogue.core.stage_admission import stage_write_admission
-from polylogue.pipeline.services.ingest_batch._core import _prepare_ingest_payloads
-from polylogue.pipeline.services.ingest_batch._core import _write_session as _lower_ingest_session
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_store import blob_store_for_connection
 from polylogue.storage.index_generation import ActiveWriterLease
@@ -113,116 +109,57 @@ def fixture_index_mutation_scope(
             yield scope
 
 
-def write_fixture_ingest_payload(conn: sqlite3.Connection, payload: Any, **kwargs: Any) -> Any:
-    """Use canonical preparation, publication and receipt retirement for a fixture.
+def write_fixture_retained_session(
+    conn: sqlite3.Connection,
+    session: ParsedSession,
+    *,
+    raw_id: str | None = None,
+    source_index: int = 0,
+    revision_authoritative: bool = False,
+    acquired_at_ms: int = 1,
+) -> tuple[bool, dict[str, int]]:
+    """Publish one admitted ParsedSession through the retained session writer.
 
-    This starts at an admitted ParsedSession, and does not claim provider-byte
-    fidelity. Preparation finishes before this owner acquires writer custody.
+    The session binds to a retained Raw: ``raw_id`` names one the law acquired
+    itself; otherwise the session's canonical JSON is acquired as its Raw.
+    Preparation on an original seal and the guarded write under that seal
+    are the ones retained publication runs. This starts at a ParsedSession and
+    claims no provider-byte fidelity. Returns the writer's ``content_changed``
+    decision and its counts.
     """
-    import tempfile
+    import json
 
-    from polylogue.sources.prepared_jsonl import PreparedJsonl
-    from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
-    from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+    from polylogue.pipeline.ids import session_id as make_session_id
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.prepared_membership import write_prepared_retained_session
 
     if current_index_mutation_scope() is not None:
         raise ValueError("fixture preparation must precede its Index mutation scope")
-    path = index_path_for_connection(conn)
-    root = path.parent
+    if conn.in_transaction:
+        raise ValueError("the law's Index connection must not hold a transaction across a retained write")
+    root = index_path_for_connection(conn).parent
     with _fixture_writer_admission(conn, "test.fixture.bootstrap", root):
         bootstrap_archive_root(root)
-    publisher = kwargs.get("blob_publisher") or ArchiveBlobPublisher(root / "source.db", root / "blob")
-    if not isinstance(publisher, ArchiveBlobPublisher):
-        raise TypeError("fixture publication requires the actual ArchiveBlobPublisher")
-    kwargs["blob_publisher"] = publisher
-    kwargs["manage_transaction"] = False
-    artifact = None
-    # The prepared view below is retired with its artifact; the caller's
-    # payload keeps the session it supplied so it can be written again.
-    supplied_session = payload.parsed_session
-    try:
-        with PreparedIndexMutation(path, archive_root=root) as seal:
-            source = kwargs.get("source_conn")
-            if source is not None:
-                source_path = next((row[2] for row in source.execute("PRAGMA database_list") if row[1] == "main"), None)
-                if not source_path:
-                    raise ValueError("fixture Source connection must own an archive file")
-                seal.require_source_target(Path(source_path))
-            directory = Path(
-                tempfile.mkdtemp(prefix="fixture-ingest-", dir=publisher._prepared_staging_directory(None))
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        if raw_id is None:
+            source_path = f"fixture/{make_session_id(session.source_name, session.provider_session_id)}.json"
+            raw_id = archive.write_raw_payload(
+                provider=session.source_name,
+                payload=json.dumps(session.model_dump(mode="json"), sort_keys=True).encode(),
+                source_path=source_path,
+                canonical_source_path=source_path,
+                acquired_at_ms=acquired_at_ms,
             )
-            artifact = PreparedJsonl.from_sessions(
-                (payload.parsed_session,),
-                blob_hash=payload.content_hash,
-                artifact_directory=directory,
-                publication_publisher=publisher,
-            )
-            payload.prepared_artifact = artifact
-            payload.prepared_session_ordinal = 0
-            payload.parsed_session = artifact.session_by_id(payload.session_id)
-            index = seal.observer("index")
-            index.row_factory = sqlite3.Row
-            if kwargs.get("source_conn") is None:
-                kwargs["source_conn"] = seal.observer("source")
-            _prepare_ingest_payloads(index, kwargs["source_conn"], (payload,))
-            seal.validate_observers_current()
-
-            # Blob reservations are prepared lease-free against the seal and
-            # each page is flushed through stage admission, as the retained
-            # owner does under the daemon writer.
-            def admitted(actor: str, work: Callable[[], Any]) -> Any:
-                with _fixture_writer_admission(conn, actor, root):
-                    return work()
-
-            with stage_write_admission(admitted):
-                artifact.publish_blobs(reference_seal=seal)
-            with _fixture_writer_admission(conn, "test.fixture.ingest", root):
-                with seal.mutation_scope(conn):
-                    result = _lower_ingest_session(conn, payload, **kwargs)
-                with (
-                    closing(
-                        open_isolated_write_connection(
-                            root / "source.db", purpose="fixture blob receipt", archive_root=root
-                        )
-                    ) as source,
-                    source,
-                ):
-                    source.execute("BEGIN IMMEDIATE")
-                    for _ordinal, _attachment, claim in artifact.iter_attachment_claims():
-                        consume_blob_publication_receipt(
-                            source, claim.receipt.publication_id, bytes.fromhex(claim.receipt.blob_hash)
-                        )
-                    for _ordinal, _tool, claim, _present in artifact.iter_sidecar_claims():
-                        consume_blob_publication_receipt(
-                            source, claim.receipt.publication_id, bytes.fromhex(claim.receipt.blob_hash)
-                        )
-            return result
-    finally:
-        primary = sys.exception()
-        failures: list[BaseException] = []
-        if payload.prepared_write is not None:
-            try:
-                payload.prepared_write.close()
-            except BaseException as failure:
-                failures.append(failure)
-            else:
-                payload.prepared_write = None
-        # A failed carrier close retains the artifact for creator-thread
-        # settlement. Never remove its files underneath a live native owner.
-        if artifact is not None and not failures:
-            try:
-                artifact.discard()
-            except BaseException as failure:
-                failures.append(failure)
-            else:
-                payload.prepared_artifact = None
-                payload.prepared_session_ordinal = None
-                payload.parsed_session = supplied_session
-        if failures:
-            raise BaseExceptionGroup(
-                "fixture ingest cleanup remains unsettled", ([primary] if primary else []) + failures
-            )
+        result = write_prepared_retained_session(
+            archive,
+            session,
+            raw_id=raw_id,
+            source_index=source_index,
+            revision_authoritative=revision_authoritative,
+        )
+        archive.commit()
+    return result.content_changed, dict(result.counts)
 
 
 def write_fixture_index_session(

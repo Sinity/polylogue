@@ -193,8 +193,14 @@ def seed_excision_session(
 
 
 def seed_excision_marker_witnesses(root: Path, batches: Any) -> None:
-    """Use the existing physical incarnation producer on a fixture-owned writer."""
-    from polylogue.pipeline.services.ingest_batch._core import _ensure_ingest_index_incarnation
+    """Seed Index marker witnesses bound to this physical Index file.
+
+    No production route writes witnesses any more (polylogue-e5hiz retires the
+    tables and excision's reader); until then this fixture records the
+    incarnation row itself so excision's witness checks stay exercised.
+    """
+    import uuid
+
     from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, native_sql_owner_for_connection
 
     with write_lease("test.excision-marker-incarnation", archive_root=root):
@@ -203,7 +209,16 @@ def seed_excision_marker_witnesses(root: Path, batches: Any) -> None:
         )
         owner = native_sql_owner_for_connection(conn) or NativeSQLCustodyOwner(conn)
         try:
-            _ensure_ingest_index_incarnation(conn)
+            index_stat = (root / "index.db").stat()
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT INTO ingest_index_incarnation(singleton, incarnation_id, device, inode) VALUES (1, ?, ?, ?) "
+                "ON CONFLICT(singleton) DO UPDATE SET incarnation_id=excluded.incarnation_id, "
+                "device=excluded.device, inode=excluded.inode "
+                "WHERE (device, inode) != (excluded.device, excluded.inode)",
+                (str(uuid.uuid4()), index_stat.st_dev, index_stat.st_ino),
+            )
+            conn.commit()
             incarnation = conn.execute(
                 "SELECT incarnation_id FROM ingest_index_incarnation WHERE singleton=1"
             ).fetchone()[0]

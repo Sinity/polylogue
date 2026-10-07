@@ -49,9 +49,7 @@ from polylogue.operations.session_profile_convergence import (
     make_session_usage_rollup_derivation,
 )
 from polylogue.operations.session_source_membership import HOT_INSIGHT_SOURCE_BYTES
-from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
-from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.scenarios import WorkloadEnvelopeSpec, partial_convergence_canary_spec
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -69,7 +67,7 @@ from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import run_off_event_loop
-from tests.infra.index_writer import write_fixture_index_session, write_fixture_ingest_payload
+from tests.infra.index_writer import write_fixture_index_session, write_fixture_retained_session
 from tests.infra.source_composer import (
     ComposedSources,
     compose_append_revision_chain,
@@ -166,7 +164,6 @@ def build_converged_archive(
     *,
     session_order: Sequence[int] | None = None,
     incremental: bool = False,
-    append_only: bool = False,
 ) -> ConvergenceArchive:
     """Materialize a composed corpus through production writes, then converge it.
 
@@ -174,9 +171,7 @@ def build_converged_archive(
     an async law's seeding runs off its event loop.
     """
     return run_off_event_loop(
-        lambda: _build_converged_archive(
-            root, composed, session_order=session_order, incremental=incremental, append_only=append_only
-        )
+        lambda: _build_converged_archive(root, composed, session_order=session_order, incremental=incremental)
     )
 
 
@@ -186,7 +181,6 @@ def _build_converged_archive(
     *,
     session_order: Sequence[int] | None,
     incremental: bool,
-    append_only: bool,
 ) -> ConvergenceArchive:
     initialize_active_archive(root)
     archive = ingest_composed_sources(
@@ -194,7 +188,6 @@ def _build_converged_archive(
         composed,
         session_indexes=_complete_session_order(composed, session_order),
         converge_after_each=incremental,
-        append_only=append_only,
     )
     if not incremental:
         converge_convergence_archive(archive)
@@ -215,14 +208,13 @@ def ingest_composed_sources(
     *,
     session_indexes: Sequence[int],
     converge_after_each: bool,
-    append_only: bool = False,
 ) -> ConvergenceArchive:
     """Use the production raw and parsed-session writers for each selected member.
 
     The test harness does not emulate archive materialization or convergence.
-    It writes source.db through the production raw writer and sends the parsed
-    payload through ``ingest_batch._core._write_session``, exactly as the live
-    ingestion layer does after a provider parser has produced a ``ParsedSession``.
+    It writes source.db through the production raw writer and publishes the
+    parsed session through the retained session writer, prepared on an
+    original seal as retained publication prepares a parser's ``ParsedSession``.
     """
     selected = _validate_session_indexes(composed, session_indexes)
     source_paths: list[Path] = []
@@ -240,7 +232,6 @@ def ingest_composed_sources(
             created_corpus_index=created_corpus_index,
             replayed=_replayed_parent_prefix(composed, composed_session),
         )
-        content_hash = str(session_content_hash(session))
         payload = _raw_payload(session)
         source_path = root / "sources" / f"{index:03d}-{session.provider_session_id}.json"
         source_path.parent.mkdir(parents=True, exist_ok=True)
@@ -288,7 +279,7 @@ def ingest_composed_sources(
                         capture_mode=Provider.CODEX,
                         source_path=str(source_path),
                         canonical_source_path=str(source_path),
-                        source_index=-1 if append_only else index,
+                        source_index=index,
                         payload=payload,
                         acquired_at_ms=_acquired_at_ms(index),
                         native_id=session.provider_session_id,
@@ -305,31 +296,13 @@ def ingest_composed_sources(
                         consume_blob_publication_receipt(source_conn, attachment_receipt, attachment_hash_bytes)
         if raw_blob_size != len(payload):
             raise AssertionError(f"published raw payload size drifted for {source_path}")
-        payload_model = SessionWritePayload(
-            session_id=str(make_session_id(session.source_name, session.provider_session_id)),
-            content_hash=content_hash,
-            parsed_session=session,
-            message_count=len(session.messages),
-            attachment_count=len(session.attachments),
-            raw_id=raw_id,
-            append_only=append_only,
-        )
-        blob_publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
-        with (
-            closing(open_connection(root / "index.db")) as index_conn,
-            closing(sqlite3.connect(root / "source.db")) as source_conn,
-        ):
-            index_conn.row_factory = sqlite3.Row
-            with index_conn, source_conn:
-                changed, counts = write_fixture_ingest_payload(
-                    index_conn,
-                    payload_model,
-                    blob_publisher=blob_publisher,
-                    source_conn=source_conn,
-                )
+        with closing(open_connection(root / "index.db")) as index_conn:
+            changed, counts = write_fixture_retained_session(
+                index_conn, session, raw_id=raw_id, source_index=index, acquired_at_ms=_acquired_at_ms(index)
+            )
+        session_id = str(make_session_id(session.source_name, session.provider_session_id))
         if not changed and counts["skipped_sessions"] == 0:
-            raise AssertionError(f"production ingest writer did not account for {payload_model.session_id}")
-        session_id = payload_model.session_id
+            raise AssertionError(f"retained session writer did not account for {session_id}")
         source_paths.append(source_path)
         session_ids.append(session_id)
         # Model a missing FTS partition after a content-changing write. A stale
@@ -566,7 +539,6 @@ def replay_convergence_archive(
     composed: ComposedSources,
     *,
     session_indexes: Sequence[int],
-    append_only: bool = False,
 ) -> ConvergenceArchive:
     """Build a fresh canonical archive from the exact writes seen so far."""
     initialize_active_archive(root)
@@ -578,7 +550,6 @@ def replay_convergence_archive(
             composed,
             session_indexes=(index,),
             converge_after_each=False,
-            append_only=append_only,
         )
         source_paths.extend(step.source_paths)
         session_ids.extend(step.session_ids)

@@ -114,7 +114,6 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_DEPENDENCY_ROOTS = (
     _REPOSITORY_ROOT / "polylogue" / "schemas" / "synthetic",
     _REPOSITORY_ROOT / "polylogue" / "operations" / "canonical_archive_ingest.py",
-    _REPOSITORY_ROOT / "polylogue" / "pipeline" / "services" / "ingest_worker.py",
     _REPOSITORY_ROOT / "polylogue" / "sources" / "source_parsing.py",
     _REPOSITORY_ROOT / "polylogue" / "schemas" / "runtime_registry.py",
     _REPOSITORY_ROOT / "polylogue" / "schemas" / "operator",
