@@ -2251,27 +2251,49 @@ def test_advancing_work_progress_events_are_useful_progress_and_a_frozen_unit_is
             for record in records:
                 handle.write(json.dumps(record) + "\n")
 
-    def progress(messages: int) -> dict[str, object]:
-        return {"event": "daemon.work.progress", "phase": "source_preparation", "messages": messages, "bytes": 0}
+    def progress(unit_id: str, messages: int, byte_count: int = 0) -> dict[str, object]:
+        return {
+            "event": "daemon.work.progress",
+            "phase": "source_preparation",
+            "unit_id": unit_id,
+            "messages": messages,
+            "bytes": byte_count,
+        }
 
     tail = WorkProgressTail(events)
-    append({"event": "daemon.started"}, progress(10))
+    append({"event": "daemon.started"}, progress("attempt-a", 10))
     before = Observation(0.0, work_progress=0)
     advanced = Observation(1.0, work_progress=tail.poll())
     assert _useful_progress(before, advanced)
 
-    append(progress(10))
+    append(progress("attempt-a", 10))
     frozen = Observation(2.0, work_progress=tail.poll())
     assert not _useful_progress(advanced, frozen)
 
+    # A retry is a new unit whose zeroed counters do not make progress just
+    # because they differ from the previous unit's completed counters.
+    append(progress("attempt-b", 0))
+    reset = Observation(3.0, work_progress=tail.poll())
+    assert not _useful_progress(frozen, reset)
+
+    # Once the new unit reports real work, its own counters advance normally.
+    append(progress("attempt-b", 1))
+    retry_advanced = Observation(4.0, work_progress=tail.poll())
+    assert _useful_progress(reset, retry_advanced)
+
+    # A decrease inside one unit is a reset, not evidence of new traversal.
+    append(progress("attempt-b", 0))
+    repeated_reset = Observation(5.0, work_progress=tail.poll())
+    assert not _useful_progress(retry_advanced, repeated_reset)
+
     # A record split across two writes is read once it is complete.
-    line = json.dumps(progress(25)) + "\n"
+    line = json.dumps(progress("attempt-b", 25, 64)) + "\n"
     with events.open("a", encoding="utf-8") as handle:
         handle.write(line[:10])
-    assert tail.poll() == frozen.work_progress
+    assert tail.poll() == repeated_reset.work_progress
     with events.open("a", encoding="utf-8") as handle:
         handle.write(line[10:])
-    assert _useful_progress(frozen, Observation(3.0, work_progress=tail.poll()))
+    assert _useful_progress(repeated_reset, Observation(6.0, work_progress=tail.poll()))
 
 
 @pytest.mark.parametrize("with_debt", [False, True])
