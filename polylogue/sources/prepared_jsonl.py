@@ -2394,6 +2394,7 @@ def _finalize_prepared_cohort(
     publication_publisher: ArchiveBlobPublisher | None,
     publication_source_read: BlobPublicationSourceRead | None,
     preparation_dependency: Callable[[], tuple[str | None, str | None]] | None,
+    preserve_parser_stage: bool = True,
 ) -> PreparedJsonl:
     """Retain the full original parse through one bounded cohort interpretation."""
     if original.blob_hash is None:
@@ -2449,6 +2450,8 @@ def _finalize_prepared_cohort(
     # Preserve the neutral parser-stage carrier for exact per-revision
     # checkpoints. The finalized carrier owns its shared attempt directory;
     # the child owns only its sealed file paths and is discarded with parent.
+    if not preserve_parser_stage:
+        return result
     return replace(result, parser_stage_artifact=replace(original, attempt_directory=None))
 
 

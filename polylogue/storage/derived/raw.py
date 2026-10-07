@@ -228,6 +228,7 @@ class _PreparationCarry:
     raw_ids: tuple[str, ...] = ()
     scratch_owner: tempfile.TemporaryDirectory[str] | None = None
     artifacts: dict[tuple[object, ...], PreparedJsonl] = dataclasses_field(default_factory=dict)
+    neutral_artifacts: dict[tuple[object, ...], PreparedJsonl] = dataclasses_field(default_factory=dict)
     attachment_refs_published: set[int] = dataclasses_field(default_factory=set)
     #: Each prepared raw's captured ZIP coordinate, read with its descriptor.
     zip_coordinates: dict[str, CapturedZipMemberCoordinate | None] = dataclasses_field(default_factory=dict)
@@ -249,11 +250,18 @@ class _PreparationCarry:
         failures: list[BaseException] = []
         try:
             _close_prepared_carriers(
-                {}, {}, (artifact for artifact in self.artifacts.values() if id(artifact) not in kept_artifacts)
+                {},
+                {},
+                (
+                    artifact
+                    for artifact in (*self.artifacts.values(), *self.neutral_artifacts.values())
+                    if id(artifact) not in kept_artifacts
+                ),
             )
         except BaseException as failure:
             failures.append(failure)
         self.artifacts.clear()
+        self.neutral_artifacts.clear()
         self.attachment_refs_published.clear()
         if keep is not None and keep.scratch_owner is self.scratch_owner:
             self.scratch_owner = None
@@ -1444,6 +1452,7 @@ class RawObservationDerivation(RawObservationInspection):
     ) -> RawObservationReplacement:
         from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
 
+        first_source_binding = carry.seal is None
         if carry.seal is not None:
             seal = carry.seal
         else:
@@ -1462,6 +1471,13 @@ class RawObservationDerivation(RawObservationInspection):
             carry.seal = seal
         replacement: RawObservationReplacement | None = None
         try:
+            if first_source_binding:
+                seal = self._prepare_codex_neutral_then_rebind(
+                    key,
+                    selection=selection,
+                    seal=seal,
+                    carry=carry,
+                )
             replacement = replace(
                 self._compute_prepared(
                     frame,
@@ -1487,6 +1503,353 @@ class RawObservationDerivation(RawObservationInspection):
                     failures.append(cleanup)
             if failures:
                 raise BaseExceptionGroup("retained preparation and cleanup failed", [primary, *failures]) from primary
+            raise
+
+    def _prepare_codex_neutral_then_rebind(
+        self,
+        key: str,
+        *,
+        selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
+        seal: PreparedIndexMutation,
+        carry: _PreparationCarry,
+    ) -> PreparedIndexMutation:
+        """Parse selected Codex JSONL raws outside Source observers, then bind afresh.
+
+        The private byte copies are made while the original Source witness is
+        current. Parsing and retained-schema validation use only those copies.
+        A new witness then proves the same selected raws and parser operands
+        before enrichment and publication artifacts are made.
+        """
+        from polylogue.sources.dispatch import is_jsonl_source_path, is_stream_record_provider
+        from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+        from polylogue.sources.sqlite_export import looks_like_logical_source_path
+        from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
+
+        blob_store = BlobStore(self.archive_root / "blob")
+        captures: dict[str, tuple[tuple[object, ...], str | None, str | None, str | None, object, Path]] = {}
+        with seal.original_read_snapshot(), seal.source_producer():
+            read = PreparedSessionSourceRead(seal, blob_store=blob_store)
+            selected = (key,) if selection is None else tuple(selection(read))
+            raw_ids, logical_keys = read.expand_raw_membership_selection(selected)
+            if not raw_ids:
+                return seal
+            operands: dict[str, tuple[tuple[object, ...], str | None, str | None, str | None, object]] = {}
+            for raw_id in raw_ids:
+                descriptor = read.raw_revision_descriptor(raw_id)
+                provider, _blob_hash, source_path, kind, _raw_size = descriptor
+                if (
+                    provider is not Provider.CODEX
+                    or not is_jsonl_source_path(source_path)
+                    or looks_like_logical_source_path(Path(source_path))
+                    or kind.value not in {"full", "unknown"}
+                ):
+                    return seal
+                operands[raw_id] = (
+                    descriptor,
+                    read.raw_profile_identity(raw_id),
+                    read.raw_revision_file_mtime(raw_id),
+                    read.raw_native_id(raw_id) if kind.value == "append" else None,
+                    read.raw_captured_zip_coordinate(raw_id),
+                )
+
+            if carry.scratch_owner is None:
+                staging = blob_store._ensure_private_staging_root()
+                carry.scratch_owner = tempfile.TemporaryDirectory(prefix=".raw-prepared-", dir=staging)
+                from polylogue.sources.prepared_message_sink import discard_decoded_sessions_under
+
+                weakref.finalize(carry.scratch_owner, discard_decoded_sessions_under, Path(carry.scratch_owner.name))
+            scratch = Path(carry.scratch_owner.name)
+            for raw_id in raw_ids:
+                descriptor, profile, fallback_timestamp, native_id, zip_coordinate = operands[raw_id]
+                provider, blob_hash, _source_path, _kind, raw_size = descriptor
+                input_hash, input_size = seal.retain_original_blob_input(raw_id)
+                if input_hash != bytes.fromhex(blob_hash) or input_size != raw_size:
+                    raise RetainedPreparationRetryableError(
+                        f"retained raw input identity changed before neutral Codex preparation: {raw_id}"
+                    )
+                blob_path = read.raw_revision_blob_path(raw_id)
+                if blob_path is None:
+                    raise RetainedPreparationRetryableError(f"retained Codex bytes are absent for raw {raw_id}")
+                before = self._blob_stat_identity(blob_path)
+                if not blob_store.verify(blob_hash, stop=compute_cancel_requested):
+                    raise RetainedPreparationRetryableError(f"retained Codex blob changed for raw {raw_id}")
+                neutral_directory = Path(tempfile.mkdtemp(prefix="codex-neutral-", dir=scratch))
+                staged_blob = neutral_directory / "input.jsonl"
+                digest = hashlib.sha256()
+                copied = 0
+                with blob_path.open("rb") as source, staged_blob.open("xb") as target:
+                    while chunk := source.read(1024 * 1024):
+                        check_compute_cancelled()
+                        target.write(chunk)
+                        digest.update(chunk)
+                        copied += len(chunk)
+                after = self._blob_stat_identity(blob_path)
+                if before != after or copied != raw_size or digest.hexdigest() != blob_hash:
+                    raise RetainedPreparationRetryableError(f"retained Codex input changed while staging raw {raw_id}")
+                captures[raw_id] = (
+                    descriptor,
+                    profile,
+                    fallback_timestamp,
+                    native_id,
+                    zip_coordinate,
+                    staged_blob,
+                )
+            original_selection = (raw_ids, logical_keys)
+
+        # Parsing can be long. Close every capture observer before it begins so
+        # unrelated Source commits cannot stale the later publication witness.
+        seal.close()
+        from polylogue.schemas import validate_retained_document
+        from polylogue.sources.fallback_identity import fallback_session_id
+        from polylogue.sources.live.batch_support import jsonl_parse_prefix_size_of_handle
+        from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
+
+        scratch = Path(carry.scratch_owner.name)
+        neutral_keys: dict[str, tuple[object, ...]] = {}
+        neutral_by_raw: dict[str, PreparedJsonl] = {}
+
+        def prepare_neutral(raw_id: str) -> PreparedJsonl:
+            descriptor, profile, fallback_timestamp, native_id, _zip_coordinate, staged_blob = captures[raw_id]
+            provider, blob_hash, source_path, _kind, _raw_size = descriptor
+            neutral_directory = staged_blob.parent
+            with staged_blob.open("rb") as staged_input:
+                parse_prefix_size = jsonl_parse_prefix_size_of_handle(staged_input)
+            neutral = prepare_jsonl_blob(
+                str(staged_blob),
+                source_path,
+                provider.value,
+                fallback_session_id(source_path, raw_id),
+                is_stream=is_stream_record_provider(source_path, provider),
+                profile_identity=profile,
+                shard_directory=str(scratch),
+                attempt_directory=neutral_directory,
+                source_sha256=blob_hash,
+                strict_jsonl_records=True,
+                parse_prefix_size=parse_prefix_size,
+            )
+            if neutral.error is None and neutral.resolved_provider is not None:
+                from polylogue.sources.revision_backfill import _retained_validation_input
+
+                prefix = neutral.parsed_prefix_size if self._validation_mode is not ValidationMode.OFF else None
+                with _retained_validation_input(staged_blob, prefix, neutral_directory) as validation_path:
+                    verdict = validate_retained_document(
+                        neutral.resolved_provider,
+                        validation_path,
+                        mode=self._validation_mode,
+                        raw_id=raw_id,
+                        revision_sha256=blob_hash,
+                        evidence_id=raw_id,
+                        source_path=source_path,
+                        jsonl=True,
+                    )
+                neutral = dataclasses.replace(neutral, validation_verdict=verdict)
+            return neutral
+
+        for raw_id in raw_ids:
+            descriptor, profile, fallback_timestamp, native_id, _zip_coordinate, _staged_blob = captures[raw_id]
+            _provider, blob_hash, source_path, _kind, _raw_size = descriptor
+            artifact_key = (
+                raw_id,
+                Provider.CODEX,
+                blob_hash,
+                source_path,
+                False,
+                native_id,
+                fallback_timestamp,
+                profile,
+                self._validation_mode,
+            )
+            neutral_keys[raw_id] = artifact_key
+
+        # Preserve the exact three canonical parses and typed one-pass prefix
+        # reducer for simple, strictly growing Codex message chains. The helper
+        # reads only these private staged copies through CapturedCodexRead.
+        groups: dict[str, list[str]] = {}
+        for raw_id in raw_ids:
+            descriptor = captures[raw_id][0]
+            groups.setdefault(descriptor[2], []).append(raw_id)
+
+        class CapturedCodexRead:
+            def raw_revision_descriptor(self, raw_id: str) -> tuple[object, ...]:
+                return captures[raw_id][0]
+
+            def raw_profile_identity(self, raw_id: str) -> str | None:
+                return captures[raw_id][1]
+
+            def raw_revision_file_mtime(self, raw_id: str) -> str | None:
+                return captures[raw_id][2]
+
+            @contextmanager
+            def open_raw_revision_material(self, raw_id: str) -> Iterator[tuple[Provider, object, str, object]]:
+                descriptor, _profile, _fallback, _native, _zip, staged_blob = captures[raw_id]
+                with staged_blob.open("rb") as payload:
+                    yield descriptor[0], payload, descriptor[2], descriptor[3]
+
+        captured_read = CapturedCodexRead()
+        from polylogue.archive.artifact_taxonomy import ArtifactStreamClassification
+        from polylogue.sources.prepared_codex_checkpoints import (
+            CodexCheckpointArtifactOptions,
+            CodexCheckpointDisposition,
+            prepare_codex_prefix_checkpoints,
+        )
+
+        for group_ids in groups.values():
+            group_ids.sort(key=lambda raw_id: captures[raw_id][0][4])
+            if len(group_ids) < 4:
+                continue
+            first_id, second_id, head_id = group_ids[0], group_ids[1], group_ids[-1]
+            first, second, head = (prepare_neutral(raw_id) for raw_id in (first_id, second_id, head_id))
+            neutral_by_raw.update({first_id: first, second_id: second, head_id: head})
+            if any(artifact.error is not None or artifact.deferred for artifact in (first, second, head)):
+                continue
+            head_classification = head.stream_classification()
+            if not isinstance(head_classification, ArtifactStreamClassification):
+                continue
+
+            def checkpoint_options(
+                raw_id: str,
+                record_count: int,
+                taxonomy: ArtifactStreamClassification = head_classification,
+            ) -> CodexCheckpointArtifactOptions:
+                descriptor, profile, fallback_timestamp, _native_id, _zip, _staged_blob = captures[raw_id]
+                _provider, _blob_hash, source_path, _kind, raw_size = descriptor
+                return CodexCheckpointArtifactOptions(
+                    source_path=source_path,
+                    fallback_timestamp=fallback_timestamp,
+                    classification=dataclasses.replace(taxonomy, record_count=record_count),
+                    parsed_prefix_size=raw_size,
+                    captured_profile_key=profile,
+                    artifact_directory=Path(tempfile.mkdtemp(prefix="codex-interior-", dir=scratch)),
+                )
+
+            with prepare_codex_prefix_checkpoints(
+                captured_read,
+                group_ids,
+                head_artifact=head,
+                artifact_directory=Path(tempfile.mkdtemp(prefix="codex-validation-", dir=scratch)),
+                validation_mode=self._validation_mode,
+                publication_publisher=None,
+                publication_source_read=None,
+                prepare_sessions=lambda _raw_id, sessions: sessions,
+                artifact_options=checkpoint_options,
+            ) as checkpoint:
+                if checkpoint.disposition is CodexCheckpointDisposition.READY:
+                    neutral_by_raw.update(checkpoint.iter_artifacts())
+
+        for raw_id in raw_ids:
+            neutral = neutral_by_raw.get(raw_id)
+            if neutral is None:
+                neutral = prepare_neutral(raw_id)
+                neutral_by_raw[raw_id] = neutral
+            carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
+
+        destination = (
+            None if self._owned_generation is None else IndexMutationDestination.owned_inactive(self._owned_generation)
+        )
+        fresh = PreparedIndexMutation(
+            self._index_db_path or ArchiveLocation.resolve(self.archive_root).active_index_path,
+            archive_root=self.archive_root,
+            destination=destination,
+            input_demand=self._compute_adapter.amend_current_input_demand,
+        )
+        try:
+            with fresh.original_read_snapshot(), fresh.source_producer():
+                fresh_read = PreparedSessionSourceRead(fresh, blob_store=blob_store)
+                fresh_selected = (key,) if selection is None else tuple(selection(fresh_read))
+                fresh_raw_ids, fresh_logical_keys = fresh_read.expand_raw_membership_selection(fresh_selected)
+                fresh_operands: dict[str, tuple[tuple[object, ...], str | None, str | None, str | None, object]] = {}
+                if fresh_raw_ids == raw_ids:
+                    for raw_id in fresh_raw_ids:
+                        descriptor = fresh_read.raw_revision_descriptor(raw_id)
+                        fresh_operands[raw_id] = (
+                            descriptor,
+                            fresh_read.raw_profile_identity(raw_id),
+                            fresh_read.raw_revision_file_mtime(raw_id),
+                            fresh_read.raw_native_id(raw_id) if descriptor[3].value == "append" else None,
+                            fresh_read.raw_captured_zip_coordinate(raw_id),
+                        )
+                if (fresh_raw_ids, fresh_logical_keys) != original_selection or fresh_operands != operands:
+                    raise _CarryInvalidatedError
+
+                from polylogue.core.timestamp_authority import normalize_session_timestamps
+                from polylogue.sources.prepared_jsonl import _finalize_prepared_cohort
+                from polylogue.sources.revision_backfill import (
+                    enrichment_dependency_digest,
+                    iter_enriched_sessions_from_retained_read,
+                )
+                from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+                for raw_id in raw_ids:
+                    descriptor, profile, fallback_timestamp, _native_id, zip_coordinate, _staged_blob = captures[raw_id]
+                    provider, _blob_hash, source_path, _kind, _raw_size = descriptor
+                    neutral = carry.neutral_artifacts[neutral_keys[raw_id]]
+                    if neutral.error is not None or neutral.deferred:
+                        bound = neutral
+                    else:
+
+                        def provider_session_ids(artifact: PreparedJsonl = neutral) -> Iterator[str]:
+                            return artifact.session_sequence().iter_provider_session_ids()
+
+                        def finalize(
+                            session_sequence: object,
+                            *,
+                            retained_raw_id: str = raw_id,
+                            retained_path: str = source_path,
+                            retained_fallback: str | None = fallback_timestamp,
+                            retained_zip: object = zip_coordinate,
+                            retained_provider_ids: Callable[[], Iterator[str]] = partial(provider_session_ids, neutral),
+                        ) -> Iterable[ParsedSession]:
+                            return iter_enriched_sessions_from_retained_read(
+                                evidence_reader=fresh_read,
+                                provider=Provider.CODEX,
+                                source_path=retained_path,
+                                sessions=session_sequence,
+                                captured_zip_coordinate=retained_zip,
+                                provider_session_ids=retained_provider_ids(),
+                                normalize_session=lambda session: normalize_session_timestamps(
+                                    session, fallback_timestamp=retained_fallback
+                                ),
+                            )
+
+                        def dependency(
+                            *,
+                            retained_path: str = source_path,
+                            retained_zip: object = zip_coordinate,
+                            retained_provider_ids: Callable[[], Iterator[str]] = partial(provider_session_ids, neutral),
+                        ) -> tuple[str, str]:
+                            return (
+                                enrichment_dependency_digest(
+                                    provider=Provider.CODEX,
+                                    source_path=retained_path,
+                                    captured_zip_coordinate=retained_zip,
+                                    provider_session_ids=retained_provider_ids(),
+                                    index_conn=fresh.observer("index"),
+                                    source_conn=fresh.observer("source"),
+                                    blob_root=blob_store.root,
+                                    parser_sidecars=False,
+                                ),
+                                str(fresh.index_path),
+                            )
+
+                        bound = _finalize_prepared_cohort(
+                            neutral,
+                            finalize,
+                            artifact_directory=Path(tempfile.mkdtemp(prefix="codex-bound-", dir=scratch)),
+                            publication_publisher=ArchiveBlobPublisher(
+                                self.archive_root / "source.db", blob_store.root
+                            ),
+                            publication_source_read=fresh_read,
+                            preparation_dependency=dependency,
+                            preserve_parser_stage=False,
+                        )
+                        bound = dataclasses.replace(bound, validation_verdict=neutral.validation_verdict)
+                    carry.artifacts[neutral_keys[raw_id]] = bound
+                carry.raw_ids = raw_ids
+                carry.seal = fresh
+                return fresh
+        except BaseException:
+            fresh.close()
             raise
 
     def _compute_prepared(

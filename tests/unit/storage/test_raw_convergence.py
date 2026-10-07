@@ -652,6 +652,75 @@ def test_canonical_publish_revalidates_the_promoted_active_generation(tmp_path: 
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
 
+def test_codex_neutral_parse_survives_unrelated_source_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex parse and schema validation finish before a fresh Source binding."""
+    from polylogue.schemas import validate_retained_document as validate_original
+    from polylogue.sources import prepared_jsonl as prepared_jsonl_module
+
+    bootstrap_archive_root(tmp_path)
+    target = _admit(
+        tmp_path,
+        (),
+        provider=Provider.CODEX,
+        path="codex/session.jsonl",
+        payload=_codex_conversation_bytes("neutral-target"),
+    )
+    parse_calls = 0
+    validation_calls = 0
+    inserted: list[str] = []
+    prepare_original = prepared_jsonl_module.prepare_jsonl_blob
+
+    def counted_prepare(*args: object, **kwargs: object) -> object:
+        nonlocal parse_calls
+        parse_calls += 1
+        return prepare_original(*args, **kwargs)
+
+    def commit_during_validation(*args: object, **kwargs: object) -> object:
+        nonlocal validation_calls
+        validation_calls += 1
+        verdict = validate_original(*args, **kwargs)
+        if not inserted:
+            inserted.append(
+                _admit(
+                    tmp_path,
+                    (),
+                    provider=Provider.CODEX,
+                    path="codex/unrelated.jsonl",
+                    payload=_codex_conversation_bytes("neutral-unrelated"),
+                    acquired_at_ms=2,
+                )
+            )
+        return verdict
+
+    monkeypatch.setattr(prepared_jsonl_module, "prepare_jsonl_blob", counted_prepare)
+    monkeypatch.setattr("polylogue.schemas.validate_retained_document", commit_during_validation)
+
+    report = run_on_convergence_owner(
+        tmp_path,
+        "test.raw.codex-neutral-rebind",
+        lambda compute: converge(
+            DerivationRegistry((RawObservationDerivation(tmp_path, compute_adapter=compute),)),
+            raw_observation_frame(tmp_path, raw_ids=(target,)),
+            budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
+            publisher=admit_stage_write,
+        ),
+    )
+
+    assert report.failed == 0
+    assert report.done == 1
+    assert parse_calls == 1
+    assert validation_calls == 1
+    assert len(inserted) == 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall() == [("neutral-target",)]
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (target,)).fetchone() == (1,)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (inserted[0],)).fetchone() == (1,)
+
+
 def test_canonical_split_root_route_uses_the_explicit_archive_root(tmp_path: Path) -> None:
     """The routed archive root owns both source bytes and its active index."""
     configured_root = tmp_path / "configured"

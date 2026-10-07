@@ -376,9 +376,7 @@ def prepare_codex_prefix_checkpoints(
             validation_mode=validation_mode,
             validation_directory=artifact_directory,
         )
-        parser_head = head_artifact.parser_stage_artifact
-        if parser_head is None:
-            raise ValueError("canonical head artifact has no neutral parser-stage artifact")
+        parser_head = head_artifact.parser_stage_artifact or head_artifact
         if parser_head.blob_hash != hashes[-1]:
             raise ValueError("canonical head parser stage is not bound to this cohort's exact head blob")
         if parser_head.captured_profile_key != source_read.raw_profile_identity(raw_ids[-1]):
