@@ -169,6 +169,8 @@ class _SampleValidationReducer:
             native_id_example=self.source_path or "",
             is_valid=valid,
         )
+        self.connection.execute("DELETE FROM retained_drift WHERE sample=?", (self.sample_count,))
+        self.connection.execute("DELETE FROM retained_unread WHERE sample=?", (self.sample_count,))
         self.strongest = _stronger_drift(self.strongest, sample_drift)
 
     def verdict(
@@ -441,9 +443,11 @@ class PrefixValidationState:
             if resolved is not None:
                 raise ValueError("Codex prefix schema selection changed after its first message")
         elif resolved is None or (
-            resolved.package_version != self._base_version or resolved.element_kind != self._base_element
+            resolved.package_version != self._base_version
+            or resolved.element_kind != self._base_element
+            or resolved.reason != self._base_resolution.reason
         ):
-            raise ValueError("Codex prefix base schema selection is not stable")
+            raise ValueError("Codex prefix base schema observation is not stable")
 
         candidates_by_version = {candidate.version: candidate for candidate in self._reducers}
         candidates_by_schema = {
