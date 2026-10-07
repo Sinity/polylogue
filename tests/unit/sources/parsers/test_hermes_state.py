@@ -89,6 +89,70 @@ def _tool_result_blocks(path: Path, *, tool_contents: list[str]) -> list[ParsedC
     ]
 
 
+def test_state_db_iterator_uses_caller_sinks_and_cleans_scratch_on_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
+
+    path = tmp_path / "state.db"
+    _write_state_db(path, tool_contents=[json.dumps({"output": "ok", "exit_code": 0})])
+    monkeypatch.setattr(hermes_state.tempfile, "tempdir", str(tmp_path))
+    store = SqliteMessageStore(tmp_path / "prepared.sqlite3")
+    try:
+        with closing(sqlite3.connect(path)) as conn:
+            iterator = hermes_state.iter_state_db_sessions(
+                conn,
+                path,
+                message_sink_factory=store.new_sink,
+                event_sink_factory=store.new_event_sink,
+            )
+            streamed = next(iterator)
+            assert isinstance(streamed.messages, SqliteMessageSink)
+            assert streamed.messages is not None and len(streamed.messages) == 2
+            assert streamed.session_events
+            scratch = list(tmp_path.glob("polylogue-hermes-stream-*"))
+            assert len(scratch) == 1
+
+            # The caller owns the source connection and the retained sink;
+            # closing a cancelled producer only retires its private grouping DB.
+            iterator.close()
+            assert not scratch[0].exists()
+            assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 1
+
+        materialized = parse_state_db(path)
+        assert session_content_hash(streamed) == session_content_hash(materialized[0])
+        assert streamed.provider_session_id == materialized[0].provider_session_id
+        assert streamed.messages[0].is_active_leaf is False
+        assert streamed.messages[-1].is_active_leaf is True
+    finally:
+        store.close()
+
+
+def test_state_db_iterator_cleans_scratch_when_cancelled_before_first_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state.db"
+    _write_state_db(path, tool_contents=[])
+    monkeypatch.setattr(hermes_state.tempfile, "tempdir", str(tmp_path))
+
+    def cancel() -> None:
+        raise RuntimeError("cancel Hermes parse")
+
+    with closing(sqlite3.connect(path)) as conn:
+        iterator = hermes_state.iter_state_db_sessions(
+            conn,
+            path,
+            message_sink_factory=list,
+            event_sink_factory=list,
+            check_cancelled=cancel,
+        )
+        with pytest.raises(RuntimeError, match="cancel Hermes parse"):
+            next(iterator)
+        assert not list(tmp_path.glob("polylogue-hermes-stream-*"))
+        assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 1
+
+
 @pytest.mark.parametrize(
     ("parents", "positions"),
     [

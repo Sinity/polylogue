@@ -11,7 +11,8 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
-from collections.abc import Iterable, Iterator, Mapping
+import tempfile
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableSequence, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -274,6 +275,37 @@ def _parse_state_connection(
     conn: sqlite3.Connection, path: Path, *, profile_root: Path | None = None, profile_identity: str | None = None
 ) -> list[ParsedSession]:
     """Parse on the caller-owned read transaction without reopening its source."""
+    return list(
+        iter_state_db_sessions(
+            conn,
+            path,
+            message_sink_factory=list,
+            event_sink_factory=list,
+            profile_root=profile_root,
+            profile_identity=profile_identity,
+        )
+    )
+
+
+def iter_state_db_sessions(
+    conn: sqlite3.Connection,
+    path: Path,
+    *,
+    message_sink_factory: Callable[[], MutableSequence[ParsedMessage]],
+    event_sink_factory: Callable[[], MutableSequence[ParsedSessionEvent]],
+    profile_root: Path | None = None,
+    profile_identity: str | None = None,
+    check_cancelled: Callable[[], None] | None = None,
+) -> Iterator[ParsedSession]:
+    """Yield settled Hermes sessions while the caller-owned source stays open.
+
+    The first pass records only ancestry facts (session identity, own message
+    count, and own leaf) in private SQLite scratch. The second pass parses one
+    session into caller supplied sinks, applying its already-resolved offset
+    and branch point before yielding it. No transcript or session cohort is
+    retained by this iterator. The caller owns the source transaction and the
+    sink lifetime; closing this generator also closes and removes its scratch.
+    """
     conn.row_factory = sqlite3.Row
     if not _has_required_tables(conn):
         raise ValueError(f"{path} is not a Hermes state.db file")
@@ -281,33 +313,212 @@ def _parse_state_connection(
     message_columns = _columns(conn, "messages")
     schema_version = _schema_version(conn)
     resolved_profile_root = profile_root or profile_root_for_artifact(path)
-    session_rows = list(
-        conn.execute(
-            """
-            SELECT *
-            FROM sessions
-            ORDER BY COALESCE(started_at, 0), id
-            """
-        ).fetchall()
-    )
-    rows_by_id = {str(row["id"]): row for row in session_rows}
-    sessions = [
-        _parse_session_row(
-            conn,
-            row,
-            parent_row=rows_by_id.get(str(parent_id))
-            if (parent_id := _row_value(row, "parent_session_id")) is not None
-            else None,
-            profile_root=resolved_profile_root,
-            profile_identity=profile_identity,
-            schema_version=schema_version,
-            session_columns=session_columns,
-            message_columns=message_columns,
-        )
-        for row in session_rows
-    ]
-    segmented = _segment_compression_continuations(sessions)
-    return _without_unreferenced_empty_sessions(segmented)
+    profile_key = profile_identity if profile_identity is not None else _profile_key(resolved_profile_root)
+    query = "SELECT * FROM sessions ORDER BY COALESCE(started_at, 0), id"
+    check = check_cancelled or (lambda: None)
+
+    with tempfile.TemporaryDirectory(prefix="polylogue-hermes-stream-") as scratch_dir:
+        grouping = sqlite3.connect(Path(scratch_dir) / "ancestry.sqlite3")
+        try:
+            grouping.execute("PRAGMA journal_mode = DELETE")
+            grouping.execute("PRAGMA temp_store = FILE")
+            state = _DiskCompressionState(grouping)
+            grouping.execute(
+                "CREATE TABLE hermes_parent_evidence (session_id TEXT COLLATE BINARY PRIMARY KEY, end_reason TEXT) WITHOUT ROWID"
+            )
+            with closing(conn.execute(query)) as cursor:
+                for row in cursor:
+                    check()
+                    grouping.execute(
+                        "INSERT INTO hermes_parent_evidence VALUES (?, ?) "
+                        "ON CONFLICT(session_id) DO UPDATE SET end_reason = excluded.end_reason",
+                        (str(row["id"]), _optional_text(_row_value(row, "end_reason"))),
+                    )
+
+            grouping.execute(
+                "CREATE TABLE hermes_stream_selected (session_id TEXT COLLATE BINARY PRIMARY KEY, "
+                "ordinal INTEGER NOT NULL, own_count INTEGER NOT NULL, own_leaf TEXT, kept INTEGER NOT NULL, "
+                "original_parent TEXT, inherited INTEGER NOT NULL, branch_point TEXT, composed_count INTEGER NOT NULL, "
+                "composed_leaf TEXT, final_parent TEXT) WITHOUT ROWID"
+            )
+            with closing(conn.execute(query)) as cursor:
+                for ordinal, row in enumerate(cursor):
+                    check()
+                    raw_id = str(row["id"])
+                    raw_parent = _row_value(row, "parent_session_id")
+                    parent_raw_id = _optional_text(raw_parent)
+                    parent = (
+                        grouping.execute(
+                            "SELECT end_reason FROM hermes_parent_evidence WHERE session_id = ?", (str(raw_parent),)
+                        ).fetchone()
+                        if raw_parent is not None
+                        else None
+                    )
+                    branch_type = _branch_type(row, {"end_reason": parent[0]} if parent is not None else None)
+                    session_id = _qualified_session_id(raw_id, profile_key)
+                    parent_id = _qualified_session_id(parent_raw_id, profile_key) if parent_raw_id else None
+                    prompt = _optional_text(_row_value(row, "system_prompt"))
+                    own_count = int(bool(prompt))
+                    own_leaf = f"{session_id}:system" if prompt else None
+                    leaf_columns = ["id", "session_id"]
+                    if "platform_message_id" in message_columns:
+                        leaf_columns.append("platform_message_id")
+                    with closing(
+                        conn.execute(
+                            f"SELECT {', '.join(leaf_columns)} FROM messages WHERE session_id = ? ORDER BY id",
+                            (raw_id,),
+                        )
+                    ) as message_cursor:
+                        for message_row in message_cursor:
+                            check()
+                            own_count += 1
+                            own_leaf = _message_provider_id(message_row)
+                    facts = {
+                        "kept": bool(own_count),
+                        "own_count": own_count,
+                        "own_leaf": own_leaf,
+                        "original_parent": parent_id,
+                    }
+                    state.add(
+                        _CompressionIdentity(
+                            ordinal,
+                            session_id,
+                            parent_id,
+                            branch_type is BranchType.CONTINUATION,
+                        ),
+                        json.dumps(facts, ensure_ascii=True),
+                    )
+
+            for node, compression_parent in _compression_resolution_order(state.roots(), state):
+                check()
+                facts = json.loads(_compression_facts_at(grouping, node.ordinal))
+                if compression_parent is None:
+                    inherited = 0
+                    branch_point = None
+                    parent_leaf = None
+                else:
+                    parent_row = grouping.execute(
+                        "SELECT own_count, composed_count, composed_leaf FROM hermes_stream_selected "
+                        "WHERE session_id = ?",
+                        (compression_parent,),
+                    ).fetchone()
+                    if parent_row is None:
+                        inherited = 0
+                        branch_point = None
+                        parent_leaf = None
+                    else:
+                        inherited = int(parent_row[1])
+                        branch_point = str(parent_row[2]) if parent_row[2] is not None else None
+                        parent_leaf = branch_point
+                own_count = int(facts["own_count"])
+                composed_count = inherited + own_count
+                composed_leaf = facts["own_leaf"] if own_count else parent_leaf
+                grouping.execute(
+                    "INSERT INTO hermes_stream_selected VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(session_id) DO UPDATE SET ordinal=excluded.ordinal, own_count=excluded.own_count, "
+                    "own_leaf=excluded.own_leaf, kept=excluded.kept, original_parent=excluded.original_parent, "
+                    "inherited=excluded.inherited, branch_point=excluded.branch_point, "
+                    "composed_count=excluded.composed_count, composed_leaf=excluded.composed_leaf",
+                    (
+                        node.session_id,
+                        node.ordinal,
+                        own_count,
+                        facts["own_leaf"],
+                        int(bool(facts["kept"])),
+                        facts["original_parent"],
+                        inherited,
+                        branch_point,
+                        composed_count,
+                        composed_leaf,
+                        None,
+                    ),
+                )
+
+            # Match _without_unreferenced_empty_sessions: follow the source
+            # parent edge through empty sessions to the nearest kept ancestor.
+            for node in state.roots():
+                check()
+                selected = grouping.execute(
+                    "SELECT kept, original_parent FROM hermes_stream_selected WHERE session_id = ?",
+                    (node.session_id,),
+                ).fetchone()
+                if selected is None:
+                    continue
+                final_parent = selected[1]
+                seen: set[str] = set()
+                while final_parent is not None:
+                    if final_parent in seen:
+                        final_parent = None
+                        break
+                    seen.add(final_parent)
+                    ancestor = grouping.execute(
+                        "SELECT kept, original_parent FROM hermes_stream_selected WHERE session_id = ?",
+                        (final_parent,),
+                    ).fetchone()
+                    if ancestor is None or bool(ancestor[0]):
+                        break
+                    final_parent = str(ancestor[1]) if ancestor[1] is not None else None
+                grouping.execute(
+                    "UPDATE hermes_stream_selected SET final_parent = ? WHERE session_id = ?",
+                    (final_parent, node.session_id),
+                )
+
+            with closing(conn.execute(query)) as cursor:
+                for ordinal, original_row in enumerate(cursor):
+                    check()
+                    row = original_row
+                    raw_id = str(row["id"])
+                    session_id = _qualified_session_id(raw_id, profile_key)
+                    settled = grouping.execute(
+                        "SELECT ordinal, own_count, kept, inherited, branch_point, final_parent "
+                        "FROM hermes_stream_selected WHERE session_id = ?",
+                        (session_id,),
+                    ).fetchone()
+                    if settled is None or not bool(settled[2]):
+                        continue
+                    selected_ordinal = int(settled[0])
+                    if selected_ordinal != ordinal:
+                        row = conn.execute(query + " LIMIT 1 OFFSET ?", (selected_ordinal,)).fetchone()
+                        if row is None:
+                            raise ValueError("Hermes selected duplicate session disappeared during parsing")
+                        raw_id = str(row["id"])
+                    parent_raw = _row_value(row, "parent_session_id")
+                    parent = (
+                        grouping.execute(
+                            "SELECT end_reason FROM hermes_parent_evidence WHERE session_id = ?", (str(parent_raw),)
+                        ).fetchone()
+                        if parent_raw is not None
+                        else None
+                    )
+                    message_sink = message_sink_factory()
+                    event_sink = event_sink_factory()
+                    session = _parse_session_row(
+                        conn,
+                        row,
+                        parent_row={"end_reason": parent[0]} if parent is not None else None,
+                        profile_root=resolved_profile_root,
+                        profile_identity=profile_identity,
+                        schema_version=schema_version,
+                        session_columns=session_columns,
+                        message_columns=message_columns,
+                        message_sink=message_sink,
+                        event_sink=event_sink,
+                        position_offset=int(settled[3]),
+                        check_cancelled=check_cancelled,
+                    )
+                    updates: dict[str, object] = {"parent_session_provider_id": settled[5]}
+                    if settled[4] is not None:
+                        updates["branch_point_provider_message_id"] = settled[4]
+                    yield session.model_copy(update=updates)
+        finally:
+            grouping.close()
+
+
+def _compression_facts_at(grouping: sqlite3.Connection, ordinal: int) -> str:
+    row = grouping.execute("SELECT facts FROM hermes_compression_nodes WHERE ordinal = ?", (ordinal,)).fetchone()
+    if row is None:
+        raise ValueError("Hermes compression node disappeared during parsing")
+    return str(row[0])
 
 
 def _without_unreferenced_empty_sessions(sessions: list[ParsedSession]) -> list[ParsedSession]:
@@ -835,28 +1046,42 @@ def _parse_session_row(
     session_columns: set[str],
     message_columns: set[str],
     inspection: _StateSessionInspection | None = None,
+    message_sink: MutableSequence[ParsedMessage] | None = None,
+    event_sink: MutableSequence[ParsedSessionEvent] | None = None,
+    position_offset: int = 0,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> ParsedSession:
     raw_session_id = str(row["id"])
     profile_key = profile_identity if profile_identity is not None else _profile_key(profile_root)
     session_id = _qualified_session_id(raw_session_id, profile_key)
-    messages: list[ParsedMessage] = []
+    messages: MutableSequence[ParsedMessage] = message_sink if message_sink is not None else []
     state_events: list[ParsedSessionEvent] = []
+    sink_active_leaf_position: int | None = None
 
     def append_message(message: ParsedMessage) -> None:
+        nonlocal sink_active_leaf_position
         if inspection is None:
+            if message_sink is not None and message.is_active_leaf is not False:
+                message = message.model_copy(update={"is_active_leaf": False})
             messages.append(message)
+            if message_sink is not None and message.is_active_path:
+                sink_active_leaf_position = len(messages) - 1
         else:
             inspection.message(message)
 
     def append_event(event: ParsedSessionEvent) -> None:
         if inspection is None:
-            state_events.append(event)
+            if event_sink is None:
+                state_events.append(event)
+            else:
+                event_sink.append(event)
         else:
             inspection.evidence.event(event)
 
     system_prompt = _optional_text(_row_value(row, "system_prompt"))
     model_name = _optional_text(_row_value(row, "model"))
     if system_prompt:
+        position = position_offset + (0 if inspection is None else inspection.evidence.messages)
         append_message(
             ParsedMessage(
                 provider_message_id=f"{session_id}:system",
@@ -864,7 +1089,7 @@ def _parse_session_row(
                 text=system_prompt,
                 timestamp=_epoch_iso(row["started_at"]),
                 blocks=[ParsedContentBlock(type=BlockType.TEXT, text=system_prompt)],
-                position=0,
+                position=position,
                 variant_index=0,
                 is_active_path=True,
                 model_name=model_name,
@@ -879,17 +1104,23 @@ def _parse_session_row(
             """,
         (raw_session_id,),
     ):
-        position = len(messages) if inspection is None else inspection.evidence.messages
+        if check_cancelled is not None:
+            check_cancelled()
+        position = position_offset + len(messages) if inspection is None else inspection.evidence.messages
         parsed = _parse_message_row(message_row, position=position, fallback_model=model_name)
         append_message(parsed)
         append_event(_message_state_event(message_row, parsed, message_columns=message_columns))
         for event in _reasoning_evidence_events(message_row, parsed):
             append_event(event)
-    if inspection is None:
+    if inspection is None and message_sink is None:
         messages = _mark_active_leaf(messages)
+    elif inspection is None and sink_active_leaf_position is not None:
+        leaf = messages[sink_active_leaf_position]
+        if not leaf.is_active_leaf:
+            messages[sink_active_leaf_position] = leaf.model_copy(update={"is_active_leaf": True})
     parent_raw_id = _optional_text(_row_value(row, "parent_session_id"))
     parent_id = _qualified_session_id(parent_raw_id, profile_key) if parent_raw_id else None
-    session_events = [
+    prefix_events = [
         _identity_event(
             raw_session_id=raw_session_id,
             profile_key=profile_key,
@@ -899,39 +1130,59 @@ def _parse_session_row(
         ),
         *_usage_and_lifecycle_events(row, messages, session_columns=session_columns),
         *_session_metadata_events(row, session_columns=session_columns),
-        *state_events,
     ]
-    active_leaf_id = next(
-        (message.provider_message_id for message in reversed(messages) if message.is_active_path),
-        None,
-    )
+    if message_sink is not None:
+        active_leaf_id = (
+            messages[sink_active_leaf_position].provider_message_id if sink_active_leaf_position is not None else None
+        )
+    else:
+        active_leaf_id = next(
+            (message.provider_message_id for message in reversed(messages) if message.is_active_path),
+            None,
+        )
     if inspection is not None:
-        for event in session_events:
+        for event in prefix_events:
             inspection.evidence.event(event)
-        session_events = []
+        for event in state_events:
+            inspection.evidence.event(event)
+        session_events: MutableSequence[ParsedSessionEvent] = []
         active_leaf_id = inspection.active_leaf_id
+    elif event_sink is not None:
+        # Message-state and reasoning events were appended as the message
+        # cursor advanced. Prefix events precede them in the public parser's
+        # established event order, so insert the small session-level prefix
+        # in reverse at index zero. Disk-backed sinks implement this without
+        # materializing the event cohort.
+        for event in reversed(prefix_events):
+            event_sink.insert(0, event)
+        session_events = event_sink
+    else:
+        session_events = [*prefix_events, *state_events]
     provider_title = _optional_text(_row_value(row, "title"))
-    return ParsedSession(
-        source_name=Provider.HERMES,
-        provider_session_id=session_id,
-        title=provider_title or raw_session_id,
-        title_source=TitleSource.ORIGIN if provider_title else None,
-        created_at=_epoch_iso(row["started_at"]),
-        updated_at=_epoch_iso(_row_value(row, "ended_at"))
+    session_values: dict[str, object] = {
+        "source_name": Provider.HERMES,
+        "provider_session_id": session_id,
+        "title": provider_title or raw_session_id,
+        "title_source": TitleSource.ORIGIN if provider_title else None,
+        "created_at": _epoch_iso(row["started_at"]),
+        "updated_at": _epoch_iso(_row_value(row, "ended_at"))
         or (_latest_message_timestamp(messages) if inspection is None else inspection.latest_timestamp),
-        messages=messages,
-        active_leaf_message_provider_id=active_leaf_id,
-        session_events=session_events,
-        parent_session_provider_id=parent_id,
-        branch_type=_branch_type(row, parent_row) if parent_id else None,
-        instructions_text=system_prompt,
-        reported_cost_usd=_reported_cost(row),
-        models_used=[model_name] if model_name else [],
-        working_directories=[cwd] if (cwd := _optional_text(_row_value(row, "cwd"))) else [],
-        git_branch=_optional_text(_row_value(row, "git_branch")),
-        git_repository_url=_optional_text(_row_value(row, "git_repo_root")),
-        ingest_flags=["hermes:state-db", f"hermes:schema-v{schema_version or 'unknown'}"],
-    )
+        "messages": messages,
+        "active_leaf_message_provider_id": active_leaf_id,
+        "session_events": session_events,
+        "parent_session_provider_id": parent_id,
+        "branch_type": _branch_type(row, parent_row) if parent_id else None,
+        "instructions_text": system_prompt,
+        "reported_cost_usd": _reported_cost(row),
+        "models_used": [model_name] if model_name else [],
+        "working_directories": [cwd] if (cwd := _optional_text(_row_value(row, "cwd"))) else [],
+        "git_branch": _optional_text(_row_value(row, "git_branch")),
+        "git_repository_url": _optional_text(_row_value(row, "git_repo_root")),
+        "ingest_flags": ["hermes:state-db", f"hermes:schema-v{schema_version or 'unknown'}"],
+    }
+    if message_sink is not None or event_sink is not None:
+        return ParsedSession.model_construct(**session_values)
+    return ParsedSession(**session_values)
 
 
 def _parse_message_row(
@@ -1001,7 +1252,7 @@ def _message_provider_id(row: sqlite3.Row) -> str:
 
 def _usage_and_lifecycle_events(
     row: sqlite3.Row,
-    messages: list[ParsedMessage],
+    messages: Sequence[ParsedMessage],
     *,
     session_columns: set[str],
 ) -> list[ParsedSessionEvent]:
@@ -1489,7 +1740,7 @@ def _epoch_iso(value: object) -> str | None:
     return datetime.fromtimestamp(seconds, UTC).isoformat()
 
 
-def _latest_message_timestamp(messages: list[ParsedMessage]) -> str | None:
+def _latest_message_timestamp(messages: Sequence[ParsedMessage]) -> str | None:
     for message in reversed(messages):
         if message.timestamp:
             return message.timestamp
@@ -1546,6 +1797,7 @@ __all__ = [
     "marker_payload",
     "parse_state_db",
     "parse_state_db_payload",
+    "iter_state_db_sessions",
     "require_declared_export",
 ]
 
