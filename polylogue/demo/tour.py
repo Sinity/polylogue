@@ -221,9 +221,12 @@ def _run_cli_step(
         output_path=output_path,
         bytes_written=len(output.encode("utf-8")),
     )
+    public_command = _sanitize_public_output(
+        shlex.join(step.command), archive_root=archive_root, output_dir=output_path.parent.parent
+    )
     rendered = "\n".join(
         [
-            f"$ {shlex.join(step.command)}",
+            f"$ {public_command}",
             explanation,
             f"exit={step.exit_code} duration={step.duration_s:.3f}s bytes={step.bytes_written}",
             output.strip(),
