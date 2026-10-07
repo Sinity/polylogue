@@ -2906,27 +2906,14 @@ def write_parsed_session_to_archive(
                     add_timing("index.full_replace", t0)
                 if merge_append:
                     t0 = time.perf_counter()
-                    _write_messages(
+                    _write_append_messages_and_blocks(
                         conn,
                         session_id,
                         messages,
-                        position_offset=position_offset,
-                        duplicate_native_ids=duplicate_message_native_ids,
-                        rows=prepared_rows_to_use.message_rows,
-                        content_identities=content_identities,
+                        message_rows=prepared_rows_to_use.message_rows,
+                        block_rows=prepared_rows_to_use.block_rows,
                     )
-                    add_timing("index.messages", t0)
-                    t0 = time.perf_counter()
-                    _write_blocks(
-                        conn,
-                        session_id,
-                        messages,
-                        position_offset=position_offset,
-                        duplicate_native_ids=duplicate_message_native_ids,
-                        rows=prepared_rows_to_use.block_rows,
-                        content_identities=content_identities,
-                    )
-                    add_timing("index.blocks", t0)
+                    add_timing("index.messages_and_blocks", t0)
                     t0 = time.perf_counter()
                     _write_file_edits(
                         conn,
@@ -4251,6 +4238,58 @@ def _messages_insert_sql() -> str:
             {spec.insert_column_names}
         ) VALUES ({spec.insert_placeholder_string})
         """
+
+
+def _write_append_messages_and_blocks(
+    conn: sqlite3.Connection,
+    session_id: str,
+    messages: Sequence[ParsedMessage],
+    *,
+    message_rows: Iterable[tuple[object, ...]],
+    block_rows: Iterable[tuple[object, ...]],
+) -> None:
+    """Append only new normalized native IDs while keeping each message's blocks aligned.
+
+    The existence check must happen before inserting the message row. Doing
+    the two writes together avoids retaining a potentially large set of IDs
+    between message and block insertion, and still allows session metadata,
+    events, and attachments to follow their ordinary append paths.
+    """
+    message_columns = [
+        column.name
+        for column in archive_tiers_specs.MESSAGES_SPEC.writable_columns
+        if column.extract_placeholder == "?"
+    ]
+    native_index = message_columns.index("native_id")
+    message_iter = iter(message_rows)
+    block_iter = iter(block_rows)
+    pending_messages: list[tuple[object, ...]] = []
+    pending_blocks: list[tuple[object, ...]] = []
+
+    def flush() -> None:
+        if pending_messages:
+            conn.executemany(_messages_insert_sql(), pending_messages)
+            conn.executemany(_blocks_insert_sql(), pending_blocks)
+            pending_messages.clear()
+            pending_blocks.clear()
+
+    for message, message_row in zip(messages, message_iter, strict=True):
+        message_blocks = _message_blocks(message)
+        aligned_blocks = islice(block_iter, len(message_blocks))
+        if _stored_native_id_exists(conn, session_id, message_row[native_index]):
+            for _ in aligned_blocks:
+                pass
+            continue
+        pending_messages.append(message_row)
+        for block_row in aligned_blocks:
+            pending_blocks.append(block_row)
+            if len(pending_blocks) >= 4096:
+                flush()
+        if len(pending_messages) >= 256:
+            flush()
+    if next(block_iter, None) is not None or next(message_iter, None) is not None:
+        raise RuntimeError("prepared append rows exceeded their parsed message owners")
+    flush()
 
 
 def _write_messages(
@@ -16662,6 +16701,19 @@ def _stored_message_native_id(message: ParsedMessage, duplicate_native_ids: froz
         return None
     stripped = native_id.strip()
     return stripped or None
+
+
+def _stored_native_id_exists(conn: sqlite3.Connection, session_id: str, native_id: object) -> bool:
+    """Whether a normalized incoming ID already has a row in this session."""
+    return (
+        isinstance(native_id, str)
+        and bool(native_id)
+        and conn.execute(
+            "SELECT 1 FROM messages WHERE session_id = ? AND native_id = ? LIMIT 1",
+            (session_id, native_id),
+        ).fetchone()
+        is not None
+    )
 
 
 def _block_type(block: ParsedContentBlock) -> BlockType:
