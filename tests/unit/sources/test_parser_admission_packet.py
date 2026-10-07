@@ -246,8 +246,9 @@ def test_admission_ledger_cost_does_not_scale_with_materialized_records() -> Non
     accounting.assert_conserved()
     assert accounting.expected[AdmissionUnit.OUTER_RECORD] == _LEDGER_RECORD_COUNT
     assert len(accounting.outcomes) == 1
-    assert accounting.outcomes[0].disposition is AdmissionDisposition.TYPED_UNKNOWN
-    assert accounting.outcomes[0].ordinal == _LEDGER_RECORD_COUNT - 1
+    exceptional = next(iter(accounting.outcomes))
+    assert exceptional.disposition is AdmissionDisposition.TYPED_UNKNOWN
+    assert exceptional.ordinal == _LEDGER_RECORD_COUNT - 1
     assert accounting.materialized_ordinals[AdmissionUnit.OUTER_RECORD] == [(0, _LEDGER_RECORD_COUNT - 1)]
     assert sum(1 for _ in accounting.iter_outcomes()) == _LEDGER_RECORD_COUNT
 

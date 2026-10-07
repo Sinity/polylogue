@@ -230,6 +230,11 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/sources/parse_accounting_spool.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/sources/parsers/antigravity.py",
     "tiers": [],
     "authority": "scratch"
@@ -313,6 +318,11 @@
   {
     "file": "polylogue/sources/sqlite_export.py",
     "tiers": []
+  },
+  {
+    "file": "polylogue/sources/streamed_event_payload.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/sources/tool_outcomes.py",

@@ -391,7 +391,7 @@ def _restore_streamed_arrays(
     if not isinstance(event_payload, dict):
         raise ValueError("streamed prepared event payload is not an object")
     for key, raw_array_id in arrays.items():
-        if not isinstance(key, str) or not isinstance(raw_array_id, str):
+        if not isinstance(raw_array_id, str):
             raise ValueError("streamed prepared event array reference is malformed")
         row = connection.execute(
             "SELECT item_count FROM prepared_streamed_json_array WHERE array_id = ?", (raw_array_id,)

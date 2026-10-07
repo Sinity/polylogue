@@ -11471,6 +11471,20 @@ def _last_agent_policy_values(
     return (row[0], row[1], row[2])
 
 
+_SessionEventInsertRow = tuple[
+    str,
+    str | None,
+    str | None,
+    int,
+    str | None,
+    str,
+    int | None,
+    int | None,
+    int | None,
+    str | None,
+]
+
+
 def _stored_event_payload(
     event: ParsedSessionEvent, sidecar_blob_locators: Mapping[str, Mapping[str, str]] | None
 ) -> Mapping[str, object]:
@@ -11550,7 +11564,7 @@ def _write_session_events(
                 by_native_id[message.provider_message_id] = message_id
         wrote_provider_usage_events = False
         position = event_position_offset
-        session_event_rows: list[tuple[object, ...]] = []
+        session_event_rows: list[_SessionEventInsertRow] = []
         agent_policy_rows: list[tuple[object, ...]] = []
         # polylogue-cuxz.11: the Codex wire restates the whole policy on every
         # turn_context, so a row per observation made this table a change-log of
@@ -11588,7 +11602,7 @@ def _write_session_events(
                 conn.executemany(_PROVIDER_USAGE_EVENT_INSERT_SQL, provider_usage_rows)
                 provider_usage_rows.clear()
 
-        def _insert_streamed_event(row: tuple[object, ...], arrays: Mapping[str, object]) -> None:
+        def _insert_streamed_event(row: _SessionEventInsertRow, arrays: Mapping[str, object]) -> None:
             conn.execute(
                 "DELETE FROM session_event_array_items WHERE session_id = ? AND event_position = ?",
                 (str(row[0]), int(row[3])),
@@ -11686,7 +11700,7 @@ def _write_session_events(
                             ordinary_payload[key] = []
                     else:
                         ordinary_payload[key] = value
-                row = (
+                row: _SessionEventInsertRow = (
                     session_id,
                     source_message_id,
                     _sqlite_text(source_message_provider_id),
@@ -11747,7 +11761,7 @@ def _write_session_events(
                     ambiguous_source_provider_ids=ambiguous_source_provider_ids,
                     duplicate_native_ids=duplicate_native_ids,
                 )
-                row = _provider_usage_event_row(
+                usage_row = _provider_usage_event_row(
                     session_id,
                     source_message_id,
                     position,
@@ -11755,8 +11769,8 @@ def _write_session_events(
                     source_message_provider_id=declared_provider_id,
                     source_message_resolution=resolution,
                 )
-                if _provider_usage_event_has_evidence(event, row):
-                    provider_usage_rows.append(row)
+                if _provider_usage_event_has_evidence(event, usage_row):
+                    provider_usage_rows.append(usage_row)
                     wrote_provider_usage_events = True
             position += 1
             if max(len(session_event_rows), len(agent_policy_rows), len(provider_usage_rows)) >= 128:
