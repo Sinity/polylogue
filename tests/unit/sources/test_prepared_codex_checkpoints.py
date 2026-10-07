@@ -15,11 +15,14 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers import codex
 from polylogue.sources.parsers.base_models import AdmissionUnit
 from polylogue.sources.prepared_codex_checkpoints import (
+    CodexCheckpointArtifactOptions,
+    CodexCheckpointDisposition,
     _finalize_codex_prefix,
     _plain_text_header,
     _plain_text_message,
     _prefix_accounting,
     _read_head_and_prove,
+    prepare_codex_prefix_checkpoints,
 )
 from polylogue.sources.prepared_jsonl import PreparedJsonl
 
@@ -160,6 +163,9 @@ class _SourceRead:
     def raw_profile_identity(self, _raw_id: str) -> str:
         return "captured-profile"
 
+    def raw_revision_file_mtime(self, raw_id: str) -> str:
+        return f"2026-06-0{int(raw_id.removeprefix('raw-')) + 1}T01:00:00Z"
+
     @contextmanager
     def open_raw_revision_material(self, raw_id: str):
         yield Provider.CODEX, BytesIO(self.payloads[raw_id]), "same/path.jsonl", RawRevisionKind.FULL
@@ -220,3 +226,64 @@ def test_each_prefix_keeps_its_own_fallback_timestamp_provenance() -> None:
         )
         assert prepared.created_at_provenance == "fallback"
         assert prepared.updated_at_provenance == "fallback"
+
+
+def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path) -> None:
+    records = _records(3)
+    records[0]["payload"].pop("timestamp")
+    payloads = []
+    for count in range(1, 5):
+        text = "\n".join(json.dumps(row, separators=(",", ":")) for row in records[:count]) + "\n"
+        payloads.append(text.encode())
+    source_read = _SourceRead(payloads)
+    raw_ids = tuple(source_read.payloads)
+    head = codex.parse_stream(records, "fallback")
+    head_hash = hashlib.sha256(payloads[-1]).hexdigest()
+    head_dir = tmp_path / "head-artifact"
+    head_dir.mkdir()
+    head_artifact = PreparedJsonl.from_sessions(
+        (head,),
+        blob_hash=head_hash,
+        artifact_directory=head_dir,
+        publication_publisher=None,
+        resolved_provider=Provider.CODEX,
+        captured_profile_key="captured-profile",
+    )
+    interior_dir = tmp_path / "interior-artifacts"
+    interior_dir.mkdir()
+
+    preparation = prepare_codex_prefix_checkpoints(
+        source_read,
+        raw_ids,
+        head_artifact=head_artifact,
+        artifact_directory=interior_dir,
+        publication_publisher=None,
+        publication_source_read=None,
+        prepare_sessions=lambda _raw_id, sessions: sessions,
+        artifact_options=lambda _raw_id: CodexCheckpointArtifactOptions(captured_profile_key="captured-profile"),
+    )
+    assert preparation.disposition is CodexCheckpointDisposition.READY
+    artifacts = list(preparation.iter_artifacts())
+    assert len(artifacts) == 1
+    raw_id, artifact = artifacts[0]
+    try:
+        expected_hash = hashlib.sha256(payloads[2]).hexdigest()
+        assert raw_id == raw_ids[2]
+        assert artifact.blob_hash == expected_hash
+        assert artifact.captured_profile_key == "captured-profile"
+        sessions = list(artifact.iter_sessions())
+        assert len(sessions) == 1
+        expected = normalize_session_timestamps(
+            codex.parse_stream(records[:3], "fallback"),
+            fallback_timestamp=source_read.raw_revision_file_mtime(raw_id),
+        )
+        actual = sessions[0].model_copy(
+            update={"messages": list(sessions[0].messages), "session_events": list(sessions[0].session_events)}
+        )
+        assert actual.model_dump(mode="json", exclude={"unit_accounting"}) == expected.model_dump(
+            mode="json", exclude={"unit_accounting"}
+        )
+    finally:
+        artifact.discard()
+        preparation.close()
+        head_artifact.discard()
