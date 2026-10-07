@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.paths import data_home
 from polylogue.schemas.runtime_registry import SchemaRegistry, canonical_schema_provider
 
@@ -189,7 +189,7 @@ def resolve_retained_schema(
     if resolution is None:
         observations, _cluster = registry.observe_payload(
             str(canonical),
-            payload,
+            cast(JSONValue, payload),
             source_path=source_path,
             schema_store=schema_store,
         )

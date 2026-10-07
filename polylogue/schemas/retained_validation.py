@@ -15,7 +15,7 @@ from collections.abc import Iterator, KeysView, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, SupportsIndex, cast, overload
 
 from jsonschema import Draft202012Validator, ValidationError, validators
 
@@ -139,7 +139,7 @@ def validate_retained_document(
                 schema_resolution=resolved,
             )
 
-        assert selected_schema is not None and schema_key is not None
+        assert selected_schema is not None
         sample_count = 0
         invalid_count = 0
         error_count = 0
@@ -261,13 +261,15 @@ def _validation_samples(
     if granularity not in {"record", "document"}:
         granularity = "record" if provider in {Provider.CLAUDE_CODE, Provider.CODEX} else "document"
     if isinstance(payload, Mapping):
-        if granularity == "document" or is_record_candidate(payload):
+        if granularity == "document" or is_record_candidate(cast(JSONDocument, payload)):
             yield payload
         return
     if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes, bytearray)):
         for value in payload:
             check_compute_cancelled()
-            if isinstance(value, Mapping) and (granularity == "document" or is_record_candidate(value)):
+            if isinstance(value, Mapping) and (
+                granularity == "document" or is_record_candidate(cast(JSONDocument, value))
+            ):
                 yield value
 
 
@@ -333,7 +335,7 @@ class _NormalizedObject(dict[str, object]):
     def __contains__(self, key: object) -> bool:
         return key in self._value
 
-    def keys(self) -> KeysView[str]:
+    def keys(self) -> KeysView[str]:  # type: ignore[override]
         return KeysView(self)
 
     def sorted_keys(self) -> Iterator[str]:
@@ -357,12 +359,12 @@ class _NormalizedObject(dict[str, object]):
         except KeyError:
             return default
 
-    def items(self) -> Iterator[tuple[str, object]]:
+    def items(self) -> Iterator[tuple[str, object]]:  # type: ignore[override]
         for key in self._value:
             check_compute_cancelled()
             yield key, self[key]
 
-    def values(self) -> Iterator[object]:
+    def values(self) -> Iterator[object]:  # type: ignore[override]
         for key in self._value:
             check_compute_cancelled()
             yield self[key]
@@ -396,13 +398,19 @@ class _NormalizedArray(list[object]):
             check_compute_cancelled()
             yield self[index]
 
-    def __getitem__(self, index: int | slice) -> object:
+    @overload
+    def __getitem__(self, index: SupportsIndex) -> object: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[object]: ...
+
+    def __getitem__(self, index: SupportsIndex | slice) -> object:
         check_compute_cancelled()
         from polylogue.schemas.validator import _schema_for_items
 
         if isinstance(index, slice):
             return [self[position] for position in range(*index.indices(len(self)))]
-        value = self._value[index]
+        value = self._value[int(index)]
         return _normalized(value, _schema_for_items(self._schema, value, self._root), self._root, self._connection)
 
     def __eq__(self, other: object) -> bool:
@@ -447,7 +455,7 @@ def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connect
     def additional_properties(
         validator: Any, additional: object, instance: object, schema_node: object
     ) -> Iterator[ValidationError]:
-        if not validator.is_type(instance, "object"):
+        if not validator.is_type(instance, "object") or not isinstance(instance, Mapping):
             return
         properties = schema_node.get("properties", {}) if isinstance(schema_node, Mapping) else {}
         patterns = schema_node.get("patternProperties", {}) if isinstance(schema_node, Mapping) else {}
@@ -469,7 +477,7 @@ def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connect
     def unique_items(
         validator: Any, enabled: object, instance: object, schema_node: object
     ) -> Iterator[ValidationError]:
-        if enabled is not True or not validator.is_type(instance, "array"):
+        if enabled is not True or not validator.is_type(instance, "array") or not isinstance(instance, Sequence):
             return
         scope = _new_scope(connection)
         try:
@@ -491,7 +499,7 @@ def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connect
     def unevaluated_properties(
         validator: Any, unevaluated: object, instance: object, schema_node: object
     ) -> Iterator[ValidationError]:
-        if not validator.is_type(instance, "object"):
+        if not validator.is_type(instance, "object") or not isinstance(instance, Mapping):
             return
         scope = _new_scope(connection)
         try:
@@ -511,7 +519,7 @@ def _bounded_validator(schema: Mapping[str, object], connection: sqlite3.Connect
     def unevaluated_items(
         validator: Any, unevaluated: object, instance: object, schema_node: object
     ) -> Iterator[ValidationError]:
-        if not validator.is_type(instance, "array"):
+        if not validator.is_type(instance, "array") or not isinstance(instance, Sequence):
             return
         scope = _new_scope(connection)
         try:
@@ -563,7 +571,9 @@ def _ensure_reducer_tables(connection: sqlite3.Connection) -> None:
 
 
 def _new_scope(connection: sqlite3.Connection) -> int:
-    return int(connection.execute("INSERT INTO retained_scope DEFAULT VALUES").lastrowid)
+    lastrowid = connection.execute("INSERT INTO retained_scope DEFAULT VALUES").lastrowid
+    assert lastrowid is not None
+    return int(lastrowid)
 
 
 def _evaluated_property_keys(validator: Any, instance: Mapping[str, object], schema: object) -> Iterator[str]:
