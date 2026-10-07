@@ -382,6 +382,7 @@ def _pinned_parser_census_projection(
         return {
             "available": False,
             "complete_count": 0,
+            "non_session_count": 0,
             "incomplete_count": 0,
             "incomplete_blob_bytes": 0,
             "missing_receipt_count": 0,
@@ -389,32 +390,53 @@ def _pinned_parser_census_projection(
             "incomplete_origin_summary": [],
         }
 
+    terminal_placeholders = ", ".join("(?, ?)" for _ in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS)
     rows = conn.execute(
         f"""
         SELECT r.raw_id, r.origin, COALESCE(r.blob_size, 0), p.raw_id, p.parser_fingerprint,
                p.status, p.logical_keys_json, r.logical_source_key, r.revision_kind,
-               EXISTS(SELECT 1 FROM {source_schema}.raw_artifacts a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
+               (r.parse_error IS NOT NULL OR r.validation_status = 'failed'),
+               EXISTS(
+                   SELECT 1 FROM {source_schema}.raw_artifacts a
+                   WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0
+                     AND a.schema_eligible = 0 AND a.decode_error IS NULL
+                     AND a.malformed_jsonl_lines = 0
+                     AND (a.artifact_kind, a.support_status) NOT IN ({terminal_placeholders})
+               ) AND NOT EXISTS(
+                   SELECT 1 FROM {source_schema}.raw_artifacts sibling
+                   WHERE sibling.raw_id = r.raw_id
+                     AND (sibling.parse_as_session <> 0 OR sibling.schema_eligible <> 0
+                          OR sibling.decode_error IS NOT NULL OR sibling.malformed_jsonl_lines <> 0
+                          OR (sibling.artifact_kind, sibling.support_status) IN ({terminal_placeholders}))
+               ),
                EXISTS(
                    SELECT 1 FROM {source_schema}.raw_membership_census mc
                    WHERE mc.raw_id = r.raw_id AND mc.parser_fingerprint = ? AND mc.status = 'non_session'
+                     AND mc.member_count = 0
                ),
                EXISTS(
                    SELECT 1 FROM {source_schema}.raw_membership_census mc
                    WHERE mc.raw_id = r.raw_id AND r.source_index < 0
                      AND mc.parser_fingerprint = ? AND mc.status = 'failed'
                      AND mc.revision_authority = ?
-               )
+               ),
+               COALESCE(r.validation_status, '') = 'skipped',
+               EXISTS(SELECT 1 FROM main.sessions s WHERE s.raw_id = r.raw_id)
         FROM {source_schema}.raw_sessions r
         LEFT JOIN {source_schema}.raw_authority_parser_census p ON p.raw_id = r.raw_id
         ORDER BY r.raw_id
         """,
         (
+            *(value for pair in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair),
+            *(value for pair in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS for value in pair),
             raw_authority_parser_fingerprint(),
             raw_authority_parser_fingerprint(),
             RawRevisionAuthority.BYTE_PROVEN.value,
         ),
     )
-    complete_count = incomplete_count = incomplete_blob_bytes = missing_receipt_count = non_complete_receipt_count = 0
+    complete_count = non_session_count = incomplete_count = incomplete_blob_bytes = missing_receipt_count = (
+        non_complete_receipt_count
+    ) = 0
     incomplete_origins: Counter[str] = Counter()
     incomplete_origin_bytes: Counter[str] = Counter()
     current_row: tuple[object, ...] | None = None
@@ -422,6 +444,7 @@ def _pinned_parser_census_projection(
     def assess() -> None:
         nonlocal \
             complete_count, \
+            non_session_count, \
             incomplete_count, \
             incomplete_blob_bytes, \
             missing_receipt_count, \
@@ -437,9 +460,12 @@ def _pinned_parser_census_projection(
             logical_keys_json,
             typed_key,
             revision_kind,
+            validation_failed,
             typed_non_session,
             parser_confirmed_non_session,
             byte_governed_fragment,
+            is_skipped,
+            is_materialized,
         ) = current_row
         complete = False
         if (
@@ -469,6 +495,14 @@ def _pinned_parser_census_projection(
                 )
         if complete:
             complete_count += 1
+            if (
+                bool(typed_non_session)
+                and bool(parser_confirmed_non_session)
+                and not bool(validation_failed)
+                and not bool(is_skipped)
+                and not bool(is_materialized)
+            ):
+                non_session_count += 1
             return
         incomplete_count += 1
         size = int(cast(int | None, blob_size) or 0)
@@ -490,6 +524,7 @@ def _pinned_parser_census_projection(
     return {
         "available": True,
         "complete_count": complete_count,
+        "non_session_count": non_session_count,
         "incomplete_count": incomplete_count,
         "incomplete_blob_bytes": incomplete_blob_bytes,
         "missing_receipt_count": missing_receipt_count,
@@ -615,6 +650,7 @@ def _raw_materialization_readiness_from_pinned_index(
         source_schema=source_schema,
         index_conn=index_conn,
     )
+    parser_non_session_count = int(cast(int, parser_census["non_session_count"])) if parser_census["available"] else 0
     authority_projection = _pinned_authority_frontier_projection(
         conn,
         source_schema=source_schema,
@@ -705,6 +741,8 @@ def _raw_materialization_readiness_from_pinned_index(
     total = int(row[4] or 0)
     parse_failed = int(row[5] or 0)
     classified = sum(count for category, count in classified_counts.items() if category not in _RAW_GAP_OWED_CATEGORIES)
+    cheap_non_session_count = 0 if classify_gaps else parser_non_session_count
+    classified += cheap_non_session_count
     affected_actionable = classified_counts.get("parse-failed", 0) + classified_counts.get(
         RAW_ALIAS_BLOB_MISSING_CATEGORY, 0
     )
@@ -716,6 +754,8 @@ def _raw_materialization_readiness_from_pinned_index(
         "raw_parse_failed": parse_failed,
         "parsed_without_index_session": int(row[6] or 0),
     }
+    if cheap_non_session_count:
+        category_counts["parsed-non-session-artifact"] = cheap_non_session_count
     if adoption_deferred_count:
         category_counts["adoption_deferred"] = adoption_deferred_count
     category_counts.update(
@@ -724,7 +764,7 @@ def _raw_materialization_readiness_from_pinned_index(
     return {
         "available": True,
         "classification": "cheap_projection"
-        if classify_gaps and (classified or adoption_deferred_count)
+        if (classify_gaps and (classified or adoption_deferred_count)) or cheap_non_session_count
         else "not_run",
         "precision": "raw_id_join_gap",
         "raw_artifact_count": int(row[0] or 0),
@@ -906,6 +946,7 @@ def raw_materialization_readiness_snapshot(
             authority_frontier_remediation_refs: list[dict[str, object]] = []
             parser_census_available = False
             parser_census_complete_count = 0
+            parser_census_non_session_count = 0
             parser_census_incomplete_count = 0
             parser_census_incomplete_blob_bytes = 0
             parser_census_missing_receipt_count = 0
@@ -918,6 +959,7 @@ def raw_materialization_readiness_snapshot(
             )
             parser_census_available = bool(parser_summary["available"])
             parser_census_complete_count = int(cast(int, parser_summary["complete_count"]))
+            parser_census_non_session_count = int(cast(int, parser_summary["non_session_count"]))
             parser_census_incomplete_count = int(cast(int, parser_summary["incomplete_count"]))
             parser_census_incomplete_blob_bytes = int(cast(int, parser_summary["incomplete_blob_bytes"]))
             parser_census_missing_receipt_count = int(cast(int, parser_summary["missing_receipt_count"]))
@@ -965,12 +1007,16 @@ def raw_materialization_readiness_snapshot(
     parsed_without_index_session = int(row["parsed_without_index_session"] or 0)
     parse_failed = classified_counts.get("parse-failed", 0)
     classified = sum(count for category, count in classified_counts.items() if category not in _RAW_GAP_OWED_CATEGORIES)
+    cheap_non_session_count = 0 if classify_gaps else parser_census_non_session_count
+    classified += cheap_non_session_count
     alias_blob_missing = classified_counts.get(RAW_ALIAS_BLOB_MISSING_CATEGORY, 0)
     actionable = len(parse_failed_origins)
     critical = actionable
     affected_actionable = parse_failed + alias_blob_missing
     unchecked = max(total - classified - affected_actionable - adoption_deferred_count, 0)
     classification = "cheap_projection" if classify_gaps and (classified or adoption_deferred_count) else "not_run"
+    if cheap_non_session_count:
+        classification = "cheap_projection"
     raw_id_join_gap_count = unchecked
     category_counts: dict[str, int] = {
         "raw_id_join_gap": raw_id_join_gap_count,
@@ -979,6 +1025,8 @@ def raw_materialization_readiness_snapshot(
         "raw_parse_failed": raw_parse_failed,
         "parsed_without_index_session": parsed_without_index_session,
     }
+    if cheap_non_session_count:
+        category_counts["parsed-non-session-artifact"] = cheap_non_session_count
     if adoption_deferred_count:
         category_counts["adoption_deferred"] = adoption_deferred_count
     category_counts.update(

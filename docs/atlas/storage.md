@@ -49,6 +49,13 @@ unreceipted raw; decode failures, unsupported/refused artifacts, validation
 refusals, mixed session cohorts, and missing or stale receipts remain visible
 gaps (`storage/archive_readiness.py`).
 
+The bounded daemon status projection reuses this durable receipt and identity
+check without opening raw blobs. It keeps the raw/index join count visible
+while excluding only receipt-backed non-session raws from its unchecked-gap
+count. Every artifact in the cohort must remain raw-only and free of terminal
+support, decode, malformed-line, or validation evidence for that fast
+classification to apply.
+
 Prepared frontier inspection uses the resident preparation owner and the same
 original Source, Index and Ops inputs through publication. Source migration
 005 and the derived-tier DDL journal changes to the dependencies of accepted

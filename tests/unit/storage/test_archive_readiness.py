@@ -1271,6 +1271,19 @@ def test_raw_materialization_snapshot_accepts_currently_censused_typed_empty_cla
     assert _category_counts(snapshot)["parsed-non-session-artifact"] == 1
     assert raw_materialization_ready(snapshot) is True
 
+    # Default daemon status uses the bounded projection. It must consume the
+    # same durable classification without turning the raw join into a session.
+    import polylogue.daemon.status as daemon_status
+
+    monkeypatch.setattr(daemon_status, "archive_root", lambda: tmp_path)
+    fast_status = daemon_status._raw_materialization_readiness_info(classify_gaps=False)
+    assert fast_status.raw_artifact_count == 1
+    assert fast_status.materialized_raw_artifact_count == 0
+    assert fast_status.join_gap_count == 1
+    assert fast_status.unchecked == 0
+    assert fast_status.category_counts["parsed-non-session-artifact"] == 1
+    assert daemon_status._component_from_raw_materialization_readiness(fast_status).state == "ready"
+
     # The zero-member census proves the parser's session set, but every raw
     # artifact in the cohort must agree with that non-session reading.
     siblings = (
@@ -1304,6 +1317,9 @@ def test_raw_materialization_snapshot_accepts_currently_censused_typed_empty_cla
         assert mixed["classified"] == 0
         assert mixed["affected_unchecked"] == 1
         assert raw_materialization_ready(mixed) is False
+        fast_mixed = daemon_status._raw_materialization_readiness_info(classify_gaps=False)
+        assert fast_mixed.unchecked == 1
+        assert daemon_status._component_from_raw_materialization_readiness(fast_mixed).state == "degraded"
         with sqlite3.connect(tmp_path / "source.db") as conn:
             conn.execute("DELETE FROM raw_artifacts WHERE artifact_id=?", (f"mixed-{artifact_id}",))
             conn.commit()
@@ -1319,6 +1335,7 @@ def test_raw_materialization_snapshot_accepts_currently_censused_typed_empty_cla
     assert unsupported["classified"] == 0
     assert unsupported["affected_unchecked"] == 1
     assert raw_materialization_ready(unsupported) is False
+    assert daemon_status._raw_materialization_readiness_info(classify_gaps=False).unchecked == 1
 
     # Durable parser receipts cannot erase a later validation refusal or
     # retained decode failure for the same typed artifact.
@@ -1333,6 +1350,7 @@ def test_raw_materialization_snapshot_accepts_currently_censused_typed_empty_cla
     assert refused["classified"] == 0
     assert refused["affected_actionable"] == 1
     assert _category_counts(refused)["parse_failed"] == 1
+    assert daemon_status._raw_materialization_readiness_info(classify_gaps=False).unchecked == 1
     assert raw_materialization_ready(refused) is False
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
