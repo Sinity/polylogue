@@ -2043,15 +2043,17 @@ def parse_generic_messages_stream(
 def _parse_lowered_spec(
     spec: LoweredPayloadSpec, resolver: SidecarResolver, *, profile_identity: str | None = None
 ) -> list[ParsedSession]:
-    """Parse one lowered spec through the shared admission boundary.
+    """Parse, account for, and admit one lowered spec for publication.
 
     Every production route passes here, including the ones that reach an
     undecorated entry point (Hermes state/ATIF/verification, Antigravity
     markdown, Codex streams); their single-session results get the same
-    outer-record ledger the decorated leaf parsers attach.
+    outer-record ledger the decorated leaf parsers attach. This applies the
+    shared positive-evidence rule once after accounting, so undecorated leaf
+    parsers do not need a second publication check.
     """
     sessions = _parse_lowered_spec_unadmitted(spec, resolver, profile_identity=profile_identity)
-    return admit_parsed_sessions(
+    admitted = admit_parsed_sessions(
         spec.provider.value.replace("-", "_"),
         spec.payload,
         sessions,
@@ -2060,6 +2062,11 @@ def _parse_lowered_spec(
         recognizes=hermes_spans.looks_like_atof_payload
         if spec.provider is Provider.HERMES and spec.mode == "grouped_records"
         else None,
+    )
+    return admit_parsed_sessions_for_publication(
+        admitted,
+        provider=spec.provider,
+        source_path=spec.source_path,
     )
 
 
@@ -2217,7 +2224,7 @@ def message_carries_authored_content(message: ParsedMessage) -> bool:
     return bool(message.blocks)
 
 
-def require_positive_conversational_evidence(
+def admit_parsed_sessions_for_publication(
     sessions: list[ParsedSession],
     *,
     provider: str | Provider,
@@ -2226,18 +2233,10 @@ def require_positive_conversational_evidence(
     """polylogue-9ykn: a session requires authored content or, for OTel GenAI,
     retained span evidence. Other empty sessions are refused before writing.
 
-    This is the admission rule; it is not folded into ``parse_payload`` or
-    ``parse_stream_payload``, which stay pure provider routing so routing
-    tests can stub parsers with zero-message sessions. Its owners are:
-
-    - ``prepared_jsonl.prepare_jsonl_blob``, the preparation owner for sealed
-      carriers, which admits every session on every provider branch before
-      any finalizer runs. Consumers of a sealed artifact do not re-apply it.
-    - Each route that still parses in-process instead of through a sealed
-      carrier, right after its parse. Find them with
-      ``git grep require_positive_conversational_evidence``; a checked-in
-      list of them goes stale. Moving those routes onto sealed preparation
-      removes their call.
+    This is the one positive-evidence admission call for production parsed
+    sessions. Dispatch applies it after provider accounting; retained
+    preparation and replay apply it before preparing or publishing their
+    sessions. Low-level parser functions remain useful for parser-only laws.
 
     Checking message *content*, not only message *count*, also refuses an
     unrecognized single-record document that Claude Code's generic lowering
@@ -2275,10 +2274,8 @@ def parse_payload(
 ) -> list[ParsedSession]:
     """Dispatch parsed payload to the appropriate provider parser.
 
-    Pure routing: returns whatever the selected provider parser reports,
-    including a zero-message session. Production write paths must apply
-    ``require_positive_conversational_evidence`` to the result themselves
-    (see that function's docstring for why it is not applied here).
+    Dispatches, records provider accounting and applies the shared positive-
+    evidence admission rule before returning sessions for publication.
 
     ``sidecar_resolver`` decides where an overflowed tool output is read from
     (polylogue-cq1ql). It defaults to acquisition-time filesystem resolution;
@@ -2626,9 +2623,8 @@ def parse_stream_payload(
 ) -> list[ParsedSession]:
     """Parse a grouped record stream.
 
-    Pure routing, same contract as ``parse_payload`` -- see
-    ``require_positive_conversational_evidence``'s docstring and
-    ``parse_payload`` for ``sidecar_resolver``.
+    The shared positive-evidence admission rule runs once per lowered
+    provider result; see ``parse_payload`` for ``sidecar_resolver``.
     """
     return list(
         iter_parsed_stream(
@@ -2657,9 +2653,8 @@ def iter_parsed_stream(
 ) -> Generator[ParsedSession, None, None]:
     """Parse a grouped record stream.
 
-    Pure routing, same contract as ``parse_payload`` -- see
-    ``require_positive_conversational_evidence``'s docstring and
-    ``parse_payload`` for ``sidecar_resolver``.
+    The shared positive-evidence admission rule runs once per lowered
+    provider result; see ``parse_payload`` for ``sidecar_resolver``.
     """
     runtime_provider = Provider.from_string(provider)
     if runtime_provider is Provider.CLAUDE_CODE:
