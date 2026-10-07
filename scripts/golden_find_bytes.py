@@ -298,20 +298,21 @@ def main(argv: list[str] | None = None) -> int:
         if callable(close):
             close()
 
+    skipped = [
+        {"line": inv.line, "command": inv.text, "reason": inv.skip_reason}
+        for inv in invocations
+        if inv.skip_reason is not None
+    ]
     payload = {
         "workload": WORKLOAD,
         "frozen_epoch": FROZEN_EPOCH,
         "source": "docs/cli-reference.md",
-        "skipped": [
-            {"line": inv.line, "command": inv.text, "reason": inv.skip_reason}
-            for inv in invocations
-            if inv.skip_reason is not None
-        ],
+        "skipped": skipped,
         "results": results,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"wrote {len(results)} goldens ({len(payload['skipped'])} skipped) to {args.output}")
+    print(f"wrote {len(results)} goldens ({len(skipped)} skipped) to {args.output}")
     return 0
 
 
