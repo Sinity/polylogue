@@ -8703,6 +8703,30 @@ class PreparedSessionSourceRead:
             row = rows.fetchone()
         return None if row is None or row[0] is None else str(row[0])
 
+    def raw_schema_eligible(self, raw_id: str) -> bool:
+        """Whether this typed artifact participates in schema validation.
+
+        Missing or mixed artifact evidence is treated as eligible. Only an
+        explicitly typed non-session artifact may omit a validation policy.
+        """
+        self._load_matches("raw_artifacts", "SELECT rowid FROM raw_artifacts WHERE raw_id=?", (raw_id,))
+        with self._seal.source_rows(
+            "SELECT parse_as_session, schema_eligible FROM raw_artifacts WHERE raw_id=?", (raw_id,)
+        ) as rows:
+            values = tuple((row[0] is None or bool(row[0]), row[1] is None or bool(row[1])) for row in rows)
+        return not values or any(parse_as_session or schema_eligible for parse_as_session, schema_eligible in values)
+
+    def raw_parser_confirmed_non_session(self, raw_id: str) -> bool:
+        """Whether current parser authority terminally classifies this raw as non-session."""
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import raw_authority_parser_fingerprint
+
+        self._load_matches("raw_membership_census", "SELECT rowid FROM raw_membership_census WHERE raw_id=?", (raw_id,))
+        with self._seal.source_rows(
+            "SELECT status, parser_fingerprint FROM raw_membership_census WHERE raw_id=?", (raw_id,)
+        ) as rows:
+            row = rows.fetchone()
+        return bool(row is not None and row[0] == "non_session" and row[1] == raw_authority_parser_fingerprint())
+
     def raw_revision_file_mtime(self, raw_id: str) -> str | None:
         from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_raw_revision_file_mtime
 

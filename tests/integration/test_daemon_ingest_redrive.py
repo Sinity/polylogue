@@ -13,6 +13,7 @@ from typing import Any, NoReturn
 import pytest
 
 from polylogue.api import Polylogue
+from polylogue.core.enums import ValidationMode
 from polylogue.daemon.api_auth import resolve_api_auth_token
 from polylogue.daemon.operation_runtime import DaemonOperationRuntime
 from polylogue.daemon.services import ServiceCapability, ServiceProfile
@@ -926,7 +927,12 @@ async def test_a_watcher_only_daemon_redrives_accepted_ingests(tmp_path: Path, m
 
     kernel = BoundedComputeAdapter(max_workers=1, queue_units=1, queue_bytes=0)
     writer = _StandaloneWriteRuntime(archive_root, compute_adapter=kernel)
-    runtime, _profiles = compose_ingest_owner(archive_root, writer.bridge, compute_adapter=kernel)
+    runtime, _profiles = compose_ingest_owner(
+        archive_root,
+        writer.bridge,
+        compute_adapter=kernel,
+        validation_mode=ValidationMode.ADVISORY,
+    )
     try:
         await asyncio.to_thread(runtime.start_accepted_ingest_redrive)
         redrive = runtime._redrive

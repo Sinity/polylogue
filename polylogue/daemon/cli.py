@@ -2611,15 +2611,18 @@ async def _run_daemon_services_under_active_writer_lease(
         capabilities.add(ServiceCapability.API)
     if browser_port is not None:
         capabilities.add(ServiceCapability.BROWSER_HOST)
+    from polylogue.config import load_polylogue_config
+
+    runtime_config = load_polylogue_config()
+    validation_mode = ValidationMode.from_string(runtime_config.schema_validation)
     embedding_config = None
     if schema_blocked:
         capabilities.add(ServiceCapability.SCHEMA_BLOCKED)
     else:
         capabilities.add(ServiceCapability.DERIVED_WRITES)
-        from polylogue.config import load_polylogue_config
         from polylogue.daemon.embedding_backlog import embedding_convergence_unavailable_reason
 
-        embedding_config = load_polylogue_config()
+        embedding_config = runtime_config
         if embedding_convergence_unavailable_reason(embedding_config) is None:
             capabilities.add(ServiceCapability.EMBEDDINGS)
 
@@ -2840,7 +2843,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 archive_root_path,
                 DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
                 compute_adapter=startup_kernel,
-                validation_mode=ValidationMode.from_string(embedding_config.schema_validation),
+                validation_mode=validation_mode,
             )
             ingest_owner_runtime.start_accepted_ingest_redrive()
             await ingest_owner_runtime.accepted_ingest_redrive_claimed()

@@ -90,11 +90,9 @@ if TYPE_CHECKING:
 RAW_OBSERVATION_DOMAIN = "raw_observation"
 
 
-def raw_observation_recipe_version(validation_mode: ValidationMode | None = ValidationMode.ADVISORY) -> str:
+def raw_observation_recipe_version(validation_mode: ValidationMode = ValidationMode.ADVISORY) -> str:
     """Identify the parser and effective validation policy for raw replay."""
     parser_fingerprint = raw_authority_parser_fingerprint()
-    if validation_mode is None:
-        return parser_fingerprint
     digest = hashlib.sha256()
     digest.update(parser_fingerprint.encode("ascii"))
     digest.update(b"\0schema-validation\0")
@@ -377,9 +375,11 @@ class RawObservationInspection:
 
     domain = RAW_OBSERVATION_DOMAIN
     prerequisites: tuple[str, ...] = ()
-    # Inspection-only adapters intentionally have no schema-validation
-    # policy. A deriving adapter overrides this with its effective mode.
-    inspection_validation_mode: ValidationMode | None = None
+
+    @property
+    def inspection_validation_mode(self) -> ValidationMode | None:
+        """Return no schema policy for inspection-only use."""
+        return None
 
     def __init__(self, archive_root: Path, *, index_db_path: Path | None = None) -> None:
         self.archive_root = archive_root
@@ -531,13 +531,41 @@ class RawObservationInspection:
         parser_fingerprint = raw_authority_parser_fingerprint()
         if census is not None and census["parser_fingerprint"] != parser_fingerprint:
             return "stale"
+        if self._decode_refusal(conn, key) is not None:
+            # A retained-byte decode refusal is independent of schema policy;
+            # changing ADVISORY/STRICT cannot make those same bytes decodable.
+            # Compute must report the permanent refusal without parsing again.
+            return "stale"
         validation_mode = self.inspection_validation_mode
         if validation_mode is not None and raw["validation_mode"] != validation_mode.value:
-            return "stale"
-        if self._decode_refusal(conn, key) is not None:
-            # Settled failure evidence is not a successfully derived output.
-            # Compute reports the permanent refusal without parsing it again.
-            return "stale"
+            # Typed non-session carriers are outside the schema-validation
+            # policy. Their current parser census is still required, so a
+            # NULL stamp is accepted only when both pieces of evidence agree.
+            typed_non_session = (
+                conn.execute(
+                    "SELECT 1 WHERE EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=?) "
+                    "AND NOT EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=? "
+                    "AND (parse_as_session IS NOT 0 OR schema_eligible IS NOT 0))",
+                    (key, key),
+                ).fetchone()
+                is not None
+            )
+            parser_non_session = (
+                conn.execute(
+                    "SELECT 1 FROM raw_membership_census WHERE raw_id=? AND status='non_session' "
+                    "AND parser_fingerprint=? LIMIT 1",
+                    (key, parser_fingerprint),
+                ).fetchone()
+                is not None
+            )
+            if not (
+                raw["validation_mode"] is None
+                and census is not None
+                and census["status"] == "complete"
+                and typed_non_session
+                and parser_non_session
+            ):
+                return "stale"
         if (
             raw["parse_error"]
             and conn.execute(
@@ -558,14 +586,25 @@ class RawObservationInspection:
             # A malformed terminal carrier cannot acquire authority through a
             # generic validation marker or the older parse-error fast paths.
             return "stale"
-        if self._terminal_revision_refusal(conn, key, census["parser_fingerprint"] if census else None) or (
-            raw["validation_status"] == "failed"
-            and (
-                raw["parsed_at_ms"] is None
-                or raw["validated_at_ms"] is None
-                or raw["validated_at_ms"] >= raw["parsed_at_ms"]
-            )
-        ):
+        if self._terminal_revision_refusal(conn, key, census["parser_fingerprint"] if census else None):
+            return "valid"
+        strict_schema_refusal = (
+            raw["validation_mode"] == ValidationMode.STRICT.value
+            and raw["validation_status"] == "failed"
+            and raw["validation_error"] is not None
+            and raw["parse_error"] is None
+            and raw["validated_at_ms"] is not None
+            and (raw["parsed_at_ms"] is None or raw["validated_at_ms"] >= raw["parsed_at_ms"])
+            and conn.execute(
+                "SELECT 1 FROM raw_artifacts WHERE raw_id=? AND parse_as_session=1 AND schema_eligible=1 LIMIT 1",
+                (key,),
+            ).fetchone()
+            is not None
+        )
+        if strict_schema_refusal:
+            # STRICT is an explicit terminal refusal after validation. An
+            # ADVISORY schema failure remains parsable and must still produce
+            # its accepted session before inspection can settle it.
             return "valid"
         error = raw["parse_error"]
         coordinates = (key, raw["origin"], raw["effective_origin"], raw["source_path"], raw["source_index"])
@@ -1516,7 +1555,14 @@ class RawObservationDerivation(RawObservationInspection):
                         raw_id
                         for raw_id in raw_ids
                         if prepared_parser_census_is_current(reference_seal, raw_id)
-                        and census_read.raw_validation_mode(raw_id) == self._validation_mode.value
+                        and (
+                            census_read.raw_validation_mode(raw_id) == self._validation_mode.value
+                            or (
+                                census_read.raw_validation_mode(raw_id) is None
+                                and not census_read.raw_schema_eligible(raw_id)
+                                and census_read.raw_parser_confirmed_non_session(raw_id)
+                            )
+                        )
                     }
                 # Every retained raw needs its actual parser authority before
                 # replay can select a session. A singleton can still refine an
