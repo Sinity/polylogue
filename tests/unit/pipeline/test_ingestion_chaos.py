@@ -658,16 +658,18 @@ class TestRerunIdempotency:
         assert second == first
         assert second_messages == first_messages
 
-    def test_codex_rollout_with_unsupported_record_settles_typed_refusal(self, tmp_path: Path) -> None:
-        """A complete Codex rollout is refused when one record shape is unsupported."""
+    def test_codex_rollout_with_unsupported_record_preserves_typed_event(self, tmp_path: Path) -> None:
+        """The retained route accounts for an unsupported outer record as a typed event."""
         import asyncio
         import sqlite3
+        import uuid
 
         from polylogue.core.enums import Provider
         from polylogue.sources.revision_backfill import RevisionCensusResult
         from polylogue.storage.blob_store import BlobStore
         from tests.infra.archive_templates import bootstrap_archive_root
         from tests.infra.retained_jsonl import retained_raw_fixture, run_retained_source_phase
+        from tests.infra.retained_replay import replay_retained_components
 
         lines = corrupt_line_wrong_envelope(generate_large_jsonl(50, provider="codex"), 30)
         content = _jsonl_bytes(lines)
@@ -688,20 +690,47 @@ class TestRerunIdempotency:
         assert isinstance(receipt, RevisionCensusResult)
         assert receipt == RevisionCensusResult(
             scanned=1,
-            classified_full=0,
-            quarantined=1,
+            classified_full=1,
+            quarantined=0,
             input_raw_ids=(raw_id,),
-            logical_keys=(),
+            logical_keys=("codex-session:wrong-envelope",),
         )
         with sqlite3.connect(archive / "source.db") as conn:
-            assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchone() == (
-                "non_session",
-            )
-            assert conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id=?", (raw_id,)).fetchone() == (
-                "terminal_unsupported_shape",
-            )
+            assert conn.execute(
+                "SELECT status, member_count FROM raw_membership_census WHERE raw_id=?", (raw_id,)
+            ).fetchone() == ("complete", 1)
+            assert conn.execute(
+                "SELECT status FROM raw_authority_parser_census WHERE raw_id=?", (raw_id,)
+            ).fetchone() == ("complete",)
+            assert conn.execute(
+                "SELECT COUNT(*) FROM raw_artifacts WHERE raw_id=? AND artifact_id LIKE 'raw-failure:%'", (raw_id,)
+            ).fetchone() == (0,)
+            assert conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone() == (None,)
+
+        replay_retained_components(archive, selected_raw_ids=(raw_id,))
         with sqlite3.connect(archive / "index.db") as conn:
-            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+            assert conn.execute("SELECT native_id, message_count FROM sessions").fetchall() == [("wrong-envelope", 49)]
+            expected_message_ids = sorted(
+                str(uuid.UUID(int=index + 1, version=4)) for index in range(50) if index != 30
+            )
+            assert conn.execute("SELECT native_id FROM messages ORDER BY native_id").fetchall() == [
+                (message_id,) for message_id in expected_message_ids
+            ]
+            event = conn.execute("SELECT event_type, payload_json FROM session_events").fetchone()
+        assert event is not None and event[0] == "codex_unknown_outer_record"
+        assert json.loads(event[1]) == {
+            "record": {"completely": "different", "no_type": "field", "structure": True},
+            "source_index": 31,
+            "wire_type": "unknown",
+        }
+
+        replay_retained_components(archive, selected_raw_ids=(raw_id,))
+        with sqlite3.connect(archive / "index.db") as conn:
+            assert conn.execute("SELECT native_id, message_count FROM sessions").fetchall() == [("wrong-envelope", 49)]
+            assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (49,)
+            assert conn.execute("SELECT event_type, COUNT(*) FROM session_events GROUP BY event_type").fetchall() == [
+                ("codex_unknown_outer_record", 1)
+            ]
 
     def test_iter_json_stream_idempotent(self) -> None:
         """_iter_json_stream produces identical output on repeated calls."""
