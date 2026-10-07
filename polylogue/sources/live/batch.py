@@ -12,7 +12,7 @@ import uuid
 import zipfile
 from builtins import BaseExceptionGroup
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import ExitStack, closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -114,7 +114,7 @@ from polylogue.sources.live.batch_support import (
     JsonlBoundary,
     JsonlFrontier,
     LiveRetainedRunner,
-    RetryableSourceReadError,
+    PreAcquisitionDecision,
     _accumulate_stage_timings,
     _append_plan_group_ready,
     _AppendPlan,
@@ -130,7 +130,7 @@ from polylogue.sources.live.batch_support import (
     _path_size,
     _throttled_phase_heartbeat,
     bind_hook_carrier_baseline_revision,
-    classify_pre_acquisition,
+    classify_pre_writer_admissions,
     claude_semantic_frontier_for_prefix,
     claude_semantic_frontier_for_prefix_with_bytes,
     cursor_prefix_hash,
@@ -2994,6 +2994,9 @@ class LiveBatchProcessor:
                             "live cancellation and capture drain failed", [cancellation, failure]
                         ) from cancellation
                     raise
+            admissions = await self._classify_pre_writer_admissions(
+                [path for path in paths if path not in captures], fallback_provider=provider
+            )
             return await self._ingest_full_paths_prepared(
                 paths,
                 source_name=source_name,
@@ -3001,7 +3004,7 @@ class LiveBatchProcessor:
                 attempt_id=attempt_id,
                 max_pass_seconds=max_pass_seconds,
                 pass_started=pass_started,
-                captured_sqlite_by_path=captures,
+                pre_writer_admissions={**admissions, **captures},
             )
         except BaseException as failure:
             primary = failure
@@ -3019,6 +3022,35 @@ class LiveBatchProcessor:
                     failures.insert(0, primary)
                 raise BaseExceptionGroup("live state publication and capture cleanup failed", failures) from primary
 
+    async def _classify_pre_writer_admissions(
+        self, paths: list[Path], *, fallback_provider: Provider
+    ) -> dict[Path, PreAcquisitionDecision | Exception]:
+        """Classify every non-state input on a worker before Source's writer.
+
+        A JSONL admission streams the file's records; taking it under the
+        writer would hold every other archive writer for that read.
+        """
+        if not paths:
+            return {}
+        cancelled = threading.Event()
+
+        def checkpoint() -> None:
+            if cancelled.is_set():
+                raise DaemonOperationCancelled("pre-writer admission cancelled")
+
+        classification = asyncio.ensure_future(
+            asyncio.to_thread(
+                classify_pre_writer_admissions, paths, fallback_provider=fallback_provider, checkpoint=checkpoint
+            )
+        )
+        try:
+            return await asyncio.shield(classification)
+        except asyncio.CancelledError:
+            cancelled.set()
+            with suppress(DaemonOperationCancelled):
+                await classification
+            raise
+
     async def _ingest_full_paths_prepared(
         self,
         paths: list[Path],
@@ -3028,7 +3060,7 @@ class LiveBatchProcessor:
         attempt_id: str | None = None,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
-        captured_sqlite_by_path: Mapping[Path, PreparedLiveSQLiteCapture | Exception],
+        pre_writer_admissions: Mapping[Path, PreparedLiveSQLiteCapture | PreAcquisitionDecision | Exception],
     ) -> _FullIngestResult:
         paths = _enrichment_evidence_first(
             paths, Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
@@ -3042,7 +3074,7 @@ class LiveBatchProcessor:
             attempt_id=attempt_id,
             max_pass_seconds=max_pass_seconds,
             pass_started=pass_started,
-            captured_sqlite_by_path=captured_sqlite_by_path,
+            pre_writer_admissions=pre_writer_admissions,
         )
         if not result.acquired_raw_ids or _source_tier_acquisition_required():
             return result
@@ -3197,7 +3229,7 @@ class LiveBatchProcessor:
         attempt_id: str | None = None,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
-        captured_sqlite_by_path: Mapping[Path, PreparedLiveSQLiteCapture | Exception],
+        pre_writer_admissions: Mapping[Path, PreparedLiveSQLiteCapture | PreAcquisitionDecision | Exception],
     ) -> _FullIngestResult:
         """Acquire and write one source group; a storage fault takes its staged blobs with it.
 
@@ -3217,7 +3249,7 @@ class LiveBatchProcessor:
                 attempt_id=attempt_id,
                 max_pass_seconds=max_pass_seconds,
                 pass_started=pass_started,
-                captured_sqlite_by_path=captured_sqlite_by_path,
+                pre_writer_admissions=pre_writer_admissions,
             )
         except Exception as exc:
             # Classify here, not by type: the publication flush raises a raw
@@ -3244,7 +3276,7 @@ class LiveBatchProcessor:
         attempt_id: str | None = None,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
-        captured_sqlite_by_path: Mapping[Path, PreparedLiveSQLiteCapture | Exception],
+        pre_writer_admissions: Mapping[Path, PreparedLiveSQLiteCapture | PreAcquisitionDecision | Exception],
     ) -> _FullIngestResult:
         if not paths:
             return _FullIngestResult(succeeded=[], failed=[], source_payload_read_bytes=0)
@@ -3283,7 +3315,7 @@ class LiveBatchProcessor:
         publishers.append(blob_store)
         publishers.extend(
             capture.publisher
-            for capture in captured_sqlite_by_path.values()
+            for capture in pre_writer_admissions.values()
             if isinstance(capture, PreparedLiveSQLiteCapture)
         )
         archive_active = self._archive_active(archive_root)
@@ -3413,11 +3445,12 @@ class LiveBatchProcessor:
                     continue
                 blob_hash: str | None = None
                 blob_publication_receipt_id: str | None = None
-                captured_sqlite = captured_sqlite_by_path.get(path)
-                if isinstance(captured_sqlite, Exception):
-                    raise_if_storage_fault(captured_sqlite, kinds=_snapshot_fault_kinds(captured_sqlite))
+                prepared = pre_writer_admissions[path]
+                if isinstance(prepared, Exception):
+                    raise_if_storage_fault(prepared, kinds=_snapshot_fault_kinds(prepared))
                     failed.append(path)
                     continue
+                captured_sqlite = prepared if isinstance(prepared, PreparedLiveSQLiteCapture) else None
                 try:
                     observed_at_ns = captured_sqlite.observed_at_ns if captured_sqlite is not None else time.time_ns()
                     stat = captured_sqlite.source_stat if captured_sqlite is not None else path.stat()
@@ -3426,17 +3459,8 @@ class LiveBatchProcessor:
                     continue
                 captured_file_observations[path] = _file_observation(stat)
                 captured_observation_times_ns[path] = observed_at_ns
-                try:
-                    admission = (
-                        captured_sqlite.admission
-                        if captured_sqlite is not None
-                        else classify_pre_acquisition(
-                            path, fallback_provider=fallback_provider, source_only=True, size_bytes=stat.st_size
-                        )
-                    )
-                except RetryableSourceReadError:
-                    failed.append(path)
-                    continue
+                admission = captured_sqlite.admission if captured_sqlite is not None else prepared
+                assert isinstance(admission, PreAcquisitionDecision)
                 if admission.refused:
                     assert admission.excluded_reason is not None
                     self._mark_refused_cursor(
@@ -3778,7 +3802,7 @@ class LiveBatchProcessor:
             try:
                 for publisher in publishers:
                     publisher.flush()
-                for sqlite_capture in captured_sqlite_by_path.values():
+                for sqlite_capture in pre_writer_admissions.values():
                     if isinstance(sqlite_capture, PreparedLiveSQLiteCapture) and sqlite_capture.snapshot is not None:
                         if sqlite_capture.snapshot is None:
                             raise ValueError("prepared state is missing its retained acquisition")

@@ -2511,9 +2511,9 @@ async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
         attempt_id: str | None = None,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
-        captured_sqlite_by_path: object = None,
+        pre_writer_admissions: object = None,
     ) -> _FullIngestResult:
-        del source_name, heartbeat, attempt_id, max_pass_seconds, pass_started, captured_sqlite_by_path
+        del source_name, heartbeat, attempt_id, max_pass_seconds, pass_started, pre_writer_admissions
         time.sleep(0.2)
         return _FullIngestResult(
             succeeded=list(paths),
@@ -4284,7 +4284,7 @@ async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
 ) -> None:
     """Admitted work finishes and publishes its cursor past diagnostic thresholds."""
     from polylogue.core.write_hold import enter_write_hold, exit_write_hold
-    from polylogue.sources.live.batch_support import classify_pre_acquisition
+    from polylogue.sources.live.batch import _file_observation
 
     root = tmp_path / "sessions"
     root.mkdir()
@@ -4303,11 +4303,12 @@ async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
             ],
         )
 
-    def slow_classify(*args: Any, **kwargs: Any) -> Any:
+    def slow_observation(stat: Any) -> tuple[int, int, int, int, int]:
+        # Each file's acquisition under the writer outlasts the 30 s hold.
         frozen_clock.advance(31)
-        return classify_pre_acquisition(*args, **kwargs)
+        return _file_observation(stat)
 
-    monkeypatch.setattr("polylogue.sources.live.batch.classify_pre_acquisition", slow_classify)
+    monkeypatch.setattr("polylogue.sources.live.batch._file_observation", slow_observation)
     cursor = CursorStore(tmp_path / "live.sqlite")
     run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(

@@ -376,9 +376,10 @@ def acquire_codex_revision_chain(
     snapshot-only so callers can retain the 804 transition assertions.
     """
     from polylogue.config import Source
+    from polylogue.core.enums import Provider
     from polylogue.pipeline.services.acquisition import AcquisitionService
     from polylogue.sources.live.batch import LiveBatchProcessor
-    from polylogue.sources.live.batch_support import _AppendPlan
+    from polylogue.sources.live.batch_support import _AppendPlan, classify_pre_writer_admissions
     from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
     from polylogue.storage.archive_identity import ArchiveLocation
@@ -444,7 +445,9 @@ def acquire_codex_revision_chain(
                 parser_fingerprint=_PARSER_FINGERPRINT,
             )
             full_result = processor._ingest_full_paths_sync(
-                [source_path], source_name="codex", captured_sqlite_by_path={}
+                [source_path],
+                source_name="codex",
+                pre_writer_admissions=classify_pre_writer_admissions([source_path], fallback_provider=Provider.CODEX),
             )
             if full_result.failed or full_result.succeeded != [source_path]:
                 raise AssertionError(f"production planner baseline ingest failed: {full_result!r}")
