@@ -16,6 +16,7 @@ from threading import Thread
 
 import pytest
 
+from polylogue.browser_capture.capture_jobs import capture_job_store_root
 from polylogue.browser_capture.server import make_server
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
@@ -83,7 +84,7 @@ def test_extension_background_publishes_canonical_complete_artifact(
         thread.join()
     receipt = json.loads(result.stdout)
     assert receipt["summary"]["needs_follow_up"] is (provider == "chatgpt" and "duplicate" in fixture)
-    retained = (tmp_path / "capture-jobs" / "artifacts" / f"{receipt['sha256']}.native").read_bytes()
+    retained = (capture_job_store_root(tmp_path) / "artifacts" / f"{receipt['sha256']}.native").read_bytes()
     raw = json.loads(source.read_bytes())
     envelope = json.loads(retained)
     assert envelope["raw_provider_payload"] == raw

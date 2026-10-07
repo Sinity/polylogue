@@ -28,6 +28,7 @@ from polylogue.browser_capture.capture_jobs import (
     canonical_json,
     capture_job_database_path,
     capture_job_scope_namespace,
+    capture_job_store_root,
 )
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import (
@@ -1931,7 +1932,7 @@ def test_checkpoint_artifact_refuses_alternate_bytes_before_ack(tmp_path: Path, 
         )
         assert status == 200 and found["job"]["checkpoint"] is None
         assert found["job"]["revision"] == adopted["job"]["revision"]
-        assert not list((tmp_path / "capture-jobs" / "artifacts").glob("*.checkpoint"))
+        assert not list((capture_job_store_root(tmp_path) / "artifacts").glob("*.checkpoint"))
 
 
 def test_checkpoint_artifact_hash_releases_writer_transaction_before_reading_bytes(
@@ -2357,7 +2358,7 @@ def test_native_receiver_complete_envelope_matches_canonical_provider_parsing(
             host, port, "POST", f"{path}/finalize", {**descriptor, "plan_digest": prepared["plan_digest"]}
         )
         assert status == 200, final
-    retained = (tmp_path / "capture-jobs" / "artifacts" / f"{final['sha256']}.native").read_bytes()
+    retained = (capture_job_store_root(tmp_path) / "artifacts" / f"{final['sha256']}.native").read_bytes()
     for member in members.values():
         assert member in retained
     envelope = json.loads(retained)
@@ -2426,7 +2427,7 @@ def test_native_preparation_cancellation_fences_actual_work_and_settles_scratch(
         )
         assert status == 409 and result["error"]["code"] == "native_acquisition_cancelled"
     assert cancelled
-    assert list((tmp_path / "capture-jobs" / "preparation").iterdir()) == []
+    assert list((capture_job_store_root(tmp_path) / "preparation").iterdir()) == []
     with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
         assert connection.execute("SELECT state FROM capture_job_native_acquisitions").fetchone() == ("cancelled",)
         assert connection.execute("SELECT COUNT(*) FROM capture_job_native_artifacts").fetchone() == (0,)
@@ -2586,7 +2587,7 @@ def test_native_preparation_preserves_duplicate_asset_occurrences_and_canonical_
             host, port, "POST", f"{path}/finalize", {**descriptor, "plan_digest": prepared["plan_digest"]}
         )
         assert status == 200, final
-        artifact = tmp_path / "capture-jobs/artifacts" / f"{final['sha256']}.native"
+        artifact = capture_job_store_root(tmp_path) / "artifacts" / f"{final['sha256']}.native"
         literal = artifact.read_bytes()
         assert raw in literal
         envelope = json.loads(literal)
@@ -2676,7 +2677,9 @@ def test_native_preparation_reordered_mapping_keeps_full_ids_hashes_and_refuses_
                 host, port, "POST", f"{path}/finalize", {**descriptor, "plan_digest": prepared["plan_digest"]}
             )
             assert status == 200
-            envelope = json.loads((spool / "capture-jobs/artifacts" / f"{final['sha256']}.native").read_bytes())
+            envelope = json.loads(
+                (capture_job_store_root(spool) / "artifacts" / f"{final['sha256']}.native").read_bytes()
+            )
             parsed.append(parse(envelope, "native-occurrences"))
             for forge_raw_position in (False, True):
                 forged = json.loads(json.dumps(envelope))
