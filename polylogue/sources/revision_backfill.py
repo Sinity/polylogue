@@ -859,7 +859,7 @@ def prepare_retained_jsonl_artifact(
 
     try:
         parse_prefix_size: int | None = None
-        if is_jsonl_source_path(source_path):
+        if is_jsonl_source_path(source_path) and not path_declaration_refuses_session(provider, source_path):
             with evidence_reader.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
                 parse_prefix_size = jsonl_parse_prefix_size_of_handle(payload)
         artifact = prepare_jsonl_blob(
