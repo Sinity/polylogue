@@ -1690,11 +1690,13 @@ async def _periodic_health_check(*, sources: tuple[WatchSource, ...] | None = No
         from polylogue.daemon.notifications import send_notifications
 
         cfg = load_polylogue_config()
-        health = await daemon_write_coordinator().run_sync(
-            "maintenance.health_check",
-            check_health,
-            tiers=resolve_health_tiers(cfg.health_check_tiers),
-            sources=sources,
+        # The checks are reads on their own read-only connections, so they run
+        # off the writer; the cursor-lag sample is the one durable write, and
+        # it bridges to the writer through the admission bound here.
+        health = await asyncio.to_thread(
+            _run_with_stage_admission,
+            _daemon_stage_write_admission(),
+            partial(check_health, tiers=resolve_health_tiers(cfg.health_check_tiers), sources=sources),
         )
         if health.overall_status != "ok":
             send_notifications(health.alerts, config=cfg.raw)
