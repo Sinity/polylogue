@@ -79,13 +79,14 @@ from polylogue.sources.assembly import SidecarData
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
+    admit_parsed_sessions_for_publication,
     detect_provider_from_stream_evidence,
     is_jsonl_source_path,
     is_stream_record_provider,
     parse_payload,
     parse_stream_payload,
-    require_positive_conversational_evidence,
 )
+from polylogue.sources.fallback_identity import fallback_session_id
 from polylogue.sources.live.batch_support import (
     jsonl_complete_prefix,
     jsonl_parse_input_of_handle,
@@ -753,6 +754,7 @@ def prepare_retained_jsonl_artifact(
     raw_id: str,
     *,
     directory: Path,
+    allow_generic_object_alias: bool = False,
 ) -> PreparedJsonl:
     """Seal JSON sessions using this creator's actual selected Source inputs.
 
@@ -767,6 +769,7 @@ def prepare_retained_jsonl_artifact(
         is_jsonl_source_path(source_path)
         or Path(source_path).suffix.lower() == ".json"
         or path_declaration_refuses_session(provider, source_path)
+        or allow_generic_object_alias
     ):
         raise RetainedPreparationRetryableError(f"retained JSON worker cannot parse {raw_id}")
     blob_path = evidence_reader.raw_revision_blob_path(raw_id)
@@ -789,7 +792,7 @@ def prepare_retained_jsonl_artifact(
                 f"retained UNKNOWN provider has no recognized complete input shape: {source_path}"
             )
             return PreparedJsonl(None, None, None, f"{type(refusal).__name__}: {refusal}", unsupported_shape=True)
-    fallback_id = Path(source_path).stem
+    fallback_id = fallback_session_id(source_path, raw_id)
     if kind is RawRevisionKind.APPEND:
         fallback_id = (
             _append_session_native_id(
@@ -926,6 +929,27 @@ def prepare_retained_non_json_artifact(
     from polylogue.storage.sqlite.reference_seal import ReferenceSealError
 
     provider, blob_hash, source_path, _kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
+    # Some providers arrive under neutral or mislabeled filenames. A simple
+    # top-level message envelope has an existing ijson-to-SQLite route in
+    # prepare_jsonl_blob; route by that complete shape before the collecting
+    # non-JSON replay below. The probe validates through EOF and leaves the
+    # retained blob untouched.
+    if provider in {Provider.DRIVE, Provider.GEMINI} and not (
+        is_jsonl_source_path(source_path) or Path(source_path).suffix.lower() == ".json"
+    ):
+        from polylogue.sources.decoder_json import generic_message_object_envelope
+
+        blob_path = evidence_reader.raw_revision_blob_path(raw_id)
+        if blob_path is not None:
+            with blob_path.open("rb") as handle:
+                generic_envelope = generic_message_object_envelope(handle)
+            if generic_envelope is not None:
+                return prepare_retained_jsonl_artifact(
+                    evidence_reader,
+                    raw_id,
+                    directory=directory,
+                    allow_generic_object_alias=True,
+                )
     if path_declaration_refuses_session(provider, source_path):
         # A raw-only member (an export's binary asset) is evidence whatever its
         # suffix: the sealed preparation records its path classification
@@ -2720,6 +2744,24 @@ def parse_retained_raw_sessions(archive: RetainedRawRead, raw_id: str) -> list[P
     def normalize_replay(sessions: list[ParsedSession]) -> list[ParsedSession]:
         return [normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp) for session in sessions]
 
+    # SQLite revisions are already immutable blob files. Open them directly:
+    # materializing the entire database as ``bytes`` before SQLite opens it
+    # duplicates every page in Python memory.
+    if provider in {Provider.HERMES, Provider.ANTIGRAVITY}:
+        from polylogue.sources.sqlite_export import looks_like_logical_source_path
+
+        sqlite_path = archive.raw_revision_blob_path(raw_id)
+        if sqlite_path is not None and looks_like_logical_source_path(sqlite_path):
+            return normalize_replay(
+                _parse_sqlite_path(
+                    provider,
+                    sqlite_path,
+                    source_path,
+                    fallback_id=fallback_session_id(source_path, raw_id),
+                    profile_identity=profile_identity,
+                )
+            )
+
     fallback_id_override = (
         _append_session_native_id(
             archive.raw_append_logical_key(raw_id),
@@ -2921,19 +2963,15 @@ def _parse_one(
     sidecar_resolver: SidecarResolver | None,
     fallback_id_override: str | None = None,
 ) -> list[ParsedSession]:
-    return require_positive_conversational_evidence(
-        _parse_one_raw(
-            provider,
-            payload,
-            source_path,
-            payload_path=payload_path,
-            archive_root=archive_root,
-            sidecar_resolver=sidecar_resolver,
-            profile_identity=profile_identity,
-            fallback_id_override=fallback_id_override,
-        ),
-        provider=provider,
-        source_path=source_path,
+    return _parse_one_raw(
+        provider,
+        payload,
+        source_path,
+        payload_path=payload_path,
+        archive_root=archive_root,
+        sidecar_resolver=sidecar_resolver,
+        profile_identity=profile_identity,
+        fallback_id_override=fallback_id_override,
     )
 
 
@@ -2984,9 +3022,9 @@ def _parse_one_raw(
                 "Antigravity raw replay did not reproduce exactly one requested trajectory "
                 f"{cascade_id!r} from {source_path}"
             )
-        return sessions
+        return admit_parsed_sessions_for_publication(sessions, provider=provider, source_path=source_path)
     source_name = Path(source_path).name
-    fallback_id = fallback_id_override or Path(source_path).stem
+    fallback_id = fallback_id_override or fallback_session_id(source_path, source_path)
     if provider is Provider.HERMES and looks_like_logical_source_bytes(payload):
         with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
             if not (
@@ -2999,18 +3037,26 @@ def _parse_one_raw(
                 # and stays replayable (polylogue-qjscw).
                 raise RuntimeError(f"retained Hermes SQLite material is not a logical export: {source_path}")
             if hermes_state.looks_like_state_db_path(sqlite_path, immutable=True):
-                return hermes_state.parse_state_db(
-                    sqlite_path,
-                    fallback_id=fallback_id,
-                    profile_identity=profile_identity,
-                    immutable=True,
+                return admit_parsed_sessions_for_publication(
+                    hermes_state.parse_state_db(
+                        sqlite_path,
+                        fallback_id=fallback_id,
+                        profile_identity=profile_identity,
+                        immutable=True,
+                    ),
+                    provider=provider,
+                    source_path=source_path,
                 )
             if hermes_verification.looks_like_verification_evidence_db_path(sqlite_path, immutable=True):
-                return hermes_verification.parse_verification_evidence_db(
-                    sqlite_path,
-                    fallback_id=fallback_id,
-                    profile_identity=profile_identity,
-                    immutable=True,
+                return admit_parsed_sessions_for_publication(
+                    hermes_verification.parse_verification_evidence_db(
+                        sqlite_path,
+                        fallback_id=fallback_id,
+                        profile_identity=profile_identity,
+                        immutable=True,
+                    ),
+                    provider=provider,
+                    source_path=source_path,
                 )
     if provider is Provider.ANTIGRAVITY and looks_like_logical_source_bytes(payload):
         with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
@@ -3022,7 +3068,11 @@ def _parse_one_raw(
             if is_sqlite_page_image(sqlite_path):
                 return []
             if antigravity.looks_like_trajectory_db_path(sqlite_path, immutable=True):
-                return list(antigravity.parse_trajectory_db(sqlite_path, fallback_id=fallback_id, immutable=True))
+                return admit_parsed_sessions_for_publication(
+                    list(antigravity.parse_trajectory_db(sqlite_path, fallback_id=fallback_id, immutable=True)),
+                    provider=provider,
+                    source_path=source_path,
+                )
     if looks_like_sqlite_bytes(payload):
         # polylogue-qjscw: a retained SQLite PAGE IMAGE reaching this point has
         # no current parser -- every provider that can replay a database has
@@ -3073,6 +3123,49 @@ def _parse_one_raw(
     )
 
 
+def _parse_sqlite_path(
+    provider: Provider,
+    path: Path,
+    source_path: str,
+    *,
+    fallback_id: str,
+    profile_identity: str | None,
+) -> list[ParsedSession]:
+    """Parse a retained SQLite export from its immutable blob path."""
+    if provider is Provider.HERMES:
+        if profile_identity is None:
+            raise MissingProfileIdentityError("retained Hermes input has no captured profile identity receipt")
+        if not (is_declared_logical_export(path, source_path) or is_undeclared_logical_export(path, source_path)):
+            raise RuntimeError(f"retained Hermes SQLite material is not a logical export: {source_path}")
+        if hermes_state.looks_like_state_db_path(path, immutable=True):
+            sessions = hermes_state.parse_state_db(
+                path,
+                fallback_id=fallback_id,
+                profile_identity=profile_identity,
+                immutable=True,
+            )
+        elif hermes_verification.looks_like_verification_evidence_db_path(path, immutable=True):
+            sessions = hermes_verification.parse_verification_evidence_db(
+                path,
+                fallback_id=fallback_id,
+                profile_identity=profile_identity,
+                immutable=True,
+            )
+        else:
+            sessions = []
+    elif provider is Provider.ANTIGRAVITY:
+        if is_sqlite_page_image(path):
+            return []
+        sessions = (
+            list(antigravity.parse_trajectory_db(path, fallback_id=fallback_id, immutable=True))
+            if antigravity.looks_like_trajectory_db_path(path, immutable=True)
+            else []
+        )
+    else:
+        raise ValueError(f"SQLite replay is not supported for {provider}")
+    return admit_parsed_sessions_for_publication(sessions, provider=provider, source_path=source_path)
+
+
 @contextmanager
 def _sqlite_payload_path(
     payload: bytes,
@@ -3109,20 +3202,14 @@ def _parse_stream(
     archive_root: Path | None = None,
     sidecar_resolver: SidecarResolver | None,
 ) -> list[ParsedSession]:
-    # polylogue-9ykn: see ``_parse_one``'s comment -- the same positive-
-    # conversational-evidence gate applies to the streaming replay path.
-    return require_positive_conversational_evidence(
-        _parse_stream_raw(
-            provider,
-            payload,
-            source_path,
-            fallback_id_override=fallback_id_override,
-            archive_root=archive_root,
-            sidecar_resolver=sidecar_resolver,
-            profile_identity=profile_identity,
-        ),
-        provider=provider,
-        source_path=source_path,
+    return _parse_stream_raw(
+        provider,
+        payload,
+        source_path,
+        fallback_id_override=fallback_id_override,
+        archive_root=archive_root,
+        sidecar_resolver=sidecar_resolver,
+        profile_identity=profile_identity,
     )
 
 
@@ -3140,7 +3227,7 @@ def _parse_stream_raw(
         raise MissingProfileIdentityError("retained Hermes input has no captured profile identity receipt")
 
     source_name = Path(source_path).name
-    fallback_id = fallback_id_override or Path(source_path).stem
+    fallback_id = fallback_id_override or fallback_session_id(source_path, source_path)
     stream = _retained_jsonl_stream(payload, source_name, source_path)
     return parse_stream_payload(
         provider,

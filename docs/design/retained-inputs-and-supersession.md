@@ -411,10 +411,8 @@ capture writes a cursor afterwards cannot affect their totals — the
 measurement isolates the continuity proof, not the cursor write.
 
 A full capture is modeled at the archive write boundary
-(`write_raw_payload` with a FULL envelope plus
-the live-watch cohort classifier, since removed) rather than through
-`_process_ingest_batch_sync`; the append configurations drive the production
-route end to end.
+(`write_raw_payload` with a FULL envelope plus the live-watch cohort
+classifier); the append configurations drive the production route end to end.
 
 Convergence work is unchanged by the representation: every configuration
 replays 1,096,453 bytes, because replay parses the accepted chain's content

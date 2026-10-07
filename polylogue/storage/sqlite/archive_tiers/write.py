@@ -16518,7 +16518,7 @@ def _stored_session_native_id(native_id: str) -> str:
 
     Single source of truth for session identity (mirrors the message-level
     ab5bad1f FK-failure fix via ``_stored_message_native_id`` below, never
-    given a session-level sibling until polylogue-lyr2). ``_write_session``'s
+    given a session-level sibling until polylogue-lyr2). The session
     INSERT bind and every call to ``core.identity_law.session_id`` (which the
     generated ``sessions.session_id`` column reimplements in SQL as
     ``origin || ':' || native_id``) MUST route through this helper, or the

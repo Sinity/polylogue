@@ -211,8 +211,7 @@ bead's framing implies.** Fifteen-plus call sites read blob bytes via
 `storage/artifacts/inspection.py`, `schemas/sampling_db.py`,
 `schemas/validation/corpus.py`, `storage/blob_integrity.py`,
 `sources/source_parsing.py`, `sources/live/batch.py`, `storage/repair.py`,
-`storage/raw_reconciler.py`, `storage/sqlite/queries/artifacts.py`,
-`pipeline/services/ingest_worker.py`. Several of these are exactly the
+`storage/raw_reconciler.py`, `storage/sqlite/queries/artifacts.py`. Several of these are exactly the
 maintenance/forensic tools (repair, reconciler, inspection, integrity audit)
 that legitimately need to open **any** raw_id's exact original bytes on
 operator demand — including a superseded one.

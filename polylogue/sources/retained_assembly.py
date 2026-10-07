@@ -65,8 +65,6 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     CompletedSourceItemRead,
     retained_completed_source_item_for_raw,
 )
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import read_frame
 
 from .assembly import (
     ClaudeCodeHistoryPasteIndex,
@@ -545,43 +543,8 @@ def with_retained_assembly_evidence(
     return result
 
 
-def resolve_retained_assembly_evidence(
-    sidecar_data: SidecarData,
-    *,
-    provider: Provider | None,
-    archive_root: Path,
-    source_path: str | None,
-    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
-) -> SidecarData:
-    """Fill missing assembly inputs from the archive at ``archive_root``.
-
-    The archive is the evidence carrier, so both the pipeline ingest worker
-    and retained-raw replay resolve these inputs from it rather than from any
-    live file beside the original source path. A read-only connection keeps
-    this safe beside the daemon's single writer, and an absent or unreadable
-    source tier degrades to no evidence rather than to a rediscovery.
-    """
-    if provider not in {Provider.CLAUDE_CODE, Provider.CODEX, Provider.CHATGPT} or not source_path:
-        return sidecar_data
-    source_db = archive_root / "source.db"
-    if not source_db.exists():
-        return sidecar_data
-    from polylogue.storage.sqlite.archive_tiers.write import ConnectionSessionSourceRead
-
-    with read_frame(source_db, timeout_class="background-read", tier=ArchiveTier.SOURCE) as frame:
-        return with_retained_assembly_evidence(
-            sidecar_data,
-            provider=provider,
-            source_read=ConnectionSessionSourceRead(frame.connection),
-            blob_store=BlobStore(archive_root / "blob"),
-            source_path=source_path,
-            captured_zip_coordinate=captured_zip_coordinate,
-        )
-
-
 __all__ = [
     "RetainedArtifact",
-    "resolve_retained_assembly_evidence",
     "codex_sidecar_coordinates",
     "chatgpt_export_scope",
     "claude_code_sidecar_coordinates",

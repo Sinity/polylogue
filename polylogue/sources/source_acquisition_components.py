@@ -378,7 +378,7 @@ def _read_plain_source_file(context: SourceReadContext, binding: SourceInputBind
     """Stream one non-ZIP source file into the blob store.
 
     This is the real per-file production acquisition entry point for the
-    daemon watcher / ``ingest_batch`` pipeline (every non-ZIP file a
+    daemon watcher and retained ingest pipeline (every non-ZIP file a
     ``WatchSource`` accepts passes through here). It emits one structured
     ``file_acquisition_decision`` log record (see
     ``polylogue.sources.live.acquisition_log``) per file, carrying the

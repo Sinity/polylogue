@@ -306,6 +306,9 @@ def recover_persisted_tool_results(session: ParsedSession, *, archive_root: Path
 
     A no-op -- with no source-tier read at all -- for a session that carries no
     unresolved overflow pointer, which is every session but a handful.
+
+    This helper is an explicit recovery operation; retained preparation does
+    not call it yet (polylogue-lgpxh).
     """
     truncations = unresolved_persisted_truncations(session)
     if not truncations:

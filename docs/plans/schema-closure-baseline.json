@@ -259,7 +259,6 @@
     "polylogue/pipeline/semantic_capture.py",
     "polylogue/pipeline/semantic_metadata.py",
     "polylogue/pipeline/services/ingest_batch/_models.py",
-    "polylogue/pipeline/services/ingest_worker.py",
     "polylogue/readiness/capability.py",
     "polylogue/schemas/__init__.py",
     "polylogue/schemas/audit/walkers.py",

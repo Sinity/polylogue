@@ -1930,7 +1930,7 @@ def build_wire_support_receipt(
     from polylogue.schemas.synthetic.core import SyntheticCorpus
     from polylogue.schemas.synthetic.selection import select_synthetic_schema
     from polylogue.schemas.validator import SchemaValidator, ValidationResult
-    from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+    from polylogue.sources.dispatch import admit_parsed_sessions_for_publication, parse_payload
 
     catalog_providers = tuple(
         sorted(dict.fromkeys(registry.list_providers() if providers is None else providers))  # type: ignore[attr-defined]
@@ -2107,7 +2107,7 @@ def build_wire_support_receipt(
                             f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}",
                             schema_resolution=schema_resolution,
                         )
-                        artifact_sessions = require_positive_conversational_evidence(
+                        artifact_sessions = admit_parsed_sessions_for_publication(
                             parsed_sessions_for_artifact,
                             provider=provider,
                             source_path=f"synthetic-wire-receipt:{provider}:{package.version}:{element_kind}:{index}",

@@ -4136,7 +4136,7 @@ def validate_assembly_spec_parity(
 
     ``polylogue.sources.assembly.get_assembly_spec`` is the current production
     per-provider sidecar/title/orchestration enrichment factory consumed by
-    ingest (``source_walk.py``, ``emitter.py``, ``ingest_worker.py``). This is
+    ingest (``source_walk.py``, ``emitter.py``, ``revision_backfill.py``). This is
     the one typed admission point polylogue-2qx.2, polylogue-j2zz, and
     polylogue-ih67 build their assembly/orchestration/title/action extensions
     on: a declared ``assembly_spec_path`` that must agree with whether the live

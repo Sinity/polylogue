@@ -847,7 +847,6 @@ async def _replay_seeded_archive(
             repository=repository,
             archive_root=config.archive_root,
             config=config,
-            ingest_workers=request.ingest_workers,
             retained_runner=owner.replay_retained_raw_ids,
         )
         return await parser.parse_from_raw()
