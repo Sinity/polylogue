@@ -90,20 +90,19 @@ def collect_sqlite_sessions(
         for session in iter_sqlite_sessions(
             provider, path, store, fallback_id=fallback_id, profile_identity=profile_identity
         ):
-            events = [
-                event.model_copy(
-                    update={"payload": json.loads("".join(iter_json_value(event.payload, ensure_ascii=False)))}
-                )
-                for event in session.session_events
-            ]
-            accounting = session.unit_accounting
-            if accounting is not None:
-                accounting = ParseAccounting.model_construct(
-                    expected=accounting.expected, outcomes=list(accounting.outcomes)
-                )
-            result.append(
-                session.model_copy(
-                    update={"messages": list(session.messages), "session_events": events, "unit_accounting": accounting}
-                )
-            )
+            result.append(resident_sqlite_session(session))
         return result
+
+
+def resident_sqlite_session(session: ParsedSession) -> ParsedSession:
+    """Copy every borrowed stream for the independent-model public API."""
+    events = [
+        event.model_copy(update={"payload": json.loads("".join(iter_json_value(event.payload, ensure_ascii=False)))})
+        for event in session.session_events
+    ]
+    accounting = session.unit_accounting
+    if accounting is not None:
+        accounting = ParseAccounting.model_construct(expected=accounting.expected, outcomes=list(accounting.outcomes))
+    return session.model_copy(
+        update={"messages": list(session.messages), "session_events": events, "unit_accounting": accounting}
+    )

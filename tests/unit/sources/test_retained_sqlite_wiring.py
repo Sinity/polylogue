@@ -124,6 +124,52 @@ def test_retained_sqlite_preparation_streams_complete_parser_metadata(
             assert parent_payload["parent_provider_id"] is None
             assert actual[0].unit_accounting.expected == {"part": 2}
             assert [(outcome.ordinal, outcome.disposition.value) for outcome in actual[0].unit_accounting.outcomes] == [
-                (0, "accepted"),
+                (0, "materialized"),
                 (1, "typed_unknown"),
             ]
+
+
+@pytest.mark.parametrize("provider", [Provider.HERMES, Provider.ANTIGRAVITY])
+def test_public_sqlite_source_models_survive_iterator_completion(tmp_path: Path, provider: Provider) -> None:
+    """Public source iteration historically returns independent session models."""
+    from polylogue.sources.source_parsing import parse_one_source_path
+
+    if provider is Provider.HERMES:
+        _single_session_state_db_bytes(tmp_path)
+        database = tmp_path / "state.db"
+    else:
+        database = tmp_path / "trajectory.db"
+        with sqlite3.connect(database) as connection:
+            connection.executescript(
+                "CREATE TABLE trajectory_meta(trajectory_id TEXT, cascade_id TEXT);"
+                "CREATE TABLE steps(idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);"
+                "CREATE TABLE parent_references(cascade_id TEXT, parent_id TEXT);"
+                "INSERT INTO trajectory_meta VALUES ('trajectory-1','cascade-1');"
+                'INSERT INTO steps VALUES (0,\'message\',\'v1\',\'{"role":"user","text":"independent text"}\');'
+                "INSERT INTO steps VALUES (1,'future_step','v2','{\"opaque\":\"evidence\"}');"
+                "INSERT INTO parent_references VALUES ('cascade-1','parent-a');"
+            )
+    archive = tmp_path / "archive"
+    bootstrap_archive_root(archive)
+    pairs = list(
+        parse_one_source_path(
+            str(database),
+            file_mtime=None,
+            source_name=provider.value,
+            sidecar_data={},
+            capture_raw=False,
+            blob_store=BlobStore(archive / "blob"),
+            blob_root=archive / "blob",
+        )
+    )
+    assert len(pairs) == 1
+    _raw, session = pairs[0]
+    assert session.messages[0].text == ("hi" if provider is Provider.HERMES else "independent text")
+    assert session.session_events
+    _projection(session)
+    session_content_hash(session)
+    if provider is Provider.ANTIGRAVITY:
+        assert session.unit_accounting is not None
+        session.unit_accounting.assert_conserved()
+        event = next(event for event in session.session_events if event.event_type == "antigravity_parent_reference")
+        assert event.payload["parent_provider_ids"] == ["parent-a"]

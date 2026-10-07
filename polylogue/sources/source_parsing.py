@@ -41,7 +41,7 @@ from .origin_specs import SourceClassRecognition, artifact_rule_for_path, recogn
 from .parsers import antigravity, hermes_state, hermes_verification
 from .parsers.base import ParsedSession, RawSessionData
 from .prepared_message_sink import SqliteMessageStore
-from .retained_sqlite import iter_sqlite_sessions
+from .retained_sqlite import iter_sqlite_sessions, resident_sqlite_session
 from .source_staging import SourceInputBinding, bind_source_input
 from .source_walk import _setup_source_walk
 from .sqlite_snapshot import is_sqlite_path, snapshot_sqlite_to_blob
@@ -411,7 +411,7 @@ def _parse_one_source_path_bound(
         ):
             for session in iter_sqlite_sessions(provider_hint, retained_path, store, fallback_id=path.stem):
                 check_compute_cancelled()
-                yield (raw_data, session)
+                yield (raw_data, resident_sqlite_session(session))
         return
     source_class = recognize_source_class(provider_hint, path)
     if (
@@ -495,7 +495,7 @@ def _parse_one_source_path_bound(
                 profile_identity=snapshot.captured_profile_key,
             ):
                 check_compute_cancelled()
-                yield (raw_data, session)
+                yield (raw_data, resident_sqlite_session(session))
         return
 
     if (
