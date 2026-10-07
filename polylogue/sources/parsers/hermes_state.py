@@ -1054,8 +1054,10 @@ def _parse_session_row(
     raw_session_id = str(row["id"])
     profile_key = profile_identity if profile_identity is not None else _profile_key(profile_root)
     session_id = _qualified_session_id(raw_session_id, profile_key)
-    messages: MutableSequence[ParsedMessage] = message_sink if message_sink is not None else []
+    materialized_messages: list[ParsedMessage] = []
+    messages: MutableSequence[ParsedMessage] = message_sink if message_sink is not None else materialized_messages
     state_events: list[ParsedSessionEvent] = []
+    materialized_events: list[ParsedSessionEvent] = []
     sink_active_leaf_position: int | None = None
 
     def append_message(message: ParsedMessage) -> None:
@@ -1113,7 +1115,8 @@ def _parse_session_row(
         for event in _reasoning_evidence_events(message_row, parsed):
             append_event(event)
     if inspection is None and message_sink is None:
-        messages = _mark_active_leaf(messages)
+        materialized_messages = _mark_active_leaf(materialized_messages)
+        messages = materialized_messages
     elif inspection is None and sink_active_leaf_position is not None:
         leaf = messages[sink_active_leaf_position]
         if not leaf.is_active_leaf:
@@ -1145,7 +1148,7 @@ def _parse_session_row(
             inspection.evidence.event(event)
         for event in state_events:
             inspection.evidence.event(event)
-        session_events: MutableSequence[ParsedSessionEvent] = []
+        session_events: MutableSequence[ParsedSessionEvent] = materialized_events
         active_leaf_id = inspection.active_leaf_id
     elif event_sink is not None:
         # Message-state and reasoning events were appended as the message
@@ -1157,32 +1160,33 @@ def _parse_session_row(
             event_sink.insert(0, event)
         session_events = event_sink
     else:
-        session_events = [*prefix_events, *state_events]
+        materialized_events = [*prefix_events, *state_events]
+        session_events = materialized_events
     provider_title = _optional_text(_row_value(row, "title"))
-    session_values: dict[str, object] = {
-        "source_name": Provider.HERMES,
-        "provider_session_id": session_id,
-        "title": provider_title or raw_session_id,
-        "title_source": TitleSource.ORIGIN if provider_title else None,
-        "created_at": _epoch_iso(row["started_at"]),
-        "updated_at": _epoch_iso(_row_value(row, "ended_at"))
+    session = ParsedSession(
+        source_name=Provider.HERMES,
+        provider_session_id=session_id,
+        title=provider_title or raw_session_id,
+        title_source=TitleSource.ORIGIN if provider_title else None,
+        created_at=_epoch_iso(row["started_at"]),
+        updated_at=_epoch_iso(_row_value(row, "ended_at"))
         or (_latest_message_timestamp(messages) if inspection is None else inspection.latest_timestamp),
-        "messages": messages,
-        "active_leaf_message_provider_id": active_leaf_id,
-        "session_events": session_events,
-        "parent_session_provider_id": parent_id,
-        "branch_type": _branch_type(row, parent_row) if parent_id else None,
-        "instructions_text": system_prompt,
-        "reported_cost_usd": _reported_cost(row),
-        "models_used": [model_name] if model_name else [],
-        "working_directories": [cwd] if (cwd := _optional_text(_row_value(row, "cwd"))) else [],
-        "git_branch": _optional_text(_row_value(row, "git_branch")),
-        "git_repository_url": _optional_text(_row_value(row, "git_repo_root")),
-        "ingest_flags": ["hermes:state-db", f"hermes:schema-v{schema_version or 'unknown'}"],
-    }
+        messages=materialized_messages,
+        active_leaf_message_provider_id=active_leaf_id,
+        session_events=materialized_events,
+        parent_session_provider_id=parent_id,
+        branch_type=_branch_type(row, parent_row) if parent_id else None,
+        instructions_text=system_prompt,
+        reported_cost_usd=_reported_cost(row),
+        models_used=[model_name] if model_name else [],
+        working_directories=[cwd] if (cwd := _optional_text(_row_value(row, "cwd"))) else [],
+        git_branch=_optional_text(_row_value(row, "git_branch")),
+        git_repository_url=_optional_text(_row_value(row, "git_repo_root")),
+        ingest_flags=["hermes:state-db", f"hermes:schema-v{schema_version or 'unknown'}"],
+    )
     if message_sink is not None or event_sink is not None:
-        return ParsedSession.model_construct(**session_values)
-    return ParsedSession(**session_values)
+        return session.model_copy(update={"messages": messages, "session_events": session_events})
+    return session
 
 
 def _parse_message_row(
