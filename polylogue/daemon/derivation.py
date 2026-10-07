@@ -753,11 +753,31 @@ class _Pass:
         if self.barrier is None or mapper is None or not keys or phase is not DiscoveryPhase.REQUIRED:
             return {}
         try:
-            sessions: dict[str, tuple[str, ...]] = {
-                str(key): (str(value),) if isinstance(value, str) else tuple(str(item) for item in value)
-                for key, value in dict(mapper(self.frame, keys)).items()
-            }
-            blocked = self.barrier(tuple(dict.fromkeys(session for group in sessions.values() for session in group)))
+            sessions = {str(key): value for key, value in dict(mapper(self.frame, keys)).items()}
+            held: dict[str, str] = {}
+            for key, group in sessions.items():
+                group_ids = (group,) if isinstance(group, str) else group
+                iterator = iter(group_ids)
+                try:
+                    while True:
+                        page: list[str] = []
+                        for _ in range(DEFAULT_PAGE):
+                            try:
+                                page.append(str(next(iterator)))
+                            except StopIteration:
+                                break
+                        if not page:
+                            break
+                        blocked = self.barrier(tuple(page))
+                        waiting = sorted(set(page).intersection(blocked))
+                        if waiting:
+                            held[key] = f"session {', '.join(waiting)} awaits primary publication"
+                            break
+                finally:
+                    close = getattr(iterator, "close", None)
+                    if callable(close):
+                        close()
+            return held
         except Exception as exc:
             emit(
                 "daemon.derivation.barrier_failed",
@@ -770,12 +790,6 @@ class _Pass:
                 error_detail=str(exc),
             )
             return dict.fromkeys(keys, f"publication barrier unreadable: {exc}")
-        held: dict[str, str] = {}
-        for key, group in sessions.items():
-            waiting = sorted(session for session in group if session in blocked)
-            if waiting:
-                held[key] = f"session {', '.join(waiting)} awaits primary publication"
-        return held
 
     # ── prerequisites ──────────────────────────────────────────────
 
