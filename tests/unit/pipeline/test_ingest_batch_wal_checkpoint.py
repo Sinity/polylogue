@@ -116,7 +116,8 @@ def test_checkpoint_wal_reports_blocking_processes_when_the_route_asks(
 
     class FakeConnection:
         def execute(self, sql: str) -> object:
-            assert sql == "PRAGMA wal_checkpoint(PASSIVE)"
+            # ``main`` only: an attached read-only tier is never backfilled.
+            assert sql == "PRAGMA main.wal_checkpoint(PASSIVE)"
             return self
 
         def fetchone(self) -> tuple[int, int, int]:

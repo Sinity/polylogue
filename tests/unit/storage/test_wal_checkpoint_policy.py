@@ -303,6 +303,41 @@ def test_observation_reports_its_own_hold_against_the_budget(
     assert not observation.over_hold_budget
 
 
+def test_index_checkpoint_owns_only_its_own_wal_beside_a_live_source_wal(
+    tmp_path: Path, seed_wal: Callable[..., sqlite3.Connection]
+) -> None:
+    """An Index checkpoint never walks the read-only Source attachment.
+
+    The Index connection attaches ``source.db`` with ``mode=ro``. Anti-vacuity:
+    issuing the checkpoint unqualified (``PRAGMA wal_checkpoint(...)``) also
+    backfills that Source WAL through its read-only descriptor and fails with
+    SQLITE_IOERR_WRITE ("disk I/O error"), and leaves Source's WAL untouched
+    only by accident.
+    """
+    from polylogue.storage.io_phase_metrics import connect_measured
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+
+    source_db = tmp_path / "source.db"
+    with closing(connect_measured(source_db)) as conn:
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+        conn.commit()
+    source_writer = seed_wal(source_db, rows=64)
+    source_wal = source_db.with_name("source.db-wal")
+    source_wal_before = source_wal.stat().st_size
+    index_db = tmp_path / "index.db"
+    seed_wal(index_db, rows=64)
+
+    observation = wal_checkpoint.checkpoint_wal(
+        index_db, reason="unit", escalation="exclusive", warn_bytes=1, escalation_bytes=1
+    )
+
+    assert observation.error is None
+    assert observation.mode == "truncate"
+    assert observation.wal_bytes_after == 0
+    assert source_wal.stat().st_size == source_wal_before
+    assert source_writer.execute("SELECT COUNT(*) FROM payload").fetchone()[0] == 64
+
+
 # -- restart -----------------------------------------------------------------
 
 
