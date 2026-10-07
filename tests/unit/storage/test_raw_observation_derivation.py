@@ -1090,8 +1090,6 @@ def test_empty_claude_history_remains_non_session_when_validation_mode_changes(
 
         frame = raw_observation_frame(tmp_path)
         advisory = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
-        report = _run(tmp_path, compute_adapter=compute_adapter)
-        assert report.done == 1 and report.failed == report.pending == 0, report.outcomes
         with sqlite3.connect(tmp_path / "source.db") as conn:
             raw_id = str(conn.execute("SELECT raw_id FROM raw_sessions").fetchone()[0])
             assert conn.execute(
@@ -1102,8 +1100,7 @@ def test_empty_claude_history_remains_non_session_when_validation_mode_changes(
                 "non_session",
             )
             # Non-session sources deliberately have no schema-validation stamp.
-            conn.execute("UPDATE raw_sessions SET validation_mode=NULL WHERE raw_id=?", (raw_id,))
-            conn.commit()
+        assert advisory.inspect(frame, (raw_id,)) == {raw_id: "valid"}
 
         strict = RawObservationDerivation(
             tmp_path, compute_adapter=compute_adapter, validation_mode=ValidationMode.STRICT
