@@ -576,7 +576,9 @@ def test_an_unsealed_shard_is_refused(tmp_path: Path) -> None:
     builder = SessionShardBuilder(tmp_path / "unsealed.db")
     builder.add(prepare_session_rows(_synthetic_sessions()[0]))
     builder._conn.execute("COMMIT")  # the rows land; the seal never does
-    builder._conn.close()
+    # Keep the unsealed file for refusal, but retire its registered SQL owner.
+    builder._discard_on_close = False
+    builder.close()
 
     with pytest.raises(ShardRefusedError, match="unsealed"):
         open_session_shard(tmp_path / "unsealed.db")
