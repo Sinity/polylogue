@@ -979,18 +979,13 @@ def _retained_validation_input(
 
 
 def _is_declared_provider_session_stream(provider: Provider, source_path: str) -> bool:
-    """Whether the provider's declared watch layout assigns this path to a session stream."""
-    layout_name = {Provider.CODEX: "codex", Provider.CLAUDE_CODE: "claude-code"}.get(provider)
-    if layout_name is None:
+    """Whether an empty provider JSONL path should be decoded as a session stream."""
+    if provider not in {Provider.CODEX, Provider.CLAUDE_CODE}:
         return False
-    from polylogue.sources.source_layout import declared_source_layouts
-
-    layout = declared_source_layouts()[layout_name]
-    parts = Path(source_path).parts
-    return any(
-        layout.artifact_kind(parts[offset:]) in {"session_stream", "coordinator_session_stream", "agent_transcript"}
-        for offset in range(len(parts))
-    )
+    # Claude's configured history file is raw-only intake metadata. Other
+    # provider JSONL paths that are not explicitly excluded by OriginSpec are
+    # session decode inputs, including neutral and exported path spellings.
+    return not (provider is Provider.CLAUDE_CODE and Path(source_path).name.lower() == "history.jsonl")
 
 
 def prepare_retained_non_json_artifact(
