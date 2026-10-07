@@ -1856,6 +1856,19 @@ def test_shutdown_progress_ignores_the_stack_sampler_cpu(tmp_path: Path, monkeyp
 
     assert probe() == before
 
+    # A hung daemon's status readers and periodic events keep read I/O,
+    # threads, the event log and SQLite read marks moving: none of that is a
+    # draining shutdown, so a stalled run is still terminated (run5 sat past
+    # its stall timeout until cancelled when these counted).
+    Sampler.samples.append((2.0, 1, 99.0, 50, 6_000, 7_000))
+    (tmp_path / "events.jsonl").write_text('{"event":"source.hook_spool.skipped"}\n', encoding="utf-8")
+    (tmp_path / "index.db-shm").write_bytes(b"read marks")
+    assert probe() == before
+
+    # A checkpoint or drain writes the archive's database files.
+    (tmp_path / "index.db-wal").write_bytes(b"frames")
+    assert probe() != before
+
 
 def test_a_full_fraction_sample_takes_zero_byte_units(tmp_path: Path) -> None:
     """``--fraction 1`` copies every unit, an empty transcript included.
