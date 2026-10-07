@@ -9,8 +9,9 @@ beside a live daemon.
 
 These tests prove the boundary mechanism against a real resident process the
 pidfile claims, in both directions: refused when a daemon owns the archive,
-still writable when nothing does. ``tests/unit/cli/test_offline_writers.py``
+refused offline too unless a leased scratch owner writes. ``tests/unit/cli/test_offline_writers.py``
 drives each remaining offline writer through the console-script route.
+Offline, the configured archive itself is never writable from the CLI.
 """
 
 from __future__ import annotations
@@ -129,15 +130,14 @@ def test_refusal_names_the_resident_writer(
     assert isinstance(caught.value.__cause__, UnleasedWriteError)
 
 
-def test_unowned_archive_leaves_the_boundary_unarmed(
+def test_offline_archive_leaves_global_lease_guards_unarmed(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """No resident daemon means no second writer, so nothing is armed.
+    """A scratch writer keeps the process-wide lease guards unarmed.
 
-    Anti-vacuity: arm unconditionally and this goes red -- which is also what
-    breaks the offline authorities, since an invocation-wide lease is bound to
-    the thread and task that minted it while the CLI writes from ``asyncio``
+    The per-open hook still classifies every writable tier; this checks that a
+    command-scoped lease was not added, since CLI writes may run in asyncio
     tasks and worker threads.
     """
     from polylogue.storage.sqlite.write_guard import archive_write_guard_installed
@@ -148,6 +148,26 @@ def test_unowned_archive_leaves_the_boundary_unarmed(
     with cli_archive_writer_ownership():
         assert write_lease_enforced() is False
         assert archive_write_guard_installed() is False
+
+
+def test_unresolved_configured_root_refuses_all_cli_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An unknown configured root cannot prove any target is a scratch archive."""
+    import sqlite3
+
+    import polylogue.cli.write_authority as authority
+
+    monkeypatch.setattr(authority, "_archive_root", lambda: None)
+    scratch = tmp_path / "unresolved"
+    scratch.mkdir()
+
+    with pytest.raises(ArchiveWriterOwnershipUndecidableError):
+        with cli_archive_writer_ownership():
+            sqlite3.connect(str(scratch / "source.db"))
+
+    assert not (scratch / "source.db").exists()
 
 
 def test_resident_archive_writer_arms_the_boundary(
@@ -304,24 +324,99 @@ def test_a_daemon_that_arrives_mid_invocation_is_refused(
     assert not (root / "index.db").exists()
 
 
-def test_revalidation_leaves_an_unowned_archive_writable(
+def test_configured_archive_has_no_offline_writer(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The opposite direction: re-asking must not refuse an archive nobody owns.
+    """With no daemon, a writable open of the configured archive is ``daemon_required``.
 
-    Anti-vacuity: refuse unconditionally inside the interception and this goes
-    red -- which is also what would break every declared offline authority.
+    The configured archive is written only by ``polylogued``; the CLI is never
+    its offline owner, even while it is empty (polylogue-5vps8 AC5).
+
+    Anti-vacuity: restore the branch that takes archive custody for the
+    configured root when no daemon is resident and the connection opens,
+    creating ``index.db``.
     """
     import sqlite3
+
+    from polylogue.cli.shared.helpers import DaemonRequiredError
 
     root = _archive_root(monkeypatch, tmp_path)
 
     with cli_archive_writer_ownership():
-        connection = sqlite3.connect(str(root / "index.db"))
-        connection.close()
+        with pytest.raises(DaemonRequiredError) as caught:
+            sqlite3.connect(str(root / "index.db"))
 
-    assert (root / "index.db").exists()
+    assert caught.value.code == "daemon_required"
+    assert caught.value.archive_root == str(root.resolve())
+    assert not (root / "index.db").exists()
+
+
+def test_an_unleased_scratch_open_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Outside the configured archive only a leased scratch owner may write.
+
+    Anti-vacuity: admit unleased opens outside the configured root and this
+    connection opens, creating the stray tier.
+    """
+    import sqlite3
+
+    _archive_root(monkeypatch, tmp_path)
+    stray = tmp_path / "stray"
+    stray.mkdir()
+
+    with cli_archive_writer_ownership():
+        with pytest.raises(ArchiveWriterOwnershipError):
+            sqlite3.connect(str(stray / "index.db"))
+
+    assert not (stray / "index.db").exists()
+
+
+def test_scoped_offline_archive_owner_can_write_its_separate_scratch_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The one-shot demo owner is an explicit scratch authority without a write lease."""
+    import sqlite3
+
+    from polylogue.maintenance.offline_guard import scoped_offline_archive_writer
+
+    configured = _archive_root(monkeypatch, tmp_path)
+    scratch = tmp_path / "demo-scratch"
+
+    with cli_archive_writer_ownership():
+        with scoped_offline_archive_writer(scratch, owner_id="test-demo-scratch"):
+            connection = sqlite3.connect(str(scratch / "index.db"))
+            try:
+                connection.execute("CREATE TABLE owned (id INTEGER PRIMARY KEY)")
+            finally:
+                connection.close()
+
+    assert (scratch / "index.db").exists()
+    assert not (configured / "index.db").exists()
+
+
+def test_scratch_lease_root_may_not_contain_the_configured_archive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A scratch file outside the configured tree is still unsafe under an overlapping root."""
+    import sqlite3
+
+    from polylogue.core.write_lease import write_lease
+
+    _archive_root(monkeypatch, tmp_path)
+    stray = tmp_path / "stray"
+    stray.mkdir()
+
+    with cli_archive_writer_ownership():
+        with write_lease("test.overlapping-scratch", archive_root=tmp_path):
+            with pytest.raises(ArchiveWriterOwnershipError):
+                sqlite3.connect(str(stray / "source.db"))
+
+    assert not (stray / "source.db").exists()
 
 
 def test_a_separate_archive_answers_to_its_own_root(
@@ -331,17 +426,17 @@ def test_a_separate_archive_answers_to_its_own_root(
 ) -> None:
     """A tier of a separately leased archive is bounded by that archive.
 
-    ``polylogue demo receipts`` seeds a throwaway archive under the working
-    directory while ``POLYLOGUE_ARCHIVE_ROOT`` names another. Its own write
-    lease then names the throwaway root, which the boundary used to compare
-    with the configured root and refuse as "a different archive".
+    A demo seed/receipts/tour operation may build an explicit scratch archive
+    while ``POLYLOGUE_ARCHIVE_ROOT`` names another. Its own write lease names
+    the scratch root, which the boundary used to compare with the configured
+    root and refuse as "a different archive".
 
     Anti-vacuity: key the boundary on the configured root again and the
     leased open is refused while the daemon-owned one is let through.
     """
     import sqlite3
 
-    from polylogue.core.write_lease import write_lease
+    from polylogue.core.write_lease import archive_write_custody, write_lease
 
     _archive_root(monkeypatch, tmp_path)
     separate = tmp_path / "separate"
@@ -350,8 +445,9 @@ def test_a_separate_archive_answers_to_its_own_root(
     owned.mkdir()
 
     with cli_archive_writer_ownership():
-        with write_lease("test.separate-archive", archive_root=separate):
-            sqlite3.connect(str(separate / "index.db")).close()
+        with archive_write_custody(separate):
+            with write_lease("test.separate-archive", archive_root=separate):
+                sqlite3.connect(str(separate / "index.db")).close()
         resident_daemon(owned / "daemon.pid")
         with write_lease("test.owned-archive", archive_root=owned):
             with pytest.raises(ArchiveWriterOwnershipError):
@@ -359,39 +455,6 @@ def test_a_separate_archive_answers_to_its_own_root(
 
     assert (separate / "index.db").exists()
     assert not (owned / "index.db").exists()
-
-
-def test_offline_writer_holds_daemon_exclusion_after_first_writable_open(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A daemon cannot acquire ownership while this offline writer is active.
-
-    Anti-vacuity: probe only at each open without retaining the shared pidfile
-    lock, then this subprocess acquires LOCK_EX while the writable connection
-    is still live.
-    """
-    import sqlite3
-
-    root = _archive_root(monkeypatch, tmp_path)
-    with cli_archive_writer_ownership():
-        connection = sqlite3.connect(str(root / "index.db"))
-        try:
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    "-c",
-                    "import fcntl, os, sys; fd=os.open(sys.argv[1], os.O_RDWR); "
-                    "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)",
-                    str(root / "daemon.pid"),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-        finally:
-            connection.close()
-    assert result.returncode != 0
 
 
 def test_bound_write_lease_rejects_a_missing_archive_identity(tmp_path: Path) -> None:
@@ -418,7 +481,9 @@ def test_cli_rejects_an_inherited_lease_without_actual_thread_authority(
     from polylogue.storage.sqlite.write_lease import write_lease
     from tests.infra.archive_custody_probe import archive_custody_available
 
-    root = _archive_root(monkeypatch, tmp_path)
+    _archive_root(monkeypatch, tmp_path)
+    root = tmp_path / "scratch"
+    root.mkdir()
     failures: list[BaseException] = []
 
     def attempt_open() -> None:

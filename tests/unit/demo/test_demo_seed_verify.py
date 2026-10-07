@@ -606,23 +606,11 @@ async def test_seed_demo_archive_self_heals_a_stale_schema_on_a_demo_owned_root(
 
 
 @pytest.mark.asyncio
-async def test_seed_demo_archive_refuses_the_default_root_collision(tmp_path: Path) -> None:
-    """Demo seed refuses to write synthetic content into a root holding real sessions.
+async def test_seed_demo_archive_refuses_real_content(tmp_path: Path) -> None:
+    """Demo seeding never adds synthetic data to a root holding real sessions.
 
-    Guards polylogue-o3a1t: ``demo seed``'s default archive-root resolution
-    shares ``archive_root()``/``polylogue.toml`` with the live daemon, so an
-    operator or agent who forgets ``--root`` can have it resolve straight to
-    their live production archive. ``demo seed`` adds rows rather than
-    refusing to run against existing content, so without this guard the
-    collision would silently seed synthetic fixture sessions into a real
-    archive.
-
-    ANTI-VACUITY: the production entry point exercised is
-    ``polylogue.demo.seed.seed_demo_archive`` with ``explicit_root=False``
-    (what the CLI passes when neither ``--root`` nor
-    ``POLYLOGUE_ARCHIVE_ROOT`` was given). Deleting the
-    ``_guard_demo_seed_target`` call from ``seed_demo_archive`` makes this
-    test fail by seeding successfully instead of raising.
+    Anti-vacuity: delete the ``_guard_demo_seed_target`` call from
+    ``_seed_demo_archive_owned`` and this seeds instead of raising.
     """
 
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -632,27 +620,8 @@ async def test_seed_demo_archive_refuses_the_default_root_collision(tmp_path: Pa
     await asyncio.to_thread(initialize_active_archive_root, archive_root)
     SessionBuilder(archive_root / "index.db", "real-session").provider("claude-code").save()
 
-    with pytest.raises(DemoSeedTargetUnsafeError, match="real ingested session"):
-        await seed_demo_archive(archive_root, force=False, explicit_root=False)
-
-    # Nothing was touched: no demo fixture source, no ownership manifest.
-    assert not (archive_root / DEMO_SOURCE_DIRNAME).exists()
-    assert not (archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).exists()
-
-
-@pytest.mark.asyncio
-async def test_seed_demo_archive_explicit_root_refuses_real_content(tmp_path: Path) -> None:
-    """An explicit location does not authorize adding demo data to a real archive."""
-
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-    from tests.infra.storage_records import SessionBuilder
-
-    archive_root = tmp_path / "archive"
-    await asyncio.to_thread(initialize_active_archive_root, archive_root)
-    SessionBuilder(archive_root / "index.db", "real-session").provider("claude-code").save()
-
     with pytest.raises(DemoSeedTargetUnsafeError, match="real archive content"):
-        await seed_demo_archive(archive_root, force=False, explicit_root=True)
+        await seed_demo_archive(archive_root, force=False)
     assert not (archive_root / DEMO_SOURCE_DIRNAME).exists()
     assert not (archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).exists()
 
@@ -843,7 +812,7 @@ async def test_record_demo_ownership_treats_missing_index_as_unsafe_not_empty(tm
     assert not (archive_root / "index.db").exists()
 
     with pytest.raises(DemoSeedTargetUnsafeError, match="real archive content"):
-        await seed_demo_archive(archive_root, force=True, explicit_root=True)
+        await seed_demo_archive(archive_root, force=True)
     assert not (archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).exists()
     assert not (archive_root / "index.db").exists()
 

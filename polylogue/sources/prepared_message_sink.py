@@ -566,7 +566,10 @@ class GeminiToolOutputIndex:
                 byte_size=entry.byte_size,
                 content_hash=hash_text(full_text),
                 was_truncated=was_truncated,
-                full_text=full_text,
+                # The validated copy was hashed and stored in the disk-backed
+                # replacement table above. Keep only a re-open handle here;
+                # a match must not retain one full output per sidecar.
+                read_text=entry.read_text,
                 file_mtime_ms=entry.file_mtime_ms,
             )
         for filename, tool_id in self.conn.execute(

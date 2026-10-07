@@ -3772,6 +3772,7 @@ def test_gemini_sidecar_decoded_past_the_cell_limit_is_typed_debt(
     instead of a ``value_bound_refused`` debt row.
     """
     from polylogue.sources import value_bounds
+    from polylogue.sources.live.tool_result_sidecars import SidecarMatch
     from polylogue.sources.prepared_message_sink import GeminiToolOutputIndex
 
     monkeypatch.setattr(value_bounds, "MAX_STORABLE_VALUE_BYTES", 64)
@@ -3790,7 +3791,7 @@ def test_gemini_sidecar_decoded_past_the_cell_limit_is_typed_debt(
             available=True,
         )
         results = list(index.join(scope))
-        assert not any(getattr(result, "full_text", None) for result in results)
+        assert not any(isinstance(result, SidecarMatch) for result in results)
         assert conn.execute("SELECT filename, reason FROM gemini_tool_debt").fetchall() == [
             ("call-1.txt", "value_bound_refused")
         ]

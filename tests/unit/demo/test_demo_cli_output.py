@@ -99,7 +99,16 @@ def test_demo_tour_json_failure_is_one_document_with_nonzero_status(tmp_path: Pa
     with patch("polylogue.cli.commands.demo.run_demo_tour", return_value=failed):
         result = runner.invoke(
             cli,
-            ["demo", "tour", "--out-dir", str(tmp_path / "tour"), "--format", "json"],
+            [
+                "demo",
+                "tour",
+                "--root",
+                str(tmp_path / "archive"),
+                "--out-dir",
+                str(tmp_path / "tour"),
+                "--format",
+                "json",
+            ],
         )
 
     assert result.exit_code != 0
@@ -115,9 +124,21 @@ def test_demo_tour_success_preserves_json_and_human_output(tmp_path: Path) -> No
     with patch("polylogue.cli.commands.demo.run_demo_tour", return_value=passed):
         json_result = runner.invoke(
             cli,
-            ["demo", "tour", "--out-dir", str(tmp_path / "tour"), "--format", "json"],
+            [
+                "demo",
+                "tour",
+                "--root",
+                str(tmp_path / "archive"),
+                "--out-dir",
+                str(tmp_path / "tour"),
+                "--format",
+                "json",
+            ],
         )
-        plain_result = runner.invoke(cli, ["demo", "tour", "--out-dir", str(tmp_path / "tour")])
+        plain_result = runner.invoke(
+            cli,
+            ["demo", "tour", "--root", str(tmp_path / "archive"), "--out-dir", str(tmp_path / "tour")],
+        )
 
     assert json_result.exit_code == 0, json_result.output
     assert json.loads(json_result.output)["ok"] is True

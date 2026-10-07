@@ -52,8 +52,8 @@ DAEMON_REQUIRED = "daemon_required"
 #:
 #: The mirror image of :data:`DAEMON_REQUIRED`, and deliberately a different
 #: code: the remedy there is "start the daemon", and the remedy here is the
-#: opposite -- route the write through the daemon that is *already* running,
-#: or stop it and own the archive offline. Folding both into one code would
+#: opposite -- route the write through the daemon that is *already* running.
+#: Folding both into one code would
 #: tell a machine caller to start a second daemon for the archive whose first
 #: one is exactly what refused it.
 ARCHIVE_WRITER_OWNERSHIP_UNAVAILABLE = "archive_writer_ownership_unavailable"
@@ -292,7 +292,7 @@ def error_archive_writer_ownership(
     remedy = (
         "check archive-writer ownership and retry when it can be determined"
         if code == "archive_writer_ownership_undecidable"
-        else "route the write through the resident polylogued, or stop it"
+        else "route the write through the resident polylogued"
     )
     details: JSONDocument = {"remedy": remedy}
     if archive_root:

@@ -1,71 +1,40 @@
 """The ordinary CLI process's archive writer ownership.
 
-:mod:`polylogue.storage.sqlite.write_lease` and
-:mod:`polylogue.storage.sqlite.write_guard` make every writable archive-tier
-open assert ownership -- but only *where enforcement is armed*. Until this
-module existed, enforcement was armed in exactly two processes: ``polylogued
-run`` (:mod:`polylogue.daemon.cli`) and the MCP stdio bridge holding a write
-or maintenance capability (:mod:`polylogue.mcp.server`). The console scripts
-``polylogue``/``plg``/``plog`` armed neither, so ``write_lease_enforced()``
-was ``False`` for the whole invocation and every ``require_write_lease`` call
-reached on that route returned ``None``. An ordinary offline writer
-therefore created and wrote tier files beside a live daemon with no ownership
-check at all -- the same unserialized-writer shape that locked the daemon out
-of its own catch-up chunk (polylogue-8qm4k).
+The configured archive is written only by ``polylogued``. The CLI owns syntax,
+confirmation and rendering; every mutation lowers onto a declared daemon
+operation. This module enforces that for every writable archive-tier open the
+CLI process makes, decided on one fact: **is a resident ``polylogued`` running
+for the configured root at entry?**
 
-The boundary is armed on the fact that decides whether this process may own
-the archive at all: **is a resident ``polylogued`` running for this root?**
-
-* A resident daemon at entry. The CLI is **not** the single writer, and the
-  premise that excused leaving it unarmed is false. Enforcement and the
-  connection-level guard are armed for the rest of the invocation, so a
-  writable tier open raises before the connection exists instead of
-  contending through the busy timeout, and the refusal is re-raised naming
-  the resident writer that holds the archive.
-* No resident daemon at entry. The CLI *is* the archive's single writer, which
-  is the standing rationale in :mod:`~polylogue.storage.sqlite.write_lease`
-  for leaving one-shot writers unarmed, and the ownership the declared offline
-  authorities already rely on. Nothing is armed -- but the question is
-  **re-asked at every writable archive-tier open**, because it is a claim
-  about volatile state that entry cannot settle for the whole command.
-* The platform cannot answer. The boundary **refuses loudly**. An unguarded
-  durable write beside a live daemon is the outcome this module exists to
-  prevent, so an unprovable owner is never treated as an absent one.
+* A resident daemon at entry. Write-lease enforcement and the
+  connection-level guard are armed for the invocation, so an unleased
+  writable open raises before the connection exists, and the refusal is
+  re-raised naming the resident writer.
+* No resident daemon at entry. Every writable archive-tier open is
+  intercepted (:func:`~polylogue.maintenance.offline_guard.refuse_writable_tier_opens`).
+  An open inside the configured archive is refused with ``daemon_required``
+  -- the CLI has no offline writer for it, empty or not -- or, if a daemon
+  has arrived since entry, with an ownership refusal naming it. An open
+  outside the configured archive is admitted only for a scratch archive held
+  by a scoped one-shot archive owner or a matching write lease plus physical
+  custody. Demo seeding (``demo seed``/``receipts``/``tour``) uses the
+  one-shot owner. Anything else has no owner and is refused.
+* The platform cannot answer the residency question. The boundary **refuses
+  loudly**; an unprovable owner is never treated as an absent one.
 
 Reads are untouched in every case: a read-only open never consults the lease
-and is never intercepted, and the CLI's read and mutation routes already reach
-a resident daemon through the operation kernel rather than the archive files.
+and is never intercepted.
 
-This is deliberately not a lease taken over the whole invocation. The CLI
-runs writes from ``asyncio`` tasks and worker threads, and a lease minted at
-the entry point is bound to the thread and task that minted it -- an
-invocation-wide lease turns "no ownership" into "ownership held by the wrong
-task" and refuses exactly the offline authorities that are entitled to write.
+This is deliberately not a lease taken over the whole invocation: a lease
+minted at the entry point is bound to the thread and task that minted it,
+while the CLI runs work from ``asyncio`` tasks and worker threads.
 
-**Why the offline case re-asks rather than trusting entry.** A single probe in
-the root callback is a time-of-check/time-of-use window as wide as the command:
-``polylogue ops embed backfill`` can sit at its confirmation prompt for
-minutes, and a ``polylogued run`` started in that time was never noticed, so
-the backfill opened writable embedding/index/ops tiers beside the live daemon.
-Residency is volatile state; only the archive root is configuration. So the
-root is resolved once and residency is re-asked at each open.
-
-The offline interception itself is
-:func:`~polylogue.maintenance.offline_guard.refuse_writable_tier_opens`, which
-lives beside the residency probe rather than here: it needs storage's own
-definition of "a writable archive-tier open", and a fresh ``cli -> storage``
-import edge is what the surface layering ratchet forbids. It is deliberately
-not a hook parameter on
+The interception lives in :mod:`polylogue.maintenance.offline_guard` beside
+the residency probe because it needs storage's own definition of "a writable
+archive-tier open", and a fresh ``cli -> storage`` import edge is what the
+surface layering ratchet forbids. It is not a hook parameter on
 :func:`~polylogue.storage.sqlite.write_guard.install_archive_write_guard`
-either -- that module is inside the derived-schema identity closure
-(``devtools schema closure``), so giving it a new parameter would move the
-identity hash of every derived tier and force a fleet-wide reconvergence for a
-CLI-side policy.
-
-Residual, not closed here: a writable connection opened while no daemon was
-resident stays open across a daemon start. Closing that needs an exclusion
-token held for the *connection's* life, which is the invocation-wide lease
-this module cannot take for the reason above.
+either: that module is inside the derived-schema identity closure.
 """
 
 from __future__ import annotations
@@ -127,6 +96,91 @@ def resident_archive_writer(root: Path | None = None) -> tuple[Path, str] | None
     return resolved, f"polylogued PID {pid} is running for this archive"
 
 
+def _refuse_configured_archive_write(path: Path, root: Path) -> None:
+    """Refuse a writable open inside the configured archive from this process.
+
+    The configured archive is written only by ``polylogued``; the CLI has no
+    offline owner for it, empty or not. A daemon that is resident by now is
+    named so the operator knows which writer to route to.
+    """
+    from polylogue.cli.shared.helpers import DaemonRequiredError
+
+    arrived = resident_archive_writer(root)
+    if arrived is not None:
+        owned_root, reason = arrived
+        raise ArchiveWriterOwnershipError(
+            f"this CLI process may not write {path}: {reason}. Route the mutation through the resident daemon",
+            archive_root=owned_root,
+            resident_writer=reason,
+        )
+    raise DaemonRequiredError(
+        f"this CLI process may not write {path}: the configured archive {root} is written only by "
+        "`polylogued run`, and the CLI has no offline writer for it. Start the daemon and repeat the command",
+        archive_root=root,
+    )
+
+
+def _require_scratch_archive_owner(path: Path, *, configured_root: Path) -> None:
+    """Admit a writable open outside the configured archive only for its owner.
+
+    Demo seeding (``demo seed``/``receipts``/``tour``) builds a synthetic
+    scratch archive under :func:`~polylogue.maintenance.offline_guard.scoped_offline_archive_writer`, which
+    holds both the daemon-start exclusion and the archive's physical identity
+    claim. A separate operation can also own its scratch root with a matching
+    write lease and SQL custody. Any other writable tier open from the CLI has
+    no owner and is refused.
+    """
+    from polylogue.core.write_lease import current_sql_custody, current_write_lease, require_write_lease
+    from polylogue.maintenance.offline_guard import current_offline_archive_writer_root
+
+    lease = current_write_lease()
+    lease_root = lease.archive_root.resolve() if lease is not None and lease.archive_root is not None else None
+    offline_root = current_offline_archive_writer_root()
+    if offline_root is not None and lease_root is not None and offline_root != lease_root:
+        raise ArchiveWriterOwnershipError(
+            f"this CLI process has overlapping archive owners for {path}: offline owner {offline_root}, "
+            f"write lease {lease_root}",
+            archive_root=offline_root,
+        )
+    owner_root = lease_root or offline_root
+    if owner_root is None or not path.resolve().is_relative_to(owner_root):
+        raise ArchiveWriterOwnershipError(
+            f"this CLI process may not write {path}: only a separately owned scratch archive is writable from the CLI",
+            archive_root=path.parent,
+        )
+    if (
+        configured_root == owner_root
+        or configured_root.is_relative_to(owner_root)
+        or owner_root.is_relative_to(configured_root)
+    ):
+        raise ArchiveWriterOwnershipError(
+            f"this CLI process may not write {path}: its scratch archive root {owner_root} overlaps the "
+            f"configured archive {configured_root}",
+            archive_root=configured_root,
+        )
+    arrived = resident_archive_writer(owner_root)
+    if arrived is not None:
+        owned_root, reason = arrived
+        raise ArchiveWriterOwnershipError(
+            f"this CLI process may not write {path}: {reason}. Route the mutation through that daemon",
+            archive_root=owned_root,
+            resident_writer=reason,
+        )
+    if offline_root is not None and lease_root is None:
+        # The scoped offline owner holds the shared daemon.pid lock and the
+        # OwnedArchiveLocation claim for this exact root. CLI lease enforcement
+        # stays unarmed in this branch, so no write lease is involved.
+        return
+    require_write_lease("CLI scratch archive writer", archive_root=lease_root)
+    custody = current_sql_custody()
+    if custody is None:
+        raise ArchiveWriterOwnershipError(
+            "this CLI writer has no current physical archive custody",
+            archive_root=lease_root,
+        )
+    custody.assert_namespace()
+
+
 @contextmanager
 def cli_archive_writer_ownership() -> Iterator[None]:
     """Hold the single-writer boundary for one CLI invocation.
@@ -136,94 +190,32 @@ def cli_archive_writer_ownership() -> Iterator[None]:
     console scripts, ``python -m polylogue`` and an embedded caller driving
     ``polylogue.cli.cli`` directly all reach it.
     """
-    from polylogue.maintenance.offline_guard import hold_daemon_start_exclusion, refuse_writable_tier_opens
+    from polylogue.maintenance.offline_guard import refuse_writable_tier_opens
 
     root = _archive_root()
     if root is None:
-        yield
+
+        def refuse_unresolved_root_write(path: Path) -> None:
+            raise ArchiveWriterOwnershipUndecidableError(
+                f"this CLI process may not write {path}: it cannot resolve the configured archive root, "
+                "so it cannot prove this is a nonconfigured scratch archive",
+                archive_root=path.parent,
+            )
+
+        with refuse_writable_tier_opens(refuse_unresolved_root_write):
+            yield
         return
 
     resident = resident_archive_writer(root)
     if resident is None:
-        # Not armed -- there is no second writer to serialize against right
-        # now. But "right now" is all entry can establish, so every writable
-        # archive-tier open re-asks before it happens.
-        stack = ExitStack()
-        offline_lock_held = False
         resolved_root = root.resolve()
 
-        def refuse_a_later_arrival(path: Path) -> None:
-            nonlocal offline_lock_held
-            from polylogue.core.write_lease import current_write_lease
+        def refuse_unowned_write(path: Path) -> None:
+            if path.resolve().is_relative_to(resolved_root):
+                _refuse_configured_archive_write(path, resolved_root)
+            _require_scratch_archive_owner(path, configured_root=resolved_root)
 
-            # An open inside the configured archive answers to it. An open
-            # outside it, made under a held write lease, belongs to that
-            # lease's operation: a separate archive the command builds under
-            # its own lease (``demo receipts`` seeds one under the working
-            # directory) or that operation's scratch probes. It answers to the
-            # leased root's residency, never to the configured archive's.
-            resolved_path = path.resolve()
-            held = current_write_lease()
-            lease_root = held.archive_root.resolve() if held is not None and held.archive_root is not None else None
-            target = (
-                lease_root
-                if lease_root is not None and not resolved_path.is_relative_to(resolved_root)
-                else resolved_root
-            )
-            if target == resolved_root and not offline_lock_held:
-                # Serialize only commands that actually open the configured
-                # archive's writable tiers; the shared pidfile lock then stays
-                # held through the command. A separately leased archive is
-                # serialized by its lease alone: the command that built it may
-                # go on to start that archive's own resident (``demo tour``).
-                stack.enter_context(hold_daemon_start_exclusion(target))
-                offline_lock_held = True
-            arrived = resident_archive_writer(target)
-            if arrived is None:
-                from polylogue.core.write_lease import (
-                    archive_write_custody,
-                    current_sql_custody,
-                    current_write_lease,
-                    require_write_lease,
-                )
-
-                lease = current_write_lease()
-                if lease is not None:
-                    if lease.archive_root is None or lease.archive_root.resolve() != target:
-                        raise ArchiveWriterOwnershipError(
-                            f"this CLI process has a write lease for a different archive while opening {path}",
-                            archive_root=target,
-                        )
-                    require_write_lease("CLI archive writer ownership", archive_root=target)
-                    custody = current_sql_custody()
-                    if custody is None:
-                        raise ArchiveWriterOwnershipError(
-                            "this CLI writer has no current physical archive custody",
-                            archive_root=target,
-                        )
-                    custody.assert_namespace()
-                    # The declared operation owner already holds this exact
-                    # root's custody; do not open a second flock descriptor.
-                    return
-                stack.enter_context(archive_write_custody(target))
-                # A command may open several tiers. Keep one physical owner
-                # until the Click resource closes, alongside the daemon-start
-                # exclusion acquired above.
-                return
-            owned_root, reason = arrived
-            raise ArchiveWriterOwnershipError(
-                f"this CLI process may not write {path}: {reason}. The daemon started after this "
-                f"command did, so {owned_root} is no longer this process's to write. Route the "
-                "mutation through the resident daemon, or stop it and run the command again as "
-                "the archive's exclusive offline owner",
-                archive_root=owned_root,
-                resident_writer=reason,
-            )
-
-        # Keep the daemon's exclusive pidfile lock from becoming available
-        # while this invocation owns writable connections, including time at
-        # a confirmation prompt. The per-open probe remains defense in depth.
-        with stack, refuse_writable_tier_opens(refuse_a_later_arrival):
+        with refuse_writable_tier_opens(refuse_unowned_write):
             yield
         return
 
@@ -244,8 +236,7 @@ def cli_archive_writer_ownership() -> Iterator[None]:
         except UnleasedWriteError as exc:
             raise ArchiveWriterOwnershipError(
                 f"this CLI process may not write {owned_root}: {reason}. "
-                "Route the mutation through the resident daemon, or stop it to run "
-                f"this operation as the archive's exclusive offline owner ({exc})",
+                f"Route the mutation through the resident daemon ({exc})",
                 archive_root=owned_root,
                 resident_writer=reason,
             ) from exc

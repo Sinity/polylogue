@@ -93,6 +93,7 @@ from tempfile import TemporaryDirectory
 from typing import Any, cast
 
 from polylogue.core.hashing import hash_text
+from polylogue.sources import value_bounds
 from polylogue.sources.sidecar_evidence import (
     RetainedSidecarFile,
     RetainedSidecarScope,
@@ -114,31 +115,25 @@ _HOOK_FILE_PREFIX = "hook-"
 #: lost" looks like from the transcript's side (polylogue-cq1ql).
 _EXPECTED_SIDECAR_ABSENT = "expected_sidecar_not_retained"
 
-#: A retained sidecar whose declared size exceeds the join's read bounds.
-#: polylogue-9k62p: the join used to read every matched file with no ceiling,
-#: so a single pathological sidecar (or a directory of them) was materialized
-#: in full -- durably re-triggered on every replay of the retained raw. An
-#: oversize sidecar is now a named, retryable gap instead of an allocation.
-_SIDECAR_SIZE_EXCEEDED = "size_exceeded"
-
-#: Read bounds on one join. Sized well above real Claude Code sidecars (the
-#: live corpus tops out in the low tens of MiB across a whole session) and far
-#: below the per-member acquisition ceiling, so ordinary evidence still joins
-#: and only a pathological input is refused.
-_MAX_SIDECAR_FILE_BYTES = 64 * 1024 * 1024
-_MAX_SIDECAR_AGGREGATE_BYTES = 256 * 1024 * 1024
-
 
 @dataclass(frozen=True)
 class SidecarMatch:
-    """A sidecar file successfully joined to its owning ``tool_result`` block."""
+    """A sidecar file successfully joined to its owning ``tool_result`` block.
+
+    The match does not hold the file's text. ``read_text`` reads it again when
+    a consumer attaches it, so a join over any number of sidecars of any size
+    keeps at most one file's text alive at a time instead of the sum of all
+    of them (polylogue-623q). ``content_hash`` is the hash of the text the
+    join read; a consumer that attaches the text records the hash of what it
+    actually attached.
+    """
 
     tool_use_id: str
     filename: str
     byte_size: int
     content_hash: str
     was_truncated: bool
-    full_text: str
+    read_text: Callable[[], str] = field(compare=False, repr=False)
     file_mtime_ms: int | None = None
 
 
@@ -541,10 +536,13 @@ def _join_from_index(
     every matched file -- and only then drop the ones it did not own. Union
     membership now decides debt classification only; a file owned by a sibling
     is skipped unread, and its id still suppresses that sibling's expected
-    pointer debt. Reads are additionally bounded by
-    ``_MAX_SIDECAR_FILE_BYTES``/``_MAX_SIDECAR_AGGREGATE_BYTES`` against the
-    retained row's declared ``byte_size``, so an oversize sidecar is recorded
-    as ``size_exceeded`` debt rather than materialized.
+    pointer debt.
+
+    Files of any size and number are joined. Each owned file is read once,
+    hashed and measured, and its text released before the next file is read;
+    the match keeps only a re-read handle. The single refusal is SQLite's
+    physical value limit, which no block text can exceed: a file over it is
+    typed ``value_bound_refused`` debt, never truncated.
     """
     if not scope.available:
         return SidecarJoinResult()
@@ -555,7 +553,6 @@ def _join_from_index(
     # Ids whose file was located in this scope, whether or not this transcript
     # read it: a pointer whose call resolved anywhere is not missing evidence.
     resolved_ids: set[str] = set()
-    aggregate_bytes = 0
 
     for entry in sorted(scope.files, key=lambda candidate: candidate.filename):
         name = entry.filename
@@ -585,19 +582,21 @@ def _join_from_index(
             # match nor its debt, so it is never read here.
             continue
 
-        if byte_size > _MAX_SIDECAR_FILE_BYTES or aggregate_bytes + byte_size > _MAX_SIDECAR_AGGREGATE_BYTES:
+        if byte_size > value_bounds.MAX_STORABLE_VALUE_BYTES:
             debt.append(
                 SidecarDebt(
                     filename=name,
                     byte_size=byte_size,
-                    reason=_SIDECAR_SIZE_EXCEEDED,
+                    reason=value_bounds.VALUE_BOUND_REFUSED,
                     file_mtime_ms=file_mtime_ms,
                 )
             )
             continue
 
         try:
-            full_text = entry.read_text()
+            # Replacement characters for invalid UTF-8 can expand a file
+            # under the byte limit past it once decoded.
+            full_text = value_bounds.require_storable_string(entry.read_text(), kind="claude code tool sidecar")
         except OSError as exc:
             debt.append(
                 SidecarDebt(
@@ -608,17 +607,31 @@ def _join_from_index(
                 )
             )
             continue
+        except value_bounds.ValueBoundRefusedError:
+            debt.append(
+                SidecarDebt(
+                    filename=name,
+                    byte_size=byte_size,
+                    reason=value_bounds.VALUE_BOUND_REFUSED,
+                    file_mtime_ms=file_mtime_ms,
+                )
+            )
+            continue
 
-        aggregate_bytes += byte_size
         inline_len, is_truncated = by_tool_use_id[tool_use_id]
+        content_hash = hash_text(full_text)
+        was_truncated = is_truncated or len(full_text) > inline_len
+        # Released here, before the next file is read: the match carries only
+        # the handle that reads it again when a consumer attaches it.
+        del full_text
         matched.append(
             SidecarMatch(
                 tool_use_id=tool_use_id,
                 filename=name,
                 byte_size=byte_size,
-                content_hash=hash_text(full_text),
-                was_truncated=is_truncated or len(full_text) > inline_len,
-                full_text=full_text,
+                content_hash=content_hash,
+                was_truncated=was_truncated,
+                read_text=entry.read_text,
                 file_mtime_ms=file_mtime_ms,
             )
         )

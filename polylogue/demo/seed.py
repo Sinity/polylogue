@@ -138,21 +138,6 @@ def _sqlite_table_row_count(db_path: Path, table: str) -> int | object:
         return _TIER_UNREADABLE
 
 
-def _archive_tier_session_count(root: Path) -> int:
-    """Return the number of sessions already present in *root*'s index tier.
-
-    Returns ``0`` when the tier database does not exist, does not yet have
-    a ``sessions`` table, or can't otherwise be read -- this is a *display*
-    helper only (used to report a session count in the safety-guard error
-    message), never the sole authorization signal. See
-    :func:`_archive_root_has_real_content` for the tier-aware predicate that
-    actually gates self-heal and the default-root guard.
-    """
-
-    result = _sqlite_table_row_count(root / "index.db", "sessions")
-    return result if isinstance(result, int) else 0
-
-
 #: The row ids a completed demo-only seed records per tier, and that
 #: :func:`_archive_root_is_demo_owned` revalidates: the rebuildable index's
 #: sessions and the durable tiers' own rows. The index alone cannot vouch for
@@ -228,41 +213,22 @@ def _archive_root_has_real_content(root: Path) -> bool:
     return False
 
 
-def _guard_demo_seed_target(root: Path, *, explicit_root: bool, force: bool) -> None:
+def _guard_demo_seed_target(root: Path) -> None:
     """Refuse to seed synthetic demo content into what looks like a real archive.
 
-    ``demo seed``'s default archive-root resolution shares
-    ``polylogue.paths.archive_root()`` (``POLYLOGUE_ARCHIVE_ROOT``, then
-    ``polylogue.toml``, then the XDG default) with the live daemon: an
-    operator or agent who runs ``polylogue demo seed`` with no ``--root``
-    can have it silently resolve to their live production archive
-    (polylogue-o3a1t). ``demo seed`` *adds* demo sessions rather than
-    refusing to run against existing content, so that collision seeds
-    synthetic fixture rows directly into a real archive.
-
     A new or demo-owned root is eligible. Real content in an unowned root
-    always refuses; an explicit path or ``--force`` does not authorize
-    mixing synthetic material with an existing archive.
+    always refuses; ``--force`` does not authorize mixing synthetic material
+    with an existing archive. The CLI additionally refuses the configured
+    archive before reaching here (``polylogue.cli.commands.demo``), because
+    an empty configured archive passes this content check.
     """
 
     if _archive_root_is_demo_owned(root):
         return
     if not _archive_root_has_real_content(root):
         return
-    if explicit_root or force:
-        raise DemoSeedTargetUnsafeError(
-            f"{root} contains real archive content; an explicit root or --force cannot seed an unowned archive"
-        )
-    session_count = _archive_tier_session_count(root)
-    detail = f"{session_count} real ingested session(s)" if session_count > 0 else "real ingested durable content"
     raise DemoSeedTargetUnsafeError(
-        f"'polylogue demo seed' resolved its archive root to {root} through the default "
-        "archive_root()/polylogue.toml resolution chain (no --root and no "
-        "POLYLOGUE_ARCHIVE_ROOT override), and that root already holds "
-        f"{detail} without valid demo ownership. "
-        "Refusing to write synthetic demo fixture content into what looks like a live "
-        "archive. Re-run with an explicit '--root <path>' pointed at a scratch/demo "
-        "location. --force cannot seed an unowned archive."
+        f"{root} contains real archive content; demo seeding cannot write into an unowned archive"
     )
 
 
@@ -1679,18 +1645,12 @@ async def _seed_demo_archive_owned(
     *,
     force: bool = False,
     with_overlays: bool = False,
-    explicit_root: bool = False,
 ) -> DemoSeedResult:
-    """Materialize, ingest, and optionally overlay the deterministic demo archive.
-
-    ``explicit_root`` records whether the caller supplied ``--root`` or
-    ``POLYLOGUE_ARCHIVE_ROOT``. It affects the refusal message but never
-    permits seeding real content into an unowned archive.
-    """
+    """Materialize, ingest, and optionally overlay the deterministic demo archive."""
 
     # A reseed must revalidate in-place version changes before generated-tier
     # reconvergence or a durable numbered train advances the owned archive.
-    _guard_demo_seed_target(archive_root, explicit_root=explicit_root, force=force)
+    _guard_demo_seed_target(archive_root)
     invalidate_active_archive_bootstrap(archive_root)
     _record_demo_ownership_if_undetermined(archive_root)
 
@@ -1738,7 +1698,6 @@ async def seed_demo_archive(
     *,
     force: bool = False,
     with_overlays: bool = False,
-    explicit_root: bool = False,
 ) -> DemoSeedResult:
     """Seed an isolated demo root under one archive owner for the entire run."""
     root = archive_root.expanduser().resolve()
@@ -1747,7 +1706,6 @@ async def seed_demo_archive(
             root,
             force=force,
             with_overlays=with_overlays,
-            explicit_root=explicit_root,
         )
 
 
