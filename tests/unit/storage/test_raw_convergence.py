@@ -824,7 +824,7 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     )
     parse_calls = 0
     validation_raw_ids: list[str] = []
-    neutral_sidecar_events: list[str] = []
+    neutral_sidecar_events: list[tuple[str, dict[str, object]]] = []
     inserted: list[str] = []
     prepare_original = prepared_jsonl_module.prepare_jsonl_blob
 
@@ -833,7 +833,7 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
         parse_calls += 1
         artifact = prepare_original(*args, **kwargs)
         for session in artifact.iter_sessions():
-            neutral_sidecar_events.extend(event.event_type for event in session.session_events)
+            neutral_sidecar_events.extend((event.event_type, event.payload) for event in session.session_events)
         return artifact
 
     def commit_during_validation(*args: object, **kwargs: object) -> object:
@@ -870,7 +870,9 @@ def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
     assert report.done == 1
     assert parse_calls == 1
     assert validation_raw_ids == [target], validation_raw_ids
-    assert neutral_sidecar_events.count("claude_tool_result_sidecar") == 1, neutral_sidecar_events
+    assert sum(event_type == "claude_tool_result_sidecar" for event_type, _ in neutral_sidecar_events) == 1, (
+        neutral_sidecar_events
+    )
     assert len(inserted) == 1
     with sqlite3.connect(tmp_path / "index.db") as conn:
         rows = conn.execute(
