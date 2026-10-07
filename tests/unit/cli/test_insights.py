@@ -24,7 +24,6 @@ from polylogue.cli.commands.insights import _make_callback
 from polylogue.storage.derived.session.rebuild import rebuild_archive_session_insights
 from polylogue.storage.derived.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
 from tests.infra.archive_scenarios import native_session_id_for, open_index_db
 from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.json_contracts import (
@@ -254,6 +253,7 @@ def _seed_cost_products(cli_workspace: CliWorkspace) -> None:
         .provider("claude-code")
         .title("Exact Cost")
         .metadata({"total_cost_usd": 1.25, "model": "claude-sonnet-4-5"})
+        .reported_cost_usd(1.25)
         .created_at("2026-03-01T11:55:00+00:00")
         .updated_at("2026-03-01T12:00:00+00:00")
         .add_message("u1", role="user", text="Run exact-cost task", timestamp="2026-03-01T11:55:00+00:00")
@@ -263,6 +263,7 @@ def _seed_cost_products(cli_workspace: CliWorkspace) -> None:
         SessionBuilder(db_path, "conv-priced-cost")
         .provider("chatgpt")
         .title("Priced Cost")
+        .reported_cost_usd(0.0075)
         .metadata({"model": "openai/gpt-4o-2024-08-06", "usage": {"input_tokens": 1000, "output_tokens": 500}})
         .created_at("2026-03-01T12:55:00+00:00")
         .updated_at("2026-03-01T13:00:00+00:00")
@@ -280,20 +281,6 @@ def _seed_cost_products(cli_workspace: CliWorkspace) -> None:
     )
     _rebuild_insights(db_path)
     with open_index_db(db_path) as conn:
-        upsert_session_profile_costs(
-            conn,
-            NID_EXACT_COST,
-            cost_usd=1.25,
-            cost_is_estimated=False,
-            cost_provenance="exact",
-        )
-        upsert_session_profile_costs(
-            conn,
-            NID_PRICED_COST,
-            cost_usd=0.0075,
-            cost_is_estimated=True,
-            cost_provenance="priced",
-        )
         # polylogue-shnc: 'origin_reported' now requires cost_usd set (CHECK
         # constraint, v49) -- it means a genuine provider-reported dollar
         # figure, not merely provider-reported tokens.

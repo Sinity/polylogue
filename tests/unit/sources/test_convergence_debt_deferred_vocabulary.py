@@ -10,6 +10,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -391,13 +392,32 @@ def test_convergence_debt_status_transition_preserves_attempts_and_deadline(
 
 
 def test_file_stage_pass_preserves_uninspected_session_debt(tmp_path: Path) -> None:
-    """The actual lineage stage's file non-applicability cannot settle a child."""
+    """The production live convergence path cannot turn file DONE into child DONE."""
     from polylogue.operations.lineage_prefix_recompose import make_lineage_prefix_recompose_stage
-    from polylogue.sources.live.convergence_outcome import settled_convergence_stages
+    from polylogue.sources.live.batch import LiveBatchProcessor
 
-    cursor = CursorStore(tmp_path / "index.db")
-    cursor.initialize()
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    initialize_runtime_source_fixture(source_db)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
     path = tmp_path / "session.jsonl"
+    path.write_text("{}", encoding="utf-8")
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES ('raw-child', 'codex-session', 'child', ?, 0, ?, 2, 1)""",
+            (str(path), bytes(32)),
+        )
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            """INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES ('child', 'codex-session', 'raw-child', 'child', ?)""",
+            (bytes(32),),
+        )
+
+    cursor = CursorStore(index_db)
+    cursor.initialize()
     for stage in ("lineage_prefix_recompose", "hook_paste_enrichment", "independent_stage"):
         cursor.record_convergence_debt(stage=stage, subject_type="session_id", subject_id="child", error="owed")
     from polylogue.core.compute import BoundedComputeAdapter
@@ -405,14 +425,18 @@ def test_file_stage_pass_preserves_uninspected_session_debt(tmp_path: Path) -> N
     compute = BoundedComputeAdapter(max_workers=1)
     try:
         lineage = make_lineage_prefix_recompose_stage(tmp_path / "index.db", compute_adapter=compute)
-        states, _ = DaemonConverger([lineage]).converge_batch([path])
+        processor = LiveBatchProcessor(
+            SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db)),
+            (),
+            cursor=cursor,
+            parser_fingerprint="test-parser",
+            converger=DaemonConverger([lineage]),
+        )
+        completed, _elapsed, _timings, debts, settlements = processor._converge_paths([path])
+        processor._record_convergence_outcomes(((path, debts),), settlements)
     finally:
         compute.shutdown(wait=True)
-    record_convergence_outcomes(
-        cursor,
-        ((path, convergence_debt_from_states([path], states)),),
-        settlements=settled_convergence_stages(states[path]),
-    )
+    assert completed == {path}
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         rows = conn.execute(
             "SELECT stage FROM convergence_debt WHERE target_type='session_id' AND target_id='child'"

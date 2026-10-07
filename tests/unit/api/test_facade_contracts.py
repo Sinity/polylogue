@@ -5693,13 +5693,13 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
     from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
 
     archive = _archive(tmp_path)
     codex = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="api-coverage-v1-codex",
         title="Coverage Codex",
+        reported_cost_usd=1.25,
         updated_at="2026-02-02T02:40:00Z",
         git_repository_url="https://example.test/polylogue.git",
         messages=[
@@ -5753,14 +5753,6 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
             from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 
             rebuild_session_insights_sync(conn, session_ids=[codex_id])
-            upsert_session_profile_costs(
-                conn,
-                codex_id,
-                cost_usd=1.25,
-                cost_provenance="exact",
-                priced_with="fixture",
-                priced_at_ms=1_770_000_000_000,
-            )
             conn.execute(
                 "UPDATE session_profiles SET total_duration_ms = 60000, wall_duration_ms = 60000 WHERE session_id = ?",
                 (codex_id,),
@@ -6145,14 +6137,11 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
 
 async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -> None:
     """Session cost insight facade reads profile cost columns."""
-    import sqlite3
-
     from polylogue.analysis.archive import CostRollupInsightQuery, SessionCostInsightQuery
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
 
     archive = _archive(tmp_path)
     priced_session = ParsedSession(
@@ -6201,17 +6190,6 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         # falls back to the declared constant and the assertion compares that
         # constant to itself, staying green under any materializer drift.
         _materialize_run_projection(tmp_path / "index.db")
-        with sqlite3.connect(tmp_path / "index.db") as conn:
-            upsert_session_profile_costs(
-                conn,
-                priced_id,
-                cost_usd=1.25,
-                cost_credits=12.5,
-                cost_is_estimated=False,
-                cost_provenance="priced",
-                priced_with="voyage-cost-v1-test",
-                priced_at_ms=1_770_000_300_000,
-            )
 
         costs = await archive.list_session_cost_insights(
             SessionCostInsightQuery(origin=Origin.CODEX_SESSION.value, status="exact", limit=10)
@@ -7365,10 +7343,7 @@ async def test_cost_insight_filters_refuse_or_precede_the_limit(tmp_path: Path) 
     SQL page holds only the newest (non-matching) session, so the matching
     older session disappears from a query that asked for it.
     """
-    import sqlite3
-
     from polylogue.core.errors import UnsupportedInsightFilterError
-    from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
 
     newer_unpriced = ParsedSession(
         source_name=Provider.CHATGPT,
@@ -7416,18 +7391,6 @@ async def test_cost_insight_filters_refuse_or_precede_the_limit(tmp_path: Path) 
         priced_id,
         store,
     ) = run_off_event_loop(_off_loop_64)
-
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        upsert_session_profile_costs(
-            conn,
-            priced_id,
-            cost_usd=2.5,
-            cost_credits=25.0,
-            cost_is_estimated=False,
-            cost_provenance="priced",
-            priced_with="cost-filter-test",
-            priced_at_ms=1_772_000_000_000,
-        )
 
     def _off_loop_65() -> Any:
         with ArchiveStore(tmp_path) as store:

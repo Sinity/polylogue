@@ -596,9 +596,7 @@ cursor. Recovery consumes pages sequentially and retains a held lease as a
 visible pending checkpoint. Orphan census uses the same response metadata with
 `orphans` and a `source_digest` cursor, including unreadable retained custody.
 Each row preserves its diagnostic message and reports `errno_class` from the
-current failed read, or `null` when no exception observation survives. Internal
-diagnostic normalization preserves existing rows and messages without assigning
-an exception class from historical prose.
+current failed read, or `null` when no exception observation survives.
 There is no maximum number of recoverable jobs or orphan records.
 
 Browser action attachments are uploaded as binary bodies with `Content-Length`

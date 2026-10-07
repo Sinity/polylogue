@@ -585,14 +585,11 @@ class _SourceTierOnlyIndexConnection:
     instead of writing through a stale-schema handle.
     """
 
-    def __init__(self, mode: str = "source-tier acquisition") -> None:
-        self._mode = mode
-
     def __getattr__(self, name: str) -> Any:
         if name == "close":
             return lambda: None
         raise RuntimeError(
-            f"index tier is unavailable in {self._mode} mode "
+            "index tier is unavailable in source-tier acquisition mode "
             f"(attempted connection attribute {name!r}); only raw source-tier "
             "access is permitted while the derived tier is unavailable"
         )

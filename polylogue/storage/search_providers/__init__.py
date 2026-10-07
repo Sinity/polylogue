@@ -75,7 +75,7 @@ def create_vector_provider(
     elif model is None or dimension is None:
         # The ambient recipe is part of the archive contract, not a nicety the
         # caller may omit. ``resolve_optional_vector_provider`` (the repository
-        # route behind ``SessionRepository.embed_session`` / ``similarity_search``)
+        # route behind ``SessionRepository.similarity_search``)
         # calls this factory with ``config=None``; loading only the ambient key
         # and skipping the recipe meant a declared ``model``/``dimension`` in
         # polylogue.toml was silently replaced by the library defaults, so the

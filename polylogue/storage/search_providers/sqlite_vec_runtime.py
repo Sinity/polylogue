@@ -473,11 +473,8 @@ class SqliteVecRuntimeMixin:
 
         Uses the canonical archive_tiers DDL (:mod:`polylogue.storage.sqlite.
         archive_tiers.embeddings`) rather than a duplicate hand-rolled schema
-        -- a second, drifted declaration here previously created ``+source_name``
-        / message_id-keyed shapes that mismatched what the archive_tiers
-        bootstrap (and the daemon catch-up path) actually writes, silently
-        breaking this provider's own :meth:`SqliteVecQueryMixin.upsert` when
-        both ran against the same ``embeddings.db``.
+        so the tables match what the archive_tiers bootstrap and the session
+        embedding route write to the same ``embeddings.db``.
         """
         conn = self._get_connection()
         try:

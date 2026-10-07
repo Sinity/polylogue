@@ -76,7 +76,7 @@ def resolve_member_candidate(
     candidates: Sequence[MemberCandidate],
     *,
     expected_digest: str | None,
-    hint_mode: MemberAddressingMode | None,
+    hint_mode: MemberAddressingMode,
     hint_index: int | None,
     expected_is_structural: bool = False,
 ) -> MemberResolution:
@@ -133,7 +133,7 @@ def _matches_expected(candidate: MemberCandidate, expected_digest: str, *, struc
 def _hinted_candidate(
     candidates: Sequence[MemberCandidate],
     *,
-    hint_mode: MemberAddressingMode | None,
+    hint_mode: MemberAddressingMode,
     hint_index: int | None,
 ) -> MemberCandidate | None:
     if hint_mode is MemberAddressingMode.WHOLE_MEMBER:
@@ -143,23 +143,12 @@ def _hinted_candidate(
         )
     if hint_index is None:
         return None
-    element = next(
+    return next(
         (
             item
             for item in candidates
             if item.addressing_mode is MemberAddressingMode.ELEMENT_OF_CONTAINER and item.element_index == hint_index
         ),
-        None,
-    )
-    if element is not None or hint_mode is MemberAddressingMode.ELEMENT_OF_CONTAINER:
-        return element
-    # A row written before the addressing mode was recorded stamped a whole
-    # member as element 0; try that reading too rather than reporting the
-    # member unrecoverable.
-    if hint_index != 0:
-        return None
-    return next(
-        (item for item in candidates if item.addressing_mode is MemberAddressingMode.WHOLE_MEMBER),
         None,
     )
 
