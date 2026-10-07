@@ -84,7 +84,7 @@ from polylogue.storage.blob_publication import (
     publication_refused,
 )
 from polylogue.storage.source_generation_receipts import iter_source_item_raw_receipts, source_generation_receipt_page
-from polylogue.storage.sqlite.archive_tiers.raw_admission import execute_source_item_admission
+from polylogue.storage.sqlite.archive_tiers.raw_admission import RawAdmissionArm, execute_source_item_admission
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     FrozenSourceInput,
     RetainedSourceGeneration,
@@ -203,6 +203,22 @@ class SourceReceiptSpool:
                 ).fetchall()
             )
 
+    def complete_raw_sessions(self, raw_ids: tuple[str, ...]) -> tuple[str, ...]:
+        """Sessions the archive holds, at this projection, for exactly these raws."""
+        if not raw_ids:
+            return ()
+        with spool_connection(self.path, read_only=True) as conn:
+            return tuple(
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT DISTINCT l.expected_session_id FROM raw_logicals r "
+                    "JOIN logicals l ON l.logical_key=r.logical_key "
+                    f"WHERE r.raw_id IN ({','.join('?' * len(raw_ids))}) AND l.complete=1 "
+                    "ORDER BY l.expected_session_id",
+                    raw_ids,
+                ).fetchall()
+            )
+
     def session_page(self, after: str | None = None) -> tuple[str, ...]:
         with spool_connection(self.path, read_only=True) as conn:
             return tuple(
@@ -244,6 +260,8 @@ def _spool_source_receipt(
             "CREATE TABLE raws(raw_id TEXT PRIMARY KEY, complete INTEGER NOT NULL, parser_complete INTEGER NOT NULL) WITHOUT ROWID;"
             "CREATE TABLE logicals(logical_key TEXT PRIMARY KEY, expected_session_id TEXT NOT NULL, complete INTEGER NOT NULL) WITHOUT ROWID;"
             "CREATE INDEX logicals_session ON logicals(expected_session_id);"
+            "CREATE TABLE raw_logicals(raw_id TEXT NOT NULL, logical_key TEXT NOT NULL, "
+            "PRIMARY KEY(raw_id, logical_key)) WITHOUT ROWID;"
             "CREATE TABLE raw_metadata(source_item_id TEXT PRIMARY KEY, page_ref TEXT NOT NULL, page_count INTEGER NOT NULL, "
             "raw_count INTEGER NOT NULL, unresolved_count INTEGER NOT NULL, digest TEXT NOT NULL) WITHOUT ROWID;"
         )
@@ -278,6 +296,10 @@ def _spool_source_receipt(
                                 "INSERT INTO logicals VALUES (?, ?, ?) ON CONFLICT(logical_key) DO UPDATE SET "
                                 "complete=MIN(complete, excluded.complete)",
                                 (logical.logical_source_key, logical.expected_session_id, int(logical.complete)),
+                            )
+                            spool.execute(
+                                "INSERT INTO raw_logicals VALUES (?, ?) ON CONFLICT DO NOTHING",
+                                (raw.raw_id, logical.logical_source_key),
                             )
                         raw_count += 1
                         unresolved_count += not raw_complete
@@ -360,6 +382,9 @@ class IngestExecution:
                 "CREATE TABLE refusals(ordinal INTEGER PRIMARY KEY, logical_key TEXT NOT NULL, raw_id TEXT NOT NULL, "
                 "reason TEXT NOT NULL, UNIQUE(logical_key, raw_id, reason));"
                 "CREATE TABLE changed_sessions(session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL) WITHOUT ROWID;"
+                # Raws this execution's admission introduced, not duplicates
+                # of retained raws.
+                "CREATE TABLE admitted_raws(raw_id TEXT PRIMARY KEY) WITHOUT ROWID;"
             )
         self.session_id_pages_ref: str | None = None
         self.session_id_page_count = 0
@@ -409,6 +434,10 @@ class IngestExecution:
                 "message_count=excluded.message_count",
                 (session_id, message_count),
             )
+
+    def record_admitted_raws(self, raw_ids: Iterable[str]) -> None:
+        with spool_connection(self.state_path) as state:
+            state.executemany("INSERT OR IGNORE INTO admitted_raws VALUES (?)", ((raw_id,) for raw_id in raw_ids))
 
     def changed_session_recorded(self, session_id: str) -> bool:
         """Whether this execution already recorded ``session_id`` as changed (a retry re-publishing its own work)."""
@@ -844,7 +873,10 @@ class IngestExecution:
         excised: _ExcisedRecords,
         admitted_coordinates: PickleSpool[str],
     ) -> None:
+        admitted_raw_ids: list[str] = []
+
         def publish(connection: sqlite3.Connection) -> None:
+            admitted_raw_ids.clear()
             if isinstance(prepared, PreparedSourceMemberDisposition):
                 from polylogue.storage.sqlite.archive_tiers.source_items import (
                     SourceItemMemberDisposition,
@@ -863,8 +895,10 @@ class IngestExecution:
                 )
             elif prepared is not None:
                 try:
-                    execute_source_item_admission(connection, prepared.admission, prepared.member)
+                    admission = execute_source_item_admission(connection, prepared.admission, prepared.member)
                     admitted_coordinates.append(prepared.member.record_coordinate)
+                    if admission.arm is not RawAdmissionArm.SKIP_DUPLICATE:
+                        admitted_raw_ids.append(admission.raw_id)
                 except ContentExcisedError:
                     # The archive forgets on purpose: durably excised bytes are
                     # a skip, not a failed ingest. The admission savepoint left
@@ -894,6 +928,8 @@ class IngestExecution:
                 )
 
         await self.source_write(publish)
+        if admitted_raw_ids:
+            self.record_admitted_raws(admitted_raw_ids)
 
     async def receipt(self, generation_id: str) -> SourceReceiptSpool:
         fd, name = tempfile.mkstemp(prefix="polylogue-source-receipt-", suffix=".sqlite", dir=os.environ.get("TMPDIR"))
@@ -987,7 +1023,59 @@ class IngestExecution:
                 cursor = raw_page[-1]
         finally:
             initial.close()
-        return await self.receipt(generation_id)
+        settled = await self.receipt(generation_id)
+        try:
+            await self._attribute_converged_sessions(settled)
+        except BaseException:
+            settled.close()
+            raise
+        return settled
+
+    async def _attribute_converged_sessions(self, settled: SourceReceiptSpool) -> None:
+        """Count the sessions the archive serves from raws this ingest introduced.
+
+        Under single-pass convergence the daemon's raw owner may publish an
+        accepted raw before this materialization reaches it, which then finds
+        the content already written. The ingest still reports what the archive
+        holds for the inputs it introduced: every session of the settled
+        projection whose row is served from one of those raws. A raw that
+        duplicated a retained one introduced nothing, so a repeated ingest
+        still reports no change.
+        """
+        cursor = ""
+        while True:
+            self.check_stop()
+            with spool_connection(self.state_path, read_only=True) as state:
+                raw_ids = tuple(
+                    str(row[0])
+                    for row in state.execute(
+                        "SELECT raw_id FROM admitted_raws WHERE raw_id>? ORDER BY raw_id LIMIT 256", (cursor,)
+                    )
+                )
+            if not raw_ids:
+                return
+            cursor = raw_ids[-1]
+            complete = set(settled.complete_raw_sessions(raw_ids))
+            if not complete:
+                continue
+
+            def served_sessions(
+                pinned: PinnedOperationRead, raws: tuple[str, ...] = raw_ids
+            ) -> tuple[tuple[str, int], ...]:
+                index_connection = pinned.archive.index_connection
+                if index_connection is None:
+                    raise RuntimeError("accepted ingest requires the pinned index tier")
+                return tuple(
+                    (str(row[0]), int(row[1]))
+                    for row in index_connection.execute(
+                        f"SELECT session_id, message_count FROM sessions WHERE raw_id IN ({','.join('?' * len(raws))})",
+                        raws,
+                    )
+                )
+
+            for session_id, message_count in await self.read(served_sessions):
+                if session_id in complete and not self.changed_session_recorded(session_id):
+                    self.record_changed_session(session_id, message_count)
 
     async def converge_profiles(self, receipt: SourceReceiptSpool) -> tuple[SessionInsightPartReceipt, ...]:
         """Derive only the exact sessions proved by this source denominator.

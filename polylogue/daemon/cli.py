@@ -3265,12 +3265,28 @@ async def _run_daemon_services_under_active_writer_lease(
                         ColdBuildGeneration.reconcile_interrupted_promotions,
                         archive_root_path,
                     )
-                    active_generation_empty = await write_coordinator.run_sync(
-                        "daemon.cold_build.probe",
-                        active_index_generation_is_empty,
-                        archive_root_path,
-                    )
-                    cold_build_requested = cold_build_index or active_generation_empty
+                    if schema_blocked:
+                        # The probe is a writable open, which admits the
+                        # active Index's derived identity first: a stale one
+                        # raises SchemaSkew. Raw materialization is parked in
+                        # this mode, so a cold build could not fill anyway;
+                        # the daemon stays up and status reports the skew
+                        # with its rebuild route.
+                        emit(
+                            "daemon.cold_build.withheld",
+                            level=WARNING,
+                            outcome="refused",
+                            reason="schema_blocked",
+                            requested=cold_build_index,
+                        )
+                        cold_build_requested = False
+                    else:
+                        active_generation_empty = await write_coordinator.run_sync(
+                            "daemon.cold_build.probe",
+                            active_index_generation_is_empty,
+                            archive_root_path,
+                        )
+                        cold_build_requested = cold_build_index or active_generation_empty
                     if cold_build_requested:
                         from polylogue.daemon.discovery_progress import run_cold_build_preparation
 

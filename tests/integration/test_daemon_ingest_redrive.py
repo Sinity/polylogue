@@ -938,10 +938,15 @@ async def test_a_watcher_only_daemon_redrives_accepted_ingests(tmp_path: Path, m
     assert _session_titles(archive_root) == ["Retained Redrive"]
 
 
-async def test_materialize_publishes_parser_complete_raw_and_reports_original_writer_counts(
+async def test_ingest_counts_sessions_convergence_published_before_its_materialize(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Accepted census alone leaves the original generation's Index work pending."""
+    """Convergence publishing an accepted raw first still counts it for the ingest.
+
+    Single-pass convergence lets the daemon's raw owner publish the ingest's
+    raw before the ingest materializes it; the ingest then writes nothing, yet
+    its receipt reports what the archive holds for the input it introduced.
+    """
     archive_root, source = await _archive(tmp_path)
     original = IngestExecution.materialize
     reached: list[str] = []
@@ -967,7 +972,7 @@ async def test_materialize_publishes_parser_complete_raw_and_reports_original_wr
             ).fetchone()[0]
             return census, index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
 
-        assert await self.read(original_state) == (1, 0)
+        assert await self.read(original_state) == (1, 1)
         reached.append(raw_ids[0])
         return await original(self, generation_id)
 
