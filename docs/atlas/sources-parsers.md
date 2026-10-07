@@ -128,6 +128,14 @@ existing transforms and aggregates fidelity counters, spilling Python session
 keys into a private BINARY-collated grouping database. It does not instantiate
 the ledger's parsed-event list. The public parser still returns its declared
 session list; the preview transports only its declared references and counts.
+Retained Hermes state parsing keeps the caller's immutable logical-export
+connection open while a first pass spills session identity, parent choice,
+own-message count and leaf coordinates into private SQLite scratch. A second
+pass parses each session into caller-owned message and event sinks, applying
+resolved continuation offsets and branch points before yielding it. This
+retained iterator keeps neither a session list nor a message list; the public
+parser's declared list API materializes only at that public boundary. Closing
+an unfinished iterator closes and removes its ancestry scratch.
 Explicit low-level connection-return readers retain their existing semantics;
 this guarantee covers the actual acquisition and import-preview operations.
 
