@@ -326,7 +326,10 @@ def test_retained_invalid_record_peak_memory_does_not_track_error_count(tmp_path
             peaks.append(peak - baseline)
             assert errors == count
         assert counts[1] == 8 * counts[0]
-        assert peaks[1] < peaks[0] * 2, f"peak traced bytes for {counts}: {peaks}"
+        assert peaks[1] < peaks[0] * 2, (
+            f"peak traced bytes for {counts}: {peaks}; top allocations: "
+            f"{tracemalloc.take_snapshot().statistics('lineno')[:12]}"
+        )
     finally:
         tracemalloc.stop()
 
