@@ -709,7 +709,7 @@ def test_codex_neutral_parse_survives_unrelated_source_commit(
         ),
     )
 
-    assert report.failed == 0
+    assert report.failed == 0, report.outcomes
     assert report.done == 1
     assert parse_calls == 1
     assert validation_calls == 1
