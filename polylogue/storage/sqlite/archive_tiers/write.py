@@ -2286,7 +2286,18 @@ def append_session_to_shard(builder: SessionShardBuilder, session: ParsedSession
         return
     sink_messages = session.messages
     origin = origin_from_provider(session.source_name)
-    messages: Sequence[ParsedMessage] = sink_messages.normalized_messages(session.session_events, origin=origin)
+    with ExitStack() as held:
+        # The parsed session is complete: its walks below reuse one decode.
+        held.enter_context(sink_messages.held_walks())
+        messages: Sequence[ParsedMessage] = sink_messages.normalized_messages(session.session_events, origin=origin)
+        if isinstance(messages, SqliteMessageSink):
+            held.enter_context(messages.held_walks())
+        _append_held_session_to_shard(builder, session, messages, origin=origin)
+
+
+def _append_held_session_to_shard(
+    builder: SessionShardBuilder, session: ParsedSession, messages: Sequence[ParsedMessage], *, origin: Origin
+) -> None:
     session_id = archive_session_id(origin.value, session.provider_session_id)
     duplicates = _duplicate_message_native_ids(messages)
     try:

@@ -66,17 +66,17 @@ def test_lifecycle_row_records_start_heartbeat_signal_and_clean_stop(
     assert '"component":"test"' in row[5]
 
 
-def test_signal_received_on_the_event_loop_thread_is_persisted(
+def test_signal_received_on_the_event_loop_thread_is_persisted_by_stop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Writing the signal synchronously on the loop thread makes this red.
+    """A handler on the loop thread must not attempt the blocking write.
 
-    The daemon's handler runs on the event-loop thread, where a synchronous
-    write lease refuses to block the loop; the write must happen elsewhere.
+    Red if it writes synchronously there (the lease refuses and
+    ``daemon.lifecycle.signal_not_persisted`` is emitted), or if the stop
+    marker drops the recorded signal.
     """
     import asyncio
-    import threading
 
     ops_db = _bind_ops_db(monkeypatch, tmp_path)
     lifecycle = DaemonLifecycle.start(run_id="loop-run", archive_root_path=tmp_path, details={"component": "test"})
@@ -94,14 +94,14 @@ def test_signal_received_on_the_event_loop_thread_is_persisted(
         lifecycle.record_signal_best_effort(signal.SIGTERM)
 
     asyncio.run(handler_on_loop())
-    for thread in threading.enumerate():
-        if thread.name == "daemon-lifecycle-signal":
-            thread.join()
+    lifecycle.stop(exit_kind="error")
 
     with sqlite3.connect(ops_db) as conn:
-        row = conn.execute("SELECT signal FROM daemon_lifecycle WHERE run_id = ?", (lifecycle.run_id,)).fetchone()
+        row = conn.execute(
+            "SELECT signal, exit_kind FROM daemon_lifecycle WHERE run_id = ?", (lifecycle.run_id,)
+        ).fetchone()
     assert refused == []
-    assert row == ("SIGTERM",)
+    assert row == ("SIGTERM", "signal")
 
 
 def test_lifecycle_stop_carries_the_received_signal(

@@ -19,6 +19,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
+from polylogue.sources.live.batch_support import classify_pre_writer_admissions
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers import antigravity
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions, parse_one_source_path
@@ -42,9 +43,13 @@ def _publish_retained(root: Path, raw_ids: tuple[str, ...]) -> None:
 
 
 def _ingest_on_writer(root: Path, processor: LiveBatchProcessor, paths: list[Path], **kwargs: Any) -> Any:
-    """The full-ingest body as the daemon's writer runs it: under the archive lease."""
+    """The full-ingest body as the daemon's writer runs it: under the archive lease.
+
+    Admission is classified first, off the lease, as the live pre-writer stage does.
+    """
+    admissions = classify_pre_writer_admissions(paths, fallback_provider=Provider.ANTIGRAVITY)
     with write_lease("test.live_ingest.full", archive_root=root):
-        return processor._ingest_full_paths_sync(paths, **kwargs)
+        return processor._ingest_full_paths_sync(paths, pre_writer_admissions=admissions, **kwargs)
 
 
 def test_source_role_contract_partitions_current_antigravity_items(tmp_path: Path) -> None:
@@ -205,9 +210,7 @@ def test_common_live_batch_admits_conversation_through_vendor_route(
         parser_fingerprint="test-parser",
     )
 
-    result = _ingest_on_writer(
-        tmp_path, processor, [conversation], source_name="antigravity", captured_sqlite_by_path={}
-    )
+    result = _ingest_on_writer(tmp_path, processor, [conversation], source_name="antigravity")
 
     assert result.succeeded == [conversation], (result, caplog.text)
     assert result.failed == []
@@ -247,9 +250,7 @@ def test_failed_conversion_still_records_the_attempted_observation(
         parser_fingerprint="test-parser",
     )
 
-    result = _ingest_on_writer(
-        tmp_path, processor, [conversation], source_name="antigravity", captured_sqlite_by_path={}
-    )
+    result = _ingest_on_writer(tmp_path, processor, [conversation], source_name="antigravity")
 
     assert result.failed == [conversation]
     assert conversation in result.captured_file_observations
@@ -383,7 +384,7 @@ def test_vendor_conversion_cannot_publish_a_later_protobuf_revision(
         return original_capture(store, path, provider)
 
     monkeypatch.setattr(source_parsing, "capture_bound_path", replace_between_conversion_and_capture)
-    result = _ingest_on_writer(tmp_path, processor, paths, source_name="antigravity", captured_sqlite_by_path={})
+    result = _ingest_on_writer(tmp_path, processor, paths, source_name="antigravity")
     assert set(exported) == {path.stem for path in paths}, (exported, result, caplog.text)
     assert result.failed == [paths[0]]
     assert result.succeeded == paths[1:]
@@ -418,7 +419,6 @@ def test_vendor_cohort_checks_the_pass_budget_between_conversations(
         source_name="antigravity",
         max_pass_seconds=1,
         pass_started=frozen_clock.monotonic(),
-        captured_sqlite_by_path={},
     )
     assert exported == [paths[0].stem]
     assert result.failed == []
@@ -443,7 +443,7 @@ def test_vendor_cohort_finishes_the_acquired_conversation_when_the_writer_budget
     )
     token = enter_write_hold("watcher.live_ingest.full", 30)
     try:
-        result = _ingest_on_writer(tmp_path, processor, paths, source_name="antigravity", captured_sqlite_by_path={})
+        result = _ingest_on_writer(tmp_path, processor, paths, source_name="antigravity")
     finally:
         exit_write_hold(token)
     assert exported == [path.stem for path in paths]

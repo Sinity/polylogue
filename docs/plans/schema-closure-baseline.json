@@ -205,6 +205,7 @@
     "polylogue/core/types.py",
     "polylogue/core/user_state_targets.py",
     "polylogue/core/web_urls.py",
+    "polylogue/core/work_progress.py",
     "polylogue/core/write_admission.py",
     "polylogue/core/write_hold.py",
     "polylogue/core/write_lease.py",

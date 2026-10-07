@@ -164,8 +164,22 @@ estimate in the budget's unit. Charging the literal ``1`` it used to charge
 (polylogue-swicx) let an arbitrarily large Drive sync consume one byte of a
 64 MiB deficit and run again on every pass while its siblings waited. An
 unmeasurable-size sync therefore reserves a full budget share rather than
-under-reporting: it still runs, but it pays for the passes it occupies.
+under-reporting: it still runs, but takes its class's whole share of each
+pass it runs in.
 """
+
+
+def _reconciled_charge(actual_cost: int, estimated_cost: int, charge: int) -> int:
+    """The deficit an admitted item finally costs, given what was charged up front.
+
+    An item charged its whole estimate pays its measured cost. An oversized
+    item, charged only the deficit that was left, pays at most that charge:
+    a smaller measured cost is still refunded, a larger one is not carried
+    into later passes.
+    """
+    if charge >= estimated_cost:
+        return actual_cost
+    return min(actual_cost, charge)
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,6 +506,7 @@ class FairIntakeDispatcher:
         # is then paid once per page rather than once per file, while the
         # per-item accounting below is unchanged.
         planned: list[IntakeItem] = []
+        charges: dict[str, int] = {}
         for item in page:
             if runtime.deficit <= 0:
                 break
@@ -519,14 +534,23 @@ class FairIntakeDispatcher:
             if runtime.deficit < item_cost and planned:
                 break
             # Charge the estimate before admission. An adapter cannot hide a
-            # large item behind a cheap synthetic page identity.
-            runtime.deficit -= item_cost
+            # large item behind a cheap synthetic page identity. An item
+            # larger than the whole remaining deficit is admitted alone and
+            # charged that deficit: it takes this pass's share, not the
+            # shares of the next thousand passes. Charging its full size
+            # left the class in debt for as many passes as the item is
+            # larger than one share, so the retry of a failed whale -- or
+            # the next whale -- waited on unrelated passes for an hour.
+            charge = min(item_cost, runtime.deficit)
+            runtime.deficit -= charge
+            charges[item.item_id] = charge
             estimated_cost += item_cost
             planned.append(item)
 
         admission_started = self._clock()
         for item, result in zip(planned, await self._admit_page(spec, planned), strict=True):
             item_cost = max(1, int(item.estimated_cost))
+            charge = charges[item.item_id]
             if result.outcome is AdmissionOutcome.CLASS_TERMINAL:
                 self._halt_class(spec.name, result.reason or "class reported terminal failure")
                 return IntakeClassReport(
@@ -565,7 +589,7 @@ class FairIntakeDispatcher:
                 actual_cost += item_actual_cost
                 # Reconcile the estimate after preparation. A larger actual
                 # cost consumes future deficit; a smaller one is returned.
-                runtime.deficit -= item_actual_cost - item_cost
+                runtime.deficit -= _reconciled_charge(item_actual_cost, item_cost, charge) - charge
                 if result.outcome is AdmissionOutcome.ADMITTED:
                     admitted += 1
                     if result.partial is not None:
@@ -608,7 +632,7 @@ class FairIntakeDispatcher:
             # a measured cost, including zero for a confirmed unattempted item.
             item_actual_cost = item_cost if result.actual_cost is None else max(0, int(result.actual_cost))
             actual_cost += item_actual_cost
-            runtime.deficit -= item_actual_cost - item_cost
+            runtime.deficit -= _reconciled_charge(item_actual_cost, item_cost, charge) - charge
             if result.unattempted:
                 retried += 1
                 continue

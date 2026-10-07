@@ -1392,6 +1392,41 @@ def classify_pre_acquisition(
     return decision
 
 
+def classify_pre_writer_admissions(
+    paths: Sequence[Path],
+    *,
+    fallback_provider: Provider,
+    checkpoint: Callable[[], None] | None = None,
+) -> dict[Path, PreAcquisitionDecision | Exception]:
+    """Decide source-only intake admission for ``paths`` before the writer.
+
+    A JSONL decision streams the file's records, so it is taken here, off the
+    Source writer, and acquisition reads the result. A retryable read fault
+    or a vanished file is recorded as that path's failure; any other fault
+    propagates.
+    """
+    admissions: dict[Path, PreAcquisitionDecision | Exception] = {}
+    for path in paths:
+        if checkpoint is not None:
+            checkpoint()
+        try:
+            size_bytes = path.stat().st_size
+        except OSError as exc:
+            admissions[path] = exc
+            continue
+        try:
+            admissions[path] = classify_pre_acquisition(
+                path,
+                fallback_provider=fallback_provider,
+                source_only=True,
+                size_bytes=size_bytes,
+                checkpoint=checkpoint,
+            )
+        except RetryableSourceReadError as exc:
+            admissions[path] = exc
+    return admissions
+
+
 def _classify_pre_acquisition(
     path: Path,
     *,
@@ -1484,7 +1519,7 @@ def _classify_pre_acquisition(
             # path rule reads no bytes, so source-only acquisition applies
             # it too: intake retains exactly what the baseline requires.
             return PreAcquisitionDecision("path rule classifies this as non-session evidence")
-    if source_only:
+    if source_only and not jsonl:
         return PreAcquisitionDecision(None)
     if sqlite_classification is not None:
         return PreAcquisitionDecision("path rule refuses session parsing", fallback_provider)
@@ -1498,8 +1533,10 @@ def _classify_pre_acquisition(
         )
         # An unknown JSONL cannot be safely excluded from acquire: the strict
         # parse route persists typed terminal evidence for empty and
-        # malformed exports. Known-provider sidecars are excluded here
-        # because their classification is already authoritative.
+        # malformed exports. Known-provider sidecars are excluded here, in
+        # source-only intake as in the baseline, because their record-stream
+        # classification is already authoritative; retaining one would settle
+        # a sidecar as corrupt session input.
         if not parse_as_session and provider is not Provider.UNKNOWN:
             return PreAcquisitionDecision("declared artifact rule: not parsed as a session", provider, crash)
         return PreAcquisitionDecision(None, provider, crash)

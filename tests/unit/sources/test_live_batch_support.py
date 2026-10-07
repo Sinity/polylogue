@@ -54,6 +54,7 @@ from polylogue.sources.live.batch_support import (
     _detect_provider_from_path,
     _FullIngestResult,
     _parse_path_as_session_artifact,
+    classify_pre_writer_admissions,
     encode_cursor_hash_authority,
     jsonl_complete_prefix,
     jsonl_complete_prefix_path,
@@ -156,10 +157,14 @@ def _full_paths_sync(processor: LiveBatchProcessor, paths: list[Path], *, source
                 state_paths, archive_root=archive_root, cancelled=threading.Event(), fallback_provider=provider
             )
 
+        admissions = classify_pre_writer_admissions(
+            [path for path in paths if path not in captures], fallback_provider=provider
+        )
+
         async def run() -> Any:
             async with supplied_live_owners(processor):
                 return await processor._ingest_full_paths_prepared(
-                    paths, source_name=source_name, captured_sqlite_by_path=captures, **kwargs
+                    paths, source_name=source_name, pre_writer_admissions={**admissions, **captures}, **kwargs
                 )
 
         return asyncio.run(run())
@@ -1172,14 +1177,6 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
         "polylogue.sources.live.batch_support._parse_path_as_session_artifact",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not decode source-only evidence")),
     )
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not classify source-only JSONL")),
-    )
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch_support.detect_provider_from_path_evidence",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not detect source-only provider")),
-    )
     try:
         result = _full_paths_sync(processor, [path, json_path, classified_path], source_name="claude-code")
     finally:
@@ -1454,11 +1451,25 @@ def test_source_only_full_ingest_bounds_oversized_ndjson_sampling(
     root = tmp_path / "inbox"
     root.mkdir()
     source = root / "oversized.ndjson"
+    # A session, not a bare header: pre-writer admission classifies the
+    # record stream and excludes a known-provider non-session sidecar.
     payload = (
         json.dumps(
             {
                 "type": "session_meta",
                 "payload": {"id": "oversized-record", "padding": "x" * 128_000},
+            }
+        ).encode()
+        + b"\n"
+        + json.dumps(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "oversized-message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
             }
         ).encode()
         + b"\n"
@@ -2076,7 +2087,7 @@ def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
     )
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
 
     result = _full_paths_sync(processor, [path], source_name="codex")
@@ -2401,7 +2412,7 @@ def test_full_ingest_hot_capture_keeps_its_frontier_before_the_unterminated_reco
     )
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
     captured_boundary_check = live_batch._stable_truncated_tail_admission
 
@@ -2444,7 +2455,7 @@ def test_full_ingest_applies_incomplete_record_guard_to_jsonl_txt(
     )
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
     boundary_check = live_batch._stable_truncated_tail_admission
 
@@ -2489,7 +2500,7 @@ def test_full_ingest_claude_hot_capture_keeps_its_frontier_before_the_unterminat
     )
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
     boundary_check = live_batch._stable_truncated_tail_admission
 
@@ -2540,7 +2551,7 @@ def test_streamed_incomplete_jsonl_capture_defers_completed_source_until_authori
     monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", len(captured) - 1)
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
     boundary_check = live_batch._stable_truncated_tail_admission
     source_completed = False
@@ -2606,7 +2617,7 @@ def test_full_ingest_settles_a_stable_unterminated_first_record_as_no_sessions(
     )
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
 
     result = _full_paths_sync(processor, [path], source_name="codex")
@@ -2670,7 +2681,7 @@ def test_full_ingest_heartbeats_small_file_groups_with_current_path(
 
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
 
     result = _full_paths_sync(processor, [first, second], source_name="codex", heartbeat=heartbeat)
@@ -2710,7 +2721,7 @@ def test_large_full_ingest_uses_archive(
     )
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
 
     result = _full_paths_sync(processor, [source], source_name="codex")
@@ -2747,7 +2758,7 @@ def test_streaming_sized_full_ingest_uses_archive(
     )
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
     # Acquisition retains bytes only; parsing belongs to retained preparation.
     for parser in ("iter_parsed_payload", "iter_parsed_stream"):
@@ -6933,7 +6944,7 @@ def test_full_multi_session_failure_retries_without_success_mapping(
     ]
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
     # Retained preparation is the only parser on the live route; it closes
     # the parser's generator, which a bare list iterator cannot stand in for.
@@ -7056,7 +7067,7 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
     ]
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
     # Retained preparation is the only parser on the live route.
     monkeypatch.setattr(
@@ -7661,7 +7672,7 @@ def test_single_session_full_terminally_supersedes_older_membership_prefix(
     older_sessions = [session("shared", "base")]
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
     monkeypatch.setattr(
         "polylogue.sources.prepared_jsonl.iter_parsed_stream",
@@ -7783,7 +7794,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
     current_raw_id: list[str] = []
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
     monkeypatch.setattr(
         "polylogue.sources.prepared_jsonl.iter_parsed_stream",
@@ -7997,7 +8008,7 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
 
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
     monkeypatch.setattr(
         "polylogue.sources.prepared_jsonl.iter_parsed_stream",
@@ -8192,7 +8203,7 @@ def test_single_session_full_cannot_overwrite_divergent_membership_head(
     divergent_sessions = [session("shared", "base", "right", "extra")]
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
     monkeypatch.setattr(
         "polylogue.sources.prepared_jsonl.iter_parsed_stream",
@@ -8276,7 +8287,7 @@ def test_single_session_full_advances_authorized_metadata_only_head(
     bundle_sessions = [older, session("safe", "safe", "2026-01-01T00:00:00Z")]
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
     monkeypatch.setattr(
         "polylogue.sources.prepared_jsonl.iter_parsed_stream",
@@ -8333,7 +8344,7 @@ def test_bundle_promotes_prior_single_full_into_membership_authority(
     bundle_sessions = [session("shared", "base", "new"), session("safe", "one")]
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
+        lambda _path, fallback_provider, **_kwargs: (fallback_provider, True, None),
     )
     monkeypatch.setattr(
         "polylogue.sources.prepared_jsonl.iter_parsed_stream",

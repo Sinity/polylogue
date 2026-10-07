@@ -548,6 +548,76 @@ def test_path_scoped_retention_preserves_the_full_chain_and_deletion_receipt(tmp
     assert scoped_authority == expected
 
 
+def test_path_scoped_retention_sees_the_semantic_head_of_a_censused_raw(tmp_path: Path) -> None:
+    """A membership-governed raw is protected through its census key's semantic head.
+
+    The raw keeps its acquisition envelope's pending key and quarantined
+    authority; its session's head is keyed by the census identity. Red if the
+    path scope reads only ``raw_sessions.logical_source_key``: the head is then
+    invisible, the session row is validated as a byte chain and refused with
+    "active full raw lacks byte-proven authority", and raw retention debt never
+    clears.
+    """
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    source_path = tmp_path / "subagents" / "agent-a.jsonl"
+    initialize_runtime_source_fixture(source_db)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    pending_key = f"pending-raw:claude-code-session:0:{source_path}:raw-agent"
+    census_key = "claude-code-session:parent:agent-a"
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-agent",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-agent",
+            generation=0,
+            blob_size=10,
+            authority="quarantined",
+        )
+        conn.execute("UPDATE raw_sessions SET logical_source_key = ? WHERE raw_id = 'raw-agent'", (pending_key,))
+        conn.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, revision_authority, decision, decided_at_ms
+            ) VALUES ('raw-agent', ?, 'parent:agent-a', 'content-agent', ?, 2, 'byte_proven', 'applied', 2)
+            """,
+            (census_key, bytes(32)),
+        )
+        conn.commit()
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, raw_id, title, content_hash) "
+            "VALUES ('parent:agent-a', 'claude-code-session', 'raw-agent', 'agent', ?)",
+            (bytes(32),),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_revision_heads (
+                logical_source_key, session_id, accepted_raw_id,
+                accepted_source_revision, accepted_content_hash,
+                accepted_frontier_kind, accepted_frontier,
+                acquisition_generation, append_end_offset, decided_at_ms
+            ) VALUES (?, 'claude-code-session:parent:agent-a', 'raw-agent', 'content-agent', ?,
+                      'semantic', 2, 0, NULL, 2)
+            """,
+            (census_key, bytes(32)),
+        )
+
+    with sqlite3.connect(source_db) as conn:
+        global_authority = active_raw_retention_authority(conn, index_db_path=index_db)
+        scoped_authority = active_raw_retention_authority(
+            conn, index_db_path=index_db, authority_source_paths=(source_path,)
+        )
+
+    expected = RawRetentionAuthority(protected_raw_ids=frozenset({"raw-agent"}), eligible_raw_ids=frozenset())
+    assert global_authority == expected
+    assert scoped_authority == expected
+
+
 def test_scoped_terminal_retention_avoids_archive_wide_raw_inventory(tmp_path: Path) -> None:
     """Terminal authority scans only the caller's source-path scope."""
 

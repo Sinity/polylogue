@@ -272,6 +272,58 @@ def test_disk_owner_keys_match_public_resolution_at_each_ordinal(tmp_path: Path)
         store.close()
 
 
+def test_set_based_disk_owner_resolution_matches_public_resolution_under_every_collision(tmp_path: Path) -> None:
+    """The disk resolver's set-based counts and keys equal the in-memory law.
+
+    Duplicate native ids, duplicate stable keys, a stable key colliding with
+    another message's key, shared physical coordinates and identical content
+    each change which anchor wins; a count or a lookup taken over the wrong
+    rows turns one of these comparisons red.
+    """
+    messages = [
+        ParsedMessage(provider_message_id="dup", role=Role.USER, text="a", position=0),
+        ParsedMessage(provider_message_id="dup", role=Role.USER, text="b", position=1),
+        ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same", position=2),
+        ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same", position=2),
+        ParsedMessage(
+            provider_message_id="",
+            role=Role.ASSISTANT,
+            text="x",
+            owner_coordinate=MessageOwnerCoordinate(stable_key="shared", position=4),
+        ),
+        ParsedMessage(
+            provider_message_id="",
+            role=Role.ASSISTANT,
+            text="y",
+            owner_coordinate=MessageOwnerCoordinate(stable_key="shared", position=5),
+        ),
+        ParsedMessage(
+            provider_message_id="unique",
+            role=Role.USER,
+            text="ü",
+            owner_coordinate=MessageOwnerCoordinate(stable_key="ünique-stable", position=6),
+        ),
+        ParsedMessage(provider_message_id="", role=Role.USER, text="lonely", position=7),
+    ]
+    expected = ids.message_owner_resolution(messages)
+    store = SqliteMessageStore(tmp_path / "prepared.db")
+    try:
+        sink = store.new_sink()
+        for message in messages:
+            sink.append(message)
+        with ids.disk_message_owner_resolution(sink) as actual:
+            assert tuple(actual.keys) == expected.keys
+            assert set(actual.ambiguous_keys) == expected.ambiguous_keys
+            assert set(actual.ambiguous_stable_keys) == expected.ambiguous_stable_keys
+            assert set(actual.ambiguous_provider_ids) == expected.ambiguous_provider_ids
+            assert set(actual.ambiguous_physical_coordinates) == expected.ambiguous_physical_coordinates
+            assert dict(actual.by_physical_coordinate.items()) == expected.by_physical_coordinate
+            assert dict(actual.by_stable_key.items()) == expected.by_stable_key
+            assert dict(actual.unique_provider_keys.items()) == expected.unique_provider_keys
+    finally:
+        store.close()
+
+
 def test_disk_revision_projection_matches_every_canonical_axis(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     messages = [
         ParsedMessage(provider_message_id="native", role=Role.USER, text="first"),

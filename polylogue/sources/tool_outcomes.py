@@ -49,6 +49,7 @@ class _OutcomeIndex:
             CREATE INDEX original_messages_native ON original_messages(native_id);
             CREATE INDEX original_messages_normalized ON original_messages(normalized_id);
             CREATE INDEX original_messages_position ON original_messages(declared_position);
+            CREATE TABLE tool_messages (ordinal INTEGER PRIMARY KEY);
             CREATE TABLE association_blocks (
                 session_key INTEGER NOT NULL,block_key TEXT PRIMARY KEY,message_key INTEGER NOT NULL,
                 tool_id TEXT,is_use INTEGER,outcome TEXT,unknown_reason TEXT,block_position INTEGER
@@ -188,6 +189,7 @@ def derive_tool_outcomes(
     events: Sequence[ParsedSessionEvent],
     *,
     origin: Origin,
+    into: SqliteMessageSink | None = None,
 ) -> list[ParsedMessage] | SqliteMessageSink:
     """Resolve tool outcomes from each origin's structured parser evidence.
 
@@ -198,13 +200,24 @@ def derive_tool_outcomes(
     A result without any such evidence is a parser defect and refuses the
     write. A tool-use without a paired result is a recorded interruption and
     receives the distinct, known ``no_result`` outcome.
+
+    With ``into``, a sink's normalized messages are appended to that empty
+    sink in one pass instead of being rewritten in place.
     """
     with _outcome_index(messages) as index:
         _index_sidecars(index, events, origin=origin)
         _index_results(index, messages, origin=origin)
+        if isinstance(messages, SqliteMessageSink) and into is not None:
+            if len(into):
+                raise ValueError("tool outcome normalization appends into an empty sink")
+            for ordinal, message in enumerate(messages):
+                into.append(_normalize_message(index, message, ordinal=ordinal, origin=origin))
+            return into
         if isinstance(messages, SqliteMessageSink):
+            # Only a message with a tool block is normalized into anything
+            # other than itself; every other row already holds its value.
             with messages.atomic_edit():
-                for ordinal in range(len(messages)):
+                for (ordinal,) in index.conn.execute("SELECT ordinal FROM tool_messages ORDER BY ordinal"):
                     messages[ordinal] = _normalize_message(index, messages[ordinal], ordinal=ordinal, origin=origin)
             return messages
         return [
@@ -259,6 +272,8 @@ def _index_results(index: _OutcomeIndex, messages: Sequence[ParsedMessage], *, o
                 message.variant_index or 0,
             ),
         )
+        if any(block.type in (BlockType.TOOL_USE, BlockType.TOOL_RESULT) for block in message.blocks):
+            index.conn.execute("INSERT INTO tool_messages VALUES(?)", (ordinal,))
         for block_ordinal, block in enumerate(message.blocks):
             if block.type not in (BlockType.TOOL_USE, BlockType.TOOL_RESULT) or not block.tool_id:
                 continue

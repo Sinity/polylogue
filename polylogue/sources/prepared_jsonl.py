@@ -39,6 +39,7 @@ from polylogue.core.prepared_file import PreparedFileSeal, VerificationCancelled
 from polylogue.core.provider_identity import profile_root_for_artifact
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.work_progress import reports_work_progress
 from polylogue.logging import WARNING, emit
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.acquisition_boundary import bound_profile_identity, open_bound_path
@@ -2435,6 +2436,7 @@ def _finalize_prepared_cohort(
     return result
 
 
+@reports_work_progress("source_preparation")
 def prepare_jsonl_blob(
     blob_path: str,
     source_path: str,
