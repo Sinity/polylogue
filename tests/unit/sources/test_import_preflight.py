@@ -12,6 +12,7 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.operations.import_operations import prepare_import_source_admission
 from polylogue.sources.import_preflight import ImportPreflightStatus
+from tests.infra.antigravity_parser import parse_trajectory_db
 
 
 def _chatgpt_payload() -> dict[str, object]:
@@ -83,7 +84,6 @@ def test_preflight_refuses_what_the_production_evidence_gate_refuses(tmp_path: P
     removes on every production write path.
     """
     from polylogue.sources.dispatch import require_positive_conversational_evidence
-    from polylogue.sources.parsers import antigravity
 
     source = tmp_path / "quiet-trajectory.sqlite"
     with sqlite3.connect(source) as connection:
@@ -95,7 +95,7 @@ def test_preflight_refuses_what_the_production_evidence_gate_refuses(tmp_path: P
             {steps_sql}
             """
         )
-    sessions = list(antigravity.parse_trajectory_db(source, fallback_id=source.stem))
+    sessions = list(parse_trajectory_db(source, fallback_id=source.stem))
 
     result = prepare_import_source_admission(source).preflight
 
@@ -271,7 +271,6 @@ def test_several_unidentified_trajectory_rows_are_refused(tmp_path: Path) -> Non
     (#5711). Anti-vacuity: mint ``<fallback>:trajectory-<n>`` for each
     unidentified row and the export parses into two sessions.
     """
-    from polylogue.sources.parsers import antigravity
     from polylogue.sources.sqlite_export import LogicalExportError
 
     source = tmp_path / "unnamed.sqlite"
@@ -286,7 +285,7 @@ def test_several_unidentified_trajectory_rows_are_refused(tmp_path: Path) -> Non
         )
 
     with pytest.raises(LogicalExportError):
-        list(antigravity.parse_trajectory_db(source, fallback_id="unnamed"))
+        list(parse_trajectory_db(source, fallback_id="unnamed"))
 
 
 def test_generated_trajectory_id_avoids_a_native_id(tmp_path: Path) -> None:
@@ -295,7 +294,6 @@ def test_generated_trajectory_id_avoids_a_native_id(tmp_path: Path) -> None:
     Anti-vacuity: take ``<fallback>:trajectory-0`` without checking the native
     ids and both rows share one ``provider_session_id``.
     """
-    from polylogue.sources.parsers import antigravity
 
     source = tmp_path / "x.sqlite"
     with sqlite3.connect(source) as connection:
@@ -308,7 +306,7 @@ def test_generated_trajectory_id_avoids_a_native_id(tmp_path: Path) -> None:
             """
         )
 
-    sessions = list(antigravity.parse_trajectory_db(source, fallback_id="x"))
+    sessions = list(parse_trajectory_db(source, fallback_id="x"))
 
     identities = [session.provider_session_id for session in sessions]
     assert len(identities) == 2

@@ -230,7 +230,7 @@ def test_drive_execution_optional_exit_code_keeps_unknown_and_output(
 def test_antigravity_exit_code_does_not_truncate_into_success(
     tmp_path: Path, value: JSONValue, code: int | None, outcome: str
 ) -> None:
-    from polylogue.sources.parsers.antigravity import parse_trajectory_db
+    from tests.infra.antigravity_parser import parse_trajectory_db
 
     source = tmp_path / "trajectory.db"
     with closing(sqlite3.connect(source)) as conn:

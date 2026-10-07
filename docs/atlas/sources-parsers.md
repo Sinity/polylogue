@@ -6,8 +6,10 @@ Sources acquire bytes and identify their material source. Detection chooses a
 provider parser by input shape; the pipeline normalizes provider records into
 parsed sessions before the storage writer lowers them
 (`polylogue/sources/dispatch.py:1-80`; `CompiledDetectorRegistry.detect` in `polylogue/sources/detection.py:88-105`;
-retained preparation in `polylogue/sources/revision_backfill.py`, driven by
-`RawObservationDerivation` in `polylogue/operations/raw_observation_derivation.py`).
+`ingest_record` in
+`polylogue/pipeline/services/ingest_worker.py:1137-1226`; `_run_parse_plan`
+in the same file at `1037-1089`;
+`_materialize_parsed_sessions` in the same file at `896-959`).
 
 Document arrays use the same tightness-ordered document predicates for every
 member, including streamed detection. An unrelated fragment cannot claim a
@@ -131,11 +133,14 @@ session list; the preview transports only its declared references and counts.
 Explicit low-level connection-return readers retain their existing semantics;
 this guarantee covers the actual acquisition and import-preview operations.
 
-Antigravity retained parsing uses the caller-owned prepared SQLite database for
-messages, complete admission outcomes and streamed parent-reference arrays.
-Those arrays are explicit replayable values, not lazy mappings: event hashing,
-prepared event serialization and the archive writer consume one item at a
-time. Their scratch IDs remain valid until the prepared artifact is sealed.
+Antigravity trajectory parsing consumes the already-proved logical SQLite
+transaction. Its retained iterator writes messages and events into caller-owned
+prepared sinks, and spills trajectory identities, summary rows, aliases,
+parent references, and exceptional parse outcomes into the same prepared
+database. Parent-reference event arrays remain replayable streamed values with
+the original payload keys and ordering; unsupported-step events keep their
+complete per-step payloads. Cancellation closes the active source and grouping
+cursors, while the preparation owner controls scratch cleanup and lifetime.
 
 ## Detection and parse route
 
@@ -234,11 +239,22 @@ provider (`docs/provider-origin-identity.md:15-30`;
   parser evidence before short admitted publication; the matching writer
   consumes attachment reservations with the same prepared receipt. Physical
   cleanup stays with that preparation creator through publication and failure.
-- Raw preparation and publication are owned by `RawObservationConvergenceOwner`;
-  it validates retained membership and precedence before publication and
-  consumes attachment reservations using the prepared receipt. The parsed
-  session writer remains the shared lowering choke point for ordinary ingest,
-  replay and reindex.
+- Batch ingest keeps source membership and precedence checks read-only:
+  `_core.py` opens one read-only `source.db` handle per batch, and
+  `revision_authority_refuses_write` reads `raw_session_memberships` through
+  it, while index publication and later blob-publication receipt consumption
+  each open their own archive-root-bound write connection
+  (`_process_ingest_batch_sync` in
+  `polylogue/pipeline/services/ingest_batch/_core.py:3528-3543`;
+  `revision_authority_refuses_write` in
+  `polylogue/storage/sqlite/archive_tiers/ingest_precedence.py:182-277`;
+  `_open_sync_connection` in
+  `polylogue/pipeline/services/ingest_batch/_core.py:215-245`). After index
+  commit, `_process_ingest_batch_sync` opens the source-tier transaction with
+  `archive_root=archive_root` and calls `consume_blob_publication_receipt`
+  for each pending attachment receipt
+  (`polylogue/pipeline/services/ingest_batch/_core.py:3656-3673`;
+  `polylogue/storage/blob_publication.py:553-564`).
 
 ## Gotchas
 
