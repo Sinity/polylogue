@@ -644,6 +644,9 @@ class TestRerunIdempotency:
                 "SELECT session_id, message_count FROM sessions WHERE native_id='chaos-rerun'"
             ).fetchone()
             first_messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        assert first is not None
+        assert first[1] == 1
+        assert first_messages == 1
 
         replay_retained_components(archive, selected_raw_ids=(raw_id,))
 
@@ -654,6 +657,51 @@ class TestRerunIdempotency:
             second_messages = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         assert second == first
         assert second_messages == first_messages
+
+    def test_codex_rollout_with_unsupported_record_settles_typed_refusal(self, tmp_path: Path) -> None:
+        """A complete Codex rollout is refused when one record shape is unsupported."""
+        import asyncio
+        import sqlite3
+
+        from polylogue.core.enums import Provider
+        from polylogue.sources.revision_backfill import RevisionCensusResult
+        from polylogue.storage.blob_store import BlobStore
+        from tests.infra.archive_templates import bootstrap_archive_root
+        from tests.infra.retained_jsonl import retained_raw_fixture, run_retained_source_phase
+
+        lines = corrupt_line_wrong_envelope(generate_large_jsonl(50, provider="codex"), 30)
+        content = _jsonl_bytes(lines)
+        archive = tmp_path / "archive"
+        bootstrap_archive_root(archive)
+        blob_hash, _size = BlobStore(archive / "blob").write_from_bytes(content)
+        with retained_raw_fixture(
+            root=archive,
+            provider=Provider.CODEX,
+            blob_hash=blob_hash,
+            source_path="sessions/wrong-envelope.jsonl",
+        ) as (reader, raw_id):
+            assert reader.raw_revision_descriptor(raw_id)[1] == blob_hash
+
+        published, phase, receipt = asyncio.run(run_retained_source_phase(archive, (raw_id,)))
+
+        assert published is False and phase == "census"
+        assert isinstance(receipt, RevisionCensusResult)
+        assert receipt == RevisionCensusResult(
+            scanned=1,
+            classified_full=0,
+            quarantined=1,
+            input_raw_ids=(raw_id,),
+            logical_keys=(),
+        )
+        with sqlite3.connect(archive / "source.db") as conn:
+            assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchone() == (
+                "non_session",
+            )
+            assert conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id=?", (raw_id,)).fetchone() == (
+                "terminal_unsupported_shape",
+            )
+        with sqlite3.connect(archive / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
     def test_iter_json_stream_idempotent(self) -> None:
         """_iter_json_stream produces identical output on repeated calls."""
