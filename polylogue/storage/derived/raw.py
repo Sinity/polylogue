@@ -2112,7 +2112,7 @@ class RawObservationDerivation(RawObservationInspection):
                                     raise AssertionError("strictly refused raw lost its validation verdict")
                                 detail = (
                                     verdict.first_diagnostic
-                                    if verdict is not None and verdict.first_diagnostic
+                                    if verdict.first_diagnostic
                                     else "strict schema validation refused the retained revision"
                                 )
                                 prepared_key_refusals[logical_key] = CohortMembershipRefusalError(
@@ -2493,7 +2493,7 @@ class RawObservationDerivation(RawObservationInspection):
                                             raise AssertionError("strictly refused member lost its validation verdict")
                                         detail = (
                                             verdict.first_diagnostic
-                                            if verdict is not None and verdict.first_diagnostic
+                                            if verdict.first_diagnostic
                                             else "strict schema validation refused the retained revision"
                                         )
                                         prepared_key_refusals[logical_key] = CohortMembershipRefusalError(
