@@ -2763,6 +2763,29 @@ def _refuse_durable_tiers_newer_than_runtime(archive_root: Path, *, recovering: 
             )
 
 
+def _refuse_lost_durable_tiers(archive_root: Path, *, recovering: set[ArchiveTier]) -> None:
+    """Refuse an established archive that lost a durable tier.
+
+    The format marker is published only after all six tiers exist, so a
+    marked root without one of its durable tiers lost it outside Polylogue.
+    Nothing here may recreate it: an empty Source tier would silently claim
+    an acquisition history the archive no longer has. A tier under an
+    unreleased train is left to that train's recovery.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import archive_format_marker_path
+
+    if not archive_format_marker_path(archive_root).is_file():
+        return
+    for tier in DURABLE_MIGRATION_ADOPTION_FLOORS:
+        tier_path = archive_root / f"{tier.value}.db"
+        if tier in recovering or tier_path.exists() or tier_path.is_symlink():
+            continue
+        raise DurableChangeTrainError(
+            f"established archive is missing {tier_path.name}; a lost durable tier is never recreated. "
+            "Restore the archive root from a verified backup"
+        )
+
+
 def _reconcile_durable_change_train_startup_locked(
     archive_root: Path,
     *,
@@ -2783,14 +2806,13 @@ def _reconcile_durable_change_train_startup_locked(
     # ownership proof would refuse it as foreign instead of naming the skew.
     # A tier with an unreleased train is left to the recovery below, whose
     # failure classification is the stronger refusal.
-    _refuse_durable_tiers_newer_than_runtime(
-        archive_root,
-        recovering={
-            train.tier
-            for train in map(load_durable_change_train_manifest, manifest_paths)
-            if train.state is not DurableChangeTrainState.RELEASED
-        },
-    )
+    recovering = {
+        train.tier
+        for train in map(load_durable_change_train_manifest, manifest_paths)
+        if train.state is not DurableChangeTrainState.RELEASED
+    }
+    _refuse_durable_tiers_newer_than_runtime(archive_root, recovering=recovering)
+    _refuse_lost_durable_tiers(archive_root, recovering=recovering)
     fresh_bootstrap_versions = _fresh_durable_bootstrap_versions(archive_root, manifest_root)
     _retire_corroborated_fresh_durable_bootstrap_marker(manifest_root, fresh_bootstrap_versions)
     chain_floor_versions = _durable_chain_floor_versions(archive_root, manifest_root)
