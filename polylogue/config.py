@@ -1748,6 +1748,7 @@ class ResolvedSourcePaths:
     claude_code_todos: Path
     claude_code_history: Path
     codex: Path
+    codex_state: Path
     codex_memories: Path
     gemini_cli: Path
     hermes: Path
@@ -1892,6 +1893,7 @@ def resolve_runtime_config(
         claude_code_todos=bootstrap.home / ".claude" / "todos",
         claude_code_history=bootstrap.home / ".claude" / "history.jsonl",
         codex=bootstrap.home / ".codex" / "sessions",
+        codex_state=bootstrap.home / ".codex",
         codex_memories=bootstrap.home / ".codex" / "memories",
         gemini_cli=bootstrap.home / ".gemini" / "tmp",
         hermes=hermes_home(bootstrap.environment, home=bootstrap.home),
@@ -1906,6 +1908,7 @@ def resolve_runtime_config(
         ("claude-code-todos", source_paths.claude_code_todos),
         ("claude-code-history", source_paths.claude_code_history),
         ("codex", source_paths.codex),
+        ("codex-state", source_paths.codex_state),
         ("codex-memories", source_paths.codex_memories),
         ("gemini-cli", source_paths.gemini_cli),
         ("hermes", source_paths.hermes),

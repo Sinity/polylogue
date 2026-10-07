@@ -118,6 +118,14 @@ extensible registry):
 | `planner-stats` | `sqlite_stat1` covers `blocks`/`messages`/`session_links`/`action_pairs` (warn-level: a fresh generation without `ANALYZE` picks pathological query plans, polylogue-l3tk class). |
 | `counts-summary` | Archive-wide session/message/block counts and an origin breakdown — the numbers-freeze starting point for an operator handoff. |
 
+The configured frontier is a current source projection, not a cross-run
+registry of optional child roots. It omits hook carrier or pending children
+that have never been created, while requiring the primary hook spool root to
+be resolvable. Cold-build baselines retain accepted revisions through their
+pending receipt and candidate generation, and source-conservation checks
+durable acquired Source evidence independently; those are the owners of
+previously observed item obligations.
+
 Exit code is non-zero when any check reports `error` (or, with `--strict`,
 `warning`). A single check's failure — including a tier database being
 temporarily busy under a concurrent rebuild — never aborts the rest; each

@@ -108,6 +108,160 @@ def test_configured_frontier_includes_browser_source_and_hook_spools(
     assert frontier.item_count == 3
 
 
+def test_configured_frontier_omits_never_created_hook_spool_children(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue import paths
+    from polylogue.maintenance import source_manifest_continuity as continuity
+
+    home = tmp_path / "home"
+    codex = home / ".codex"
+    codex.mkdir(parents=True)
+    (codex / "history.jsonl").write_text('{"id":"synthetic"}\n', encoding="utf-8")
+    archive = tmp_path / "archive"
+    # Production's primary spool root may exist before its carrier and pending
+    # children are first written.
+    (archive / "hooks").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive))
+    monkeypatch.setattr(paths, "archive_root", lambda: archive)
+
+    frontier = continuity.configured_source_frontier(archive)
+
+    assert frontier.complete
+    assert "configured:codex-state" in {row.source_id for row in frontier.declarations}
+    assert not any(":carrier:" in row.source_id or row.source_id.endswith(":pending") for row in frontier.declarations)
+
+
+def test_configured_frontier_refuses_an_unavailable_primary_hook_spool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue import paths
+    from polylogue.maintenance import source_manifest_continuity as continuity
+
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "history.jsonl").write_text('{"id":"synthetic"}\n', encoding="utf-8")
+    archive = tmp_path / "archive"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive))
+    monkeypatch.setattr(paths, "archive_root", lambda: archive)
+
+    with pytest.raises(SourceContinuityError, match="hook spool root is unavailable"):
+        continuity.configured_source_frontier(archive)
+
+
+def test_configured_frontier_keeps_broken_hook_child_as_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue import paths
+    from polylogue.maintenance import source_manifest_continuity as continuity
+
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "history.jsonl").write_text('{"id":"synthetic"}\n', encoding="utf-8")
+    archive = tmp_path / "archive"
+    broken = archive / "hooks" / "carriers" / "codex"
+    broken.parent.mkdir(parents=True)
+    broken.symlink_to(archive / "missing-carrier", target_is_directory=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive))
+    monkeypatch.setattr(paths, "archive_root", lambda: archive)
+
+    frontier = continuity.configured_source_frontier(archive)
+
+    assert not frontier.complete
+    assert frontier.root_states["primary-hook-spool:carrier:codex"] is FrontierState.UNAVAILABLE
+
+
+def test_configured_frontier_keeps_unreadable_hook_child_as_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue import paths
+    from polylogue.maintenance import source_manifest_continuity as continuity
+
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "history.jsonl").write_text('{"id":"synthetic"}\n', encoding="utf-8")
+    archive = tmp_path / "archive"
+    unreadable = archive / "hooks" / "carriers" / "codex"
+    unreadable.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive))
+    monkeypatch.setattr(paths, "archive_root", lambda: archive)
+    original_lstat = Path.lstat
+
+    def deny_child(path: Path) -> os.stat_result:
+        if path == unreadable:
+            raise PermissionError("synthetic unreadable hook root")
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", deny_child)
+
+    frontier = continuity.configured_source_frontier(archive)
+
+    assert not frontier.complete
+    assert frontier.root_states["primary-hook-spool:carrier:codex"] is FrontierState.UNAVAILABLE
+
+
+def test_codex_state_member_is_in_cold_baseline_and_configured_frontier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daemon's Codex state root also belongs to the continuity denominator."""
+    import sqlite3
+
+    from polylogue import paths
+    from polylogue.maintenance import source_manifest_continuity as continuity
+    from polylogue.sources.live.production_baseline import capture_production_source_baseline
+    from polylogue.sources.live.watcher import daemon_watch_sources
+
+    home = tmp_path / "home"
+    codex = home / ".codex"
+    codex.mkdir(parents=True)
+    member = codex / "history.jsonl"
+    member.write_text('{"id":"synthetic-codex-state"}\n', encoding="utf-8")
+    database = codex / "state_5.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE threads(id TEXT)")
+        connection.execute("CREATE TABLE thread_spawn_edges(parent TEXT, child TEXT)")
+        connection.execute("INSERT INTO threads VALUES ('synthetic-thread')")
+    session = codex / "sessions" / "2026" / "01" / "02" / "rollout-2026-01-02T00-00-00-1.jsonl"
+    session.parent.mkdir(parents=True)
+    session.write_text(
+        '{"type":"session_meta","payload":{"id":"synthetic-session","timestamp":"2026-01-02T00:00:00Z"}}\n'
+        '{"type":"response_item","payload":{"type":"message","id":"synthetic-message",'
+        '"role":"user","content":[{"type":"input_text","text":"synthetic"}]}}\n',
+        encoding="utf-8",
+    )
+    memory = codex / "memories" / "MEMORY.md"
+    memory.parent.mkdir()
+    memory.write_text("# Synthetic memory\n", encoding="utf-8")
+    credential = codex / "auth.json"
+    credential.write_text('{"token":"synthetic"}\n', encoding="utf-8")
+    archive = tmp_path / "archive"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive))
+    monkeypatch.setattr(paths, "archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.sources.hooks.hook_spool_sources", lambda: ())
+
+    watched = tuple(source for source in daemon_watch_sources() if source.name == "codex-state")
+    assert len(watched) == 1
+    baseline = capture_production_source_baseline(watched, operation_id="synthetic-codex-frontier")
+    assert {decision.path for decision in baseline.accepted} == {str(member), str(database)}
+
+    frontier = continuity.configured_source_frontier(archive)
+    declaration = next(row for row in frontier.declarations if row.source_id == "configured:codex-state")
+    assert declaration.root == codex
+    assert "configured:codex" in {row.source_id for row in frontier.declarations}
+    assert "configured:codex-memories" in {row.source_id for row in frontier.declarations}
+    owned = [(row.source_id, row.coordinate) for row in frontier.members]
+    assert owned.count(("configured:codex-state", "history.jsonl")) == 1
+    assert owned.count(("configured:codex-state:sqlite:state_5.sqlite", "state_5.sqlite")) == 1
+    assert owned.count(("configured:codex", "2026/01/02/rollout-2026-01-02T00-00-00-1.jsonl")) == 1
+    assert owned.count(("configured:codex-memories", "MEMORY.md")) == 1
+    assert all("auth.json" not in coordinate for _, coordinate in owned)
+
+
 def test_configured_frontier_keeps_a_disappeared_source_in_its_denominator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

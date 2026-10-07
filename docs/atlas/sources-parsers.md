@@ -24,6 +24,11 @@ Interruption during preparation accepts no material rows; replay publishes the
 complete material set without duplicates. Row and text pages bound work while
 preserving all content.
 
+The resolved runtime source set declares `codex-state` at `~/.codex/`, matching
+the daemon watcher and cold-build baseline for its database members,
+`session_index.jsonl`, and `history.jsonl`. Its layout admits only those named
+members; sessions and memories remain separately declared roots.
+
 For a same-path Codex JSONL cohort of at least four full or unknown-kind
 revisions, `RawObservationDerivation` may use prefix checkpoints only after
 proving each retained blob is the exact byte prefix of the next, every revision

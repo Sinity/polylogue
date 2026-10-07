@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import stat
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -321,23 +322,54 @@ def configured_source_frontier(archive_root: Path) -> SourceFrontier:
             )
             for member in sqlite_paths
         )
+    observed_spools: list[tuple[Path, tuple[int, int]]] = []
     for spec in hook_spool_sources():
         spool_root = Path(spec.root)
+        try:
+            spool_identity = spool_root.lstat()
+        except OSError as exc:
+            raise SourceContinuityError(f"hook spool root is unavailable: {spool_root}: {exc}") from exc
+        if not stat.S_ISDIR(spool_identity.st_mode):
+            raise SourceContinuityError(f"hook spool root is not a directory: {spool_root}")
+        observed_spools.append((spool_root, (spool_identity.st_dev, spool_identity.st_ino)))
         for carrier_provider in ("claude-code", "codex", "hermes"):
             carrier_root = spool_root / "carriers" / carrier_provider
-            rows.append(
-                SourceDeclaration(
-                    f"{spec.source_id}:carrier:{carrier_provider}",
-                    SourceRole.SPOOL,
-                    carrier_root,
-                    True,
-                    f"{carrier_provider}-hooks",
+            if _source_path_present(carrier_root):
+                rows.append(
+                    SourceDeclaration(
+                        f"{spec.source_id}:carrier:{carrier_provider}",
+                        SourceRole.SPOOL,
+                        carrier_root,
+                        True,
+                        f"{carrier_provider}-hooks",
+                    )
                 )
-            )
         pending = spool_root / "pending"
-        rows.append(SourceDeclaration(f"{spec.source_id}:pending", SourceRole.SPOOL, pending, True))
+        if _source_path_present(pending):
+            rows.append(SourceDeclaration(f"{spec.source_id}:pending", SourceRole.SPOOL, pending, True))
     unique: dict[str, SourceDeclaration] = {row.source_id: row for row in rows}
-    return build_source_frontier(unique.values())
+    frontier = build_source_frontier(unique.values())
+    for spool_root, expected in observed_spools:
+        try:
+            after_identity = spool_root.lstat()
+        except OSError as exc:
+            raise SourceContinuityError(f"hook spool root disappeared during observation: {spool_root}: {exc}") from exc
+        if (after_identity.st_dev, after_identity.st_ino) != expected:
+            raise SourceContinuityError(f"hook spool root identity changed during observation: {spool_root}")
+    return frontier
+
+
+def _source_path_present(path: Path) -> bool:
+    """Treat only a definite missing optional child as absent."""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        # Keep permission and I/O failures in the declaration set so the
+        # frontier records the child as UNAVAILABLE instead of hiding it.
+        return True
+    return True
 
 
 def canonical_source_declarations(
