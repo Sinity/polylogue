@@ -215,6 +215,7 @@ def test_each_prefix_keeps_its_own_fallback_timestamp_provenance() -> None:
     head = codex.parse_stream(records, "fallback")
     checkpoint = _finalize_codex_prefix(head, head.messages, 2, _prefix_accounting(2), head.created_at)
 
+    observed: list[tuple[str | None, str | None, str, str, list[str | None]]] = []
     for fallback in ("2026-06-01T01:00:00Z", "2026-06-02T01:00:00Z"):
         ordinary = normalize_session_timestamps(
             codex.parse_stream(records[:3], "fallback"), fallback_timestamp=fallback
@@ -226,6 +227,19 @@ def test_each_prefix_keeps_its_own_fallback_timestamp_provenance() -> None:
         )
         assert prepared.created_at_provenance == "fallback"
         assert prepared.updated_at_provenance == "fallback"
+        observed.append(
+            (
+                prepared.created_at,
+                prepared.updated_at,
+                prepared.created_at_provenance,
+                prepared.updated_at_provenance,
+                [message.timestamp for message in prepared.messages],
+            )
+        )
+    assert observed[0][0] != observed[1][0]
+    assert observed[0][1] != observed[1][1]
+    assert observed[0][2:4] == observed[1][2:4] == ("fallback", "fallback")
+    assert observed[0][4] == observed[1][4] == [None, None]
 
 
 def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path) -> None:
@@ -283,7 +297,40 @@ def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path) -> None:
         assert actual.model_dump(mode="json", exclude={"unit_accounting"}) == expected.model_dump(
             mode="json", exclude={"unit_accounting"}
         )
+        assert sessions[0].created_at_provenance == "fallback"
+        assert sessions[0].updated_at_provenance == "fallback"
+        assert all(message.timestamp is None for message in sessions[0].messages)
     finally:
         artifact.discard()
         preparation.close()
         head_artifact.discard()
+
+    normalized_head_dir = tmp_path / "normalized-head-artifact"
+    normalized_head_dir.mkdir()
+    normalized_head = normalize_session_timestamps(
+        head, fallback_timestamp=source_read.raw_revision_file_mtime(raw_ids[-1])
+    )
+    normalized_head_artifact = PreparedJsonl.from_sessions(
+        (normalized_head,),
+        blob_hash=head_hash,
+        artifact_directory=normalized_head_dir,
+        publication_publisher=None,
+        resolved_provider=Provider.CODEX,
+        captured_profile_key="captured-profile",
+    )
+    try:
+        rejected = prepare_codex_prefix_checkpoints(
+            source_read,
+            raw_ids,
+            head_artifact=normalized_head_artifact,
+            artifact_directory=interior_dir,
+            publication_publisher=None,
+            publication_source_read=None,
+            prepare_sessions=lambda _raw_id, sessions: sessions,
+            artifact_options=lambda _raw_id: CodexCheckpointArtifactOptions(captured_profile_key="captured-profile"),
+        )
+        assert rejected.disposition is CodexCheckpointDisposition.ORDINARY_FALLBACK
+        assert list(rejected.iter_artifacts()) == []
+        rejected.close()
+    finally:
+        normalized_head_artifact.discard()

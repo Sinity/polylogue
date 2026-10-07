@@ -327,6 +327,10 @@ def prepare_codex_prefix_checkpoints(
             raise ValueError("canonical head artifact disagrees with the proved Codex header")
         if len(head.messages) != head_message_count:
             raise ValueError("canonical head artifact message count disagrees with the proved grammar")
+        if head.created_at_provenance == "fallback" or head.updated_at_provenance == "fallback":
+            raise ValueError("canonical head artifact already carries head-specific fallback timestamps")
+        if any(message.timestamp is not None for message in head.messages):
+            raise ValueError("canonical head artifact message timestamps exceed the proved message grammar")
         if head.session_events:
             raise ValueError("canonical head artifact includes non-prefix-local Codex events")
         for raw_id in raw_ids[2:-1]:
