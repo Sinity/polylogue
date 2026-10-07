@@ -1057,25 +1057,43 @@ def test_retained_parser_error_settles_as_terminal_refusal(tmp_path: Path, monke
     _run_raw_law(tmp_path, run_phase)
 
 
-def test_claude_history_remains_non_session_when_validation_mode_changes(tmp_path: Path) -> None:
+def test_empty_claude_history_remains_non_session_when_validation_mode_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
         """Configured history is raw-only evidence and has no schema policy."""
+        from types import SimpleNamespace
+
+        import polylogue.paths as polylogue_paths
+        import polylogue.sources.live.watcher as live_watcher
+        from polylogue.sources.live.batch import LiveBatchProcessor
+        from polylogue.sources.live.cursor import CursorStore
+        from polylogue.sources.live.watcher import default_sources
+        from tests.infra.raw_owner_routes import run_ingest_files
+
         bootstrap_archive_root(tmp_path)
-        source_path = "/neutral/install/.claude/history.jsonl"
-        with _fixture_archive(tmp_path) as archive:
-            raw_id = archive.write_raw_payload(
-                provider=Provider.CLAUDE_CODE,
-                payload=b'{"display":"neutral prompt"}\n',
-                source_path=source_path,
-                canonical_source_path=source_path,
-                acquired_at_ms=1,
-            )
+        claude_root = tmp_path / "neutral-home" / ".claude"
+        claude_root.mkdir(parents=True)
+        source_path = claude_root / "history.jsonl"
+        source_path.write_bytes(b"")
+        monkeypatch.setattr(polylogue_paths, "claude_code_path", lambda: claude_root / "projects")
+        history_source = next(source for source in default_sources() if source.name == "claude-code-history")
+        polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))
+        processor = LiveBatchProcessor(
+            polylogue,
+            (history_source,),
+            cursor=CursorStore(tmp_path / "ops.db"),
+            parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        )
+        metrics = run_ingest_files(processor, [source_path], emit_event=False)
+        assert metrics.succeeded_file_count == 1 and metrics.failed_file_count == 0, metrics
 
         frame = raw_observation_frame(tmp_path)
         advisory = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
         report = _run(tmp_path, compute_adapter=compute_adapter)
         assert report.done == 1 and report.failed == report.pending == 0, report.outcomes
         with sqlite3.connect(tmp_path / "source.db") as conn:
+            raw_id = str(conn.execute("SELECT raw_id FROM raw_sessions").fetchone()[0])
             assert conn.execute(
                 "SELECT artifact_kind, parse_as_session, schema_eligible FROM raw_artifacts WHERE raw_id=?",
                 (raw_id,),

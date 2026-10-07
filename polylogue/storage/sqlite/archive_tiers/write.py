@@ -8711,10 +8711,13 @@ class PreparedSessionSourceRead:
         """
         self._load_matches("raw_artifacts", "SELECT rowid FROM raw_artifacts WHERE raw_id=?", (raw_id,))
         with self._seal.source_rows(
-            "SELECT parse_as_session, schema_eligible FROM raw_artifacts WHERE raw_id=?", (raw_id,)
+            "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=?) "
+            "OR EXISTS (SELECT 1 FROM raw_artifacts WHERE raw_id=? "
+            "AND (parse_as_session IS NOT 0 OR schema_eligible IS NOT 0)) THEN 1 ELSE 0 END",
+            (raw_id, raw_id),
         ) as rows:
-            values = tuple((row[0] is None or bool(row[0]), row[1] is None or bool(row[1])) for row in rows)
-        return not values or any(parse_as_session or schema_eligible for parse_as_session, schema_eligible in values)
+            row = rows.fetchone()
+        return row is not None and bool(row[0])
 
     def raw_parser_confirmed_non_session(self, raw_id: str) -> bool:
         """Whether current parser authority terminally classifies this raw as non-session."""
