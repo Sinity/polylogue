@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 import zipfile
-from builtins import BaseExceptionGroup
+from builtins import BaseExceptionGroup, ExceptionGroup
 from collections import Counter
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext
@@ -287,6 +287,41 @@ class PreparedRevisionReplayResult:
     written_counts: dict[str, int] = field(default_factory=dict, compare=False)
     session_outputs: tuple[tuple[str, bytes | None, bytes | None, int], ...] = ()
     membership_refusals: tuple[tuple[str, str, MembershipDecision], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedRawRetryableFailure:
+    """One raw whose retained preparation failed retryably within a replay page.
+
+    ``error`` is the original failure, kept as evidence. The raw's bytes stay
+    retained and unpublished, so its next pass (the live cursor's retry, or
+    fair intake) prepares it again.
+    """
+
+    raw_id: str
+    error: Exception
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedReplayOutcome:
+    """A retained replay page's receipts and its raws' retryable failures.
+
+    A failing raw does not stop its page: the receipts its siblings published
+    are returned beside the failures, so a caller can account for both.
+    """
+
+    receipts: tuple[PreparedRevisionReplayResult, ...] = ()
+    failures: tuple[RetainedRawRetryableFailure, ...] = ()
+
+    def require_complete(self) -> tuple[PreparedRevisionReplayResult, ...]:
+        """The receipts, or the page's failures raised for a caller that admits no partial page."""
+        if len(self.failures) == 1:
+            raise self.failures[0].error
+        if self.failures:
+            raise ExceptionGroup(
+                "retained replay raws failed preparation", [failure.error for failure in self.failures]
+            )
+        return self.receipts
 
 
 _REPLAY_ENRICHMENT_DEGRADATIONS: contextvars.ContextVar[Counter[str] | None] = contextvars.ContextVar(
@@ -3121,6 +3156,8 @@ __all__ = [
     "raw_authority_parser_fingerprint",
     "RetainedSessionEnricher",
     "PreparedRevisionReplayResult",
+    "RetainedRawRetryableFailure",
+    "RetainedReplayOutcome",
     "RevisionCensusResult",
     "apply_prepared_revision_replay",
     "apply_prepared_revision_census",

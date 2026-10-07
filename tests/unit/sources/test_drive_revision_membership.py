@@ -57,7 +57,7 @@ async def _capture(root: Path, payload: bytes, acquired_at_ms: int) -> str:
 
     raw_id = await run_archive_fixture_write(root, acquire)
     async with prepared_live_convergence_owner(root) as owner:
-        await owner.ingest_retained_raw_ids((raw_id,))
+        (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
     return raw_id
 
 

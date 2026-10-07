@@ -247,7 +247,7 @@ class ChatGPTAssetIndex:
 
         from ijson.backends import python as ijson_python
 
-        from polylogue.core.json_envelope import _PrefixStringReader
+        from polylogue.core.json_envelope import LexemeAlignedReader, _PrefixStringReader
         from polylogue.sources.detection_projection import DetectorProjection, _project
 
         encoding = json.detect_encoding(source.read(4))
@@ -268,7 +268,9 @@ class ChatGPTAssetIndex:
         conn = self._connection()
         conn.execute("SAVEPOINT sidecar_input")
         try:
-            events = iter(ijson_python.basic_parse(_PrefixStringReader(Utf8Input(), scalar_values=True)))
+            events = iter(
+                ijson_python.basic_parse(LexemeAlignedReader(_PrefixStringReader(Utf8Input(), scalar_values=True)))
+            )
             first = next(events, None)
             if first is None:
                 raise ValueError("empty ChatGPT sidecar input")

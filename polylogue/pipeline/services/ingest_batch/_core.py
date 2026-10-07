@@ -19,7 +19,7 @@ from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROW
 from polylogue.core.enums import Provider
 from polylogue.core.raw_failure_evidence import CohortMembershipRefusalError, RetainedRawDecodeRefusalError
 from polylogue.core.timestamp_authority import session_evidence_timestamps
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.ids import (
     message_content_identity,
     session_content_hash,
@@ -954,12 +954,23 @@ async def process_ingest_batch(
     def settle_membership_refusal(refusal: CohortMembershipRefusalError) -> None:
         refusals.append(refusal)
 
-    receipts = await service.retained_runner(
+    replay = await service.retained_runner(
         tuple(batch_ids),
         on_terminal_refusal=settle_terminal_refusal,
         on_membership_refusal=settle_membership_refusal,
     )
-    result.parse_failures += len(refusals)
+    receipts = replay.receipts
+    # A raw whose preparation failed retryably stays retained and unpublished
+    # for the next pass; it is this batch's failure, not a lost sibling page.
+    for failure in replay.failures:
+        emit(
+            "ingest.retained_preparation_failed",
+            level=WARNING,
+            outcome="error",
+            raw_id=failure.raw_id,
+            error_type=type(failure.error).__name__,
+        )
+    result.parse_failures += len(refusals) + len(replay.failures)
     written: dict[str, None] = {}
     changed: dict[str, None] = {}
     for receipt in receipts:
@@ -982,8 +993,8 @@ async def process_ingest_batch(
         "sessions": len(written),
         "messages": sum(receipt.written_message_count for receipt in receipts),
         "changed_sessions": len(changed),
-        "failed_raw_count": len(refusals),
-        "converged": all(receipt.adoption_deferred == 0 for receipt in receipts),
+        "failed_raw_count": len(refusals) + len(replay.failures),
+        "converged": not replay.failures and all(receipt.adoption_deferred == 0 for receipt in receipts),
         "elapsed_ms": (time.perf_counter() - started) * 1000,
     }
 

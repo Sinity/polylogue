@@ -17,10 +17,8 @@ import pytest
 
 from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider
-from polylogue.core.stage_admission import stage_write_admission
 from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, converge
 from polylogue.operations.raw_observation_derivation import (
-    converge_raw_observations,
     make_raw_observation_derivation,
     raw_observation_frame,
 )
@@ -1293,45 +1291,6 @@ def test_discovery_budget_bounds_raw_enumeration(tmp_path: Path) -> None:
     _run_raw_law(tmp_path, run_phase)
 
 
-@pytest.mark.parametrize("limit", [1, 2])
-def test_bounded_source_pass_publishes_every_selected_observation(tmp_path: Path, limit: int) -> None:
-    def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
-        """Anti-vacuity: spending the inspection budget on discovery prevents all writes."""
-        bootstrap_archive_root(tmp_path)
-        source = tmp_path / "source"
-        selected_raw_ids = tuple(
-            _admit(tmp_path, (f"selected-{index}",), path=str(source / f"{index}.json")) for index in range(limit)
-        )
-        _admit(tmp_path, ("outside",), path=str(tmp_path / "outside.json"))
-
-        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
-        for raw_id in selected_raw_ids:
-            _prepare_source_phases(adapter, raw_observation_frame(tmp_path, raw_ids=(raw_id,)), raw_id)
-
-        with stage_write_admission(lambda actor, work: _writer(tmp_path, actor, work)):
-            report = converge_raw_observations(
-                tmp_path, source_roots=(source,), limit=limit, compute_adapter=compute_adapter
-            )
-
-        assert report.failed == report.pending == 0
-        assert report.done == report.work.computed == report.work.published == limit
-        assert report.work.discovered == limit
-        assert report.work.inspected == 2 * limit
-        with sqlite3.connect(tmp_path / "index.db") as conn:
-            assert conn.execute("SELECT native_id FROM sessions ORDER BY native_id").fetchall() == [
-                (f"selected-{index}",) for index in range(limit)
-            ]
-        before = _snapshot(tmp_path)
-        with stage_write_admission(lambda actor, work: _writer(tmp_path, actor, work)):
-            unchanged = converge_raw_observations(
-                tmp_path, source_roots=(source,), limit=limit, compute_adapter=compute_adapter
-            )
-        assert unchanged.made_no_publication_attempts
-        assert _snapshot(tmp_path) == before
-
-    _run_raw_law(tmp_path, run_phase)
-
-
 @pytest.mark.parametrize(
     "field", ["source_revision", "accepted_source_revision", "decision_id", "accepted_content_hash"]
 )
@@ -1393,10 +1352,10 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
-        """One discovery page reads a bounded slice of a large all-valid source scope.
+        """One discovery page reads a bounded slice of a large all-valid archive.
 
-        Anti-vacuity: a LIMIT applied after source filtering and sorting still
-        consumes the full matching scope; the red twin below measures that plan.
+        Anti-vacuity: a LIMIT applied after a full sort still consumes every
+        row; the red twin below measures that plan.
         """
         from tests.infra.sqlite_work_counter import sqlite_work_counter
 
@@ -1448,19 +1407,17 @@ def test_all_valid_prefix_has_a_total_discovery_bound_and_continuation(
         assert len(censused) == len(set(censused)) == members
         assert set(censused) == set(raw_ids)
         adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
-        frame = raw_observation_frame(tmp_path, source_roots=(source,))
+        frame = raw_observation_frame(tmp_path)
         with sqlite_work_counter(step_interval=1) as indexed:
             keys, continuation = adapter.required_page(frame, cursor=None, limit=128)
         assert len(keys) == 128 and continuation is not None
         assert indexed.metric("vm_steps", "source") < 10_000, indexed.summary()
-        # Red twin: LIMIT after source filtering/sorting still consumes the full
-        # matching scope. Returned-row counts alone cannot detect that work.
+        # Red twin: a LIMIT after sorting by an unindexed column still consumes
+        # every row. Returned-row counts alone cannot detect that work.
         with sqlite_work_counter(step_interval=1) as sorted_scope:
             with sqlite3.connect(tmp_path / "source.db") as conn:
                 rows = conn.execute(
-                    "SELECT raw_id FROM raw_sessions INDEXED BY idx_raw_sessions_source_path "
-                    "WHERE source_path >= ? AND source_path < ? ORDER BY raw_id LIMIT 128",
-                    (str(source) + "/", str(source) + "0"),
+                    "SELECT raw_id FROM raw_sessions NOT INDEXED ORDER BY acquired_at_ms, raw_id LIMIT 128"
                 ).fetchall()
         assert len(rows) == 128
         assert sorted_scope.metric("vm_steps", "source") > 10_000

@@ -63,7 +63,7 @@ async def test_typed_artifact_acquisition_leaves_parser_receipt_to_original_reta
 
     raw_id = await run_archive_fixture_write(root, acquire)
     async with prepared_live_convergence_owner(root) as owner:
-        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert sum(len(receipt.written_session_ids) for receipt in receipts) == 0
         assert sum(receipt.written_message_count for receipt in receipts) == 0
     with ArchiveStore.open_existing(root, read_only=True) as archive:

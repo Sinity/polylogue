@@ -796,6 +796,18 @@ with terminal evidence: `terminal_corrupt_input`, or
 intake and retained replay apply that same rule. An unterminated JSONL tail is
 excluded from the parsed prefix rather than refused.
 
+Any other failure while preparing one raw is that raw's retryable outcome and
+does not stop the page (`retained_replay_operation` in
+`polylogue/operations/raw_observation_owner.py`). The replay returns a
+`RetainedReplayOutcome`: the receipts of the raws that published and one
+`RetainedRawRetryableFailure` per failed raw. A preparation that fails while
+censusing the page's identity-opaque siblings is prepared again with a frame of
+that raw alone, so one sibling's fault cannot block the others. The live batch
+fails only the failed raw's path, so its cursor retries it next pass, and emits
+`live.ingest.retained_preparation_failed`. Cancellation, compute backpressure,
+a missing writer, SQLite errors, storage faults and failed cleanup still stop
+the page.
+
 An archive storage fault -- a full disk or quota, an I/O error, a corrupt
 database page, a read-only mount, or attachment bytes a parse worker published
 that blob GC reclaimed before the writer reserved them

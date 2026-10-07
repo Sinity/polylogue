@@ -19,7 +19,7 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
-from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
+from polylogue.sources.revision_backfill import RetainedReplayOutcome
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.live_ingest import prepared_live_convergence_owner
 
@@ -59,13 +59,18 @@ async def prepared_live_batch_processor(
                 raw_ids: Sequence[str],
                 *,
                 on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
-            ) -> tuple[PreparedRevisionReplayResult, ...]:
+            ) -> RetainedReplayOutcome:
                 try:
-                    return await owner.ingest_retained_raw_ids(raw_ids, on_terminal_refusal=on_terminal_refusal)
+                    outcome = await owner.ingest_retained_raw_ids(raw_ids, on_terminal_refusal=on_terminal_refusal)
                 except BaseException as failure:
                     if failure_details is not None:
                         failure_details.append("".join(traceback.format_exception(failure)))
                     raise
+                if failure_details is not None:
+                    failure_details.extend(
+                        "".join(traceback.format_exception(failure.error)) for failure in outcome.failures
+                    )
+                return outcome
 
             def open_cursor() -> CursorStore:
                 return CursorStore(root / "index.db", ops_db_path=root / "ops.db")

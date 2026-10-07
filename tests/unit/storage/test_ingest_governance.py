@@ -714,7 +714,7 @@ async def test_canonical_accepted_head_foreign_parse_is_a_typed_per_key_refusal(
 
     monkeypatch.setattr("polylogue.sources.revision_backfill.prepare_retained_jsonl_artifact", worker)
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        results = await owner.ingest_retained_raw_ids((raw_id,))
+        results = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert sum(len(result.written_session_ids) for result in results) == 1
         with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
             assert reader.index_connection is not None
@@ -723,7 +723,7 @@ async def test_canonical_accepted_head_foreign_parse_is_a_typed_per_key_refusal(
             assert row[0] == raw_id
         session = _session("elsewhere", session_id="a-different-logical-session")
         with pytest.raises(CohortMembershipRefusalError) as empty:
-            await owner.ingest_retained_raw_ids((raw_id,))
+            (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert empty.value.logical_source_key == "codex-session:prepared-membership"
         assert empty.value.raw_id == raw_id
         assert "none for this logical key" in empty.value.reason
@@ -761,7 +761,7 @@ async def test_canonical_retained_sqlite_busy_stays_retryable(tmp_path: Path, mo
     monkeypatch.setattr("polylogue.sources.revision_backfill.prepare_jsonl_blob", busy_parse)
     async with prepared_live_convergence_owner(tmp_path) as owner:
         with pytest.raises(RetainedPreparationRetryableError) as retryable:
-            await owner.ingest_retained_raw_ids((raw_id,))
+            (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert retryable.value.__cause__ is failure
     assert len(calls) == 1
     with closing(sqlite3.connect(tmp_path / "source.db")) as source, source:
@@ -833,7 +833,7 @@ async def test_original_raw_selects_each_sessions_own_attachment_claim(
 
     monkeypatch.setattr("polylogue.sources.revision_backfill.prepare_retained_jsonl_artifact", worker)
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        results = await owner.ingest_retained_raw_ids((raw_id,))
+        results = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert sum(len(result.written_session_ids) for result in results) == 2
     with closing(sqlite3.connect(tmp_path / "index.db")) as index, index:
         rows = index.execute(

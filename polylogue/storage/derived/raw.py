@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import json
 import sqlite3
 import sys
 import tempfile
@@ -131,7 +130,6 @@ class RawFrame(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class RawObservationScope:
-    source_roots: tuple[Path, ...] = ()
     raw_ids: tuple[str, ...] = ()
 
 
@@ -422,20 +420,11 @@ class RawObservationInspection:
                 raise FileNotFoundError(f"durable source tier is missing: {self.archive_root / 'source.db'}")
             return (), None
         scope = frame.scope if isinstance(frame.scope, RawObservationScope) else RawObservationScope()
-        if scope.source_roots and not scope.raw_ids:
-            return self._source_scope_page(scope.source_roots, cursor=cursor, limit=limit)
         predicates = ["r.raw_id > ?"]
         parameters: list[object] = [cursor or ""]
         if scope.raw_ids:
             predicates.append(f"r.raw_id IN ({','.join('?' for _ in scope.raw_ids)})")
             parameters.extend(scope.raw_ids)
-        if scope.source_roots:
-            bounds = []
-            for path in scope.source_roots:
-                root = str(path).rstrip("/")
-                bounds.append("(r.source_path = ? OR (r.source_path >= ? AND r.source_path < ?))")
-                parameters.extend((root, root + "/", root + "0"))
-            predicates.append("(" + " OR ".join(bounds) + ")")
         with self._read() as conn:
             self._require_bootstrapped_source_tier(conn)
             rows = conn.execute(
@@ -444,56 +433,6 @@ class RawObservationInspection:
             ).fetchall()
         keys = tuple(str(row[0]) for row in rows)
         return keys, keys[-1] if len(keys) == limit else None
-
-    def _source_scope_page(
-        self, roots: tuple[Path, ...], *, cursor: str | None, limit: int
-    ) -> tuple[tuple[str, ...], str | None]:
-        """Seek the existing source-path index; never sort an excluded archive.
-
-        Each root has an exact-path interval and a descendant interval. The
-        disposable cursor tracks that interval and the index's natural key,
-        including rowid for observations sharing a path/index coordinate.
-        Both returned rows and empty interval probes have one call-wide bound.
-        """
-        ordered = tuple(sorted({str(root).rstrip("/") for root in roots}))
-        position = 0
-        after: tuple[str, int, int] | None = None
-        if cursor is not None:
-            position, serialized_after = json.loads(cursor)
-            if serialized_after is not None:
-                after = (str(serialized_after[0]), int(serialized_after[1]), int(serialized_after[2]))
-        keys: list[str] = []
-        probes = 0
-        with self._read() as conn:
-            self._require_bootstrapped_source_tier(conn)
-            while position < 2 * len(ordered) and len(keys) < limit and probes < max(2, limit):
-                root = ordered[position // 2]
-                if position % 2:
-                    predicate = "source_path >= ? AND source_path < ?"
-                    parameters: list[object] = [root + "/", root + "0"]
-                else:
-                    predicate = "source_path = ?"
-                    parameters = [root]
-                if after is not None:
-                    predicate += " AND (source_path, source_index, rowid) > (?, ?, ?)"
-                    parameters.extend(after)
-                remaining = limit - len(keys)
-                rows = conn.execute(
-                    f"SELECT raw_id, source_path, source_index, rowid FROM raw_sessions "
-                    f"INDEXED BY idx_raw_sessions_source_path WHERE {predicate} "
-                    "ORDER BY source_path, source_index, rowid LIMIT ?",
-                    (*parameters, remaining),
-                ).fetchall()
-                probes += 1
-                keys.extend(str(row[0]) for row in rows)
-                if len(rows) == remaining:
-                    last = rows[-1]
-                    after = (str(last[1]), int(last[2]), int(last[3]))
-                    break
-                position += 1
-                after = None
-        continuation = json.dumps((position, after)) if position < 2 * len(ordered) else None
-        return tuple(keys), continuation
 
     def excess_page(self, frame: RawFrame, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], None]:
         # Durable raws are retained. Excess logical identities are inspected

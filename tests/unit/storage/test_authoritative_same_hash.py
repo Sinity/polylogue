@@ -72,9 +72,9 @@ async def test_same_hash_authoritative_replay_consumes_changed_hook_parent(
             )
 
     async with prepared_live_convergence_owner(root) as owner:
-        await owner.ingest_retained_raw_ids((acquired["parent-a"], acquired["parent-b"]))
+        (await owner.ingest_retained_raw_ids((acquired["parent-a"], acquired["parent-b"]))).require_complete()
         await run_archive_fixture_write(root, lambda: hook("parent-a", 1))
-        first = await owner.ingest_retained_raw_ids((acquired["child"],))
+        first = (await owner.ingest_retained_raw_ids((acquired["child"],))).require_complete()
         assert sum(receipt.written_message_count for receipt in first) == (2 if inherits_prefix else 1)
         with ArchiveStore.open_existing(root, read_only=True) as archive:
             index = archive.index_connection
@@ -89,11 +89,11 @@ async def test_same_hash_authoritative_replay_consumes_changed_hook_parent(
                 ).fetchone()[0]
                 == "parent-a"
             )
-        stable = await owner.ingest_retained_raw_ids((acquired["child"],))
+        stable = (await owner.ingest_retained_raw_ids((acquired["child"],))).require_complete()
         assert sum(receipt.written_message_count for receipt in stable) == 0
         assert sum(receipt.written_counts.get("skipped_sessions", 0) for receipt in stable) == 1
         await run_archive_fixture_write(root, lambda: hook(next_parent, 2))
-        changed = await owner.ingest_retained_raw_ids((acquired["child"],))
+        changed = (await owner.ingest_retained_raw_ids((acquired["child"],))).require_complete()
         assert sum(receipt.written_message_count for receipt in changed) == (2 if inherits_prefix else 0)
         assert sum(receipt.written_counts.get("skipped_sessions", 0) for receipt in changed) == (
             0 if inherits_prefix else 1
@@ -195,7 +195,7 @@ async def test_authoritative_same_hash_skip_preserves_real_replacement_obligatio
 
     prior_raw_id = await run_archive_fixture_write(root, lambda: acquire(prior_payload, 1))
     async with prepared_live_convergence_owner(root) as owner:
-        baseline = await owner.ingest_retained_raw_ids((prior_raw_id,))
+        baseline = (await owner.ingest_retained_raw_ids((prior_raw_id,))).require_complete()
         assert sum(receipt.written_message_count for receipt in baseline) == 1
     raw_id = (
         await run_archive_fixture_write(root, lambda: acquire(raw_payload, 2))
@@ -231,10 +231,10 @@ async def test_authoritative_same_hash_skip_preserves_real_replacement_obligatio
             await run_archive_fixture_write(root, seed)
 
     async with prepared_live_convergence_owner(root) as owner:
-        replacement = await owner.ingest_retained_raw_ids((raw_id,))
+        replacement = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert sum(receipt.written_message_count for receipt in replacement) == 1, replacement
         assert sum(receipt.written_counts.get("skipped_sessions", 0) for receipt in replacement) == 0
-        repeated = await owner.ingest_retained_raw_ids((raw_id,))
+        repeated = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert sum(receipt.written_message_count for receipt in repeated) == 0
         assert sum(receipt.written_counts.get("skipped_sessions", 0) for receipt in repeated) == 1
     with ArchiveStore.open_existing(root, read_only=True) as archive:

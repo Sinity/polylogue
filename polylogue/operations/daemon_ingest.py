@@ -965,14 +965,14 @@ class IngestExecution:
             cursor: str | None = None
             while raw_page := initial.raw_page(cursor):
                 self.check_stop()
-                publications = await self.runtime.materialize_retained_raw_ids(
+                replay = await self.runtime.materialize_retained_raw_ids(
                     raw_page,
                     on_terminal_refusal=refused,
                     on_dependency_refusal=dependency_refused,
                     on_membership_refusal=membership_refused,
                     before_publication=partial(self.require_publication_identity, expected),
                 )
-                for publication in publications:
+                for publication in replay.receipts:
                     for logical_key, raw_id, decision in publication.membership_refusals:
                         self.record_membership_refusal(logical_key, raw_id, decision.value)
                     for session_id, before_hash, after_hash, message_count in publication.session_outputs:
@@ -980,6 +980,9 @@ class IngestExecution:
                             self.record_changed_session(session_id, message_count)
                         elif not self.changed_session_recorded(session_id):
                             self.unchanged_publications += 1
+                # The page's published siblings are accounted above; a raw
+                # that failed retryably fails this operation, which retries.
+                replay.require_complete()
                 cursor = raw_page[-1]
         finally:
             initial.close()

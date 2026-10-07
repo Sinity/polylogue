@@ -113,7 +113,7 @@ async def _ingest(root: Path, raw_id: str) -> BaseException | None:
     """Run the canonical owner once; return the surfaced failure, if any."""
     try:
         async with prepared_live_convergence_owner(root) as owner:
-            receipts = await owner.ingest_retained_raw_ids((raw_id,))
+            receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
     except BaseException as exc:  # the crash under test may surface as any typed failure
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise

@@ -237,7 +237,7 @@ async def test_frontier_census_reports_a_blocked_head_without_promising_a_remedy
 
     raw_id = await run_archive_fixture_write(tmp_path, acquire)
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert sum(len(receipt.written_session_ids) for receipt in receipts) == 1
 
         def quarantine() -> None:

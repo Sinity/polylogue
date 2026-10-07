@@ -37,7 +37,7 @@ def _publish_retained(root: Path, raw_ids: tuple[str, ...]) -> None:
 
     async def publish() -> None:
         async with prepared_live_convergence_owner(root) as owner:
-            await owner.ingest_retained_raw_ids(raw_ids)
+            (await owner.ingest_retained_raw_ids(raw_ids)).require_complete()
 
     asyncio.run(publish())
 

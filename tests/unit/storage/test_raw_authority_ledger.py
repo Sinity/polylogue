@@ -15,10 +15,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, converge
 from polylogue.operations import raw_observation_derivation as raw_observation_derivation_mod
-from polylogue.operations.raw_observation_derivation import (
-    converge_raw_observations,
-    raw_observation_frame,
-)
+from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.storage import raw_authority as raw_authority_mod
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.derived import raw as raw_derivation_mod
@@ -45,18 +42,12 @@ def _derive_raw_observations(root: Path, *, limit: int = 128) -> DerivationRepor
     import asyncio
 
     from tests.infra.live_ingest import prepared_live_convergence_owner
+    from tests.infra.raw_owner_routes import converge_pending_raws_async
 
     async def exercise() -> DerivationReport:
         async with prepared_live_convergence_owner(root) as owner:
-            await owner.replay_retained_raw_ids(_raw_ids(root))
-            return await owner.run_prepared_sync(
-                "test.ledger.raw-pass",
-                lambda: converge_raw_observations(
-                    root, source_roots=(), limit=limit, compute_adapter=owner._compute_adapter
-                ),
-                settlement_owners=lambda: (),
-                estimated_bytes=0,
-            )
+            (await owner.replay_retained_raw_ids(_raw_ids(root))).require_complete()
+            return await converge_pending_raws_async(owner, root, limit=limit)
 
     return asyncio.run(exercise())
 
@@ -160,7 +151,7 @@ async def test_replay_plan_build_and_validation_read_the_active_generation(tmp_p
 
     raw_id = await run_archive_fixture_write(tmp_path, acquire)
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert sum(len(receipt.written_session_ids) for receipt in receipts) == 1
     shadow_plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
     assert shadow_plan.index_preconditions["sessions"]
@@ -598,7 +589,7 @@ async def test_frontier_classifies_dangling_head_session_as_corrupt(tmp_path: Pa
 
     raw_id, phantom = await run_archive_fixture_write(tmp_path, acquire)
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert sum(len(item.written_session_ids) for item in receipts) == 1
 
         def corrupt() -> None:
@@ -652,7 +643,7 @@ async def test_frontier_classifies_head_session_raw_mismatch_as_corrupt(tmp_path
 
     raw_id, phantom = await run_archive_fixture_write(tmp_path, acquire)
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert sum(len(item.written_session_ids) for item in receipts) == 1
 
         def corrupt() -> None:
@@ -707,7 +698,7 @@ async def test_quarantined_accepted_head_is_a_terminal_obligation_not_a_promise(
 
     raw_id, phantom = await run_archive_fixture_write(tmp_path, acquire)
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         assert sum(len(item.written_session_ids) for item in receipts) == 1
 
         def corrupt() -> None:

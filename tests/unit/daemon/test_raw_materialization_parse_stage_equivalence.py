@@ -17,7 +17,7 @@ from polylogue.daemon.session_profile_composition import compose_session_profile
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.raw_owner_routes import converge_raw_observations_with_owner
+from tests.infra.raw_owner_routes import converge_pending_raws_with_owner
 
 
 def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -78,9 +78,8 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
 
     raw_id = await asyncio.to_thread(acquire)
     result = await asyncio.to_thread(
-        converge_raw_observations_with_owner,
+        converge_pending_raws_with_owner,
         archive_root,
-        source_roots=(),
         limit=1,
     )
     assert result.done == 1 and result.failed == 0
@@ -147,9 +146,8 @@ async def test_two_accepted_revisions_survive_one_periodic_profile_pass(tmp_path
         # Each call is a fresh pass with no carried cursor, so its discovery
         # bound must reach past the already-current earlier revision.
         result = await asyncio.to_thread(
-            converge_raw_observations_with_owner,
+            converge_pending_raws_with_owner,
             archive_root,
-            source_roots=(),
             limit=revision,
         )
         assert result.done == 1 and result.failed == 0
@@ -237,7 +235,7 @@ def test_raw_materialized_session_ids_exclude_stale_component_sessions_without_c
             canonical_source_path="split.json",
             acquired_at_ms=1,
         )
-    result = converge_raw_observations_with_owner(archive_root, source_roots=(), limit=1)
+    result = converge_pending_raws_with_owner(archive_root, limit=1)
     assert result.done == 1 and result.failed == 0
     with sqlite3.connect(archive_root / "index.db") as index:
         index.execute("DELETE FROM raw_revision_heads WHERE session_id = ?", ("chatgpt-export:stale",))

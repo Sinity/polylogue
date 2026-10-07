@@ -915,11 +915,123 @@ def bounded_lines(handle: IO[bytes] | IO[str] | Iterable[bytes | str]) -> Iterat
         yield OversizedRecord(size)
 
 
+#: Bytes after which the python lexer has finished every lexeme of its
+#: buffer, outside any string: its unary structural lexemes and JSON
+#: whitespace. ``:`` is excluded: that lexer extends a buffer ending in it.
+_LEXEME_END_BYTES = b"[]{}, \t\r\n"
+
+
+class LexemeAlignedReader:
+    """Pass JSON bytes through in chunks that each end where a lexeme has ended.
+
+    ``ijson.backends.python`` is the exact tokenizer (it keeps lone surrogate
+    escapes that the C tokenizer refuses), but its lexer appends every chunk
+    to its buffer while a lexeme spans a chunk boundary and replaces the
+    buffer only once a chunk is consumed with no lexeme left over. Fed
+    arbitrary chunks, that buffer keeps the whole consumed document. Each
+    chunk this reader returns ends right after a closing quote, a structural
+    character or whitespace outside any string, so the lexer finishes every
+    chunk and starts the next with a fresh buffer. Only the chunking changes:
+    the bytes, and so the lexemes and events, are exactly the source's.
+
+    A source run with no lexeme end at all (one token longer than
+    ``flush_bytes``, which a valid JSON document passed through
+    :class:`_PrefixStringReader` cannot contain) is passed through as it is.
+    """
+
+    def __init__(self, source: _Readable, *, flush_bytes: int = 4 * _READ_BYTES) -> None:
+        self._source = source
+        self._flush_bytes = flush_bytes
+        self._pending = bytearray()
+        #: Bytes of ``_pending`` whose string state is known.
+        self._scanned = 0
+        self._in_string = False
+        self._eof = False
+
+    def read(self, size: int = -1) -> bytes:
+        if size == 0:
+            # The tokenizer probes with an empty read to learn the stream type.
+            return b""
+        while True:
+            cut = self._scan()
+            if not cut and self._eof:
+                cut = len(self._pending)
+            elif not cut and len(self._pending) >= self._flush_bytes:
+                # Everything whose string state is known; an escape whose
+                # escaped byte has not arrived stays behind.
+                cut = self._scanned or len(self._pending)
+            if cut or self._eof:
+                chunk = bytes(self._pending[:cut])
+                del self._pending[:cut]
+                self._scanned = max(0, self._scanned - cut)
+                return chunk
+            data = self._source.read(_READ_BYTES)
+            if data:
+                self._pending += data
+            else:
+                self._eof = True
+
+    def _scan(self) -> int:
+        """Advance string state over unscanned bytes; return the last lexeme end, or 0."""
+        data = self._pending
+        size = len(data)
+        position = self._scanned
+        in_string = self._in_string
+        cut = 0
+        # The last run of bytes outside any string; only its lexeme ends can
+        # follow the last closing quote.
+        span = (position, position) if not in_string else (0, 0)
+        while position < size:
+            if in_string:
+                quote = data.find(b'"', position)
+                limit = size if quote < 0 else quote
+                while (escape := data.find(b"\\", position, limit)) >= 0:
+                    if escape + 1 >= size:
+                        # The escaped byte has not arrived yet.
+                        self._scanned = escape
+                        self._in_string = True
+                        return max(cut, self._span_cut(span))
+                    position = escape + 2
+                    if position > limit:
+                        # That escape was the quote's: the string goes on.
+                        quote = data.find(b'"', position)
+                        limit = size if quote < 0 else quote
+                if quote < 0:
+                    position = size
+                    break
+                in_string = False
+                position = quote + 1
+                cut = position
+                span = (position, position)
+                continue
+            quote = data.find(b'"', position)
+            end = size if quote < 0 else quote
+            span = (position, end)
+            if quote < 0:
+                position = size
+                break
+            in_string = True
+            position = quote + 1
+        self._scanned = position
+        self._in_string = in_string
+        return max(cut, self._span_cut(span))
+
+    def _span_cut(self, span: tuple[int, int]) -> int:
+        start, end = span
+        if start >= end:
+            return 0
+        return max(self._pending.rfind(byte, start, end) for byte in _LEXEME_END_SINGLE_BYTES) + 1
+
+
+_LEXEME_END_SINGLE_BYTES = tuple(bytes((byte,)) for byte in _LEXEME_END_BYTES)
+
+
 __all__ = [
     "ENVELOPE_TEXT_PREFIX_CHARS",
     "UNDECLARED_FIELDS",
     "EnvelopeValueTooLargeError",
     "EnvelopeValueUnrepresentableError",
+    "LexemeAlignedReader",
     "OversizedRecord",
     "bounded_lines",
     "jsonl_record_envelopes",

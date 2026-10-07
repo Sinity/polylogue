@@ -38,7 +38,7 @@ async def test_streaming_resolver_drains_owned_work_when_the_body_raises(tmp_pat
                 assert workers and any(worker.is_alive() for worker in workers)
                 raise primary
 
-            await owner.replay_retained_raw_ids(raw_ids, before_publication=fail_body)
+            (await owner.replay_retained_raw_ids(raw_ids, before_publication=fail_body)).require_complete()
     assert failure.value is primary
     assert reached
     assert workers and not any(worker.is_alive() for worker in workers)

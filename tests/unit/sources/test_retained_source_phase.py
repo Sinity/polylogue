@@ -245,7 +245,7 @@ def test_backfill_replays_codex_state_by_latest_raw_observation(tmp_path: Path) 
 
     async def replay() -> None:
         async with prepared_live_convergence_owner(tmp_path) as owner:
-            await owner.replay_retained_raw_ids(acquired)
+            (await owner.replay_retained_raw_ids(acquired)).require_complete()
 
     asyncio.run(replay())
     with closing(sqlite3.connect(tmp_path / "index.db")) as conn:
@@ -276,7 +276,7 @@ def test_backfill_replays_equal_time_codex_state_by_raw_acquisition_order(tmp_pa
 
     async def replay() -> None:
         async with prepared_live_convergence_owner(tmp_path) as owner:
-            await owner.replay_retained_raw_ids(acquired)
+            (await owner.replay_retained_raw_ids(acquired)).require_complete()
 
     asyncio.run(replay())
     with closing(sqlite3.connect(tmp_path / "index.db")) as conn:
@@ -556,7 +556,7 @@ def test_fragment_repair_preserves_durable_membership_while_refreshing_legacy_re
 
     async def replay() -> None:
         async with prepared_live_convergence_owner(tmp_path) as owner:
-            await owner.replay_retained_raw_ids((baseline_raw_id, raw_id))
+            (await owner.replay_retained_raw_ids((baseline_raw_id, raw_id))).require_complete()
 
     asyncio.run(replay())
 
@@ -706,7 +706,7 @@ def test_retained_thread_graph_cohort_preserves_absent_evidence_and_scope_parent
 
     async def replay_rollouts() -> None:
         async with prepared_live_convergence_owner(tmp_path) as owner:
-            await owner.replay_retained_raw_ids(rollouts)
+            (await owner.replay_retained_raw_ids(rollouts)).require_complete()
 
     asyncio.run(replay_rollouts())
     acquired: list[str] = []
@@ -734,7 +734,7 @@ def test_retained_thread_graph_cohort_preserves_absent_evidence_and_scope_parent
 
     async def replay_graphs() -> None:
         async with prepared_live_convergence_owner(tmp_path) as owner:
-            await owner.replay_retained_raw_ids(tuple(reversed(acquired)))
+            (await owner.replay_retained_raw_ids(tuple(reversed(acquired)))).require_complete()
 
     asyncio.run(replay_graphs())
     with closing(sqlite3.connect(tmp_path / "index.db")) as index:

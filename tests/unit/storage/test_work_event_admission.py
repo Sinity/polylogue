@@ -44,7 +44,7 @@ async def test_work_event_requires_actual_unambiguous_target_acquisition(
 
     raw_id = await run_archive_fixture_write(tmp_path, lambda: acquire(provider))
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        receipts = (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
     changed = {session_id for receipt in receipts for session_id in receipt.changed_session_ids}
     assert len(changed) == 1
     session_id = next(iter(changed))
@@ -82,7 +82,7 @@ async def test_work_event_requires_actual_unambiguous_target_acquisition(
     assert event_provider is provider
     assert json.loads(event_payload)["provider"] == provider.value
     async with prepared_live_convergence_owner(tmp_path) as owner:
-        receipts = await owner.ingest_retained_raw_ids((event_raw_id,))
+        receipts = (await owner.ingest_retained_raw_ids((event_raw_id,))).require_complete()
     assert event_raw_id in {raw for receipt in receipts for raw in receipt.writer_changed_raw_ids}
 
 

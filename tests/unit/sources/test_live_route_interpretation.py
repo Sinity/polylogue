@@ -23,7 +23,7 @@ from polylogue.sources.parsers.hermes_identity import profile_key, qualified_ses
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.raw_owner_routes import (
-    converge_raw_observations_with_owner,
+    converge_pending_raws_with_owner,
     inspect_raw_observations,
     run_ingest_files,
 )
@@ -512,11 +512,11 @@ def test_writer_enrichment_resolves_an_unknown_acquisition_provider(monkeypatch:
     assert seen == [Provider.CLAUDE_CODE]
 
 
-def _converge_to_fixpoint(archive_root: Path, root: Path) -> None:
+def _converge_to_fixpoint(archive_root: Path) -> None:
     """Run the canonical raw-observation convergence until nothing is pending."""
     from polylogue.daemon.derivation import Outcome
 
-    report = converge_raw_observations_with_owner(archive_root, source_roots=(root,), limit=64, passes=3)
+    report = converge_pending_raws_with_owner(archive_root, limit=64, passes=3)
     unsettled = [outcome for outcome in report.outcomes if outcome.outcome is not Outcome.DONE]
     assert not unsettled, unsettled
 
@@ -554,7 +554,7 @@ def test_claude_code_rows_do_not_depend_on_evidence_order(
 
     reference_root = tmp_path / "reference"
     _claude_ingest(reference_root, project, [index_path, transcript])
-    _converge_to_fixpoint(reference_root, project.parent)
+    _converge_to_fixpoint(reference_root)
     reference = _session_rows(reference_root)
     assert [row[1] for row in reference] == ["Curated 0"]
 
@@ -562,7 +562,7 @@ def test_claude_code_rows_do_not_depend_on_evidence_order(
     archive_root = tmp_path / "permuted"
     for group in groups:
         _claude_ingest(archive_root, project, [by_name[name] for name in group])
-    _converge_to_fixpoint(archive_root, project.parent)
+    _converge_to_fixpoint(archive_root)
     assert _session_rows(archive_root) == reference
     assert set(_enrichment_bindings(archive_root)) == {str(row[0]) for row in reference}
 
@@ -580,7 +580,7 @@ def test_a_later_index_revision_re_derives_the_titled_session(tmp_path: Path) ->
     project, transcript, index_path = _claude_project(tmp_path / "live")
     archive_root = tmp_path / "archive"
     _claude_ingest(archive_root, project, [index_path, transcript])
-    _converge_to_fixpoint(archive_root, project.parent)
+    _converge_to_fixpoint(archive_root)
     before = _enrichment_bindings(archive_root)
     assert [row[1] for row in _session_rows(archive_root)] == ["Curated 0"]
 
@@ -588,7 +588,7 @@ def test_a_later_index_revision_re_derives_the_titled_session(tmp_path: Path) ->
     document["entries"][0]["summary"] = "Renamed later"
     index_path.write_text(json.dumps(document), encoding="utf-8")
     _claude_ingest(archive_root, project, [index_path])
-    _converge_to_fixpoint(archive_root, project.parent)
+    _converge_to_fixpoint(archive_root)
 
     assert [row[1] for row in _session_rows(archive_root)] == ["Renamed later"]
     after = _enrichment_bindings(archive_root)
@@ -818,7 +818,7 @@ def test_a_superseded_sibling_from_another_directory_reads_the_accepted_evidence
     archive_root = tmp_path / "archive"
     _claude_ingest(archive_root, first, [first_index, first_transcript])
     _claude_ingest(archive_root, second, [second_index, second_transcript])
-    _converge_to_fixpoint(archive_root, projects)
+    _converge_to_fixpoint(archive_root)
 
     with sqlite3.connect(archive_root / "source.db") as conn:
         raws = [
@@ -828,5 +828,5 @@ def test_a_superseded_sibling_from_another_directory_reads_the_accepted_evidence
             )
         ]
     assert len(raws) == 2
-    statuses = inspect_raw_observations(archive_root, raws, source_roots=(projects,))
+    statuses = inspect_raw_observations(archive_root, raws)
     assert set(statuses.values()) == {"valid"}

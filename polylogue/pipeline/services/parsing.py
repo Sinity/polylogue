@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from polylogue.core.protocols import ProgressCallback
     from polylogue.core.raw_failure_evidence import CohortMembershipRefusalError, RetainedRawDecodeRefusalError
     from polylogue.pipeline.services.ingest_execution import IngestExecution
-    from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
+    from polylogue.sources.revision_backfill import RetainedReplayOutcome
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
@@ -34,7 +34,7 @@ class IngestRetainedRunner(Protocol):
         *,
         on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
         on_membership_refusal: Callable[[CohortMembershipRefusalError], None] | None = None,
-    ) -> Awaitable[tuple[PreparedRevisionReplayResult, ...]]: ...
+    ) -> Awaitable[RetainedReplayOutcome]: ...
 
 
 class ParsingService:

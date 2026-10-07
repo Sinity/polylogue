@@ -87,7 +87,7 @@ async def test_final_retained_writer_admits_original_prepared_identity_carrier(
 
     monkeypatch.setattr(replay, "apply_prepared_revision_replay", publish)
     async with prepared_live_convergence_owner(root) as owner:
-        receipts = await owner.replay_retained_raw_ids((raw_id,))
+        receipts = (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
     assert len(carriers) == 1
     session_id, content_hash, identities = carriers[0]
     assert {key for receipt in receipts for key in receipt.changed_session_ids} == {session_id}

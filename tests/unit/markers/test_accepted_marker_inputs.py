@@ -21,6 +21,7 @@ from polylogue.pipeline.services.ingest_batch import _core as ingest_batch_core
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.sources.revision_backfill import RetainedReplayOutcome
 from polylogue.storage.accepted_marker_inputs import (
     AcceptedMarkerInputRefusedError,
     append_accepted_marker_input,
@@ -386,9 +387,9 @@ async def test_source_required_mode_refuses_before_retained_publication(
 
     calls: list[tuple[str, ...]] = []
 
-    async def retained_runner(raw_ids: object, **_refusal_handlers: object) -> tuple[Any, ...]:
+    async def retained_runner(raw_ids: object, **_refusal_handlers: object) -> RetainedReplayOutcome:
         calls.append(tuple(cast(Any, raw_ids)))
-        return ()
+        return RetainedReplayOutcome()
 
     repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"))
     service = ParsingService(

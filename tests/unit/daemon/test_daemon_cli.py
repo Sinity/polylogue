@@ -39,6 +39,7 @@ from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWri
 from polylogue.logging import capture
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.revision_backfill import RetainedReplayOutcome
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 from polylogue.storage.derived.raw import RawObservationScope
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -1028,9 +1029,9 @@ def test_drive_source_catchup_ingests_configured_drive_source(
             )
 
     class FakeRawOwner:
-        async def ingest_retained_raw_ids(self, raw_ids: Sequence[str]) -> tuple[object, ...]:
+        async def ingest_retained_raw_ids(self, raw_ids: Sequence[str]) -> RetainedReplayOutcome:
             del raw_ids
-            return ()
+            return RetainedReplayOutcome()
 
     raw_owner = FakeRawOwner()
 
@@ -3679,7 +3680,7 @@ def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
                 await task
             with sqlite3.connect(tmp_path / "index.db") as conn:
                 assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
-            next_report = await owner.replay_retained_raw_ids((raw_id,))
+            next_report = (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
             with sqlite3.connect(tmp_path / "index.db") as conn:
                 assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,), (
                     next_report,

@@ -71,7 +71,9 @@ async def test_retained_component_is_not_committed_per_session(tmp_path: Path, m
 
     monkeypatch.setattr(write, "_write_messages", observe)
     async with prepared_live_convergence_owner(root) as owner:
-        receipts = await owner.replay_retained_raw_ids(raw_ids, select_retained_raw_ids=lambda reader: raw_ids)
+        receipts = (
+            await owner.replay_retained_raw_ids(raw_ids, select_retained_raw_ids=lambda reader: raw_ids)
+        ).require_complete()
     expected = ["chatgpt-export:boundary-one", "chatgpt-export:boundary-two"]
     assert len(observed) == 2, observed
     assert observed == [[], []]
@@ -111,7 +113,9 @@ def test_retained_component_interrupt_preserves_fts_and_rolls_back(
 
     async def replay() -> None:
         async with prepared_live_convergence_owner(root) as owner:
-            await owner.replay_retained_raw_ids(raw_ids, select_retained_raw_ids=lambda reader: raw_ids)
+            (
+                await owner.replay_retained_raw_ids(raw_ids, select_retained_raw_ids=lambda reader: raw_ids)
+            ).require_complete()
 
     with pytest.raises(KeyboardInterrupt) as caught:
         asyncio.run(replay())

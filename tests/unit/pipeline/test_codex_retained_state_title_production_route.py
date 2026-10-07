@@ -116,7 +116,7 @@ async def _record_state_export_async(archive_root: Path, state_path: Path, *, ac
 
     raw_id = await run_archive_fixture_write(archive_root, acquire)
     async with prepared_live_convergence_owner(archive_root) as owner:
-        await owner.replay_retained_raw_ids((raw_id,))
+        (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
 
 
 def _record_state_export(archive_root: Path, state_path: Path, *, acquired_at_ms: int) -> None:
@@ -139,9 +139,9 @@ async def _record_rollout(archive_root: Path, source_path: str, *, ingest: bool)
     raw_id = await run_archive_fixture_write(archive_root, acquire)
     async with prepared_live_convergence_owner(archive_root) as owner:
         if ingest:
-            await owner.ingest_retained_raw_ids((raw_id,))
+            (await owner.ingest_retained_raw_ids((raw_id,))).require_complete()
         else:
-            await owner.replay_retained_raw_ids((raw_id,))
+            (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
 
 
 def test_resident_ingest_resolves_the_projected_state_title(tmp_path: Path) -> None:
@@ -219,7 +219,7 @@ def test_unknown_export_codex_raw_publishes_under_its_resolved_provider(tmp_path
         async with prepared_live_convergence_owner(archive_root) as owner:
             # Establish genuine preparatory census/classification before holding
             # the selected parser artifact for the stale-dependency experiment.
-            await owner.replay_retained_raw_ids((raw_id,))
+            (await owner.replay_retained_raw_ids((raw_id,))).require_complete()
 
             retained: list[RawObservationReplacement] = []
 
