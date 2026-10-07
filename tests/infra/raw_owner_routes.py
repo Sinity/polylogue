@@ -18,6 +18,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from polylogue.core.enums import ValidationMode
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
@@ -360,14 +361,20 @@ async def converge_pending_raws_async(
     return DerivationReport(raw_observation_frame(archive_root), tuple(outcomes), counts, WorkCounters(**work))
 
 
-def converge_pending_raws_with_owner(archive_root: Path, *, limit: int = 128, passes: int = 1) -> DerivationReport:
+def converge_pending_raws_with_owner(
+    archive_root: Path,
+    *,
+    limit: int = 128,
+    passes: int = 1,
+    validation_mode: ValidationMode = ValidationMode.ADVISORY,
+) -> DerivationReport:
     """Run ``passes`` fair-intake passes on one raw owner and discovery; return the last report."""
     from polylogue.operations.intake_adapters import RawMaterializationDiscovery
 
     async def run() -> DerivationReport:
         report: DerivationReport | None = None
         discovery = RawMaterializationDiscovery(archive_root)
-        async with prepared_live_convergence_owner(archive_root) as raw_owner:
+        async with prepared_live_convergence_owner(archive_root, validation_mode=validation_mode) as raw_owner:
             for _ in range(passes):
                 report = await converge_pending_raws_async(raw_owner, archive_root, limit=limit, discovery=discovery)
         assert report is not None

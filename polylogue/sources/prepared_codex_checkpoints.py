@@ -12,10 +12,11 @@ import hashlib
 import json
 import tempfile
 from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Protocol, overload
 
 from polylogue.archive.artifact_taxonomy import ArtifactStreamClassification
 from polylogue.archive.revision_authority import RawRevisionKind
@@ -23,14 +24,28 @@ from polylogue.core.compute import DaemonBackpressureError, DaemonOperationCance
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
 from polylogue.core.timestamp_authority import normalize_session_timestamps
+from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.dispatch import admit_parsed_sessions_for_publication
 from polylogue.sources.parsers import codex
-from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base_models import AdmissionUnit, ParseAccounting
 from polylogue.sources.prepared_jsonl import PreparedJsonl
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, BlobPublicationSourceRead
-from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+
+
+class _CodexCheckpointRead(Protocol):
+    """Read only the pinned source evidence needed by prefix preparation."""
+
+    def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]: ...
+
+    def raw_profile_identity(self, raw_id: str) -> str | None: ...
+
+    def raw_revision_file_mtime(self, raw_id: str) -> str | None: ...
+
+    def open_raw_revision_material(
+        self, raw_id: str
+    ) -> AbstractContextManager[tuple[Provider, BinaryIO, str, RawRevisionKind]]: ...
 
 
 class CodexCheckpointDisposition(StrEnum):
@@ -86,10 +101,10 @@ class CodexPrefixPreparation:
         return self._artifacts
 
 
-class _PrefixMessages(Sequence):
+class _PrefixMessages(Sequence[ParsedMessage]):
     """Read-only view over one independently parsed head message prefix."""
 
-    def __init__(self, messages: Sequence, count: int) -> None:
+    def __init__(self, messages: Sequence[ParsedMessage], count: int) -> None:
         self._messages = messages
         self._count = count
 
@@ -100,7 +115,13 @@ class _PrefixMessages(Sequence):
     def __len__(self) -> int:
         return self._count
 
-    def __getitem__(self, index):
+    @overload
+    def __getitem__(self, index: int) -> ParsedMessage: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> Sequence[ParsedMessage]: ...
+
+    def __getitem__(self, index: int | slice) -> ParsedMessage | Sequence[ParsedMessage]:
         if isinstance(index, slice):
             return [self[position] for position in range(*index.indices(self._count))]
         ordinal = index + self._count if index < 0 else index
@@ -114,9 +135,12 @@ def _plain_text_header(record: object) -> str | None:
     if not isinstance(record, dict) or set(record) != {"type", "payload"} or record.get("type") != "session_meta":
         return None
     payload = record.get("payload")
-    if not isinstance(payload, dict) or not isinstance(payload.get("id"), str) or not payload["id"]:
+    if not isinstance(payload, dict):
         return None
-    return payload["id"]
+    identifier = payload.get("id")
+    if not isinstance(identifier, str) or not identifier:
+        return None
+    return identifier
 
 
 def _plain_text_message(record: object) -> tuple[str, str, str] | None:
@@ -145,9 +169,7 @@ def _plain_text_message(record: object) -> tuple[str, str, str] | None:
     return message_id, role, content[0]["text"]
 
 
-def _hash_and_compare_prefix(
-    source_read: PreparedSessionSourceRead, raw_id: str, prefix_file: BinaryIO
-) -> tuple[str, int]:
+def _hash_and_compare_prefix(source_read: _CodexCheckpointRead, raw_id: str, prefix_file: BinaryIO) -> tuple[str, int]:
     provider, blob_hash, _source_path, kind, declared_size = source_read.raw_revision_descriptor(raw_id)
     if provider is not Provider.CODEX or kind is not RawRevisionKind.FULL:
         raise ValueError("checkpoint cohort contains a non-full Codex raw")
@@ -177,7 +199,7 @@ def _hash_and_compare_prefix(
 
 
 def _read_head_and_prove(
-    source_read: PreparedSessionSourceRead,
+    source_read: _CodexCheckpointRead,
     raw_ids: Sequence[str],
     head_blob: BinaryIO,
 ) -> tuple[BinaryIO, list[int], list[str], str, int]:
@@ -227,6 +249,8 @@ def _read_head_and_prove(
     line_end = 0
     prefix_record_counts: list[int] = []
     next_prefix = 0
+    header_id: str | None = None
+    line_number = 0
     for line_number, line in enumerate(head_blob, start=1):
         check_compute_cancelled()
         line_end += len(line)
@@ -249,7 +273,9 @@ def _read_head_and_prove(
                 raise ValueError("a retained revision does not end on a complete record boundary")
     if next_prefix != len(sizes) or line_end != sizes[-1]:
         raise ValueError("head Codex JSONL stream ended inside a record")
-    if prefix_record_counts[0] != 1 or prefix_record_counts[-1] != line_number:
+    if header_id is None or line_number == 0:
+        raise ValueError("head Codex JSONL stream has no session header")
+    if not prefix_record_counts or prefix_record_counts[0] != 1 or prefix_record_counts[-1] != line_number:
         raise ValueError("checkpoint prefixes must include the header and the complete head")
     return head_blob, prefix_record_counts, hashes, header_id, line_number - 1
 
@@ -273,7 +299,7 @@ def _prefix_accounting(message_count: int) -> ParseAccounting:
 
 def _finalize_codex_prefix(
     head: ParsedSession,
-    messages: Sequence,
+    messages: Sequence[ParsedMessage],
     message_count: int,
     accounting: ParseAccounting,
     updated_at: str | None,
@@ -293,7 +319,7 @@ def _finalize_codex_prefix(
 
 
 def prepare_codex_prefix_checkpoints(
-    source_read: PreparedSessionSourceRead,
+    source_read: _CodexCheckpointRead,
     raw_ids: Sequence[str],
     *,
     head_artifact: PreparedJsonl,
@@ -317,7 +343,9 @@ def prepare_codex_prefix_checkpoints(
         head_blob, prefix_record_counts, hashes, header_id, head_message_count = _read_head_and_prove(
             source_read, raw_ids, head_blob
         )
-        parser_head = getattr(head_artifact, "parser_stage_artifact", None) or head_artifact
+        parser_head = head_artifact.parser_stage_artifact
+        if parser_head is None:
+            raise ValueError("canonical head artifact has no neutral parser-stage artifact")
         if parser_head.blob_hash != hashes[-1]:
             raise ValueError("canonical head parser stage is not bound to this cohort's exact head blob")
         if parser_head.captured_profile_key != source_read.raw_profile_identity(raw_ids[-1]):
@@ -352,7 +380,7 @@ def prepare_codex_prefix_checkpoints(
     def artifacts() -> Iterator[tuple[str, PreparedJsonl]]:
         assert head_blob is not None
         last_count = prefix_record_counts[1] - 1
-        timestamp_pair = codex.parse_timestamp_pair(head.created_at)
+        timestamp_pair = parse_timestamp_pair(head.created_at)
         try:
             for index in range(2, len(raw_ids) - 1):
                 check_compute_cancelled()
@@ -361,7 +389,7 @@ def prepare_codex_prefix_checkpoints(
                 for message_index in range(last_count, message_count):
                     timestamp_pair = codex._newer_timestamp_pair(
                         timestamp_pair,
-                        codex.parse_timestamp_pair(head.messages[message_index].timestamp),
+                        parse_timestamp_pair(head.messages[message_index].timestamp),
                     )
                 last_count = message_count
                 canonical = _finalize_codex_prefix(

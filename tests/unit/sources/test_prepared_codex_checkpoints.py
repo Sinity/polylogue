@@ -4,6 +4,7 @@ import hashlib
 import json
 import tempfile
 from contextlib import contextmanager
+from dataclasses import replace
 from io import BytesIO
 
 import pytest
@@ -263,6 +264,10 @@ def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path, monkeypat
         resolved_provider=Provider.CODEX,
         captured_profile_key="captured-profile",
     )
+    head_artifact = replace(
+        head_artifact,
+        parser_stage_artifact=replace(head_artifact, attempt_directory=None),
+    )
     interior_dir = tmp_path / "interior-artifacts"
     interior_dir.mkdir()
 
@@ -323,6 +328,10 @@ def test_checkpoint_preparation_seals_exact_per_raw_artifact(tmp_path, monkeypat
         publication_publisher=None,
         resolved_provider=Provider.CODEX,
         captured_profile_key="captured-profile",
+    )
+    normalized_head_artifact = replace(
+        normalized_head_artifact,
+        parser_stage_artifact=replace(normalized_head_artifact, attempt_directory=None),
     )
     try:
         rejected = prepare_codex_prefix_checkpoints(
