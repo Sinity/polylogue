@@ -106,7 +106,7 @@ def _assert_publication(artifact: PreparedJsonl, expected: list[ParsedSession], 
     assert artifact.sessions_path is not None
     with sqlite3.connect(artifact.sessions_path) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert tables == {
+    required_tables = {
         "prepared_session",
         "prepared_message",
         "prepared_event",
@@ -120,7 +120,15 @@ def _assert_publication(artifact: PreparedJsonl, expected: list[ParsedSession], 
         "prepared_codex_thread",
         "prepared_codex_spawn",
         "prepared_codex_state_part",
+        "prepared_streamed_json_array",
+        "prepared_streamed_json_array_value",
     }
+    assert tables == required_tables
+    sessions_path = artifact.sessions_path
+    shard_path = artifact.shard_path
+    artifact.discard()
+    assert not sessions_path.exists()
+    assert not shard_path.exists()
 
 
 def _collected_members(monkeypatch: pytest.MonkeyPatch) -> list[int]:

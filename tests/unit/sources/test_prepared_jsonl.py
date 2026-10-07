@@ -1867,7 +1867,7 @@ def test_grok_empty_conversation_is_refused_at_preparation(tmp_path: Path) -> No
     assert artifact.positive_evidence_filtered is True
     assert list(artifact.iter_sessions()) == []
     direct = parse_payload(Provider.GROK, record, "fallback")
-    assert len(direct) == 1
+    assert direct == []
     assert admit_parsed_sessions_for_publication(direct, provider=Provider.GROK, source_path=str(source)) == []
     artifact.discard()
 

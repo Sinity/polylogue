@@ -224,6 +224,43 @@ async def test_older_full_replace_does_not_overwrite_newer_session_body(async_ba
     assert row["text"] == "newer browser capture text"
 
 
+async def test_equal_freshness_full_replace_updates_model_name(async_backend: SQLiteBackend) -> None:
+    def _make(model_name: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="conv-equal-freshness-model",
+            title="Equal freshness",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-03T00:00:00Z",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="msg-1",
+                    role=Role.ASSISTANT,
+                    text="same body",
+                    model_name=model_name,
+                    timestamp="2024-01-03T00:00:00Z",
+                )
+            ],
+            attachments=[],
+        )
+
+    session_id = await ingest_session(_make("model-before"), async_backend)
+    first_hash = (await _session_row(async_backend, session_id))["content_hash"]
+    replaced_id = await ingest_session(_make("model-after"), async_backend)
+
+    assert replaced_id == session_id
+    assert (await _session_row(async_backend, session_id))["content_hash"] != first_hash
+    async with async_backend.connection() as conn:
+        row = await (
+            await conn.execute(
+                "SELECT model_name FROM messages WHERE session_id = ? AND native_id = 'msg-1'",
+                (session_id,),
+            )
+        ).fetchone()
+    assert row is not None
+    assert row["model_name"] == "model-after"
+
+
 # ---------------------------------------------------------------------------
 # Session events
 # ---------------------------------------------------------------------------

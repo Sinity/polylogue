@@ -21,6 +21,7 @@ from polylogue.sources.dispatch import (
     parse_payload,
 )
 from polylogue.sources.origin_specs import ORIGIN_SPECS
+from polylogue.sources.parsers import codex
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary
 from polylogue.sources.parsers.base_models import ParsedSession
 from tests.infra.origin_capability_matrix import (
@@ -198,6 +199,9 @@ def test_collision_witnesses_follow_real_detector_precedence_and_still_parse() -
     manifest = load_manifest()
 
     for case in manifest.collisions:
+        if case.name == "claude-code-before-codex":
+            assert isinstance(case.payload, list)
+            assert codex.looks_like(case.payload)
         detected, evidence = detect_provider_evidence(case.payload)
         assert detected is case.expected_provider, case.name
         assert evidence.strip(), case.name
