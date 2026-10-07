@@ -152,6 +152,11 @@
     "tiers": []
   },
   {
+    "file": "polylogue/schemas/observation_spill.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/schemas/source_cache.py",
     "tiers": []
   },

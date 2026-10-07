@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 
 try:
@@ -58,16 +58,48 @@ def canonicalize_structure_schema(schema: Mapping[str, object]) -> JSONDocument:
     return json_document(canonicalize(schema))
 
 
-def legacy_structure_schema_digest(schema: Mapping[str, object]) -> str:
-    """Return the order-sensitive digest used by already-published packages."""
+def _structure_schema_parts(value: object, *, canonical: bool, parent_key: str | None = None) -> Iterator[str]:
+    from polylogue.schemas.shape_fingerprint import ordered_keys
 
-    payload = json.dumps(schema, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    if isinstance(value, Mapping):
+        yield "{"
+        for index, key in enumerate(ordered_keys(value)):
+            if index:
+                yield ","
+            yield json.dumps(key, ensure_ascii=False) + ":"
+            yield from _structure_schema_parts(value[key], canonical=canonical, parent_key=key)
+        yield "}"
+    elif isinstance(value, list):
+        items = (
+            sorted(value)
+            if canonical and parent_key == "required" and all(isinstance(item, str) for item in value)
+            else value
+        )
+        yield "["
+        for index, child in enumerate(items):
+            if index:
+                yield ","
+            yield from _structure_schema_parts(child, canonical=canonical)
+        yield "]"
+    else:
+        yield json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _structure_schema_hash(schema: Mapping[str, object], *, canonical: bool) -> str:
+    digest = hashlib.sha256()
+    for part in _structure_schema_parts(schema, canonical=canonical):
+        digest.update(part.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def legacy_structure_schema_digest(schema: Mapping[str, object]) -> str:
+    """Return the shipped required-order digest, streaming the schema tree."""
+    return _structure_schema_hash(schema, canonical=False)
 
 
 def structure_schema_digest(schema: Mapping[str, object]) -> str:
-    """Return the stable SHA-256 witness for an observed structural schema."""
-    return legacy_structure_schema_digest(canonicalize_structure_schema(schema))
+    """Return the canonical required-order digest, streaming the schema tree."""
+    return _structure_schema_hash(schema, canonical=True)
 
 
 def is_source_structure_witness(value: str) -> bool:
@@ -150,7 +182,9 @@ def _flatten_composite_branches(schema: JSONDocument) -> JSONDocument:
     return merged
 
 
-def _merge_observed_structure_pair(left: JSONDocument, right: JSONDocument) -> JSONDocument:
+def _merge_observed_structure_pair(
+    left: JSONDocument, right: JSONDocument, *, store: Callable[[object], JSONDocument] | None = None
+) -> JSONDocument:
     if not left:
         return right
     if not right:
@@ -177,12 +211,12 @@ def _merge_observed_structure_pair(left: JSONDocument, right: JSONDocument) -> J
     for name in property_names:
         left_schema = _schema_object(left_properties.get(name))
         right_schema = _schema_object(right_properties.get(name))
-        properties[name] = _merge_observed_structure_pair(left_schema, right_schema)
+        properties[name] = _merge_observed_structure_pair(left_schema, right_schema, store=store)
 
     required = sorted(_required_names(left) & _required_names(right))
     left_additional = _schema_object(left.get("additionalProperties"))
     right_additional = _schema_object(right.get("additionalProperties"))
-    additional = _merge_observed_structure_pair(left_additional, right_additional)
+    additional = _merge_observed_structure_pair(left_additional, right_additional, store=store)
 
     already_high_cardinality = (
         left.get("x-polylogue-high-cardinality-keys") is True or right.get("x-polylogue-high-cardinality-keys") is True
@@ -197,7 +231,7 @@ def _merge_observed_structure_pair(left: JSONDocument, right: JSONDocument) -> J
                 retained_names.update(_schema_object(side.get("properties")))
         fresh = [schema for name, schema in properties.items() if name not in retained_names]
         if fresh:
-            additional = merge_observed_structure_schemas([additional, *map(_schema_object, fresh)])
+            additional = merge_observed_structure_schemas([additional, *map(_schema_object, fresh)], store=store)
             properties = {name: schema for name, schema in properties.items() if name in retained_names}
             required = [name for name in required if name in retained_names]
     elif properties and should_collapse_observed_keys(properties.keys()):
@@ -207,7 +241,7 @@ def _merge_observed_structure_pair(left: JSONDocument, right: JSONDocument) -> J
         collapsed_names = {name for name in properties if is_dynamic_key(name)} if additional else set(properties)
         if collapsed_names:
             additional = merge_observed_structure_schemas(
-                [additional, *(_schema_object(properties[name]) for name in sorted(collapsed_names))]
+                [additional, *(_schema_object(properties[name]) for name in sorted(collapsed_names))], store=store
             )
             properties = {name: schema for name, schema in properties.items() if name not in collapsed_names}
             required = [name for name in required if name not in collapsed_names]
@@ -222,7 +256,7 @@ def _merge_observed_structure_pair(left: JSONDocument, right: JSONDocument) -> J
 
     left_items = _schema_object(left.get("items"))
     right_items = _schema_object(right.get("items"))
-    items = _merge_observed_structure_pair(left_items, right_items)
+    items = _merge_observed_structure_pair(left_items, right_items, store=store)
     if items:
         merged["items"] = items
     if additional:
@@ -232,25 +266,25 @@ def _merge_observed_structure_pair(left: JSONDocument, right: JSONDocument) -> J
     for marker in ("x-polylogue-dynamic-keys", "x-polylogue-high-cardinality-keys"):
         if left.get(marker) is True or right.get(marker) is True:
             merged[marker] = True
-    return merged
+    return store(merged) if store is not None else merged
 
 
-def merge_observed_structure_schemas(schemas: Iterable[JSONDocument]) -> JSONDocument:
+def merge_observed_structure_schemas(
+    schemas: Iterable[JSONDocument], *, store: Callable[[object], JSONDocument] | None = None
+) -> JSONDocument:
     """Incrementally merge structural schemas without retaining property history."""
     merged: JSONDocument = {}
     seen_identities: set[bytes] = set()
     identity_order: deque[bytes] = deque()
     for schema in schemas:
-        identity = hashlib.sha256(
-            json.dumps(schema, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        ).digest()
+        identity = bytes.fromhex(legacy_structure_schema_digest(schema))
         if identity in seen_identities:
             continue
         if len(identity_order) >= _STRUCTURAL_DEDUP_WINDOW:
             seen_identities.remove(identity_order.popleft())
         seen_identities.add(identity)
         identity_order.append(identity)
-        merged = _merge_observed_structure_pair(merged, schema)
+        merged = _merge_observed_structure_pair(merged, schema, store=store)
     return merged
 
 
@@ -270,7 +304,9 @@ def dynamic_object_paths(schema: Mapping[str, object], path: str = "$") -> set[s
     return paths
 
 
-def observed_structure_schema(value: object, *, field_name: str | None = None) -> JSONDocument:
+def observed_structure_schema(
+    value: object, *, field_name: str | None = None, store: Callable[[object], JSONDocument] | None = None
+) -> JSONDocument:
     """Build a bounded structural schema before Genson sees dynamic keys.
 
     Genson creates one node per object property.  Feeding it provider payloads
@@ -291,10 +327,12 @@ def observed_structure_schema(value: object, *, field_name: str | None = None) -
         return {"type": "string"}
     if isinstance(value, list):
         array_schema: JSONDocument = {"type": "array"}
-        items = merge_observed_structure_schemas(observed_structure_schema(item) for item in value)
+        items = merge_observed_structure_schemas(
+            (observed_structure_schema(item, store=store) for item in value), store=store
+        )
         if items:
             array_schema["items"] = items
-        return array_schema
+        return store(array_schema) if store is not None else array_schema
     if not isinstance(value, Mapping):
         raise TypeError(f"Unsupported schema observation value: {type(value).__name__}")
 
@@ -302,28 +340,32 @@ def observed_structure_schema(value: object, *, field_name: str | None = None) -
     collapse_all = filename_map or should_collapse_observed_keys(value.keys())
     properties: JSONDocument = {}
     required: list[JSONValue] = []
-    for key, child in value.items():
-        key_text = str(key)
-        if collapse_all or is_dynamic_key(key_text):
-            continue
-        properties[key_text] = observed_structure_schema(child, field_name=key_text)
-        required.append(key_text)
+    if not collapse_all:
+        for key, child in value.items():
+            key_text = str(key)
+            if is_dynamic_key(key_text):
+                continue
+            properties[key_text] = observed_structure_schema(child, field_name=key_text, store=store)
+            required.append(key_text)
 
     object_schema: JSONDocument = {"type": "object"}
     if properties:
         object_schema["properties"] = properties
         object_schema["required"] = required
     dynamic_values = merge_observed_structure_schemas(
-        observed_structure_schema(child, field_name=str(key))
-        for key, child in value.items()
-        if collapse_all or is_dynamic_key(str(key))
+        (
+            observed_structure_schema(child, field_name=str(key), store=store)
+            for key, child in value.items()
+            if collapse_all or is_dynamic_key(str(key))
+        ),
+        store=store,
     )
     if dynamic_values or filename_map:
         object_schema["additionalProperties"] = dynamic_values
         object_schema["x-polylogue-dynamic-keys"] = True
         if collapse_all and not filename_map:
             object_schema["x-polylogue-high-cardinality-keys"] = True
-    return object_schema
+    return store(object_schema) if store is not None else object_schema
 
 
 def collapse_dynamic_keys(schema: JSONDocument) -> JSONDocument:
