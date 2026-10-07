@@ -1057,7 +1057,7 @@ def test_retained_parser_error_settles_as_terminal_refusal(tmp_path: Path, monke
     _run_raw_law(tmp_path, run_phase)
 
 
-def test_empty_claude_history_remains_non_session_when_validation_mode_changes(tmp_path: Path) -> None:
+def test_claude_history_remains_non_session_when_validation_mode_changes(tmp_path: Path) -> None:
     def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
         """Configured history is raw-only evidence and has no schema policy."""
         bootstrap_archive_root(tmp_path)
@@ -1065,7 +1065,7 @@ def test_empty_claude_history_remains_non_session_when_validation_mode_changes(t
         with _fixture_archive(tmp_path) as archive:
             raw_id = archive.write_raw_payload(
                 provider=Provider.CLAUDE_CODE,
-                payload=b"",
+                payload=b'{"display":"neutral prompt"}\n',
                 source_path=source_path,
                 canonical_source_path=source_path,
                 acquired_at_ms=1,
@@ -1090,8 +1090,9 @@ def test_empty_claude_history_remains_non_session_when_validation_mode_changes(t
         strict = RawObservationDerivation(
             tmp_path, compute_adapter=compute_adapter, validation_mode=ValidationMode.STRICT
         )
-        assert strict.inspect(frame, (raw_id,)) == {raw_id: "valid"}
-        repeated = strict.compute(frame, raw_id)
+        strict_frame = raw_observation_frame(tmp_path, validation_mode=ValidationMode.STRICT)
+        assert strict.inspect(strict_frame, (raw_id,)) == {raw_id: "valid"}
+        repeated = strict.compute(strict_frame, raw_id)
         try:
             assert repeated.already_valid
         finally:
