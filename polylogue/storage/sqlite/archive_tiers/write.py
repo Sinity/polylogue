@@ -8696,6 +8696,13 @@ class PreparedSessionSourceRead:
 
         return prepared_raw_revision_descriptor(self._seal, raw_id)
 
+    def raw_validation_mode(self, raw_id: str) -> str | None:
+        """Read the persisted validation policy bound to this raw revision."""
+        self._load_matches("raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (raw_id,))
+        with self._seal.source_rows("SELECT validation_mode FROM raw_sessions WHERE raw_id=?", (raw_id,)) as rows:
+            row = rows.fetchone()
+        return None if row is None or row[0] is None else str(row[0])
+
     def raw_revision_file_mtime(self, raw_id: str) -> str | None:
         from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_raw_revision_file_mtime
 

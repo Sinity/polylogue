@@ -30,6 +30,7 @@ from polylogue.core.compute import BoundedComputeAdapter, publish_compute_adapte
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.degraded import DegradedReason, set_degraded
 from polylogue.core.durable_fs import atomic_create
+from polylogue.core.enums import ValidationMode
 from polylogue.core.json import dumps
 from polylogue.core.loopback import bind_hosts_overlap, is_loopback_host
 from polylogue.core.stage_admission import (
@@ -1952,7 +1953,11 @@ async def _shutdown_writer_coordinator_with_rebuild_exclusion(
 
 
 def compose_ingest_owner(
-    archive_root: Path, write_bridge: DaemonWriteThreadBridge, *, compute_adapter: BoundedComputeAdapter
+    archive_root: Path,
+    write_bridge: DaemonWriteThreadBridge,
+    *,
+    compute_adapter: BoundedComputeAdapter,
+    validation_mode: ValidationMode,
 ) -> tuple[DaemonOperationRuntime, ComposedSessionProfiles]:
     """The ingest owner of a daemon that serves no API: its operation runtime.
 
@@ -1979,6 +1984,7 @@ def compose_ingest_owner(
             compute_adapter=compute_adapter,
             write_bridge=write_bridge,
             write_coordinator=write_bridge.coordinator,
+            validation_mode=validation_mode,
         ),
         owner_loop=write_bridge.owner_loop,
         session_maintenance=profiles.maintenance,
@@ -2834,6 +2840,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 archive_root_path,
                 DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
                 compute_adapter=startup_kernel,
+                validation_mode=ValidationMode.from_string(embedding_config.schema_validation),
             )
             ingest_owner_runtime.start_accepted_ingest_redrive()
             await ingest_owner_runtime.accepted_ingest_redrive_claimed()

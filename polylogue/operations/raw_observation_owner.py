@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.enums import ValidationMode
 from polylogue.core.raw_failure_evidence import (
     CohortMembershipRefusalError,
     RetainedRawDecodeRefusalError,
@@ -97,9 +98,16 @@ def _isolates_as_raw_failure(failure: Exception) -> bool:
 class RawObservationArchiveWork:
     """Source/Index/cold-build work for one archive's raw-observation owner."""
 
-    def __init__(self, archive_root: Path, *, compute_adapter: BoundedComputeAdapter) -> None:
+    def __init__(
+        self,
+        archive_root: Path,
+        *,
+        compute_adapter: BoundedComputeAdapter,
+        validation_mode: ValidationMode = ValidationMode.ADVISORY,
+    ) -> None:
         self._archive_root = archive_root
         self._compute_adapter = compute_adapter
+        self._validation_mode = validation_mode
 
     def require_source_frontier_authority(self, raw_id: str) -> None:
         """Refuse exactly the raw paths the durable frontier cannot authorize.
@@ -179,6 +187,7 @@ class RawObservationArchiveWork:
                 compute_adapter=self._compute_adapter,
                 index_db_path=index_path,
                 owned_generation=generation,
+                validation_mode=self._validation_mode,
             ),
             index_path,
         )
@@ -369,7 +378,12 @@ class RawObservationArchiveWork:
                             if item not in refused_ids and item not in dependency_blocked_ids and item not in failed_ids
                         )
                     )
-                    frame = raw_observation_frame(archive_root, raw_ids=frame_scope, index_db_path=index_path)
+                    frame = raw_observation_frame(
+                        archive_root,
+                        raw_ids=frame_scope,
+                        index_db_path=index_path,
+                        validation_mode=self._validation_mode,
+                    )
                     try:
                         replacement = adapter.compute(
                             frame, raw_id, replay_current=True, select_retained_raw_ids=select_original

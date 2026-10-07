@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, ParamSpec, TypeVar
 from polylogue.core import compute
 from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.compute_cancel import compute_cancel
+from polylogue.core.enums import ValidationMode
 from polylogue.core.raw_failure_evidence import (
     CohortMembershipRefusalError,
     RetainedRawDecodeRefusalError,
@@ -71,12 +72,16 @@ class RawObservationConvergenceOwner:
         compute_adapter: BoundedComputeAdapter,
         write_bridge: DaemonWriteThreadBridge,
         write_coordinator: DaemonWriteCoordinator,
+        validation_mode: ValidationMode = ValidationMode.ADVISORY,
     ) -> None:
         self._archive_root = archive_root
         self._compute_adapter = compute_adapter
         self._write_bridge = write_bridge
         self._write_coordinator = write_coordinator
-        self._archive = RawObservationArchiveWork(archive_root, compute_adapter=compute_adapter)
+        self._validation_mode = validation_mode
+        self._archive = RawObservationArchiveWork(
+            archive_root, compute_adapter=compute_adapter, validation_mode=validation_mode
+        )
         self._converge_lock = asyncio.Lock()
 
     async def run_prepared_sync(
@@ -184,6 +189,7 @@ class RawObservationConvergenceOwner:
                 self._archive_root,
                 raw_ids=(raw_id,),
                 index_db_path=index_path,
+                validation_mode=self._validation_mode,
             )
             # The parse holds the retained payload: reserve its size up front.
             # A read fault propagates as retryable rather than admitting the

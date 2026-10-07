@@ -141,6 +141,7 @@ from polylogue.storage.sqlite.session_shard import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.schemas.retained_validation import RetainedValidationVerdict
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 
 
@@ -700,6 +701,8 @@ class PreparedJsonl:
     prepared_writes: tuple[PreparedSessionWrite, ...] = ()
     parsed_prefix_size: int | None = None
     resolved_provider: Provider | None = None
+    validation_verdict: RetainedValidationVerdict | None = field(default=None, compare=False, repr=False)
+    parser_stage_artifact: PreparedJsonl | None = field(default=None, compare=False, repr=False)
     positive_evidence_filtered: bool = False
     attempt_directory: Path | None = None
     #: For a terminal failure that never read bytes into a blob (a worker
@@ -974,6 +977,12 @@ class PreparedJsonl:
         state.material_page = ()
         state.retired = True
         failures: list[BaseException] = []
+        if self.parser_stage_artifact is not None:
+            try:
+                self.parser_stage_artifact.discard()
+            except BaseException as exc:
+                failures.append(exc)
+            self.parser_stage_artifact = None
         for prepared in self.prepared_writes:
             try:
                 prepared.close()
@@ -2437,17 +2446,10 @@ def _finalize_prepared_cohort(
             captured_profile_key=original.captured_profile_key,
             preparation_dependency=preparation_dependency,
         )
-    # The final carrier owns the attempt directory. Settle only the fully
-    # consumed original files, after all original transcript readers close.
-    try:
-        replace(original, attempt_directory=None).discard()
-    except BaseException as primary:
-        try:
-            result.discard()
-        except BaseException as cleanup:
-            raise BaseExceptionGroup("cohort copy and original retirement failed", [primary, cleanup]) from None
-        raise
-    return result
+    # Preserve the neutral parser-stage carrier for exact per-revision
+    # checkpoints. The finalized carrier owns its shared attempt directory;
+    # the child owns only its sealed file paths and is discarded with parent.
+    return replace(result, parser_stage_artifact=replace(original, attempt_directory=None))
 
 
 @reports_work_progress("source_preparation")

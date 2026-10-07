@@ -262,6 +262,8 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         execution_kernel: BoundedComputeAdapter,
         operation_runtime: DaemonOperationRuntime | None = None,
     ) -> None:
+        from polylogue.config import load_polylogue_config
+        from polylogue.core.enums import ValidationMode
         from polylogue.daemon.operation_runtime import DaemonOperationRuntime
 
         self.socket_path = socket_path
@@ -273,6 +275,8 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         self._closing_handlers = False
         from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 
+        validation_mode = ValidationMode.from_string(load_polylogue_config().schema_validation)
+
         self.operation_runtime = operation_runtime or DaemonOperationRuntime(
             archive_root,
             write_bridge=write_bridge,
@@ -282,6 +286,7 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
                 compute_adapter=execution_kernel,
                 write_bridge=write_bridge,
                 write_coordinator=write_bridge.coordinator,
+                validation_mode=validation_mode,
             ),
             owner_loop=write_bridge.owner_loop,
         )

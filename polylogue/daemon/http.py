@@ -5670,6 +5670,7 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
             write_bridge=self.write_bridge,
             now=time,
         )
+        from polylogue.core.enums import ValidationMode
         from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 
         self.operation_runtime = DaemonOperationRuntime(
@@ -5681,6 +5682,7 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
                 compute_adapter=self.execution_kernel,
                 write_bridge=self.write_bridge,
                 write_coordinator=self.write_bridge.coordinator,
+                validation_mode=ValidationMode.from_string(operation_settings.schema_validation),
             ),
             owner_loop=self.write_bridge.owner_loop,
             session_maintenance=self.session_profile_callback.maintenance,

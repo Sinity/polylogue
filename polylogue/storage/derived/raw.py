@@ -39,7 +39,7 @@ from polylogue.core.compute import (
     SubmittedOperation,
 )
 from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel_requested
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import Origin, Provider, ValidationMode
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
     RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
@@ -88,6 +88,19 @@ if TYPE_CHECKING:
     _InPlacePhase = tuple[tuple[Literal["census", "classification"], RevisionCensusResult], ...]
 
 RAW_OBSERVATION_DOMAIN = "raw_observation"
+
+
+def raw_observation_recipe_version(validation_mode: ValidationMode | None = ValidationMode.ADVISORY) -> str:
+    """Identify the parser and effective validation policy for raw replay."""
+    parser_fingerprint = raw_authority_parser_fingerprint()
+    if validation_mode is None:
+        return parser_fingerprint
+    digest = hashlib.sha256()
+    digest.update(parser_fingerprint.encode("ascii"))
+    digest.update(b"\0schema-validation\0")
+    digest.update(validation_mode.value.encode("ascii"))
+    return digest.hexdigest()
+
 
 #: Origins whose enrichment reads session-scoped retained evidence. Both
 #: origins map to exactly one provider, so the reverse lookup is not a guess.
@@ -488,7 +501,7 @@ class RawObservationInspection:
 
         row = conn.execute(
             retained_raw_decode_refusal_sql(),
-            (key, self.recipe_version, *sorted(RAW_FAILURE_VALIDATION_FAILURE_KINDS)),
+            (key, raw_authority_parser_fingerprint(), *sorted(RAW_FAILURE_VALIDATION_FAILURE_KINDS)),
         ).fetchone()
         return retained_raw_decode_refusal_from_row(key, row)
 
@@ -512,7 +525,11 @@ class RawObservationInspection:
         # changed classifier must recensus retained bytes before accepting
         # either its ambiguity or its deferral as current evidence.
         census = conn.execute("SELECT * FROM raw_authority_parser_census WHERE raw_id = ?", (key,)).fetchone()
-        if census is not None and census["parser_fingerprint"] != self.recipe_version:
+        parser_fingerprint = raw_authority_parser_fingerprint()
+        if census is not None and census["parser_fingerprint"] != parser_fingerprint:
+            return "stale"
+        validation_mode = getattr(self, "_validation_mode", None)
+        if validation_mode is not None and raw["validation_mode"] != validation_mode.value:
             return "stale"
         if self._decode_refusal(conn, key) is not None:
             # Settled failure evidence is not a successfully derived output.
@@ -578,7 +595,7 @@ class RawObservationInspection:
         membership = conn.execute("SELECT * FROM raw_membership_census WHERE raw_id = ?", (key,)).fetchone()
         if census is None:
             return "missing"
-        if census["parser_fingerprint"] != self.recipe_version or census["status"] != "complete":
+        if census["parser_fingerprint"] != parser_fingerprint or census["status"] != "complete":
             return "stale"
         non_session = (
             conn.execute(
@@ -614,7 +631,7 @@ class RawObservationInspection:
                 typed_non_session=non_session,
                 parser_confirmed_non_session=membership is not None
                 and membership["status"] == "non_session"
-                and membership["parser_fingerprint"] == self.recipe_version,
+                and membership["parser_fingerprint"] == parser_fingerprint,
                 byte_governed_fragment=raw["source_index"] < 0
                 and membership is not None
                 and membership["revision_authority"] == RawRevisionAuthority.BYTE_PROVEN.value,
@@ -638,7 +655,7 @@ class RawObservationInspection:
             parser_non_session = (
                 membership is not None
                 and membership["status"] == "non_session"
-                and membership["parser_fingerprint"] == self.recipe_version
+                and membership["parser_fingerprint"] == parser_fingerprint
             )
             if not measured.observed_count or non_session or parser_non_session:
                 # A non-session artifact (a hook carrier on its physical
@@ -858,6 +875,7 @@ class RawObservationDerivation(RawObservationInspection):
         prepaid_blob_inputs: tuple[tuple[str, bytes, int], ...] = (),
         index_db_path: Path | None = None,
         owned_generation: IndexGeneration | None = None,
+        validation_mode: ValidationMode = ValidationMode.ADVISORY,
     ) -> None:
         super().__init__(archive_root, index_db_path=index_db_path)
         self._prepare_non_json_artifact = prepare_non_json_artifact
@@ -865,6 +883,7 @@ class RawObservationDerivation(RawObservationInspection):
         self._prepaid_blob_inputs = prepaid_blob_inputs
         self._index_db_path = index_db_path
         self._owned_generation = owned_generation
+        self._validation_mode = validation_mode
         #: Replacements whose publication committed a prerequisite phase,
         #: consumed by :meth:`publication_advanced` on the same key.
         self._phase_committed: dict[int, str] = {}
@@ -877,6 +896,11 @@ class RawObservationDerivation(RawObservationInspection):
             if index_db_path is not None and index_db_path.resolve(strict=True) != destination.index_path:
                 raise ValueError("retained replay Index differs from its owned generation")
             self._index_db_path = destination.index_path
+
+    @property
+    def recipe_version(self) -> str:
+        """Bind retained preparation validity to its effective schema policy."""
+        return raw_observation_recipe_version(self._validation_mode)
 
     @staticmethod
     def _lineage_deferrals(
@@ -1477,8 +1501,15 @@ class RawObservationDerivation(RawObservationInspection):
                 )
 
                 with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                    census_read = PreparedSessionSourceRead(
+                        reference_seal,
+                        blob_store=BlobStore(self.archive_root / "blob"),
+                    )
                     complete_census = {
-                        raw_id for raw_id in raw_ids if prepared_parser_census_is_current(reference_seal, raw_id)
+                        raw_id
+                        for raw_id in raw_ids
+                        if prepared_parser_census_is_current(reference_seal, raw_id)
+                        and census_read.raw_validation_mode(raw_id) == self._validation_mode.value
                     }
                 # Every retained raw needs its actual parser authority before
                 # replay can select a session. A singleton can still refine an
@@ -1587,6 +1618,7 @@ class RawObservationDerivation(RawObservationInspection):
                                 native_id,
                                 fallback_timestamp,
                                 profile_identity,
+                                self._validation_mode,
                             )
                             artifact = prepared_artifacts.get(artifact_key)
                             if artifact is None:
@@ -1620,6 +1652,7 @@ class RawObservationDerivation(RawObservationInspection):
                                             retained_read,
                                             raw_id,
                                             directory=Path(tempfile.mkdtemp(prefix="artifact-", dir=scratch)),
+                                            validation_mode=self._validation_mode,
                                         )
                                         provider_parse_seconds += time.perf_counter() - parse_started
                                     check_compute_cancelled()
@@ -1666,7 +1699,7 @@ class RawObservationDerivation(RawObservationInspection):
                                 kind,
                                 size,
                                 native_id,
-                                self.recipe_version,
+                                raw_authority_parser_fingerprint(),
                                 fallback_timestamp,
                                 verified_blob_stat=after,
                                 parser_error=artifact.error,
@@ -1756,6 +1789,36 @@ class RawObservationDerivation(RawObservationInspection):
                                         except CohortMembershipRefusalError as refusal:
                                             prepared_key_refusals[logical_key] = refusal
                                             break
+                        # Schema STRICT refusal is independent of parsing and
+                        # census authority. Keep the actual parsed membership,
+                        # but do not derive an Index replacement from a chain
+                        # whose accepted revision failed its validation policy.
+                        for logical_key, accepted_raw_ids in planned_accepted_raw_ids.items():
+                            if logical_key in prepared_key_refusals:
+                                continue
+                            refused_raw_id = next(
+                                (
+                                    raw_id
+                                    for raw_id in accepted_raw_ids
+                                    if (item := prepared.get(raw_id)) is not None
+                                    and item.prepared_artifact is not None
+                                    and item.prepared_artifact.validation_verdict is not None
+                                    and item.prepared_artifact.validation_verdict.strict_refusal
+                                ),
+                                None,
+                            )
+                            if refused_raw_id is not None:
+                                verdict = prepared[refused_raw_id].prepared_artifact.validation_verdict
+                                detail = (
+                                    verdict.first_diagnostic
+                                    if verdict is not None and verdict.first_diagnostic
+                                    else "strict schema validation refused the retained revision"
+                                )
+                                prepared_key_refusals[logical_key] = CohortMembershipRefusalError(
+                                    logical_key,
+                                    refused_raw_id,
+                                    f"retained schema validation refused revision: {detail}",
+                                )
                         for logical_key, accepted_raw_ids in (
                             planned_accepted_raw_ids.items() if not needs_source_census else ()
                         ):
@@ -2109,6 +2172,30 @@ class RawObservationDerivation(RawObservationInspection):
                                             membership_plan, classification=MembershipClassification((), (), ())
                                         )
                                     accepted_members = membership_plan.classification.accepted_raw_ids
+                                    refused_member = next(
+                                        (
+                                            raw_id
+                                            for raw_id in accepted_members
+                                            if (item := prepared.get(raw_id)) is not None
+                                            and item.prepared_artifact is not None
+                                            and item.prepared_artifact.validation_verdict is not None
+                                            and item.prepared_artifact.validation_verdict.strict_refusal
+                                        ),
+                                        None,
+                                    )
+                                    if refused_member is not None:
+                                        verdict = prepared[refused_member].prepared_artifact.validation_verdict
+                                        detail = (
+                                            verdict.first_diagnostic
+                                            if verdict is not None and verdict.first_diagnostic
+                                            else "strict schema validation refused the retained revision"
+                                        )
+                                        prepared_key_refusals[logical_key] = CohortMembershipRefusalError(
+                                            logical_key,
+                                            refused_member,
+                                            f"retained schema validation refused revision: {detail}",
+                                        )
+                                        continue
                                     if accepted_members:
                                         prepared_replay_adoption[(logical_key, accepted_members)] = (
                                             membership_read.prepare_raw_revision_replay_adoption(

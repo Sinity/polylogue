@@ -38,6 +38,7 @@ from polylogue.sources.tool_result_reasons import unknown_reason
 from .base import (
     AdmissionLedger,
     AdmissionUnit,
+    ParseAccounting,
     ParsedContentBlock,
     ParsedMessage,
     ParsedSession,
@@ -632,6 +633,40 @@ def _newer_timestamp_pair(
     if current is None or candidate[0] > current[0]:
         return candidate
     return current
+
+
+def finalize_codex_session(
+    session: ParsedSession,
+    *,
+    messages: Sequence[ParsedMessage],
+    session_events: Sequence[ParsedSessionEvent],
+    updated_at: str | None,
+    unit_accounting: ParseAccounting,
+    mark_active_leaf: bool,
+    active_leaf_message_provider_id: str | None = None,
+) -> ParsedSession:
+    """Apply the canonical final session fields to an ordinary or prefix parse.
+
+    Checkpointed prefixes use a read-only message view whose final row already
+    carries its own active-leaf bit. Ordinary parsing asks this helper to mark
+    the final occurrence in its sink, preserving the existing behavior.
+    """
+    if mark_active_leaf:
+        if isinstance(messages, list):
+            messages = mark_last_occurrence_as_active_leaf(cast(list[ParsedMessage], messages))
+        elif messages and isinstance(messages, MutableSequence):
+            messages[-1] = messages[-1].model_copy(update={"is_active_leaf": True})
+    if active_leaf_message_provider_id is None and messages:
+        active_leaf_message_provider_id = messages[-1].provider_message_id if messages[-1].provider_message_id else None
+    return session.model_copy(
+        update={
+            "messages": messages,
+            "session_events": session_events,
+            "updated_at": updated_at,
+            "active_leaf_message_provider_id": active_leaf_message_provider_id,
+            "unit_accounting": unit_accounting,
+        }
+    )
 
 
 def _has_continuation_evidence(
@@ -5251,13 +5286,6 @@ def _parse_records(
         commit_val = session_git.get("commit_hash")
         if isinstance(commit_val, str) and commit_val.strip():
             git_commit_hash_typed = commit_val.strip()
-    active_leaf_message_provider_id = (
-        messages[-1].provider_message_id if messages and messages[-1].provider_message_id else None
-    )
-    if message_sink is None:
-        messages = mark_last_occurrence_as_active_leaf(cast(list[ParsedMessage], messages))
-    elif messages:
-        messages[-1] = messages[-1].model_copy(update={"is_active_leaf": True})
     unit_accounting = admission.close()
 
     session = ParsedSession(
@@ -5267,7 +5295,7 @@ def _parse_records(
         created_at=session_timestamp,
         updated_at=updated_at_pair[1] if updated_at_pair is not None else None,
         messages=cast(list[ParsedMessage], messages) if message_sink is None else [],
-        active_leaf_message_provider_id=active_leaf_message_provider_id,
+        active_leaf_message_provider_id=None,
         session_events=cast(list[ParsedSessionEvent], session_events) if event_sink is None else [],
         parent_session_provider_id=parent_id,
         branch_type=branch_type,
@@ -5283,7 +5311,16 @@ def _parse_records(
         updates["messages"] = messages
     if event_sink is not None:
         updates["session_events"] = session_events
-    return session.model_copy(update=updates) if updates else session
+    if updates:
+        session = session.model_copy(update=updates)
+    return finalize_codex_session(
+        session,
+        messages=messages,
+        session_events=session_events,
+        updated_at=updated_at_pair[1] if updated_at_pair is not None else None,
+        unit_accounting=unit_accounting,
+        mark_active_leaf=True,
+    )
 
 
 @parser_admission("codex", scan=codex_unknown_wire_type)
