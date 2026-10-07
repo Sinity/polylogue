@@ -5121,10 +5121,14 @@ class LiveBatchProcessor:
         # mutable browser snapshots can arrive through the generic inbox.
         source_name = self._source_name_for(path)
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
-        if path_declaration_refuses_session(provider, path):
-            return None
         path_artifact = classify_artifact_path(str(path), provider=provider)
         is_hook_carrier = path_artifact is not None and path_artifact.kind is ArtifactKind.HOOK_EVENT_CARRIER
+        # Hook carriers are declared raw-only because they are never session
+        # transcripts, but their retained bytes still have a physical append
+        # route. Apply the session-parsing refusal only to other raw-only
+        # artifacts so a grown carrier can retain its exact new byte slice.
+        if not is_hook_carrier and path_declaration_refuses_session(provider, path):
+            return None
         if path.suffix.lower() != ".jsonl" and not (path.suffix.lower() == ".ndjson" and is_hook_carrier):
             return None
         if source_name == "hermes" and not is_hook_carrier:
