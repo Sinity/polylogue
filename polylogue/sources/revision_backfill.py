@@ -3747,7 +3747,7 @@ def prepare_revision_source_census(
                     f"current retained parser receipt lacks captured validation evidence for raw {raw_id}"
                 )
             return False
-        if artifact is not None and artifact.codex_state_kind is not None:
+        if artifact.codex_state_kind is not None:
             # Append fragments have no stable artifact-observation coordinate.
             # Their parser receipt is byte-governed; never mint an artifact at -1.
             if source_index < 0:
@@ -3907,7 +3907,7 @@ def prepare_revision_source_census(
         prepared = prepared_inputs.get(raw_id)
         artifact = prepared.prepared_artifact if prepared is not None else None
         verdict = artifact.validation_verdict if artifact is not None else None
-        if verdict is not None:
+        if verdict is not None and artifact is not None:
             if (
                 verdict.raw_id != raw_id
                 or verdict.revision_sha256 != evidence_reader.raw_revision_descriptor(raw_id)[1]
