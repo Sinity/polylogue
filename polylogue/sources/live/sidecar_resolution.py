@@ -150,34 +150,54 @@ class RetainedSidecarResolver:
         tool_results_dir = resolve_tool_results_dir(source_path)
         if tool_results_dir is None or source_path is None:
             return UNRESOLVED_SIDECAR_SCOPE
+        scope_key = str(tool_results_dir)
         with self._source_reader() as conn:
             if conn is None and self._source_read is None:
-                return UNRESOLVED_SIDECAR_SCOPE
+                return RetainedSidecarScope(scope_key=scope_key)
             rows = self._children_of(conn, tool_results_dir)
             if not rows:
-                return UNRESOLVED_SIDECAR_SCOPE
+                return RetainedSidecarScope(scope_key=scope_key)
             siblings = self._retained_siblings(conn, source_path)
+        witness = tuple(
+            (
+                "file",
+                row.source_path,
+                row.raw_id,
+                row.blob_hash,
+                row.blob_size,
+                row.file_mtime_ms,
+            )
+            for row in rows
+        ) + tuple(
+            ("sibling", sibling.coordinate, sibling.selection_witness, sibling.record_blobs) for sibling in siblings
+        )
         return RetainedSidecarScope(
-            scope_key=str(tool_results_dir),
+            scope_key=scope_key,
             files=tuple(self._as_file(row) for row in rows),
             siblings=siblings,
             available=True,
+            witness=witness,
         )
 
     def gemini_cli_scope(self, source_path: str | Path | None, session_id: str | None) -> RetainedSidecarScope:
         tool_outputs_dir = resolve_tool_outputs_dir(source_path, session_id)
         if tool_outputs_dir is None:
             return UNRESOLVED_SIDECAR_SCOPE
+        scope_key = str(tool_outputs_dir)
         with self._source_reader() as conn:
             if conn is None and self._source_read is None:
-                return UNRESOLVED_SIDECAR_SCOPE
+                return RetainedSidecarScope(scope_key=scope_key)
             rows = self._children_of(conn, tool_outputs_dir)
         if not rows:
-            return UNRESOLVED_SIDECAR_SCOPE
+            return RetainedSidecarScope(scope_key=scope_key)
+        witness = tuple(
+            ("file", row.source_path, row.raw_id, row.blob_hash, row.blob_size, row.file_mtime_ms) for row in rows
+        )
         return RetainedSidecarScope(
-            scope_key=str(tool_outputs_dir),
+            scope_key=scope_key,
             files=tuple(self._as_file(row) for row in rows),
             available=True,
+            witness=witness,
         )
 
     # -- retained reads -------------------------------------------------
@@ -308,7 +328,10 @@ class RetainedSidecarResolver:
                 largest = max(candidate_rows, key=lambda row: row[2])
                 siblings.append(
                     SiblingTranscript(
-                        coordinate=candidate, open_records=self._records_from_blobs([(largest[5], largest[0])])
+                        coordinate=candidate,
+                        open_records=self._records_from_blobs([(largest[5], largest[0])]),
+                        record_blobs=((largest[5], largest[0]),),
+                        selection_witness=tuple(tuple(row) for row in candidate_rows),
                     )
                 )
                 continue
@@ -343,7 +366,14 @@ class RetainedSidecarResolver:
                 assert step[4] is not None
                 end = step[4]
                 last_raw_id = step[5]
-            siblings.append(SiblingTranscript(coordinate=candidate, open_records=self._records_from_blobs(blob_hashes)))
+            siblings.append(
+                SiblingTranscript(
+                    coordinate=candidate,
+                    open_records=self._records_from_blobs(blob_hashes),
+                    record_blobs=tuple(blob_hashes),
+                    selection_witness=tuple(tuple(row) for row in candidate_rows),
+                )
+            )
         return tuple(siblings)
 
     def _records_from_blobs(self, blob_hashes: list[tuple[str, str]]) -> Callable[[], Iterator[object]]:
@@ -373,6 +403,9 @@ class RetainedSidecarResolver:
             byte_size=row.blob_size,
             file_mtime_ms=row.file_mtime_ms,
             read_text=self._text_from_blob(row.raw_id, row.blob_hash),
+            raw_id=row.raw_id,
+            blob_hash=row.blob_hash,
+            source_path=row.source_path,
         )
 
     def _text_from_blob(self, raw_id: str, blob_hash: str) -> Callable[[], str]:

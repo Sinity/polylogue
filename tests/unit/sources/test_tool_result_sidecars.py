@@ -27,10 +27,35 @@ from polylogue.sources.live.tool_result_sidecars import (
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers.claude.code_parser import apply_tool_result_sidecars, parse_code
 from polylogue.sources.revision_backfill import _parse_one
-from polylogue.sources.sidecar_evidence import RetainedSidecarFile, RetainedSidecarScope, SiblingTranscript
+from polylogue.sources.sidecar_evidence import (
+    CapturedSidecarResolver,
+    RetainedSidecarFile,
+    RetainedSidecarScope,
+    SiblingTranscript,
+)
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
 _TRUNCATED_NEEDLE = "zz_sentinel_needle_only_in_full_output"
+
+
+def test_captured_sidecar_resolver_has_no_ambient_path_fallback(tmp_path: Path) -> None:
+    """Detached parsing sees only the explicitly captured scope for a path."""
+    source_path = tmp_path / "project" / "session.jsonl"
+    staged = tmp_path / "captured-output.txt"
+    staged.write_text("captured", encoding="utf-8")
+    scope = RetainedSidecarScope(
+        scope_key=str(tmp_path / "project" / "session" / "tool-results"),
+        files=(RetainedSidecarFile("output.txt", 8, None, lambda: staged.read_text()),),
+        available=True,
+        witness=(("file", "raw-captured", "a" * 64),),
+    )
+    resolver = CapturedSidecarResolver({source_path.as_posix(): scope})
+
+    assert resolver.claude_code_scope(source_path) is scope
+    unresolved = resolver.claude_code_scope(tmp_path / "project" / "other.jsonl")
+    assert unresolved.available is False
+    assert unresolved.files == ()
+    assert unresolved.scope_key == ""
 
 
 def _dir_scope(tool_results_dir: Path) -> RetainedSidecarScope:

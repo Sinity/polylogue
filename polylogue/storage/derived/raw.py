@@ -1472,7 +1472,7 @@ class RawObservationDerivation(RawObservationInspection):
         replacement: RawObservationReplacement | None = None
         try:
             if first_source_binding:
-                seal = self._prepare_codex_neutral_then_rebind(
+                seal = self._prepare_neutral_jsonl_then_rebind(
                     key,
                     selection=selection,
                     seal=seal,
@@ -1505,7 +1505,7 @@ class RawObservationDerivation(RawObservationInspection):
                 raise BaseExceptionGroup("retained preparation and cleanup failed", [primary, *failures]) from primary
             raise
 
-    def _prepare_codex_neutral_then_rebind(
+    def _prepare_neutral_jsonl_then_rebind(
         self,
         key: str,
         *,
@@ -1513,16 +1513,26 @@ class RawObservationDerivation(RawObservationInspection):
         seal: PreparedIndexMutation,
         carry: _PreparationCarry,
     ) -> PreparedIndexMutation:
-        """Parse selected Codex JSONL raws outside Source observers, then bind afresh.
+        """Parse selected Codex or Claude Code JSONL raws, then bind afresh.
 
         The private byte copies are made while the original Source witness is
         current. Parsing and retained-schema validation use only those copies.
-        A new witness then proves the same selected raws and parser operands
-        before enrichment and publication artifacts are made.
+        Claude Code's declared sidecars and sibling ownership transcripts are
+        staged from their retained CAS rows and supplied through a resolver
+        with no ambient filesystem fallback. A new witness proves the same
+        selected raws and parser operands before enrichment and publication.
         """
         from polylogue.archive.revision_authority import RawRevisionKind
         from polylogue.sources.dispatch import is_jsonl_source_path, is_stream_record_provider
+        from polylogue.sources.origin_specs import path_declaration_refuses_session
         from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+        from polylogue.sources.sidecar_evidence import (
+            CapturedSidecarResolver,
+            RetainedSidecarFile,
+            RetainedSidecarScope,
+            SiblingTranscript,
+            iter_jsonl_records,
+        )
         from polylogue.sources.sqlite_export import looks_like_logical_source_path
         from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
         from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
@@ -1532,22 +1542,23 @@ class RawObservationDerivation(RawObservationInspection):
             str,
             tuple[tuple[object, ...], str | None, str | None, str | None, object, str | None, Path],
         ] = {}
+        sidecar_scope_by_raw: dict[str, RetainedSidecarScope] = {}
+        captured_sidecar_scopes: dict[str, RetainedSidecarScope] = {}
+        staged_sidecars: dict[tuple[str, str], Path] = {}
         with seal.original_read_snapshot(), seal.source_producer():
             read = PreparedSessionSourceRead(seal, blob_store=blob_store)
             selected = (key,) if selection is None else tuple(selection(read))
             raw_ids, logical_keys = read.expand_raw_membership_selection(selected)
             if not raw_ids:
                 return seal
-            operands: dict[
-                str,
-                tuple[tuple[object, ...], str | None, str | None, str | None, object, str | None],
-            ] = {}
+            operands: dict[str, tuple[object, ...]] = {}
             for raw_id in raw_ids:
                 descriptor = read.raw_revision_descriptor(raw_id)
                 provider, _blob_hash, source_path, kind, _raw_size = descriptor
                 if (
-                    provider is not Provider.CODEX
+                    provider not in {Provider.CODEX, Provider.CLAUDE_CODE}
                     or not is_jsonl_source_path(source_path)
+                    or path_declaration_refuses_session(provider, source_path)
                     or looks_like_logical_source_path(Path(source_path))
                 ):
                     return seal
@@ -1567,22 +1578,116 @@ class RawObservationDerivation(RawObservationInspection):
 
                 weakref.finalize(carry.scratch_owner, discard_decoded_sessions_under, Path(carry.scratch_owner.name))
             scratch = Path(carry.scratch_owner.name)
+
+            def capture_sidecar_payload(raw_id: str, blob_hash: str, expected_size: int) -> Path:
+                identity = (raw_id, blob_hash)
+                existing = staged_sidecars.get(identity)
+                if existing is not None:
+                    return existing
+                directory = Path(tempfile.mkdtemp(prefix="claude-sidecar-", dir=scratch))
+                target_path = directory / "payload.bin"
+                digest = hashlib.sha256()
+                copied = 0
+                with (
+                    read.open_sidecar_payload(raw_id, bytes.fromhex(blob_hash)) as source,
+                    target_path.open("xb") as target,
+                ):
+                    while chunk := source.read(1024 * 1024):
+                        check_compute_cancelled()
+                        target.write(chunk)
+                        digest.update(chunk)
+                        copied += len(chunk)
+                if copied != expected_size or digest.hexdigest() != blob_hash:
+                    raise RetainedPreparationRetryableError(
+                        f"retained Claude sidecar changed while staging raw {raw_id}"
+                    )
+                staged_sidecars[identity] = target_path
+                return target_path
+
+            retained_sidecar_resolver = read.retained_sidecar_resolver()
             for raw_id in raw_ids:
-                descriptor, profile, fallback_timestamp, native_id, zip_coordinate, append_logical_key = operands[
-                    raw_id
-                ]
+                descriptor = operands[raw_id][0]
+                provider, _hash, source_path, _kind, _size = descriptor
+                if provider is not Provider.CLAUDE_CODE:
+                    continue
+                scope = retained_sidecar_resolver.claude_code_scope(source_path)
+                sidecar_scope_by_raw[raw_id] = scope
+                staged_files: list[RetainedSidecarFile] = []
+                staged_siblings: list[SiblingTranscript] = []
+                for retained_file in scope.files:
+                    if retained_file.raw_id is None or retained_file.blob_hash is None:
+                        raise RetainedPreparationRetryableError("retained Claude sidecar lacks a durable byte identity")
+                    # The resolver already chose the exact durable raw and
+                    # size. Read that raw's canonical descriptor under this
+                    # same source witness to bind the staged bytes.
+                    _provider, file_hash, file_path, _kind, file_size = read.raw_revision_descriptor(
+                        retained_file.raw_id
+                    )
+                    if file_hash != retained_file.blob_hash or file_path != retained_file.source_path:
+                        raise RetainedPreparationRetryableError("retained Claude sidecar descriptor changed")
+                    staged_path = capture_sidecar_payload(retained_file.raw_id, file_hash, file_size)
+                    staged_files.append(
+                        RetainedSidecarFile(
+                            filename=retained_file.filename,
+                            byte_size=retained_file.byte_size,
+                            file_mtime_ms=retained_file.file_mtime_ms,
+                            read_text=partial(staged_path.read_text, encoding="utf-8", errors="replace"),
+                            raw_id=retained_file.raw_id,
+                            blob_hash=retained_file.blob_hash,
+                            source_path=retained_file.source_path,
+                        )
+                    )
+                for sibling in scope.siblings:
+                    staged_records: list[Path] = []
+                    for sibling_raw_id, sibling_hash in sibling.record_blobs:
+                        _provider, actual_hash, _path, _kind, sibling_size = read.raw_revision_descriptor(
+                            sibling_raw_id
+                        )
+                        if actual_hash != sibling_hash:
+                            raise RetainedPreparationRetryableError("retained Claude sibling descriptor changed")
+                        staged_records.append(capture_sidecar_payload(sibling_raw_id, actual_hash, sibling_size))
+
+                    def open_records(paths: tuple[Path, ...] = tuple(staged_records)) -> Iterator[object]:
+                        for record_path in paths:
+                            check_compute_cancelled()
+                            with record_path.open("rb") as handle:
+                                yield from iter_jsonl_records(lambda: iter(handle))
+
+                    staged_siblings.append(
+                        SiblingTranscript(
+                            coordinate=sibling.coordinate,
+                            open_records=open_records,
+                            record_blobs=sibling.record_blobs,
+                            selection_witness=sibling.selection_witness,
+                        )
+                    )
+                captured_sidecar_scopes[Path(source_path).as_posix()] = RetainedSidecarScope(
+                    scope_key=scope.scope_key,
+                    files=tuple(staged_files),
+                    siblings=tuple(staged_siblings),
+                    available=scope.available,
+                    witness=scope.witness,
+                )
+            for raw_id in raw_ids:
+                scope = sidecar_scope_by_raw.get(raw_id)
+                signature = None if scope is None else (scope.scope_key, scope.available, scope.witness)
+                operands[raw_id] = (*operands[raw_id], signature)
+            for raw_id in raw_ids:
+                descriptor, profile, fallback_timestamp, native_id, zip_coordinate, append_logical_key, _sidecar = (
+                    operands[raw_id]
+                )
                 provider, blob_hash, _source_path, _kind, raw_size = descriptor
                 input_hash, input_size = seal.retain_original_blob_input(raw_id)
                 if input_hash != bytes.fromhex(blob_hash) or input_size != raw_size:
                     raise RetainedPreparationRetryableError(
-                        f"retained raw input identity changed before neutral Codex preparation: {raw_id}"
+                        f"retained raw input identity changed before neutral preparation: {raw_id}"
                     )
                 blob_path = read.raw_revision_blob_path(raw_id)
                 if blob_path is None:
-                    raise RetainedPreparationRetryableError(f"retained Codex bytes are absent for raw {raw_id}")
+                    raise RetainedPreparationRetryableError(f"retained JSONL bytes are absent for raw {raw_id}")
                 before = self._blob_stat_identity(blob_path)
                 if not blob_store.verify(blob_hash, stop=compute_cancel_requested):
-                    raise RetainedPreparationRetryableError(f"retained Codex blob changed for raw {raw_id}")
+                    raise RetainedPreparationRetryableError(f"retained JSONL blob changed for raw {raw_id}")
                 neutral_directory = Path(tempfile.mkdtemp(prefix="codex-neutral-", dir=scratch))
                 staged_blob = neutral_directory / "input.jsonl"
                 digest = hashlib.sha256()
@@ -1595,7 +1700,7 @@ class RawObservationDerivation(RawObservationInspection):
                         copied += len(chunk)
                 after = self._blob_stat_identity(blob_path)
                 if before != after or copied != raw_size or digest.hexdigest() != blob_hash:
-                    raise RetainedPreparationRetryableError(f"retained Codex input changed while staging raw {raw_id}")
+                    raise RetainedPreparationRetryableError(f"retained JSONL input changed while staging raw {raw_id}")
                 captures[raw_id] = (
                     descriptor,
                     profile,
@@ -1618,6 +1723,13 @@ class RawObservationDerivation(RawObservationInspection):
         scratch = Path(carry.scratch_owner.name)
         neutral_keys: dict[str, tuple[object, ...]] = {}
         neutral_by_raw: dict[str, PreparedJsonl] = {}
+        captured_sidecar_resolver = CapturedSidecarResolver(captured_sidecar_scopes)
+
+        def sidecar_signature(raw_id: str) -> tuple[object, ...] | None:
+            scope = sidecar_scope_by_raw.get(raw_id)
+            if scope is None:
+                return None
+            return (scope.scope_key, scope.available, scope.witness)
 
         def prepare_neutral(raw_id: str) -> PreparedJsonl:
             descriptor, profile, fallback_timestamp, native_id, _zip_coordinate, append_logical_key, staged_blob = (
@@ -1651,6 +1763,7 @@ class RawObservationDerivation(RawObservationInspection):
                 source_sha256=blob_hash,
                 strict_jsonl_records=True,
                 parse_prefix_size=parse_prefix_size,
+                sidecar_resolver=captured_sidecar_resolver,
             )
             if neutral.error is None and neutral.resolved_provider is not None:
                 from polylogue.sources.revision_backfill import _retained_validation_input
@@ -1685,6 +1798,7 @@ class RawObservationDerivation(RawObservationInspection):
                 fallback_timestamp,
                 profile,
                 self._validation_mode,
+                sidecar_signature(raw_id),
             )
             neutral_keys[raw_id] = artifact_key
 
@@ -1694,7 +1808,7 @@ class RawObservationDerivation(RawObservationInspection):
         groups: dict[str, list[str]] = {}
         for raw_id in raw_ids:
             descriptor = captures[raw_id][0]
-            if descriptor[3].value in {"full", "unknown"}:
+            if descriptor[0] is Provider.CODEX and descriptor[3].value in {"full", "unknown"}:
                 groups.setdefault(descriptor[2], []).append(raw_id)
 
         class CapturedCodexRead:
@@ -1794,13 +1908,19 @@ class RawObservationDerivation(RawObservationInspection):
                 fresh_read = PreparedSessionSourceRead(fresh, blob_store=blob_store)
                 fresh_selected = (key,) if selection is None else tuple(selection(fresh_read))
                 fresh_raw_ids, fresh_logical_keys = fresh_read.expand_raw_membership_selection(fresh_selected)
-                fresh_operands: dict[
-                    str,
-                    tuple[tuple[object, ...], str | None, str | None, str | None, object, str | None],
-                ] = {}
+                fresh_operands: dict[str, tuple[object, ...]] = {}
                 if fresh_raw_ids == raw_ids:
+                    fresh_sidecar_resolver = fresh_read.retained_sidecar_resolver()
                     for raw_id in fresh_raw_ids:
                         descriptor = fresh_read.raw_revision_descriptor(raw_id)
+                        sidecar_signature: tuple[object, ...] | None = None
+                        if descriptor[0] is Provider.CLAUDE_CODE:
+                            fresh_scope = fresh_sidecar_resolver.claude_code_scope(descriptor[2])
+                            sidecar_signature = (
+                                fresh_scope.scope_key,
+                                fresh_scope.available,
+                                fresh_scope.witness,
+                            )
                         fresh_operands[raw_id] = (
                             descriptor,
                             fresh_read.raw_profile_identity(raw_id),
@@ -1808,6 +1928,7 @@ class RawObservationDerivation(RawObservationInspection):
                             fresh_read.raw_native_id(raw_id) if descriptor[3].value == "append" else None,
                             fresh_read.raw_captured_zip_coordinate(raw_id),
                             fresh_read.raw_append_logical_key(raw_id) if descriptor[3].value == "append" else None,
+                            sidecar_signature,
                         )
                 if (fresh_raw_ids, fresh_logical_keys) != original_selection or fresh_operands != operands:
                     raise _CarryInvalidatedError
@@ -1840,6 +1961,7 @@ class RawObservationDerivation(RawObservationInspection):
                             session_sequence: object,
                             *,
                             retained_raw_id: str = raw_id,
+                            retained_provider: Provider = provider,
                             retained_path: str = source_path,
                             retained_fallback: str | None = fallback_timestamp,
                             retained_zip: object = zip_coordinate,
@@ -1847,7 +1969,7 @@ class RawObservationDerivation(RawObservationInspection):
                         ) -> Iterable[ParsedSession]:
                             return iter_enriched_sessions_from_retained_read(
                                 evidence_reader=fresh_read,
-                                provider=Provider.CODEX,
+                                provider=retained_provider,
                                 source_path=retained_path,
                                 sessions=session_sequence,
                                 captured_zip_coordinate=retained_zip,

@@ -721,6 +721,174 @@ def test_codex_neutral_parse_survives_unrelated_source_commit(
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (inserted[0],)).fetchone() == (1,)
 
 
+def test_claude_neutral_parse_uses_retained_sidecars_and_survives_source_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude's detached parser consumes captured CAS sidecars, then binds current Source."""
+    from polylogue.schemas import validate_retained_document as validate_original
+    from polylogue.sources import prepared_jsonl as prepared_jsonl_module
+
+    bootstrap_archive_root(tmp_path)
+    session_id = "2c9fbada-0d07-4429-8728-63f70e3c672f"
+    project = tmp_path / "projects" / "-realm-project-polylogue"
+    owner_path = project / f"{session_id}.jsonl"
+    sidecar_path = project / session_id / "tool-results" / "toolu_capture.txt"
+    sidecar_text = "retained-output-only: " + ("synthetic output " * 40)
+    sidecar = _admit(
+        tmp_path,
+        (),
+        provider=Provider.UNKNOWN,
+        path=sidecar_path.as_posix(),
+        payload=sidecar_text.encode(),
+    )
+    sibling_sidecar_path = project / session_id / "tool-results" / "toolu_sibling.txt"
+    sibling_sidecar = _admit(
+        tmp_path,
+        (),
+        provider=Provider.UNKNOWN,
+        path=sibling_sidecar_path.as_posix(),
+        payload=b"sibling-owned output",
+    )
+    sibling_path = project / session_id / "subagents" / "agent-capture.jsonl"
+    sibling_payload = (
+        json.dumps(
+            {
+                "type": "assistant",
+                "uuid": "a-sibling",
+                "sessionId": session_id,
+                "timestamp": "2026-07-20T10:00:03Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "toolu_sibling", "name": "Bash", "input": {}}],
+                },
+            }
+        )
+        + "\n"
+    ).encode()
+    sibling_raw = _admit(
+        tmp_path,
+        (),
+        provider=Provider.CLAUDE_CODE,
+        path=sibling_path.as_posix(),
+        payload=sibling_payload,
+        acquired_at_ms=2,
+    )
+    pointer = f"<persisted-output>Output too large. Full output saved to: {sidecar_path}</persisted-output>"
+    owner_payload = (
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "u-capture",
+                "sessionId": session_id,
+                "timestamp": "2026-07-20T10:00:00Z",
+                "message": {"role": "user", "content": "run it"},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "assistant",
+                "uuid": "a-capture",
+                "parentUuid": "u-capture",
+                "sessionId": session_id,
+                "timestamp": "2026-07-20T10:00:01Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "toolu_capture", "name": "Bash", "input": {}}],
+                },
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "user",
+                "uuid": "u-result",
+                "parentUuid": "a-capture",
+                "sessionId": session_id,
+                "timestamp": "2026-07-20T10:00:02Z",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "toolu_capture", "content": pointer}],
+                },
+            }
+        )
+        + "\n"
+    ).encode()
+    target = _admit(
+        tmp_path,
+        (),
+        provider=Provider.CLAUDE_CODE,
+        path=owner_path.as_posix(),
+        payload=owner_payload,
+        acquired_at_ms=3,
+    )
+    parse_calls = 0
+    validation_calls = 0
+    inserted: list[str] = []
+    prepare_original = prepared_jsonl_module.prepare_jsonl_blob
+
+    def counted_prepare(*args: object, **kwargs: object) -> object:
+        nonlocal parse_calls
+        parse_calls += 1
+        return prepare_original(*args, **kwargs)
+
+    def commit_during_validation(*args: object, **kwargs: object) -> object:
+        nonlocal validation_calls
+        validation_calls += 1
+        verdict = validate_original(*args, **kwargs)
+        if not inserted:
+            inserted.append(
+                _admit(
+                    tmp_path,
+                    (),
+                    provider=Provider.CLAUDE_CODE,
+                    path="projects/unrelated.jsonl",
+                    payload=b'{"type":"queue-operation","operation":"compact"}\n',
+                    acquired_at_ms=3,
+                )
+            )
+        return verdict
+
+    monkeypatch.setattr(prepared_jsonl_module, "prepare_jsonl_blob", counted_prepare)
+    monkeypatch.setattr("polylogue.schemas.validate_retained_document", commit_during_validation)
+
+    report = run_on_convergence_owner(
+        tmp_path,
+        "test.raw.claude-neutral-rebind",
+        lambda compute: converge(
+            DerivationRegistry((RawObservationDerivation(tmp_path, compute_adapter=compute),)),
+            raw_observation_frame(tmp_path, raw_ids=(target,)),
+            budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
+            publisher=admit_stage_write,
+        ),
+    )
+
+    assert report.failed == 0, report.outcomes
+    assert report.done == 1
+    assert parse_calls == 1
+    assert validation_calls == 1
+    assert len(inserted) == 1
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        rows = conn.execute(
+            "SELECT b.text FROM blocks b JOIN sessions s ON s.session_id = b.session_id "
+            "WHERE s.raw_id = ? AND b.block_type = 'tool_result'",
+            (target,),
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == sidecar_text
+        assert conn.execute(
+            "SELECT COUNT(*) FROM session_events e JOIN sessions s ON s.session_id = e.session_id "
+            "WHERE s.raw_id = ? AND e.event_type = 'claude_tool_result_sidecar'",
+            (target,),
+        ).fetchone() == (1,), "the sibling-owned file is resolved from its retained tool_use record"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sidecar,)).fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sibling_sidecar,)).fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (sibling_raw,)).fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (inserted[0],)).fetchone() == (1,)
+
+
 def test_canonical_split_root_route_uses_the_explicit_archive_root(tmp_path: Path) -> None:
     """The routed archive root owns both source bytes and its active index."""
     configured_root = tmp_path / "configured"
