@@ -635,7 +635,17 @@ class RawObservationInspection:
                     ) as identity:
                         if identity.fetchone() is None:
                             return "excess"
-            if not measured.observed_count:
+            parser_non_session = (
+                membership is not None
+                and membership["status"] == "non_session"
+                and membership["parser_fingerprint"] == self.recipe_version
+            )
+            if not measured.observed_count or non_session or parser_non_session:
+                # A non-session artifact (a hook carrier on its physical
+                # chain) inherits its own durable chain key into the census
+                # but owns no session output: there is no revision
+                # application or head to verify, and demanding one left the
+                # key "missing" on every pass.
                 return "valid"
             with closing(measured.iter_durable_bindings()) as bindings:
                 for logical_key, source_key in bindings:

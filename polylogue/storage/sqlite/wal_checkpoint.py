@@ -93,7 +93,12 @@ def checkpoint_connection(
     if mode not in CHECKPOINT_MODES or mode not in CHECKPOINT_ESCALATION_MODES[boundary]:
         raise ValueError(f"checkpoint mode {mode} is not permitted at {boundary} boundary")
     with timed_io_phase(getattr(conn, "_metric_tier", None), "checkpoint"):
-        row = conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
+        # ``main`` only. An unqualified checkpoint also walks every attached
+        # tier; an Index connection attaches Source read-only, and SQLite
+        # backfilling that WAL through a read-only descriptor fails with
+        # SQLITE_IOERR_WRITE, while the returned counts would no longer
+        # describe the one WAL this boundary owns.
+        row = conn.execute(f"PRAGMA main.wal_checkpoint({mode})").fetchone()
     if row is None:
         raise sqlite3.OperationalError(f"checkpoint returned no result for {mode}")
     return tuple(int(value or 0) for value in row)  # type: ignore[return-value]

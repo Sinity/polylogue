@@ -74,14 +74,9 @@ def produce_direct_status(
     from polylogue.storage.archive_readiness import archive_readiness_status_from_connections
 
     index_conn = _required_index_connection(archive)
-    # The pinned snapshot names both roots: the configured archive root and the
-    # directory the served index actually lives in.  Hardcoding the match made
-    # a redirected/shadow active index report as the configured one
-    # (polylogue-bu47u); this is the same comparison
-    # ``cli/commands/paths.py`` publishes, computed from the snapshot alone so
-    # this producer still resolves nothing.
+    # The pinned snapshot names both roots from the snapshot alone, so this
+    # producer still resolves nothing (``archive_identity_status``).
     configured_root = Path(archive.archive_root)
-    active_root = Path(archive.index_db_path).parent
     source_conn = _source_connection(archive)
     ops_conn = _attached_connection(index_conn, "ops_tier")
     archive_stats = archive.stats().to_dict()
@@ -269,9 +264,7 @@ def produce_direct_status(
             status_snapshot=None,
         ),
         "daemon_liveness": False,
-        "archive_root": str(configured_root),
-        "active_archive_root": str(active_root),
-        "active_archive_root_matches_configured": _same_directory(configured_root, active_root),
+        **archive_identity_status(configured_root, Path(archive.index_db_path)),
         "db_exists": "index" not in archive.operation_degraded_components,
         "active_db_path": str(archive.index_db_path),
         "config_exists": config is not None,
@@ -304,6 +297,21 @@ def produce_direct_status(
     payload.update(archive_stats)
     payload.update(raw_failures)
     return normalize_raw_frontier_status_payload(payload, snapshot_state="pinned")
+
+
+def archive_identity_status(configured_root: Path, index_db_path: Path) -> dict[str, object]:
+    """Name the archive a status answer is for, on every status route.
+
+    ``active_archive_root`` is the directory the served index actually lives
+    in, so a redirected or shadow active index never reports as the
+    configured one (polylogue-bu47u).
+    """
+    active_root = index_db_path.parent
+    return {
+        "archive_root": str(configured_root),
+        "active_archive_root": str(active_root),
+        "active_archive_root_matches_configured": _same_directory(configured_root, active_root),
+    }
 
 
 def _same_directory(left: Path, right: Path) -> bool:

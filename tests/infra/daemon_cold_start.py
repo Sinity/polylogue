@@ -302,18 +302,6 @@ def _durable_parse_error(archive: Path, source_path: Path) -> str | None:
         return None
 
 
-def _unpublished_candidate_session_count(archive: Path) -> int | None:
-    """Observe cold-build work without mistaking its inactive tier for publication."""
-    counts: list[int] = []
-    for db in (archive / ".index-generations").glob("*/index.db"):
-        try:
-            with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=0.1) as conn:
-                counts.append(int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]))
-        except sqlite3.Error:
-            continue
-    return max(counts) if counts else None
-
-
 def _process_tree_rss(
     root_pid: int,
     *,
@@ -876,33 +864,24 @@ def qualify(
                             receipt["outcome"] = "success"
                             break
                     if malformed_last and durable_raw_count_max >= 3:
+                        # A deterministic parser failure on unchanged bytes is a
+                        # settled refusal: the cold generation completes and
+                        # publishes the two sound sessions, and the malformed
+                        # third keeps a durable parse error instead of a session.
+                        if SESSION_IDS[2] in verified:
+                            raise AssertionError("the malformed session was published")
                         parse_error = _durable_parse_error(
                             archive, projects / FIXTURE_NESTED_SESSION
                         ) or _durable_parse_error(archive, source / FIXTURE_NESTED_SESSION)
-                        candidate_sessions = _unpublished_candidate_session_count(archive)
-                        catchup = latest_status.get("catchup") if isinstance(latest_status, dict) else None
-                        failed_count = (
-                            catchup.get("cumulative_failed_file_attempts") if isinstance(catchup, dict) else None
-                        )
-                        if (
-                            parse_error is not None
-                            and candidate_sessions == 2
-                            and isinstance(failed_count, int)
-                            and failed_count > 0
-                        ):
-                            if verified:
-                                raise AssertionError(
-                                    f"incomplete cold generation published partial sessions: {sorted(verified)}"
-                                )
+                        if parse_error is not None and verified == set(SESSION_IDS[:2]):
                             expected_malformed_refusal = True
                             receipt["parse_refusal"] = {
                                 "source": FIXTURE_NESTED_SESSION,
                                 "error": parse_error[:500],
                             }
-                            receipt["candidate_sessions_unpublished"] = candidate_sessions
                             receipt["outcome"] = "incomplete_population"
                             raise AssertionError(
-                                "two sessions prepared in an inactive generation; malformed third has a durable parse error"
+                                "two sessions published; malformed third settled as a durable parse refusal"
                             )
                 time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
             else:

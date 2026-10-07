@@ -27,7 +27,7 @@ from polylogue.sources.source_staging import (
     read_staging_receipt,
     write_bound_input,
 )
-from polylogue.sources.sqlite_export import source_byte_page
+from polylogue.sources.sqlite_export import SourceBytePage, source_byte_page
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, snapshot_sqlite_to_blob
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.runtime import RawSessionRecord
@@ -205,7 +205,10 @@ def discover_ingest_input_spool(path: Path, *, source_path: str | None, check_st
 
 @contextmanager
 def _bind_ingest_input_row(
-    row: tuple[str, str, str, str | None], receipt: dict[str, object] | None
+    row: tuple[str, str, str, str | None],
+    receipt: dict[str, object] | None,
+    *,
+    byte_page: SourceBytePage,
 ) -> Iterator[SourceInputBinding]:
     _coordinate, physical_name, logical_path, captured_member = row
     physical = Path(physical_name)
@@ -218,7 +221,9 @@ def _bind_ingest_input_row(
             staged_root = physical.parents[len(relative.parts) - 1]
             binding = owners.enter_context(bind_staged_member(staged_root, member, receipt))
         else:
-            binding = owners.enter_context(bind_source_input(physical))
+            # The page's live reader proves the binding; a fresh worker
+            # process per input made a 10,000-input ingest spawn 10,000.
+            binding = owners.enter_context(bind_source_input(physical, byte_page=byte_page))
         if logical_path != str(physical) and not binding.staged:
             raise ValueError("staged input lacks its captured original source identity")
         yield binding
@@ -253,11 +258,12 @@ def preflight_ingest_input(
                     ).fetchall()
                 if not rows:
                     return
-                for row in rows:
-                    check_stop()
-                    with _bind_ingest_input_row(row, receipt) as binding:
-                        yield binding, binding.source_path.name if row[0] == "input:0" else row[0]
-                    after = row[0]
+                with source_byte_page() as reader:
+                    for row in rows:
+                        check_stop()
+                        with _bind_ingest_input_row(row, receipt, byte_page=reader) as binding:
+                            yield binding, binding.source_path.name if row[0] == "input:0" else row[0]
+                        after = row[0]
 
         with closing(members()) as bound_members:
             result = preflight_import_bindings(
@@ -291,7 +297,9 @@ def retain_input_page(
         for coordinate, physical_name, logical_path, captured_member in rows:
             check_stop()
             physical = Path(physical_name)
-            with _bind_ingest_input_row((coordinate, physical_name, logical_path, captured_member), receipt) as binding:
+            with _bind_ingest_input_row(
+                (coordinate, physical_name, logical_path, captured_member), receipt, byte_page=reader
+            ) as binding:
                 captured_identity = binding.captured_identity
                 if is_sqlite_path(binding.source_path):
                     blob_hash = snapshot_sqlite_to_blob(

@@ -63,7 +63,7 @@ from polylogue.daemon.live_ingest_attempt_progress import (
 from polylogue.daemon.periodic import periodic_loop_payload
 from polylogue.logging import WARNING, emit
 from polylogue.maintenance.archive_verification import read_raw_failure_lifecycle
-from polylogue.operations.daemon_status import overall_status_ok
+from polylogue.operations.daemon_status import archive_identity_status, overall_status_ok
 from polylogue.operations.quick_check import (
     QuickCheckObservation,
     observe_quick_check,
@@ -3201,6 +3201,9 @@ def daemon_status_payload(
             "claim_guard": status.claim_guard,
             "live": live_source_status_payload(watch_sources),
             "browser_capture": browser_capture_status_payload(),
+            # The archive this daemon answers for, from the same producer as
+            # the pinned operation read: the HTTP route serves this payload.
+            **archive_identity_status(archive_root(), _active_status_db_path()),
             "db_path": str(_active_status_db_path()),
             "db_size_bytes": status.db_size_bytes,
             "wal_size_bytes": status.wal_size_bytes,

@@ -18,9 +18,11 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorPathAuthority, CursorStore
+from polylogue.sources.parsers.hermes_identity import declares_profile_identity
 from tests.infra.archive_templates import bootstrap_archive_root
 
 _ROLLOUT = (
@@ -72,10 +74,11 @@ def test_first_cursor_write_claims_the_observed_file_authority(tmp_path: Path, w
     assert record is not None
     observed = CursorPathAuthority.observe(path)
     assert observed.canonical_source_path == str(path.resolve())
-    assert (record.canonical_source_path, record.captured_profile_key) == (
-        observed.canonical_source_path,
-        observed.captured_profile_key,
-    )
+    assert record.canonical_source_path == observed.canonical_source_path
+    # A cursor records a profile key only where acquisition declares one
+    # (``declares_profile_identity``); a Codex rollout declares none.
+    assert not declares_profile_identity(Provider.CODEX)
+    assert record.captured_profile_key is None
     assert _unauthorized_offsets(tmp_path) == []
 
 

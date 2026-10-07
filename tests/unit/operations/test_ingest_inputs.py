@@ -311,7 +311,9 @@ def test_actual_retained_input_page_uses_one_settled_byte_child(
     monkeypatch.setattr(sqlite_export, "_exchange_source_worker", observe_exchange)
     monkeypatch.setattr(subprocess, "Popen", launch)
     assert len(_retain(source, None, tmp_path)) == member_count
-    assert len(binding_children) == member_count
+    # The page's one reader also proves every binding (5525e77e71); a fresh
+    # binding process per input made a 10,241-input ingest spawn 10,241.
+    assert binding_children == []
     assert len(children) == 1 and children[0].poll() == 0
     for child in [*binding_children, *children]:
         assert child.poll() == 0

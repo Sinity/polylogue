@@ -1,11 +1,12 @@
-"""The dispatcher's own cold-build shape (polylogue-6xcqj).
+"""The live write route's cold-build shape (polylogue-6xcqj).
 
 The cold-build write shape used to be reachable only from
 ``sources/revision_backfill.py``: the ordinary live ingest pass took the live
 write profile and the full compare/replace writer no matter how empty the
-index generation was. These tests pin the shape onto the route the daemon's
-intake dispatcher actually uses -- ``LiveBatchProcessor.ingest_files`` -- and
-pin the boundary that hands the generation back to live readers.
+index generation was. These tests pin the shape onto the live write open
+(``_open_archive_for_live_write``), which the append route calls with
+``cold_build=True`` on every pass, and pin the boundary that hands the
+generation back to live readers.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from polylogue.sources.live import WatchSource
+from polylogue.sources.live.archive_open import _open_archive_for_live_write
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.source_layout import export_drop_layout
@@ -56,37 +58,25 @@ def _index_pragma(archive_root: Path, pragma: str) -> object:
 
 
 def test_an_empty_generation_gives_the_live_pass_the_cold_build_shape(tmp_path: Path) -> None:
-    """The store engages the shape from generation state, not a caller flag.
+    """The live write open engages the shape from generation state, not a caller flag.
+
+    The full-ingest pass now writes Source only and publishes through the
+    retained owner (its empty-archive cold build is the owned inactive
+    generation, pinned by ``test_retained_cold_readiness``); the live append
+    route is the one that asks ``_open_archive_for_live_write`` for this shape
+    on every pass.
 
     Anti-vacuity: reverting ``_open_archive_for_live_write`` to the plain
     ``open_existing`` writer, or dropping the emptiness probe so the shape is
     never engaged, makes the ``engaged`` assertion red.
     """
-    root = tmp_path / "sessions"
-    root.mkdir()
-    (root / "one.jsonl").write_bytes(_codex_session("cold-one", "zero"))
-
-    engaged: list[bool] = []
-    processor = _processor(tmp_path, root)
-    original = ArchiveStore.open_active_cold_build.__func__  # type: ignore[attr-defined]
-
-    def recording(cls: type[ArchiveStore], archive_root: Path) -> ArchiveStore:
-        store = cast(ArchiveStore, original(cls, archive_root))
-        engaged.append(store.active_cold_build_engaged)
-        return store
-
-    ArchiveStore.open_active_cold_build = classmethod(recording)  # type: ignore[assignment]
-    try:
-        metrics = run_ingest_files(processor, [root / "one.jsonl"], emit_event=False)
-    finally:
-        ArchiveStore.open_active_cold_build = classmethod(original)  # type: ignore[assignment]
-
-    assert metrics.succeeded_file_count == 1
-    assert engaged and engaged[0] is True
+    bootstrap_archive_root(tmp_path)
+    with _open_archive_for_live_write(tmp_path, cold_build=True) as archive:
+        assert archive.active_cold_build_engaged is True
 
 
 def test_a_populated_generation_falls_back_to_the_live_shape(tmp_path: Path) -> None:
-    """The shape is licensed by emptiness, so the second pass loses it.
+    """The shape is licensed by emptiness, so the next pass loses it.
 
     This is the transition back to the live shape: nothing latches, and no
     caller has to remember to turn it off.
@@ -95,26 +85,20 @@ def test_a_populated_generation_falls_back_to_the_live_shape(tmp_path: Path) -> 
     ``SELECT 1 FROM sessions`` probe (or engage unconditionally) makes the
     second ``engaged`` assertion red.
     """
-    root = tmp_path / "sessions"
-    root.mkdir()
-    (root / "one.jsonl").write_bytes(_codex_session("cold-first", "zero"))
-    (root / "two.jsonl").write_bytes(_codex_session("cold-second", "one"))
+    from polylogue.core.enums import Provider
+    from polylogue.sources.parsers.base import ParsedSession
 
+    bootstrap_archive_root(tmp_path)
     engaged: list[bool] = []
-    processor = _processor(tmp_path, root)
-    original = ArchiveStore.open_active_cold_build.__func__  # type: ignore[attr-defined]
-
-    def recording(cls: type[ArchiveStore], archive_root: Path) -> ArchiveStore:
-        store = cast(ArchiveStore, original(cls, archive_root))
-        engaged.append(store.active_cold_build_engaged)
-        return store
-
-    ArchiveStore.open_active_cold_build = classmethod(recording)  # type: ignore[assignment]
-    try:
-        assert run_ingest_files(processor, [root / "one.jsonl"], emit_event=False).succeeded_file_count == 1
-        assert run_ingest_files(processor, [root / "two.jsonl"], emit_event=False).succeeded_file_count == 1
-    finally:
-        ArchiveStore.open_active_cold_build = classmethod(original)  # type: ignore[assignment]
+    with _open_archive_for_live_write(tmp_path, cold_build=True) as archive:
+        engaged.append(archive.active_cold_build_engaged)
+        write_fixture_index_session(
+            archive._conn,
+            ParsedSession(source_name=Provider.CODEX, provider_session_id="cold-first", title="first", messages=[]),
+        )
+        archive._conn.commit()
+    with _open_archive_for_live_write(tmp_path, cold_build=True) as archive:
+        engaged.append(archive.active_cold_build_engaged)
 
     assert engaged == [True, False]
 

@@ -169,7 +169,9 @@ def test_deferred_cursor_keeps_canonical_path_and_profile_authority(tmp_path: Pa
 
     The raw-frontier gate refuses any non-excluded cursor with a byte offset
     and no canonical source path, so losing it here blocks retention and
-    source selection for the whole archive.
+    source selection for the whole archive. The cursor is a Hermes one because
+    only a provider whose acquisition declares a profile key records one
+    (``declares_profile_identity``).
     """
     source = tmp_path / "session.jsonl"
     source.write_bytes(b'{"type":"session_meta","payload":{"id":"kept"}}\n{"partial":')
@@ -183,7 +185,7 @@ def test_deferred_cursor_keeps_canonical_path_and_profile_authority(tmp_path: Pa
         last_complete_newline=accepted,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="f" * 64,
-        source_name="codex",
+        source_name="hermes",
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
@@ -195,7 +197,7 @@ def test_deferred_cursor_keeps_canonical_path_and_profile_authority(tmp_path: Pa
         source,
         cursor=cursor.get_record(source),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
-        source_name="codex",
+        source_name="hermes",
         deferred_end_offset=None,
     )
 

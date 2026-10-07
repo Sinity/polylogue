@@ -338,6 +338,11 @@ def configure_logging(verbose: bool = False, json_logs: bool = False) -> None:
         processors.append(
             structlog.dev.ConsoleRenderer(
                 colors=sys.stderr.isatty() and not force_plain,
+                # No frame locals: rendering them calls len()/iter() on
+                # arbitrary objects (a closed disk-backed native-id set
+                # raises), so the log call itself replaced the failure it
+                # was reporting, and it copied archive content into stderr.
+                exception_formatter=structlog.dev.RichTracebackFormatter(show_locals=False),
             )
         )
 
