@@ -14,6 +14,7 @@ from pathlib import Path
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
+from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from tests.infra.index_writer import fixture_index_connection, write_fixture_index_session
 
@@ -54,3 +55,31 @@ def test_append_keeps_a_new_native_id_even_when_content_repeats(tmp_path: Path) 
         ("m0", "same earlier prompt"),
         ("m1", "same earlier prompt"),
     ]
+
+
+def test_delta_write_keeps_the_merged_session_hash(tmp_path: Path) -> None:
+    """The carrier covers this append's rows; the stored hash covers the session."""
+    with fixture_index_connection(tmp_path / "index.db") as conn:
+        initial = _session("m0", "first")
+        session_id = write_fixture_index_session(conn, initial)
+        delta = _session("m1", "second")
+        merged = initial.model_copy(update={"messages": [*initial.messages, *delta.messages]})
+
+        write_fixture_index_session(
+            conn,
+            delta,
+            content_hash=session_content_hash(merged),
+            pending_input_content_hash=session_content_hash(delta),
+            merge_append=True,
+        )
+
+        rows = conn.execute(
+            "SELECT native_id FROM messages WHERE session_id = ? ORDER BY position", (session_id,)
+        ).fetchall()
+        stored_hash = conn.execute("SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[
+            0
+        ]
+
+    assert [row[0] for row in rows] == ["m0", "m1"]
+    assert stored_hash == bytes.fromhex(session_content_hash(merged))
+    assert stored_hash != bytes.fromhex(session_content_hash(delta))
