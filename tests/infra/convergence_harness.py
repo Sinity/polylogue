@@ -244,6 +244,7 @@ def ingest_composed_sources(
             raw_blob_hash, raw_blob_size = raw_blob_publisher.write_from_bytes(payload)
             raw_blob_receipt = raw_blob_publisher.receipt_id(raw_blob_hash)
             preacquired_attachments: list[ParsedAttachment] = []
+            preacquired_attachment_blobs: dict[object, tuple[bytes | None, int, str]] = {}
             attachment_blob_refs: list[ArchiveSourceBlobRef] = []
             attachment_receipts: list[tuple[str, bytes]] = []
             for attachment in session.attachments:
@@ -252,10 +253,14 @@ def ingest_composed_sources(
                     continue
                 attachment_hash, attachment_size = raw_blob_publisher.write_from_bytes(attachment.inline_bytes)
                 attachment_receipt = raw_blob_publisher.receipt_id(attachment_hash)
-                preacquired_attachments.append(
-                    attachment.model_copy(
-                        update={"inline_bytes": None, "precomputed_blob": (attachment_hash, attachment_size)}
-                    )
+                preacquired_attachment = attachment.model_copy(
+                    update={"inline_bytes": None, "precomputed_blob": (attachment_hash, attachment_size)}
+                )
+                preacquired_attachments.append(preacquired_attachment)
+                preacquired_attachment_blobs[preacquired_attachment.acquisition_key] = (
+                    bytes.fromhex(attachment_hash),
+                    attachment_size,
+                    "acquired",
                 )
                 attachment_blob_refs.append(
                     ArchiveSourceBlobRef(
@@ -298,7 +303,12 @@ def ingest_composed_sources(
             raise AssertionError(f"published raw payload size drifted for {source_path}")
         with closing(open_connection(root / "index.db")) as index_conn:
             changed, counts = write_fixture_retained_session(
-                index_conn, session, raw_id=raw_id, source_index=index, acquired_at_ms=_acquired_at_ms(index)
+                index_conn,
+                session,
+                raw_id=raw_id,
+                source_index=index,
+                acquired_at_ms=_acquired_at_ms(index),
+                preacquired_attachment_blobs=preacquired_attachment_blobs,
             )
         session_id = str(make_session_id(session.source_name, session.provider_session_id))
         if not changed and counts["skipped_sessions"] == 0:

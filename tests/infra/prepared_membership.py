@@ -134,6 +134,7 @@ def write_prepared_retained_session(
     raw_id: str,
     source_index: int = 0,
     revision_authoritative: bool = False,
+    preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
 ) -> ArchiveRawParsedWriteResult:
     """Write one retained session through the guarded retained writer.
 
@@ -171,7 +172,7 @@ def write_prepared_retained_session(
                 stage_timings_s=None,
                 stage_timing_prefix="test.retained-write",
                 manage_transaction=False,
-                preacquired_attachment_blobs={},
+                preacquired_attachment_blobs=preacquired_attachment_blobs or {},
                 finalize_raw_parse=False,
                 revision_authoritative=revision_authoritative,
                 prepared_required=True,

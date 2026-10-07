@@ -117,6 +117,7 @@ def write_fixture_retained_session(
     source_index: int = 0,
     revision_authoritative: bool = False,
     acquired_at_ms: int = 1,
+    preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
 ) -> tuple[bool, dict[str, int]]:
     """Publish one admitted ParsedSession through the retained session writer.
 
@@ -157,6 +158,7 @@ def write_fixture_retained_session(
             raw_id=raw_id,
             source_index=source_index,
             revision_authoritative=revision_authoritative,
+            preacquired_attachment_blobs=preacquired_attachment_blobs,
         )
         archive.commit()
     return result.content_changed, dict(result.counts)

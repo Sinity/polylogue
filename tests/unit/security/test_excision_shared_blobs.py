@@ -39,12 +39,10 @@ import polylogue.sources.live.watcher as live_watcher
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.pipeline.ids import session_content_hash
-from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.sources.live import WatchSource
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.sources.source_layout import export_drop_layout
-from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import (
@@ -57,7 +55,7 @@ from tests.infra.excision import (
     plan_session_excision_from_root,
 )
 from tests.infra.excision_execution import execute_excision
-from tests.infra.index_writer import fixture_index_connection, write_fixture_ingest_payload
+from tests.infra.index_writer import fixture_index_connection, write_fixture_index_session
 from tests.infra.live_batch import prepared_live_batch_processor
 from tests.infra.retained_jsonl import prepared_source_fixture
 
@@ -510,6 +508,10 @@ def _attachment_ref(content: bytes) -> ArchiveSourceBlobRef:
 
 
 def _acquire(archive_root: Path, native_id: str, payload: bytes, refs: tuple[bytes, ...]) -> str:
+    blob_store = BlobStore(archive_root / "blob")
+    for content in refs:
+        blob_hash, _size = blob_store.write_from_bytes(content)
+        assert blob_hash == hashlib.sha256(content).hexdigest()
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         return write_source_raw_session(
@@ -525,8 +527,8 @@ def _acquire(archive_root: Path, native_id: str, payload: bytes, refs: tuple[byt
         )
 
 
-def _attachment_session(native_id: str, raw_id: str, attachments: dict[str, bytes]) -> SessionWritePayload:
-    session = ParsedSession(
+def _attachment_session(native_id: str, attachments: dict[str, bytes]) -> ParsedSession:
+    return ParsedSession(
         source_name=Provider.CLAUDE_AI,
         provider_session_id=native_id,
         title="Synthetic",
@@ -540,19 +542,10 @@ def _attachment_session(native_id: str, raw_id: str, attachments: dict[str, byte
                 name=name,
                 mime_type="text/plain",
                 size_bytes=len(content),
-                inline_bytes=content,
+                precomputed_blob=(hashlib.sha256(content).hexdigest(), len(content)),
             )
             for name, content in attachments.items()
         ],
-    )
-    bound = str(session_content_hash(session))
-    return SessionWritePayload(
-        session_id=f"{Origin.CLAUDE_AI_EXPORT.value}:{native_id}",
-        content_hash=bound,
-        parsed_session=session.model_copy(update={"content_hash": bound}),
-        message_count=1,
-        attachment_count=len(attachments),
-        raw_id=raw_id,
     )
 
 
@@ -562,16 +555,35 @@ def test_excising_a_keeps_the_attachment_it_shares_with_b(tmp_path: Path) -> Non
     payload_a = b'{"uuid": "att-a", "synthetic": "session a"}'
     raw_a = _acquire(archive_root, "att-a", payload_a, (_SHARED_ATTACHMENT, _A_ONLY_ATTACHMENT))
     raw_b = _acquire(archive_root, "att-b", b'{"uuid": "att-b", "synthetic": "session b"}', ())
-    publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
-    with fixture_index_connection(archive_root / "index.db") as conn:
+    with (
+        fixture_index_connection(archive_root / "index.db") as conn,
+        sqlite3.connect(archive_root / "source.db") as source,
+    ):
         for payload in (
-            _attachment_session("att-a", raw_a, {"shared.txt": _SHARED_ATTACHMENT, "own.txt": _A_ONLY_ATTACHMENT}),
-            _attachment_session("att-b", raw_b, {"shared.txt": _SHARED_ATTACHMENT}),
+            ("att-a", raw_a, {"shared.txt": _SHARED_ATTACHMENT, "own.txt": _A_ONLY_ATTACHMENT}),
+            ("att-b", raw_b, {"shared.txt": _SHARED_ATTACHMENT}),
         ):
-            changed, _counts = write_fixture_ingest_payload(conn, payload, blob_publisher=publisher)
-            assert changed is True
-        conn.commit()
-        session_a = str(conn.execute("SELECT session_id FROM sessions WHERE native_id = 'att-a'").fetchone()[0])
+            native_id, raw_id, attachments = payload
+            session = _attachment_session(native_id, attachments)
+            preacquired = {
+                attachment.acquisition_key: (
+                    bytes.fromhex(attachment.precomputed_blob[0]),
+                    attachment.precomputed_blob[1],
+                    "acquired",
+                )
+                for attachment in session.attachments
+                if attachment.precomputed_blob is not None
+            }
+            session_id = write_fixture_index_session(
+                conn,
+                session,
+                raw_id=raw_id,
+                source_conn=source,
+                preacquired_attachment_blobs=preacquired,
+            )
+            assert session_id == f"{Origin.CLAUDE_AI_EXPORT.value}:{native_id}"
+            conn.commit()
+        session_a = f"{Origin.CLAUDE_AI_EXPORT.value}:att-a"
 
     shared = hashlib.sha256(_SHARED_ATTACHMENT).digest()
     own = hashlib.sha256(_A_ONLY_ATTACHMENT).digest()
