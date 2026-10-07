@@ -4319,6 +4319,8 @@ def _append_has_auxiliary_input(session: ParsedSession) -> bool:
     return bool(
         session.attachments
         or session.session_events
+        or session.provider_session_aliases
+        or session.session_kind.value != "standard"
         or session.parent_session_provider_id
         or session.branch_point_provider_message_id
         or session.branch_type

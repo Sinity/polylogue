@@ -209,6 +209,24 @@ def test_duplicate_append_reports_only_auxiliary_changes(tmp_path: Path) -> None
             ).fetchone()[0]
             == 1
         )
+
+        with_alias = original.model_copy(update={"provider_session_aliases": ["provider-alias"]})
+        alias_outcomes: list[ArchiveWriteOutcome] = []
+        write_fixture_index_session(
+            conn,
+            with_alias,
+            merge_append=True,
+            write_outcome=alias_outcomes,
+        )
+        assert alias_outcomes[-1].wrote is True
+        alias_claim = conn.execute(
+            """
+            SELECT claim_kind FROM session_identity_claims
+            WHERE claimant_session_id = ? AND provider_value = 'provider-alias'
+            """,
+            (session_id,),
+        ).fetchone()
+        assert alias_claim is not None and alias_claim[0] == "alias"
     finally:
         conn.close()
 

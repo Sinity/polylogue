@@ -33,6 +33,7 @@ from polylogue.sources.live.cold_build import (
 from polylogue.sources.revision_backfill import (
     LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
     _browser_snapshot_fidelity,
+    _is_declared_provider_session_stream,
     uncensused_historical_revision_raw_ids,
 )
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
@@ -57,6 +58,19 @@ from tests.infra.revision_backfill_benchmark import (
     build_independent_raw_corpus,
     build_revision_chain_corpus,
 )
+
+
+@pytest.mark.parametrize(
+    ("provider", "source_path", "expected"),
+    [
+        (Provider.CODEX, "2026/10/07/rollout-a.jsonl", True),
+        (Provider.CLAUDE_CODE, "-home-user-repo/session.jsonl", True),
+        (Provider.CLAUDE_CODE, "history.jsonl", False),
+        (Provider.CHATGPT, "sessions/abc.jsonl", False),
+    ],
+)
+def test_declared_provider_session_stream_boundary(provider: Provider, source_path: str, expected: bool) -> None:
+    assert _is_declared_provider_session_stream(provider, source_path) is expected
 
 
 def _seed_historical_revision(archive: ArchiveStore, raw_id: str, revision: RawRevisionEnvelope) -> None:
@@ -1295,9 +1309,9 @@ def test_byte_proof_refuses_a_head_between_forks(monkeypatch: pytest.MonkeyPatch
     original = revision_backfill.prepare_retained_jsonl_artifact
     parsed: list[str] = []
 
-    def counted(evidence_reader: Any, raw_id: str, *, directory: Path) -> Any:
+    def counted(evidence_reader: Any, raw_id: str, *, directory: Path, **kwargs: Any) -> Any:
         parsed.append(raw_id)
-        return original(evidence_reader, raw_id, directory=directory)
+        return original(evidence_reader, raw_id, directory=directory, **kwargs)
 
     monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", counted)
 
@@ -1352,9 +1366,9 @@ def test_chain_inherits_only_its_interior_members(monkeypatch: pytest.MonkeyPatc
     original = revision_backfill.prepare_retained_jsonl_artifact
     parsed: list[str] = []
 
-    def counted(evidence_reader: Any, raw_id: str, *, directory: Path) -> Any:
+    def counted(evidence_reader: Any, raw_id: str, *, directory: Path, **kwargs: Any) -> Any:
         parsed.append(raw_id)
-        return original(evidence_reader, raw_id, directory=directory)
+        return original(evidence_reader, raw_id, directory=directory, **kwargs)
 
     monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", counted)
 
@@ -1428,9 +1442,9 @@ def test_census_skips_parse_for_byte_proven_superseded_revisions_at_scale(
     original = revision_backfill.prepare_retained_jsonl_artifact
     parse_calls: list[str] = []
 
-    def counted(evidence_reader: Any, raw_id: str, *, directory: Path) -> Any:
+    def counted(evidence_reader: Any, raw_id: str, *, directory: Path, **kwargs: Any) -> Any:
         parse_calls.append(raw_id)
-        return original(evidence_reader, raw_id, directory=directory)
+        return original(evidence_reader, raw_id, directory=directory, **kwargs)
 
     monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", counted)
 

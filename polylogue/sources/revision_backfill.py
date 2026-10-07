@@ -862,7 +862,27 @@ def prepare_retained_jsonl_artifact(
         parse_prefix_size: int | None = None
         if is_jsonl_source_path(source_path) and not path_declaration_refuses_session(provider, source_path):
             with evidence_reader.open_raw_revision_material(raw_id) as (_provider, payload, _path, _kind):
-                parse_prefix_size = jsonl_parse_prefix_size_of_handle(payload)
+                try:
+                    parse_prefix_size = jsonl_parse_prefix_size_of_handle(payload)
+                except Exception as exc:
+                    decode_failure = classify_decode_failure(exc)
+                    if decode_failure is None:
+                        raise
+                    return PreparedJsonl(
+                        blob_hash,
+                        None,
+                        None,
+                        f"{type(exc).__name__}: {exc}",
+                        decode_failure=decode_failure,
+                    )
+            if _size == 0 and _is_declared_provider_session_stream(provider, source_path):
+                return PreparedJsonl(
+                    blob_hash,
+                    None,
+                    None,
+                    "zero-byte provider session stream contains no decodable session record",
+                    decode_failure=DecodeFailure.JSONL_RECORD,
+                )
         artifact = prepare_jsonl_blob(
             str(blob_path),
             source_path,
@@ -956,6 +976,21 @@ def _retained_validation_input(
         yield path
     finally:
         path.unlink(missing_ok=True)
+
+
+def _is_declared_provider_session_stream(provider: Provider, source_path: str) -> bool:
+    """Whether the provider's declared watch layout assigns this path to a session stream."""
+    layout_name = {Provider.CODEX: "codex", Provider.CLAUDE_CODE: "claude-code"}.get(provider)
+    if layout_name is None:
+        return False
+    from polylogue.sources.source_layout import declared_source_layouts
+
+    layout = declared_source_layouts()[layout_name]
+    parts = Path(source_path).parts
+    return any(
+        layout.artifact_kind(parts[offset:]) in {"session_stream", "coordinator_session_stream", "agent_transcript"}
+        for offset in range(len(parts))
+    )
 
 
 def prepare_retained_non_json_artifact(
