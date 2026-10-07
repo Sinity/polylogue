@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import tempfile
 from contextlib import AbstractContextManager, closing
 from pathlib import Path
+from types import GeneratorType
 
 import pytest
 
@@ -99,7 +101,7 @@ def test_state_db_iterator_uses_caller_sinks_and_cleans_scratch_on_close(
 
     path = tmp_path / "state.db"
     _write_state_db(path, tool_contents=[json.dumps({"output": "ok", "exit_code": 0})])
-    monkeypatch.setattr(hermes_state.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     store = SqliteMessageStore(tmp_path / "prepared.sqlite3")
     try:
         with closing(sqlite3.connect(path)) as conn:
@@ -111,13 +113,14 @@ def test_state_db_iterator_uses_caller_sinks_and_cleans_scratch_on_close(
             )
             streamed = next(iterator)
             assert isinstance(streamed.messages, SqliteMessageSink)
-            assert streamed.messages is not None and len(streamed.messages) == 2
+            assert len(streamed.messages) == 2
             assert streamed.session_events
             scratch = list(tmp_path.glob("polylogue-hermes-stream-*"))
             assert len(scratch) == 1
 
             # The caller owns the source connection and the retained sink;
             # closing a cancelled producer only retires its private grouping DB.
+            assert isinstance(iterator, GeneratorType)
             iterator.close()
             assert not scratch[0].exists()
             assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 1
@@ -126,19 +129,22 @@ def test_state_db_iterator_uses_caller_sinks_and_cleans_scratch_on_close(
         assert session_content_hash(streamed) == session_content_hash(materialized[0])
         sentinel = object()
         for field_name in type(streamed).model_fields:
-            actual = getattr(streamed, field_name)
-            expected = getattr(materialized[0], field_name)
             if field_name in {"messages", "session_events"}:
-                # Compare the disk sink and public list incrementally. This
-                # covers full message/event fields while keeping the parity
-                # check bounded for large retained sessions.
-                for actual_item, expected_item in zip_longest(actual, expected, fillvalue=sentinel):
-                    assert actual_item is not sentinel and expected_item is not sentinel
-                    assert actual_item == expected_item
-            else:
-                # Includes excluded hash metadata such as provenance,
-                # accounting, enrichment and parser identity carriers.
-                assert actual == expected
+                continue
+            # Includes excluded hash metadata such as provenance,
+            # accounting, enrichment and parser identity carriers.
+            assert getattr(streamed, field_name) == getattr(materialized[0], field_name)
+        # Compare the disk sink and public list incrementally. This covers full
+        # message/event fields while keeping parity bounded for large sessions.
+        assert isinstance(streamed.messages, SqliteMessageSink)
+        for actual_item, expected_item in zip_longest(streamed.messages, materialized[0].messages, fillvalue=sentinel):
+            assert actual_item is not sentinel and expected_item is not sentinel
+            assert actual_item == expected_item
+        for actual_item, expected_item in zip_longest(
+            streamed.session_events, materialized[0].session_events, fillvalue=sentinel
+        ):
+            assert actual_item is not sentinel and expected_item is not sentinel
+            assert actual_item == expected_item
     finally:
         store.close()
 
@@ -148,7 +154,7 @@ def test_state_db_iterator_cleans_scratch_when_cancelled_before_first_session(
 ) -> None:
     path = tmp_path / "state.db"
     _write_state_db(path, tool_contents=[])
-    monkeypatch.setattr(hermes_state.tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
 
     def cancel() -> None:
         raise RuntimeError("cancel Hermes parse")

@@ -6,17 +6,23 @@ import copy
 import gc
 import json
 import tracemalloc
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import pytest
 
 from polylogue.core.enums import ValidationMode, ValidationStatus
 from polylogue.schemas import observation_spill
-from polylogue.schemas.packages import SchemaResolution
+from polylogue.schemas.packages import SchemaResolution, SchemaResolutionReason
 from polylogue.schemas.retained_validation import _bounded_validator, _normalized
 from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
-from polylogue.schemas.validator import SchemaValidator, _normalize_empty_arrays, validate_retained_document
+from polylogue.schemas.validator import (
+    RetainedValidationVerdict,
+    SchemaValidator,
+    _normalize_empty_arrays,
+    validate_retained_document,
+)
 from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
 
@@ -30,14 +36,14 @@ def _schema(kind: object) -> dict[str, object]:
     }
 
 
-def _resolution(version: str, *, explicit_reason: str = "package_default") -> SchemaResolution:
+def _resolution(version: str, *, explicit_reason: SchemaResolutionReason = "package_default") -> SchemaResolution:
     return SchemaResolution(
         provider="claude-code",
         package_version=version,
         element_kind="session_record_stream",
         exact_structure_id=None,
         bundle_scope=None,
-        reason=explicit_reason,  # type: ignore[arg-type]
+        reason=explicit_reason,
     )
 
 
@@ -49,7 +55,7 @@ def _registry(tmp_path: Path, current: object, historical: object | None = None)
     return registry
 
 
-def _write_jsonl(path: Path, rows: list[object]) -> None:
+def _write_jsonl(path: Path, rows: Sequence[object]) -> None:
     path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
 
@@ -74,7 +80,9 @@ def _schema_shaped_witness(schema: object, root: object | None = None, depth: in
             for branch in branches:
                 candidate = _schema_shaped_witness(branch, root, depth + 1)
                 if isinstance(candidate, dict):
-                    candidate = {**_schema_shaped_witness(base, root, depth + 1), **candidate}
+                    base_candidate = _schema_shaped_witness(base, root, depth + 1)
+                    if isinstance(base_candidate, dict):
+                        candidate = {**base_candidate, **candidate}
                 if validator.is_valid(candidate):
                     return candidate
     if "allOf" in schema:
@@ -125,30 +133,46 @@ def _late_invalid_variant(schema: object, witness: object) -> object | None:
                 continue
             kind = child_schema.get("type")
             kind_key = kind if isinstance(kind, str) else None
-            alternatives: tuple[object, ...] = {
+            alternatives: dict[str, tuple[object, ...]] = {
                 "string": (0, None, []),
                 "integer": ("invalid", None, []),
                 "number": ("invalid", None, []),
                 "boolean": (0, "invalid", None),
                 "object": ("invalid", None, []),
                 "array": ("invalid", None, {}),
-            }.get(kind_key, (None, "invalid", []))
-            for replacement in alternatives:
+            }
+            replacements = (
+                alternatives.get(kind_key, (None, "invalid", [])) if kind_key is not None else (None, "invalid", [])
+            )
+            for replacement in replacements:
                 candidate = copy.deepcopy(witness)
                 candidate[key] = replacement
                 if not validator.is_valid(candidate):
                     return candidate
-    for candidate in ([], None, "invalid", 0, False):
-        if not validator.is_valid(candidate):
-            return candidate
+    root_candidate: object
+    for root_candidate in ([], None, "invalid", 0, False):
+        if not validator.is_valid(root_candidate):
+            return root_candidate
     return None
+
+
+class _RetainedValidationArguments(TypedDict):
+    provider: str
+    path: Path
+    raw_id: str
+    revision_sha256: str
+    evidence_id: str
+    jsonl: bool
+    schema_resolution: SchemaResolution
+    schema_resolution_is_explicit: bool
+    registry: SchemaRegistry
 
 
 def test_retained_strict_counts_late_failure_and_advisory_accepts(tmp_path: Path) -> None:
     path = tmp_path / "raw.jsonl"
     _write_jsonl(path, [{"type": "record", "kind": "first"}, {"type": "record", "kind": 17}])
     registry = _registry(tmp_path, {"type": "string"})
-    args = {
+    args: _RetainedValidationArguments = {
         "provider": "claude-code",
         "path": path,
         "raw_id": "raw-a",
@@ -210,7 +234,7 @@ def test_retained_drift_reduction_is_order_independent(tmp_path: Path) -> None:
     registry = _registry(tmp_path, {"type": "string"})
     resolution = _resolution("v2", explicit_reason="exact_structure")
 
-    def run(name: str, rows: list[object]):
+    def run(name: str, rows: list[dict[str, object]]) -> RetainedValidationVerdict:
         path = tmp_path / name
         _write_jsonl(path, rows)
         return validate_retained_document(

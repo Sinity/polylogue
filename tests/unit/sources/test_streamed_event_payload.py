@@ -147,7 +147,11 @@ def test_parse_accounting_spill_preserves_complete_outcomes_and_conservation(
                 )
             )
         second = ParseAccounting(expected={AdmissionUnit.PART: total}, outcomes=second_writer.finish())
-        assert second.outcomes.accounting_id != accounting.outcomes.accounting_id
+        second_outcomes = second.outcomes
+        first_outcomes = accounting.outcomes
+        assert isinstance(first_outcomes, SpilledParseAccountingOutcomes)
+        assert isinstance(second_outcomes, SpilledParseAccountingOutcomes)
+        assert second_outcomes.accounting_id != first_outcomes.accounting_id
         assert second.stable_binding_digest() == first_binding
         inline_rows = [
             AdmissionOutcome.model_validate(row) for row in second.outcomes.iter_unit(AdmissionUnit.PART.value)

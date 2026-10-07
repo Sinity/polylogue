@@ -15,6 +15,7 @@ from polylogue.sources.parsers.antigravity import (
     parse_markdown_export,
 )
 from polylogue.sources.parsers.base import ParsedMessage
+from polylogue.sources.streamed_event_payload import StreamedJsonArray
 from tests.infra.antigravity_parser import parse_trajectory_db
 
 
@@ -441,9 +442,13 @@ def test_conflicting_parent_references_assert_no_parent(tmp_path: Path) -> None:
     ambiguity = next(
         event for event in session.session_events if event.event_type == "antigravity_ambiguous_parent_reference"
     )
-    assert list(ambiguity.payload["parent_provider_ids"].iter_values()) == ["parent-1", "parent-2"]
+    parent_provider_ids = ambiguity.payload["parent_provider_ids"]
+    assert isinstance(parent_provider_ids, StreamedJsonArray)
+    assert list(parent_provider_ids.iter_values()) == ["parent-1", "parent-2"]
     parent_event = next(event for event in session.session_events if event.event_type == "antigravity_parent_reference")
-    assert list(parent_event.payload["references"].iter_values()) == [
+    references = parent_event.payload["references"]
+    assert isinstance(references, StreamedJsonArray)
+    assert list(references.iter_values()) == [
         {"cascade_id": "cascade-1", "parent_id": "parent-1"},
         {"cascade_id": "cascade-1", "parent_id": "parent-2"},
     ]
