@@ -9,8 +9,10 @@ import pytest
 
 from polylogue.core.enums import ValidationMode, ValidationStatus
 from polylogue.schemas.packages import SchemaResolution
-from polylogue.schemas.runtime_registry import SchemaRegistry
-from polylogue.schemas.validator import SchemaValidator, validate_retained_document
+from polylogue.schemas.retained_validation import _bounded_validator, _normalized
+from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
+from polylogue.schemas.validator import SchemaValidator, _normalize_empty_arrays, validate_retained_document
+from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
 
 def _schema(kind: object) -> dict[str, object]:
@@ -199,3 +201,38 @@ def test_public_validator_shares_spill_safe_extended_keywords() -> None:
     assert not validator.validate(
         {"chosen": 1, "unique": [1, 1.0], "items": [2, 3], "branch": 3}, include_drift=False
     ).is_valid
+
+
+def test_committed_schema_files_match_draft202012_validity() -> None:
+    """The streaming extensions preserve baseline validity for every committed package schema."""
+    from jsonschema import Draft202012Validator
+
+    registry = SchemaRegistry(storage_root=SCHEMA_DIR)
+    cases: tuple[object, ...] = (
+        None,
+        True,
+        0,
+        "neutral",
+        [],
+        {},
+        {"type": "message", "id": "neutral", "content": "text"},
+        {"messages": []},
+        {"type": "session", "messages": [{"role": "user", "content": "text"}]},
+    )
+    schema_count = 0
+    with scratch_connection_context(
+        prefix="polylogue-schema-package-parity-", filename="validation.sqlite"
+    ) as connection:
+        for provider in registry.list_committed_providers():
+            for version in registry.list_committed_versions(provider):
+                for schema_file in registry.list_committed_schema_files(provider, version):
+                    schema = registry.load_committed_schema_file(provider, version, schema_file)
+                    assert schema is not None, (provider, version, schema_file)
+                    schema_count += 1
+                    for case in cases:
+                        expected = Draft202012Validator(schema).is_valid(_normalize_empty_arrays(case, schema))
+                        actual = _bounded_validator(schema, connection).is_valid(
+                            _normalized(case, schema, schema, connection)
+                        )
+                        assert actual == expected, (provider, version, schema_file, case)
+    assert schema_count == 60
