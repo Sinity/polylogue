@@ -1907,7 +1907,7 @@ class RawObservationDerivation(RawObservationInspection):
             return neutral
 
         cohort_identity: tuple[object, ...] = (
-            original_selection,
+            raw_ids,
             tuple(_neutral_parser_cache_identity(raw_id, operands[raw_id]) for raw_id in raw_ids),
         )
         for raw_id in raw_ids:
@@ -2192,7 +2192,7 @@ class RawObservationDerivation(RawObservationInspection):
                 ):
                     neutral_operands = {raw_id: _neutral_parser_operand(selection_read, raw_id) for raw_id in raw_ids}
                     neutral_cohort: tuple[object, ...] = (
-                        (raw_ids, logical_keys),
+                        raw_ids,
                         tuple(_neutral_parser_cache_identity(raw_id, neutral_operands[raw_id]) for raw_id in raw_ids),
                     )
                     neutral_artifact_keys = {
@@ -2452,7 +2452,6 @@ class RawObservationDerivation(RawObservationInspection):
                                     raw_id: str,
                                     record_count: int,
                                     head_taxonomy: ArtifactStreamClassification = head_classification,
-                                    keys_by_raw: dict[str, tuple[object, ...]] = checkpoint_keys,
                                     options_by_raw: dict[
                                         str, CodexCheckpointArtifactOptions
                                     ] = checkpoint_options_by_raw,
@@ -2461,9 +2460,13 @@ class RawObservationDerivation(RawObservationInspection):
                                     if existing is not None:
                                         return existing
                                     _provider, _blob_hash, _path, _kind, raw_size = descriptors[raw_id]
-                                    artifact_key = keys_by_raw[raw_id]
-                                    profile = artifact_key[-2]
-                                    fallback_timestamp = artifact_key[-3]
+                                    operand = neutral_operands.get(raw_id)
+                                    if operand is None:
+                                        with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                                            read = PreparedSessionSourceRead(reference_seal, blob_store=material_store)
+                                            operand = _neutral_parser_operand(read, raw_id)
+                                    profile = operand.profile_identity
+                                    fallback_timestamp = operand.fallback_timestamp
                                     if profile is not None and not isinstance(profile, str):
                                         raise TypeError("checkpoint profile identity must be text or absent")
                                     if fallback_timestamp is not None and not isinstance(fallback_timestamp, str):

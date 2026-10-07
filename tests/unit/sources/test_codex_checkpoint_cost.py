@@ -112,7 +112,7 @@ def test_neutral_endpoint_artifacts_are_owned_before_later_parse_failure(
     original_prepare = prepared_jsonl.prepare_jsonl_blob
     original_discard = PreparedJsonl.discard
     created: list[PreparedJsonl] = []
-    discarded: list[int] = []
+    discarded: list[PreparedJsonl] = []
 
     def fail_on_head(
         blob_path: str,
@@ -128,7 +128,7 @@ def test_neutral_endpoint_artifacts_are_owned_before_later_parse_failure(
         return artifact
 
     def count_discard(self: PreparedJsonl) -> None:
-        discarded.append(id(self))
+        discarded.append(self)
         original_discard(self)
 
     monkeypatch.setattr(prepared_jsonl, "prepare_jsonl_blob", fail_on_head)
@@ -138,4 +138,7 @@ def test_neutral_endpoint_artifacts_are_owned_before_later_parse_failure(
         replay_retained_components(tmp_path, selected_raw_ids=raw_ids)
 
     assert len(created) == 2
-    assert set(discarded) == {id(artifact) for artifact in created}
+    created_sessions = {artifact.sessions_path for artifact in created}
+    discarded_sessions = {artifact.sessions_path for artifact in discarded}
+    assert None not in created_sessions
+    assert created_sessions == discarded_sessions
