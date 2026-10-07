@@ -133,11 +133,14 @@ session list; the preview transports only its declared references and counts.
 Explicit low-level connection-return readers retain their existing semantics;
 this guarantee covers the actual acquisition and import-preview operations.
 
-Antigravity retained parsing uses the caller-owned prepared SQLite database for
-messages, complete admission outcomes and streamed parent-reference arrays.
-Those arrays are explicit replayable values, not lazy mappings: event hashing,
-prepared event serialization and the archive writer consume one item at a
-time. Their scratch IDs remain valid until the prepared artifact is sealed.
+Antigravity trajectory parsing consumes the already-proved logical SQLite
+transaction. Its retained iterator writes messages and events into caller-owned
+prepared sinks, and spills trajectory identities, summary rows, aliases,
+parent references, and exceptional parse outcomes into the same prepared
+database. Parent-reference event arrays remain replayable streamed values with
+the original payload keys and ordering; unsupported-step events keep their
+complete per-step payloads. Cancellation closes the active source and grouping
+cursors, while the preparation owner controls scratch cleanup and lifetime.
 
 ## Detection and parse route
 

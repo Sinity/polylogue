@@ -13,9 +13,9 @@ from polylogue.sources.parsers.antigravity import (
     _mark_active_leaf,
     looks_like_trajectory_db_path,
     parse_markdown_export,
-    parse_trajectory_db,
 )
 from polylogue.sources.parsers.base import ParsedMessage
+from tests.infra.antigravity_parser import parse_trajectory_db
 
 
 def test_parse_markdown_export_splits_known_sections() -> None:
@@ -441,7 +441,12 @@ def test_conflicting_parent_references_assert_no_parent(tmp_path: Path) -> None:
     ambiguity = next(
         event for event in session.session_events if event.event_type == "antigravity_ambiguous_parent_reference"
     )
-    assert ambiguity.payload == {"parent_provider_ids": ["parent-1", "parent-2"]}
+    assert list(ambiguity.payload["parent_provider_ids"].iter_values()) == ["parent-1", "parent-2"]
+    parent_event = next(event for event in session.session_events if event.event_type == "antigravity_parent_reference")
+    assert list(parent_event.payload["references"].iter_values()) == [
+        {"cascade_id": "cascade-1", "parent_id": "parent-1"},
+        {"cascade_id": "cascade-1", "parent_id": "parent-2"},
+    ]
 
 
 def test_single_parent_reference_still_asserts_its_edge(tmp_path: Path) -> None:
