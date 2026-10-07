@@ -49,7 +49,15 @@ browser-capture spool, and hook-event carriers. Examples include:
 
 Every origin is acquired only from its canonical location: the provider
 tool's own directory, the hook spools and browser-capture spool under the
-archive root, and the archive inbox. There are no custom watch roots and no
+archive root, and the archive inbox. Each watch source declares its layout
+relative to its root (`polylogue/sources/source_layout.py`): the exact depth
+and position of every artifact kind, such as
+`<project>/<session>/subagents/agent-<id>.jsonl` under `~/.claude/projects`.
+Discovery descends only into directories that layout reaches and admits only
+files at a declared position. Anything else under a root, including a copy of
+the provider tree nested inside it (an agent worktree under
+`.claude/worktrees/`), is reported once as an `outside_declared_layout`
+excluded entry and is never walked or parsed. There are no custom watch roots and no
 way to narrow the watch set. A tool whose logs live elsewhere is followed by
 a symlink at its canonical path. Account exports (ChatGPT, Claude, Gemini) are
 imported deliberately with `polylogue import <path>`, which stages them in the

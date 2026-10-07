@@ -554,7 +554,7 @@ class FileIntakeAdapter(IntakeAdapter):
                     if path in internal_paths:
                         continue
                     if not (
-                        (entry.is_dir() and not self.source.ignores_directory(path))
+                        (entry.is_dir() and self.source.admits_directory(path))
                         or (entry.is_file(follow_symlinks=False) and self.source.accepts(path))
                     ):
                         continue

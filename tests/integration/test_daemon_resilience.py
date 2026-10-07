@@ -767,7 +767,8 @@ def test_sigkill_recovery(workspace_env: dict[str, Path]) -> None:
     - Daemon reaches ready state within timeout.
     """
     archive_root = workspace_env["archive_root"]
-    corpus_root = Path.home() / ".claude" / "projects"
+    # A project directory of the declared Claude Code layout.
+    corpus_root = Path.home() / ".claude" / "projects" / "-synthetic-resilience"
     db = archive_root / "index.db"
 
     # 1. Create source files.
@@ -912,7 +913,8 @@ def test_wal_checkpoint_recovery(workspace_env: dict[str, Path]) -> None:
     4. Restart; assert WAL is checkpointed and no corruption.
     """
     archive_root = workspace_env["archive_root"]
-    corpus_root = Path.home() / ".claude" / "projects"
+    # A project directory of the declared Claude Code layout.
+    corpus_root = Path.home() / ".claude" / "projects" / "-synthetic-resilience"
     db = archive_root / "index.db"
 
     # Write enough sessions to keep the daemon busy.
@@ -1030,7 +1032,8 @@ def test_daemon_memory_pressure(workspace_env: dict[str, Path]) -> None:
     skipped when systemd-run is not available (CI without systemd, macOS).
     """
     archive_root = workspace_env["archive_root"]
-    corpus_root = Path.home() / ".claude" / "projects"
+    # A project directory of the declared Claude Code layout.
+    corpus_root = Path.home() / ".claude" / "projects" / "-synthetic-resilience"
     db = archive_root / "index.db"
 
     N_SESSIONS = 8
@@ -1190,7 +1193,8 @@ def test_large_session_file(workspace_env: dict[str, Path]) -> None:
     - FTS triggers intact.
     """
     archive_root = workspace_env["archive_root"]
-    corpus_root = Path.home() / ".claude" / "projects"
+    # A project directory of the declared Claude Code layout.
+    corpus_root = Path.home() / ".claude" / "projects" / "-synthetic-resilience"
     db = archive_root / "index.db"
 
     session_id = "large-session-000000000000"
@@ -1307,7 +1311,8 @@ def test_concurrent_access_safety(workspace_env: dict[str, Path]) -> None:
     4. Run ``polylogue --plain analyze --count`` through the same public route.
     """
     archive_root = workspace_env["archive_root"]
-    corpus_root = Path.home() / ".claude" / "projects"
+    # A project directory of the declared Claude Code layout.
+    corpus_root = Path.home() / ".claude" / "projects" / "-synthetic-resilience"
     db = archive_root / "index.db"
 
     # Write sessions so the daemon stays busy.

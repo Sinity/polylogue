@@ -157,9 +157,17 @@ def _ordered_children(
             try:
                 is_link = entry.is_symlink()
                 if entry.is_dir(follow_symlinks=False) or (is_link and entry.is_dir()):
-                    if source.ignores_directory(path):
+                    if not source.admits_directory(path):
+                        # Reported once and never walked: nothing below a
+                        # directory outside the declared layout is offered
+                        # for admission, so a nested copy of a provider tree
+                        # costs one entry, not its whole contents.
                         if on_disposition is not None:
-                            on_disposition(path, "excluded", "ignored_directory")
+                            on_disposition(
+                                path,
+                                "excluded",
+                                "outside_declared_layout" if source.layout is not None else "ignored_directory",
+                            )
                         continue
                     if is_link and not _admit_linked_directory(
                         source,
@@ -218,8 +226,8 @@ def _ordered_children(
     return children
 
 
-def _log_unclaimed_intake_candidate(path: Path, *, source_name: str, suffixes: tuple[str, ...]) -> None:
-    """Log one discovered file no configured suffix accepts.
+def _log_unclaimed_intake_candidate(path: Path, *, source: WatchSource) -> None:
+    """Log one discovered file its source does not admit.
 
     Best-effort ``stat``: a file that vanished between the listing and this
     call was still seen and unclaimed, just without size/mtime detail.
@@ -234,8 +242,12 @@ def _log_unclaimed_intake_candidate(path: Path, *, source_name: str, suffixes: t
         path=path,
         size=size,
         mtime=mtime,
-        reason=f"suffix not in watched set {suffixes} for source {source_name!r}",
-        source_name=source_name,
+        reason=(
+            f"outside the declared layout of source {source.name!r}"
+            if source.layout is not None
+            else f"suffix not in watched set {source.suffixes} for source {source.name!r}"
+        ),
+        source_name=source.name,
     )
 
 
@@ -343,12 +355,12 @@ def _source_path_steps(
                 continue
             if not source.accepts(path):
                 if on_disposition is not None:
-                    on_disposition(path, "excluded", "artifact_rule")
-                # A file this source's own walk reached but whose suffix no
-                # detector is configured to accept. The record exists whether
-                # or not an operator runs the standalone sweep, and discovery
-                # is the only production walk left that reaches it.
-                _log_unclaimed_intake_candidate(path, source_name=source.name, suffixes=source.suffixes)
+                    on_disposition(path, "excluded", source.exclusion_reason())
+                # A file this source's own walk reached but does not admit.
+                # The record exists whether or not an operator runs the
+                # standalone sweep, and discovery is the only production walk
+                # left that reaches it.
+                _log_unclaimed_intake_candidate(path, source=source)
                 yield None
                 continue
         except FileNotFoundError:

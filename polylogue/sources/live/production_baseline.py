@@ -773,7 +773,7 @@ def capture_production_source_baseline(
                     sorted(source.ignored_dir_names),
                     source.source_id,
                     source.role,
-                    None if source.path_artifact_kinds is None else sorted(source.path_artifact_kinds),
+                    None if source.layout is None else source.layout.identity(),
                     source.required,
                 )
                 for source in sources

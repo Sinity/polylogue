@@ -65,6 +65,7 @@ from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 from polylogue.sources.parsers.hermes_identity import declares_profile_identity
+from polylogue.sources.source_layout import SourceLayout, declared_source_layout, hook_carrier_layout
 from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
 from polylogue.sources.sqlite_snapshot import (
     is_sqlite_path,
@@ -128,10 +129,6 @@ _INCOMPLETE_APPEND_PROBE_CHUNK_BYTES = 1024 * 1024
 # pass would have re-observed the file anyway.
 _STUCK_DEFERRED_APPEND_AGE_S = 60.0 * 60.0
 INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson", ".db", ".sqlite", ".sqlite3")
-
-#: The Codex artifact rules the ``codex-state`` source admits beside its
-#: databases: the raw-only JSONL sidecars at the install root.
-CODEX_STATE_SIDECAR_KINDS = frozenset({"session_index", "prompt_history_log"})
 
 
 class _ArchivedCursorReconciliation(str, Enum):
@@ -215,8 +212,21 @@ def _directory_identity(path: Path) -> tuple[int, int] | None:
     return (stat.st_dev, stat.st_ino)
 
 
-#: Directory names no watched root ever descends into.
+#: Directory names a source without a declared layout never descends into.
 _DEFAULT_IGNORED_DIR_NAMES: frozenset[str] = frozenset({".git", "__pycache__", "node_modules", "venv", ".venv"})
+
+
+def _relative_parts(path: Path, root: Path) -> tuple[str, ...] | None:
+    """``path`` relative to ``root``: lexically first, then by resolved location."""
+
+    try:
+        return Path(os.path.abspath(path)).relative_to(Path(os.path.abspath(root))).parts
+    except ValueError:
+        pass
+    try:
+        return path.resolve().relative_to(root.resolve()).parts
+    except (OSError, ValueError):
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,19 +241,28 @@ class WatchSource:
     # their historical name-only contract.
     source_id: str | None = None
     role: str | None = None
-    # Most provider sources use OriginSpec path rules as an admission
-    # escape-hatch for extensionless or otherwise path-scoped artifacts.
-    # ``None`` admits every declared rule of the source's provider. A source
-    # whose suffix set is deliberately a hard boundary names the only rule
-    # kinds it admits (the default Codex state database source admits its
-    # install-level JSONL sidecars and nothing else).
-    path_artifact_kinds: frozenset[str] | None = None
     required: bool = False
-    recursive: bool = True
     exact_paths: frozenset[Path] | None = None
+    # Every canonical watch source declares where its provider writes each
+    # artifact kind (``polylogue.sources.source_layout``). With a layout,
+    # discovery descends only into directories the layout reaches and admits
+    # only files at a declared position; suffixes, ignored directory names and
+    # unanchored artifact-rule matches play no part. A source without one is an
+    # explicitly declared one-shot root, admitted by suffix and artifact rule.
+    layout: SourceLayout | None = None
 
     def exists(self) -> bool:
         return self.root.exists()
+
+    def artifact_kind(self, path: Path) -> str | None:
+        """The declared artifact kind at ``path``, or ``None`` outside the layout."""
+
+        if self.layout is None:
+            return None
+        parts = _relative_parts(path, self.root)
+        if not parts:
+            return None
+        return self.layout.artifact_kind(parts)
 
     def accepts(self, path: Path) -> bool:
         if self.exact_paths is not None:
@@ -251,6 +270,8 @@ class WatchSource:
                 return path.resolve() in self.exact_paths
             except OSError:
                 return False
+        if self.layout is not None:
+            return self.artifact_kind(path) is not None
         name = path.name.lower()
         # A declared artifact rule is the source-owned escape hatch for
         # extensionless and path-scoped artifacts. Check it before suffixes,
@@ -261,14 +282,24 @@ class WatchSource:
             provider = Provider.from_string(self.name)
         except ValueError:
             return any(name.endswith(suffix) for suffix in self.suffixes)
-        rule = artifact_rule_for_path(provider, str(path))
-        if rule is not None and (self.path_artifact_kinds is None or rule.kind in self.path_artifact_kinds):
+        if artifact_rule_for_path(provider, str(path)) is not None:
             return True
         return any(name.endswith(suffix) for suffix in self.suffixes)
 
-    def ignores_directory(self, path: Path) -> bool:
-        """Return whether a subtree cannot contain a live source artifact."""
-        return not self.recursive or path.name in self.ignored_dir_names
+    def admits_directory(self, path: Path) -> bool:
+        """Whether a directory under the root can hold an artifact of this source."""
+
+        parts = _relative_parts(path, self.root)
+        if parts is None:
+            return False
+        if self.layout is not None:
+            return not parts or self.layout.admits_directory(parts)
+        return not any(part in self.ignored_dir_names for part in parts)
+
+    def exclusion_reason(self) -> str:
+        """The disposition reason for an entry this source does not admit."""
+
+        return "outside_declared_layout" if self.layout is not None else "artifact_rule"
 
 
 #: The harnesses that write hook carriers. Each gets its own watched
@@ -298,6 +329,7 @@ def hook_carrier_watch_sources(specs: Iterable[HookSpoolSourceSpec]) -> tuple[Wa
             suffixes=(".ndjson",),
             source_id=f"{spec.source_id}:{provider}",
             role=spec.role,
+            layout=hook_carrier_layout(Provider.from_string(provider)),
         )
         for spec in specs
         for provider in HOOK_CARRIER_PROVIDERS
@@ -1516,16 +1548,12 @@ class LiveWatcher:
         return None
 
     def _source_for_directory(self, path: Path) -> WatchSource | None:
-        """Return the watched source owning a non-ignored directory."""
+        """Return the watched source whose layout reaches this directory."""
 
         source = deepest_source_for_path(path, self._sources)
         if source is None:
             return None
-        try:
-            relative = path.resolve().relative_to(source.root.resolve())
-        except (OSError, ValueError):
-            return None
-        return None if any(source.ignores_directory(Path(part)) for part in relative.parts) else source
+        return source if source.admits_directory(path) else None
 
     def _directory_is_watch_relevant(self, path: Path) -> bool:
         """Return whether a directory is owned or leads to a configured source root."""
@@ -1574,7 +1602,6 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
     daemon-owned watcher.
 
     """
-    from polylogue.core.enums import Provider
     from polylogue.paths import (
         antigravity_path,
         archive_root,
@@ -1586,92 +1613,49 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         gemini_cli_path,
         hermes_sessions_path,
     )
-    from polylogue.sources.origin_specs import artifact_suffixes_for_provider
 
+    def declared(name: str, root: Path) -> WatchSource:
+        return WatchSource(name=name, root=root, layout=declared_source_layout(name))
+
+    # Each source is admitted only at the positions its declared layout names
+    # (``polylogue.sources.source_layout``); overlapping roots never descend
+    # into each other's trees because no layout reaches them.
     return (
-        WatchSource(
-            name="claude-code",
-            root=claude_code_path(),
-            suffixes=artifact_suffixes_for_provider(Provider.CLAUDE_CODE, defaults=(".jsonl",)),
-        ),
+        declared("claude-code", claude_code_path()),
         # polylogue-t0p: Claude Code's live plan-snapshot directory
         # (~/.claude/todos/) is a sibling of claude_code_path(), not nested
-        # under it -- a second, narrower WatchSource rooted there, same
-        # precedent as "codex-state" below, so the main claude-code root
-        # doesn't have to widen its own suffix/path assumptions to reach a
-        # completely different directory tree.
-        WatchSource(
-            name="claude-code-todos",
-            root=claude_code_todos_path(),
-            suffixes=(".json",),
-        ),
+        # under it.
+        declared("claude-code-todos", claude_code_todos_path()),
         # polylogue-ximhz: ``~/.claude/history.jsonl`` is the prompt-submission
         # log whose rows carry the paste evidence no transcript records, and it
-        # sits beside the sessions root rather than under it. Rooted at the
-        # install directory with no suffixes at all, so only the declared
-        # ``prompt_history_log`` path rule admits a file; the two large
-        # sibling trees have their own sources and are not descended twice.
-        WatchSource(
-            name="claude-code-history",
-            root=claude_code_path().parent,
-            suffixes=(),
-            recursive=False,
-        ),
-        WatchSource(name="codex", root=codex_path()),
-        # polylogue-0jf4: Codex also keeps live SQLite state (thread titles,
-        # spawn topology, goals, memories) as siblings of the sessions/
-        # directory, not under it -- a second, narrower WatchSource rooted at
-        # ~/.codex (codex_path().parent) rather than widening the "codex"
-        # source's own root, so a broadened suffix set never has to reason
-        # about history.jsonl/config.toml/log/ under the shared root. Suffix
-        # filtering alone (".sqlite"/".db") keeps this cheap; the acquisition
-        # path (sources/live/batch.py) re-verifies table shape by name and
-        # structure before treating anything as in-scope evidence. The only
-        # other files it admits are the install-level ``session_index.jsonl``
-        # and ``history.jsonl`` sidecars, by their declared exact-coordinate
-        # rules: retained replay reads them for Codex titles and history.
-        WatchSource(
-            name="codex-state",
-            root=codex_path().parent,
-            suffixes=(".sqlite", ".db"),
-            path_artifact_kinds=CODEX_STATE_SIDECAR_KINDS,
-        ),
-        # polylogue-rovf5: Codex keeps harness-authored memory documents in
-        # ~/.codex/memories/, a sibling of sessions/. Rooted there rather
-        # than widening "codex-state" so no Codex root admits ``.md``
-        # globally: the source carries no suffixes at all and only the
-        # declared ``agent_memory_document`` path rule admits a file.
-        # Overlap with the shallower "codex-state" root is resolved by
-        # ``deepest_source_for_path``, which prefers this one.
-        WatchSource(
-            name="codex-memories",
-            root=codex_memories_path(),
-            suffixes=(),
-        ),
-        WatchSource(name="gemini-cli", root=gemini_cli_path(), suffixes=(".json", ".jsonl")),
-        # Hermes emits four independently durable source classes under its
-        # runtime root: state.db, optional session snapshots, NeMo Relay ATIF
-        # documents, and append-only ATOF JSONL.  The ledger database is
-        # admitted as a live SQLite source too; parsing it remains a separate
-        # fidelity/normalization contract rather than an implicit filename
-        # fallback.
-        WatchSource(
-            name="hermes",
-            root=hermes_root if hermes_root is not None else hermes_sessions_path(),
-            suffixes=(".json", ".jsonl", ".db", ".sqlite", ".sqlite3"),
-        ),
+        # sits beside the sessions root rather than under it. Its layout is
+        # that one file; the install directory is never descended.
+        declared("claude-code-history", claude_code_path().parent),
+        declared("codex", codex_path()),
+        # polylogue-0jf4: Codex keeps live SQLite state (thread titles, spawn
+        # topology, goals, memories) and the install-level ``session_index``
+        # and ``history`` JSONL sidecars as siblings of sessions/. The layout
+        # names each declared database member and sidecar at its position;
+        # the acquisition path (sources/live/batch.py) still verifies table
+        # shape before treating a database as in-scope evidence.
+        declared("codex-state", codex_path().parent),
+        # polylogue-rovf5: harness-authored memory documents in
+        # ~/.codex/memories/.
+        declared("codex-memories", codex_memories_path()),
+        declared("gemini-cli", gemini_cli_path()),
+        # Hermes keeps state.db, verification_evidence.db, session snapshots,
+        # NeMo Relay ATIF documents and the ATOF stream under its home, and a
+        # complete home per profile under profiles/<name>/.
+        declared("hermes", hermes_root if hermes_root is not None else hermes_sessions_path()),
         # Antigravity conversations are opaque protobufs. The ordinary live
         # batch route hands those files to the vendor language-server adapter;
         # brain documents and metadata remain source artifacts.
-        WatchSource(
-            name="antigravity",
-            root=antigravity_path(),
-            suffixes=artifact_suffixes_for_provider(Provider.ANTIGRAVITY),
-        ),
-        WatchSource(name="browser-capture", root=browser_capture_spool_root(), suffixes=(".json",)),
-        # #1683: inbox accepts archive, zip, and json-line formats so that
-        # GDPR exports (typically .zip) and raw .json dumps are observed.
-        WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
+        declared("antigravity", antigravity_path()),
+        declared("browser-capture", browser_capture_spool_root()),
+        # #1683: the inbox admits archive, zip, and json-line formats at any
+        # depth so that GDPR exports (typically .zip) and raw .json dumps are
+        # observed.
+        declared("inbox", archive_root() / "inbox"),
         *hook_carrier_watch_sources(hook_spool_sources()),
     )
 
