@@ -138,6 +138,7 @@ _REQUIRED_TABLES = {
     "embedding_status",
     "embedding_derivation_state",
     "embedding_failures",
+    "excision_embedding_completions",
 }
 
 

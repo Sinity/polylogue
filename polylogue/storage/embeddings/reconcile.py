@@ -244,6 +244,42 @@ def reconcile_embedding_orphans(
         )
 
 
+def _empty_reconcile_report(
+    index_path: Path,
+    embeddings_path: Path,
+    *,
+    dry_run: bool,
+    now_ms: int,
+    quiet_window_ms: int,
+) -> EmbeddingOrphanReconcileReport:
+    return EmbeddingOrphanReconcileReport(
+        index_db=str(index_path),
+        embeddings_db=str(embeddings_path),
+        dry_run=dry_run,
+        now_ms=now_ms,
+        quiet_window_ms=quiet_window_ms,
+        scanned_message_meta_rows=0,
+        scanned_vector_rows=0,
+        scanned_status_rows=0,
+        orphan_message_rows=0,
+        orphan_message_meta_rows=0,
+        orphan_vector_rows=0,
+        orphan_status_rows=0,
+        skipped_recent_message_rows=0,
+        skipped_recent_status_rows=0,
+        candidate_message_rows=0,
+        candidate_message_meta_rows=0,
+        candidate_vector_rows=0,
+        candidate_status_rows=0,
+        removed_message_rows=0,
+        removed_vector_rows=0,
+        removed_status_rows=0,
+        sessions_recounted=0,
+        more_pending=False,
+        samples=(),
+    )
+
+
 def _reconcile_embedding_orphans(
     index_db_path: str | Path,
     embeddings_db_path: str | Path | EmbeddingGenerationBinding | None = None,
@@ -287,31 +323,8 @@ def _reconcile_embedding_orphans(
             raise RuntimeError("embedding orphan reconciliation apply received an unrecognized mutation authority")
 
     if not embeddings_path.exists():
-        return EmbeddingOrphanReconcileReport(
-            index_db=str(index_path),
-            embeddings_db=str(embeddings_path),
-            dry_run=dry_run,
-            now_ms=resolved_now_ms,
-            quiet_window_ms=quiet_window_ms,
-            scanned_message_meta_rows=0,
-            scanned_vector_rows=0,
-            scanned_status_rows=0,
-            orphan_message_rows=0,
-            orphan_message_meta_rows=0,
-            orphan_vector_rows=0,
-            orphan_status_rows=0,
-            skipped_recent_message_rows=0,
-            skipped_recent_status_rows=0,
-            candidate_message_rows=0,
-            candidate_message_meta_rows=0,
-            candidate_vector_rows=0,
-            candidate_status_rows=0,
-            removed_message_rows=0,
-            removed_vector_rows=0,
-            removed_status_rows=0,
-            sessions_recounted=0,
-            more_pending=False,
-            samples=(),
+        return _empty_reconcile_report(
+            index_path, embeddings_path, dry_run=dry_run, now_ms=resolved_now_ms, quiet_window_ms=quiet_window_ms
         )
 
     if dry_run:
@@ -344,6 +357,24 @@ def _reconcile_embedding_orphans(
         if not loaded:
             raise RuntimeError("embedding orphan reconciliation requires sqlite-vec") from error
 
+        # Empty paid state has no deletion candidates and needs no Index truth.
+        # Hold the same transaction that protects the populated reconciliation,
+        # so a concurrent publication cannot invalidate this emptiness proof.
+        conn.execute("BEGIN" if dry_run else "BEGIN IMMEDIATE")
+        paid_tables = ("message_embeddings_meta", "message_embeddings", "embedding_status")
+        has_rows = any(_scalar(conn, f"SELECT EXISTS(SELECT 1 FROM {table})") for table in paid_tables)
+        refs_present = (
+            conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_embedding_refs'").fetchone()
+            is not None
+        )
+        if not has_rows and refs_present:
+            has_rows = bool(_scalar(conn, "SELECT EXISTS(SELECT 1 FROM message_embedding_refs)"))
+        if not has_rows:
+            conn.rollback()
+            return _empty_reconcile_report(
+                index_path, embeddings_path, dry_run=dry_run, now_ms=resolved_now_ms, quiet_window_ms=quiet_window_ms
+            )
+
         expected_index_identity = _index_identity(index_path)
         if dry_run:
             attach_readonly_database(conn, expected_index_identity.resolved_path, alias="idx")
@@ -357,8 +388,6 @@ def _reconcile_embedding_orphans(
                     f"active index is v{actual_index_schema_version}, packaged index is v{INDEX_SCHEMA_VERSION}"
                 )
             _assert_active_index_generation(index_path)
-        conn.execute("BEGIN" if dry_run else "BEGIN IMMEDIATE")
-
         # These now count content-addressed (deduped) rows, not per-message
         # rows -- message_embedding_refs (below) is the per-message scan.
         scanned_message_meta_rows = _scalar(conn, "SELECT COUNT(*) FROM message_embeddings_meta")

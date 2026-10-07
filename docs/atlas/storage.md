@@ -423,7 +423,8 @@ generation's writer lock. Declared compatible recipes retain their actual
 producer identities. Incompatible output contracts raise
 `EmbeddingContractTransitionRequiredError` before purchasing or writing a
 window. Unknown producer provenance refuses independently. A separately
-produced candidate can be validated and explicitly promoted through
+produced candidate must contain the current excision completion relation before
+being validated and explicitly promoted through
 `EmbeddingGenerationStore.replace`; this admission does not automatically
 build or switch generations (`storage/embeddings/generations.py`;
 `storage/embeddings/materialization.py`; `storage/embeddings/derivation.py`).

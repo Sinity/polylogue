@@ -242,3 +242,11 @@ require a successful watched-file admission: operation imports may already
 have written the inactive candidate. The settlement owner checks candidate
 coverage and promotes a nonempty candidate or discards an empty one. Blocked
 and retryable settlement retain their existing evidence and retry conditions.
+
+
+Embedding orphan maintenance runs without an enabled purchase provider because
+paid references can outlive Index replacement. A transaction proving that no
+vectors, vector metadata, message references or status rows exist returns an
+empty report before requiring active Index generation readiness. Populated
+paid state still requires the active source-snapshotted Index before deletion
+(`storage/embeddings/reconcile.py`; `daemon/embedding_backlog.py`).
