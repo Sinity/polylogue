@@ -139,6 +139,12 @@ an unfinished iterator closes and removes its ancestry scratch.
 Explicit low-level connection-return readers retain their existing semantics;
 this guarantee covers the actual acquisition and import-preview operations.
 
+Antigravity retained parsing uses the caller-owned prepared SQLite database for
+messages, complete admission outcomes and streamed parent-reference arrays.
+Those arrays are explicit replayable values, not lazy mappings: event hashing,
+prepared event serialization and the archive writer consume one item at a
+time. Their scratch IDs remain valid until the prepared artifact is sealed.
+
 ## Detection and parse route
 
 1. Acquisition records raw bytes and source metadata in `source.db`.

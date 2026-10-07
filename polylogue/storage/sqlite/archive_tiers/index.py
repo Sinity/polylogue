@@ -1099,6 +1099,10 @@ CREATE TABLE IF NOT EXISTS session_events (
     {TABLE_SPECS["session_events"].ddl_body}
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS session_event_array_items (
+    {TABLE_SPECS["session_event_array_items"].ddl_body}
+) STRICT;
+
 CREATE INDEX IF NOT EXISTS idx_session_events_source_message
 ON session_events(source_message_id)
 WHERE source_message_id IS NOT NULL;

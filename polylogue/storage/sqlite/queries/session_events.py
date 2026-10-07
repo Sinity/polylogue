@@ -65,7 +65,9 @@ def read_session_events(conn: sqlite3.Connection, session_id: str) -> list[Sessi
 
     with closing(conn.cursor()) as cursor:
         cursor.row_factory = sqlite3.Row
-        return [_row_to_session_event(row) for row in cursor.execute(_SESSION_EVENTS_SQL, (session_id,))]
+        records = [_row_to_session_event(row) for row in cursor.execute(_SESSION_EVENTS_SQL, (session_id,))]
+    hydrate_session_event_array_items(conn, records)
+    return records
 
 
 async def get_session_events(
@@ -73,7 +75,9 @@ async def get_session_events(
     session_id: str,
 ) -> list[SessionEventRecord]:
     async with conn.execute(_SESSION_EVENTS_SQL, (session_id,)) as cursor:
-        return [_row_to_session_event(row) for row in await cursor.fetchall()]
+        records = [_row_to_session_event(row) for row in await cursor.fetchall()]
+    await _hydrate_array_items_async(conn, records)
+    return records
 
 
 async def get_session_events_batch(
@@ -101,6 +105,8 @@ async def get_session_events_batch(
     for row in rows:
         record = _row_to_session_event(row)
         result[str(record.session_id)].append(record)
+    for records in result.values():
+        await _hydrate_array_items_async(conn, records)
     return dict(result)
 
 
@@ -127,7 +133,75 @@ def sync_session_events_batch(
     for row in rows:
         record = _row_to_session_event(row)
         result[str(record.session_id)].append(record)
+    for records in result.values():
+        hydrate_session_event_array_items(conn, records)
     return dict(result)
+
+
+def hydrate_session_event_array_items(conn: sqlite3.Connection, records: list[SessionEventRecord]) -> None:
+    """Restore item rows at the read boundary, retaining ordinary JSON payloads."""
+    if not records:
+        return
+    sessions = {str(record.session_id) for record in records}
+    for session_id in sessions:
+        matches = [record for record in records if str(record.session_id) == session_id]
+        positions = tuple(record.event_index for record in matches)
+        placeholders = ", ".join("?" for _ in positions)
+        rows = conn.execute(
+            "SELECT event_position, payload_key, value_json FROM session_event_array_items "
+            f"WHERE session_id = ? AND event_position IN ({placeholders}) "
+            "ORDER BY event_position, payload_key, item_ordinal",
+            (session_id, *positions),
+        )
+        current: tuple[int, str] | None = None
+        values: list[object] = []
+        record_by_position = {record.event_index: record for record in matches}
+        for position, key, encoded in rows:
+            coordinate = (int(position), str(key))
+            if current is not None and coordinate != current:
+                target = record_by_position.get(current[0])
+                if target is not None:
+                    target.payload[current[1]] = values
+                values = []
+            current = coordinate
+            values.append(json.loads(encoded))
+        if current is not None:
+            target = record_by_position.get(current[0])
+            if target is not None:
+                target.payload[current[1]] = values
+
+
+async def _hydrate_array_items_async(conn: aiosqlite.Connection, records: list[SessionEventRecord]) -> None:
+    if not records:
+        return
+    sessions = {str(record.session_id) for record in records}
+    for session_id in sessions:
+        matches = [record for record in records if str(record.session_id) == session_id]
+        positions = tuple(record.event_index for record in matches)
+        placeholders = ", ".join("?" for _ in positions)
+        async with conn.execute(
+            "SELECT event_position, payload_key, value_json FROM session_event_array_items "
+            f"WHERE session_id = ? AND event_position IN ({placeholders}) "
+            "ORDER BY event_position, payload_key, item_ordinal",
+            (session_id, *positions),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        record_by_position = {record.event_index: record for record in matches}
+        current: tuple[int, str] | None = None
+        values: list[object] = []
+        for position, key, encoded in rows:
+            coordinate = (int(position), str(key))
+            if current is not None and coordinate != current:
+                target = record_by_position.get(current[0])
+                if target is not None:
+                    target.payload[current[1]] = values
+                values = []
+            current = coordinate
+            values.append(json.loads(encoded))
+        if current is not None:
+            target = record_by_position.get(current[0])
+            if target is not None:
+                target.payload[current[1]] = values
 
 
 async def get_session_event_compaction_counts(
@@ -182,6 +256,7 @@ __all__ = [
     "get_session_event_compaction_counts",
     "get_session_events",
     "get_session_events_batch",
+    "hydrate_session_event_array_items",
     "sync_session_event_compaction_counts",
     "sync_session_events_batch",
 ]
