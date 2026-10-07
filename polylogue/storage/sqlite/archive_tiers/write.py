@@ -2819,12 +2819,15 @@ def write_parsed_session_to_archive(
                 position_offset = 0
                 stale_attachment_ids: set[str] = set()
                 projection_carry_forward: _ProjectionCarryForward | None = None
+                append_has_new_messages = False
                 t0 = time.perf_counter()
                 if merge_append:
                     position_offset = _next_message_position(conn, session_id)
                     _assert_unique_message_coordinates(session_id, messages, position_offset=position_offset)
-                    if not event_only:
-                        # An append without messages cannot move the active leaf.
+                    append_has_new_messages = _append_has_new_native_messages(
+                        conn, session_id, prepared_rows_to_use.message_rows
+                    )
+                    if not event_only and append_has_new_messages:
                         conn.execute(
                             """
                             UPDATE messages
@@ -16678,6 +16681,18 @@ def _stored_native_id_exists(conn: sqlite3.Connection, session_id: str, native_i
         ).fetchone()
         is not None
     )
+
+
+def _append_has_new_native_messages(
+    conn: sqlite3.Connection, session_id: str, rows: Iterable[tuple[object, ...]]
+) -> bool:
+    columns = [
+        column.name
+        for column in archive_tiers_specs.MESSAGES_SPEC.writable_columns
+        if column.extract_placeholder == "?"
+    ]
+    native_index = columns.index("native_id")
+    return any(not _stored_native_id_exists(conn, session_id, row[native_index]) for row in rows)
 
 
 def _block_type(block: ParsedContentBlock) -> BlockType:
