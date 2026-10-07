@@ -79,15 +79,13 @@ def test_retained_sqlite_preparation_streams_complete_parser_metadata(
         source_path=str(source_path),
         directory=tmp_path / "prepared",
         prepare=original_prepare,
-    ) as (artifact, reader):
+    ) as (artifact, _reader):
         assert artifact.error is None
-        with sqlite3.connect(archive / "source.db") as connection:
-            (raw_id,) = connection.execute("SELECT raw_id FROM raw_sessions WHERE blob_hash=?", (blob_hash,)).fetchone()
         expected = collect_sqlite_sessions(
             provider,
             BlobStore(archive / "blob").blob_path(blob_hash),
             fallback_id=source_path.stem,
-            profile_identity=reader.raw_profile_identity(raw_id),
+            profile_identity=artifact.captured_profile_key,
         )
         expected = [normalize_session_timestamps(session) for session in expected]
         for session in expected:
@@ -97,3 +95,27 @@ def test_retained_sqlite_preparation_streams_complete_parser_metadata(
         assert actual[0].session_events
         assert actual[0].unit_accounting is not None
         actual[0].unit_accounting.assert_conserved()
+
+        events = {event.event_type: event for event in actual[0].session_events}
+        assert actual[0].messages[0].text == ("hi" if provider is Provider.HERMES else "retained text")
+        if provider is Provider.HERMES:
+            assert actual[0].title == "root"
+            assert events["hermes_session_metadata"].payload["end_reason"] == "completed"
+            assert events["hermes_message_state"].payload["active"] is True
+        else:
+            assert actual[0].title == "Complete title"
+            assert events["antigravity_unsupported_step"].payload["payload"] == {"opaque": "retained evidence"}
+            parent_payload = json.loads(
+                "".join(iter_json_value(events["antigravity_parent_reference"].payload, ensure_ascii=False))
+            )
+            assert parent_payload["parent_provider_ids"] == ["parent-a", "parent-b"]
+            assert parent_payload["references"] == [
+                {"cascade_id": "cascade-1", "parent_id": "parent-a"},
+                {"cascade_id": "cascade-1", "parent_id": "parent-b"},
+            ]
+            assert parent_payload["parent_provider_id"] is None
+            assert actual[0].unit_accounting.expected == {"part": 2}
+            assert [(outcome.ordinal, outcome.disposition.value) for outcome in actual[0].unit_accounting.outcomes] == [
+                (0, "accepted"),
+                (1, "typed_unknown"),
+            ]
