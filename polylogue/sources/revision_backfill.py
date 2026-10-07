@@ -61,7 +61,7 @@ from polylogue.archive.session_revision_membership import (
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel_requested
-from polylogue.core.enums import PolylogueStrEnum, Provider, ValidationMode
+from polylogue.core.enums import ArtifactSupportStatus, PolylogueStrEnum, Provider, ValidationMode
 from polylogue.core.json import JSONValue
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.core.raw_failure_evidence import (
@@ -3116,6 +3116,41 @@ def _persist_terminal_non_session_artifact(
     return True
 
 
+def _persist_codex_state_artifact(
+    producer: SourceRawOutcomeProducer,
+    raw_id: str,
+    *,
+    source_path: str,
+    source_index: int,
+    observed_at_ms: int,
+    state_kind: str,
+    manage_transaction: bool,
+) -> None:
+    """Record a validated Codex state database as typed non-session evidence."""
+    _upsert_raw_artifact(
+        producer,
+        raw_id,
+        ArchiveSourceArtifact(
+            artifact_id=artifact_observation_id(
+                source_name=Provider.CODEX.value,
+                source_path=source_path,
+                source_index=source_index,
+            ),
+            origin=origin_from_provider(Provider.CODEX),
+            source_path=source_path,
+            source_index=source_index,
+            artifact_kind=ArtifactKind.BINARY_DATABASE.value,
+            classification_reason=f"validated Codex state database ({state_kind})",
+            support_status=ArtifactSupportStatus.RECOGNIZED_UNPARSED,
+            parse_as_session=False,
+            schema_eligible=False,
+            first_observed_at_ms=observed_at_ms,
+            last_observed_at_ms=observed_at_ms,
+        ),
+        manage_transaction=manage_transaction,
+    )
+
+
 def _parse_one(
     provider: Provider,
     payload: bytes,
@@ -3598,11 +3633,77 @@ def prepare_revision_source_census(
     state = _RevisionCensusState(0, 0, 0, set(), {}, set())
     producer = _PreparedSourceProducer(seal)
 
+    def stage_current_parser_followup(raw_id: str, source_index: int) -> bool:
+        """Finish Source obligations not represented by a current parser receipt."""
+        prepared = prepared_inputs.get(raw_id)
+        artifact = prepared.prepared_artifact if prepared is not None else None
+        if artifact is None:
+            if evidence_reader.raw_schema_eligible(raw_id):
+                raise RetainedPreparationRetryableError(
+                    f"current retained parser receipt lacks captured validation evidence for raw {raw_id}"
+                )
+            return False
+        if artifact is not None and artifact.codex_state_kind is not None:
+            # Append fragments have no stable artifact-observation coordinate.
+            # Their parser receipt is byte-governed; never mint an artifact at -1.
+            if source_index < 0:
+                return False
+            _provider, _blob_hash, source_path, _revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
+            acquired_at_ms = evidence_reader.raw_revision_observation_order(raw_id)[0]
+            _persist_codex_state_artifact(
+                producer,
+                raw_id,
+                source_path=source_path,
+                source_index=source_index,
+                observed_at_ms=acquired_at_ms,
+                state_kind=artifact.codex_state_kind,
+                manage_transaction=False,
+            )
+            prepare_codex_state_source_terminal(
+                seal,
+                raw_id,
+                prepared_state=artifact,
+                state_kind=artifact.codex_state_kind,
+                source_path=source_path,
+                acquired_at_ms=acquired_at_ms,
+                censused_at_ms=0,
+                source_read=evidence_reader,
+            )
+            state.transient_non_session_raw_ids.add(raw_id)
+            return True
+
+        verdict = artifact.validation_verdict
+        staged = False
+        if verdict is None:
+            if evidence_reader.raw_schema_eligible(raw_id):
+                raise RetainedPreparationRetryableError(
+                    f"current retained parser receipt lacks captured validation evidence for raw {raw_id}"
+                )
+        else:
+            blob_hash = evidence_reader.raw_revision_descriptor(raw_id)[1]
+            if verdict.raw_id != raw_id or verdict.revision_sha256 != blob_hash:
+                raise RetainedPreparationRetryableError(f"retained validation evidence changed for {raw_id}")
+            if evidence_reader.raw_validation_mode(raw_id) != verdict.mode:
+                prepare_raw_state_update(
+                    seal,
+                    raw_id,
+                    state=RawSessionStateUpdate(
+                        validation_status=verdict.status,
+                        validation_error=verdict.first_diagnostic,
+                        validation_drift_count=verdict.drift_count,
+                        validation_provider=artifact.resolved_provider,
+                        validation_mode=verdict.mode,
+                    ),
+                )
+                staged = True
+        return staged
+
     def apply_outcome(raw_id: str, source_index: int) -> None:
         check_compute_cancelled()
         state.scanned += 1
         state.censused.add(raw_id)
         if source_index < 0:
+            stage_current_parser_followup(raw_id, source_index)
             if evidence_reader.raw_has_membership_authority(raw_id):
                 record_current_parser_source_census(seal, raw_id)
             else:
@@ -3694,6 +3795,15 @@ def prepare_revision_source_census(
                 ),
             )
         if artifact is not None and artifact.codex_state_kind is not None:
+            _persist_codex_state_artifact(
+                producer,
+                raw_id,
+                source_path=source_path,
+                source_index=source_index,
+                observed_at_ms=observed_at_ms,
+                state_kind=artifact.codex_state_kind,
+                manage_transaction=False,
+            )
             prepare_codex_state_source_terminal(
                 seal,
                 raw_id,
@@ -3857,10 +3967,11 @@ def prepare_revision_source_census(
             if raw_id in state.censused:
                 continue
             if prepared_parser_census_is_current(seal, raw_id):
-                # A current receipt already decides this raw for this parser.
-                # Censusing it again can only restate that decision, or, when
-                # this parse differs, overwrite accepted authority with an
-                # outcome the receipt does not describe.
+                # A current parser receipt may still lack the independent
+                # validation policy or typed non-session Source result needed
+                # before replay. Complete those captured obligations without
+                # re-parsing and risking a conflicting authority update.
+                stage_current_parser_followup(raw_id, source_index)
                 state.censused.add(raw_id)
                 continue
             prepared = prepared_inputs.get(raw_id)
@@ -4080,6 +4191,53 @@ def _accepted_marker_request_session_binding(session: object) -> dict[str, objec
     return binding
 
 
+def _prepared_accepted_marker_sessions(
+    *,
+    raw_id: str,
+    artifact: PreparedJsonl,
+    selected_session_ids: set[str],
+    prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
+    marker_write_factory: Callable[[str, ParsedSession], PreparedSessionWrite],
+) -> Iterator[tuple[str, PreparedSessionWrite, tuple[object, ...]]]:
+    """Stream canonical marker writes, closing each owned temporary after use."""
+    from polylogue.sources.parsers.base_models import ParsedSession as ParsedSessionModel
+
+    found_bindings: dict[str, dict[str, object]] = {}
+    with closing(artifact.iter_sessions()) as parsed_sessions:
+        for session in parsed_sessions:
+            if not isinstance(session, ParsedSessionModel):
+                raise RetainedPreparationRetryableError(
+                    f"accepted marker request has an invalid retained session for {raw_id}"
+                )
+            binding = _accepted_marker_request_session_binding(session)
+            session_id = binding["session_id"]
+            if not isinstance(session_id, str) or session_id not in selected_session_ids:
+                continue
+            prior_binding = found_bindings.get(session_id)
+            if prior_binding is not None:
+                if prior_binding != binding:
+                    raise RetainedPreparationRetryableError(
+                        f"accepted marker request has conflicting parsed session {raw_id}:{session_id}"
+                    )
+                continue
+            found_bindings[session_id] = binding
+            prepared = prepared_writes.get((raw_id, session_id))
+            if prepared is None:
+                prepared = marker_write_factory(raw_id, session)
+                try:
+                    yield session_id, prepared, ()
+                finally:
+                    prepared.close()
+            else:
+                yield session_id, prepared, ()
+    missing = selected_session_ids - found_bindings.keys()
+    if missing:
+        missing_session_id = min(missing)
+        raise RetainedPreparationRetryableError(
+            f"accepted marker request lost selected parsed session {raw_id}:{missing_session_id}"
+        )
+
+
 def prepare_retained_replay_source(
     seal: PreparedIndexMutation,
     *,
@@ -4088,6 +4246,7 @@ def prepare_retained_replay_source(
     membership_plans: Mapping[str, PreparedMembershipReplay],
     adoptions: Mapping[tuple[str, tuple[str, ...]], PreparedRevisionAdoption],
     prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
+    marker_write_factory: Callable[[str, ParsedSession], PreparedSessionWrite],
 ) -> PreparedRetainedReplaySource:
     """Stage exact acknowledgements for the original ordered Index outcomes."""
     from polylogue.markers.preparation import marker_recipe_fingerprint
@@ -4111,6 +4270,7 @@ def prepare_retained_replay_source(
     original_index_outputs: dict[str, tuple[bytes | None, int] | None] = {}
     decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
     marker_recipe = marker_recipe_fingerprint()
+    marker_sessions_by_raw: dict[str, set[str]] = {}
     with seal.original_read_snapshot(), seal.source_producer():
 
         def request_sessions_for(raw_id: str) -> Callable[[], Iterable[Mapping[str, object]]]:
@@ -4132,9 +4292,10 @@ def prepare_retained_replay_source(
                             raise RetainedPreparationRetryableError(
                                 f"accepted marker request has an invalid retained session for {raw_id}"
                             )
+                        binding = _accepted_marker_request_session_binding(session)
                         # Content and accounting are both bound without
                         # serializing their disk-backed or spilled arrays.
-                        yield _accepted_marker_request_session_binding(session)
+                        yield binding
 
             return sessions
 
@@ -4149,7 +4310,10 @@ def prepare_retained_replay_source(
                 "marker_recipe": marker_recipe,
             }
 
-        def stage_accepted_marker_history(raw_id: str) -> None:
+        def retain_accepted_marker_session(raw_id: str, session_id: str) -> None:
+            marker_sessions_by_raw.setdefault(raw_id, set()).add(session_id)
+
+        def stage_accepted_marker_history(raw_id: str, selected_session_ids: set[str]) -> None:
             artifact = prepared_inputs[raw_id].prepared_artifact
             verdict = artifact.validation_verdict if artifact is not None else None
             if verdict is not None and verdict.strict_refusal:
@@ -4163,23 +4327,31 @@ def prepare_retained_replay_source(
                 request_sessions=request_sessions,
             ):
                 return
-            has_prepared_write = any(prepared_raw_id == raw_id for prepared_raw_id, _session_id in prepared_writes)
-            if not has_prepared_write and next(iter(request_sessions()), None) is not None:
+            artifact = prepared_inputs[raw_id].prepared_artifact
+            if artifact is None:
                 raise RetainedPreparationRetryableError(
-                    f"accepted marker request has no canonical prepared write for {raw_id}"
+                    f"accepted marker request has no canonical retained parse for {raw_id}"
                 )
-            prepared_sessions = (
-                (session_id, prepared, ())
-                for (prepared_raw_id, session_id), prepared in prepared_writes.items()
-                if prepared_raw_id == raw_id
-            )
-            carrier = prepare_accepted_marker_carrier(
-                raw_id=raw_id,
-                request_facts=facts,
-                request_sessions=request_sessions,
-                prepared_sessions=prepared_sessions,
-            )
-            stage_accepted_marker_carrier(seal, carrier)
+
+            with closing(
+                _prepared_accepted_marker_sessions(
+                    raw_id=raw_id,
+                    artifact=artifact,
+                    selected_session_ids=selected_session_ids,
+                    prepared_writes=prepared_writes,
+                    marker_write_factory=marker_write_factory,
+                )
+            ) as marker_sessions:
+                carrier = prepare_accepted_marker_carrier(
+                    raw_id=raw_id,
+                    request_facts=facts,
+                    request_sessions=request_sessions,
+                    prepared_sessions=marker_sessions,
+                )
+                try:
+                    stage_accepted_marker_carrier(seal, carrier)
+                finally:
+                    carrier.close()
 
         def retain_attachment_carrier(raw_id: str) -> None:
             if raw_id in attachment_artifacts:
@@ -4200,7 +4372,7 @@ def prepare_retained_replay_source(
             if adoption.session_id is None:
                 raise RetainedPreparationRetryableError("accepted byte acknowledgement has no session identity")
             for raw_id in outcome.plan.accepted_raw_ids:
-                stage_accepted_marker_history(raw_id)
+                retain_accepted_marker_session(raw_id, adoption.session_id)
                 retain_attachment_carrier(raw_id)
             for raw_id in revision_replay_terminal_raw_ids(outcome.plan):
                 prepare_raw_parse_success(seal, raw_id, provider=prepared_inputs[raw_id].provider)
@@ -4224,7 +4396,14 @@ def prepare_retained_replay_source(
                 skipped = not adoption.adoptable or _reader_suppresses(seal.observer("user"), session_id)
                 if not skipped:
                     for raw_id in accepted:
-                        stage_accepted_marker_history(raw_id)
+                        retain_accepted_marker_session(
+                            raw_id,
+                            str(
+                                make_session_id(
+                                    plan.sessions[raw_id].source_name, plan.sessions[raw_id].provider_session_id
+                                )
+                            ),
+                        )
                     retain_attachment_carrier(accepted[-1])
                     produced_session_ids.add(session_id)
             decisions = membership_decisions_for_head_plan(plan.classification, plan.head_plan, suppressed=skipped)
@@ -4242,6 +4421,8 @@ def prepare_retained_replay_source(
                 source_decisions=decisions,
                 decided_at_ms=decided_at_ms,
             )
+        for raw_id, session_ids in sorted(marker_sessions_by_raw.items()):
+            stage_accepted_marker_history(raw_id, session_ids)
         for raw_id, session_id in prepared_writes:
             if not is_work_event_raw_id(raw_id):
                 continue

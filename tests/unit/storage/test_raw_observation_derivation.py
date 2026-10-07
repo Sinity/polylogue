@@ -586,6 +586,40 @@ def test_duplicate_raws_share_preparation_but_keep_distinct_census(
     _run_raw_law(tmp_path, run_phase)
 
 
+def test_current_parser_census_still_records_missing_validation_policy(tmp_path: Path) -> None:
+    def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
+        """A current parser receipt cannot stand in for a raw's validation receipt."""
+        bootstrap_archive_root(tmp_path)
+        raw_id = _admit(tmp_path, ("validation-continuation",))
+        initial = _run(tmp_path, compute_adapter=compute_adapter)
+        assert initial.done == 1 and initial.failed == initial.pending == 0
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute(
+                "UPDATE raw_sessions SET validated_at_ms=NULL,validation_status=NULL,validation_error=NULL,"
+                "validation_mode=NULL,validation_drift_count=0 WHERE raw_id=?",
+                (raw_id,),
+            )
+            conn.commit()
+
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
+        frame = raw_observation_frame(tmp_path)
+        replacement = adapter.compute(frame, raw_id)
+        try:
+            assert [phase for phase, _receipt in replacement.committed_phase_receipts] == ["census"]
+            assert _publish(adapter, frame, replacement)
+        finally:
+            replacement.close()
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            status, mode, validated_at_ms = conn.execute(
+                "SELECT validation_status,validation_mode,validated_at_ms FROM raw_sessions WHERE raw_id=?",
+                (raw_id,),
+            ).fetchone()
+        assert status == "passed" and mode == ValidationMode.ADVISORY.value and validated_at_ms is not None
+        assert adapter.inspect(frame, (raw_id,)) == {raw_id: "valid"}
+
+    _run_raw_law(tmp_path, run_phase)
+
+
 def test_restart_without_ops_hints_recovers_index_loss_and_new_admission(tmp_path: Path) -> None:
     def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
         """Anti-vacuity: retained pending caches hide reset or later admissions."""

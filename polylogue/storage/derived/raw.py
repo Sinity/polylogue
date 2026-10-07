@@ -2375,6 +2375,34 @@ class RawObservationDerivation(RawObservationInspection):
                             # same remaining outcomes, including shared Raw IDs.
                             for refused_key in prepared_key_refusals:
                                 prepared_byte_outcomes.pop(refused_key, None)
+
+                            def prepare_marker_write(raw_id: str, session: ParsedSession) -> PreparedSessionWrite:
+                                retained = prepared.get(raw_id)
+                                artifact = retained.prepared_artifact if retained is not None else None
+                                if artifact is None or artifact.shard_path is None:
+                                    raise RetainedPreparationRetryableError(
+                                        f"accepted marker request has no owned prepared shard for {raw_id}"
+                                    )
+                                session_id = _session_id(session)
+                                marker_source = PreparedSessionSourceRead(
+                                    reference_seal,
+                                    blob_store=material_store,
+                                )
+                                return prepare_session_write(
+                                    reference_seal.observer("index"),
+                                    session,
+                                    merge_append=False,
+                                    fallback_timestamp=prepared_raw_revision_file_mtime(reference_seal, raw_id),
+                                    source_read=marker_source,
+                                    raw_id=raw_id,
+                                    force_replace=True,
+                                    prepared_rows=prepared_session_rows_from_shard(
+                                        artifact.shard_path,
+                                        session_id,
+                                    ),
+                                    before_input=reference_seal.before_index_input,
+                                )
+
                             prepared_replay_source = prepare_retained_replay_source(
                                 reference_seal,
                                 prepared_inputs=prepared,
@@ -2382,6 +2410,7 @@ class RawObservationDerivation(RawObservationInspection):
                                 membership_plans=membership_plans,
                                 adoptions=prepared_replay_adoption,
                                 prepared_writes=prepared_writes,
+                                marker_write_factory=prepare_marker_write,
                             )
                             membership_plans = dict(prepared_replay_source.membership_plans)
                     except BaseException as primary:

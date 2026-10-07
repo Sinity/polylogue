@@ -18,7 +18,7 @@ from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWri
 from polylogue.schemas import RetainedValidationVerdict
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.raw_owner_routes import converge_pending_raws_with_owner
+from tests.infra.raw_owner_routes import converge_pending_raws_with_owner, replay_retained_raws
 
 
 def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -203,35 +203,49 @@ async def test_two_accepted_revisions_survive_one_periodic_profile_pass(tmp_path
     """
     archive_root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, archive_root)
-    from tests.infra.retained_jsonl import acquire_full_revision
+    from tests.infra.retained_jsonl import retained_append_fixture
 
     source_path = tmp_path / "coalesced-profile.jsonl"
-    for revision, note in ((1, "first retained note"), (2, "second retained note")):
+    native_id = "coalesced-profile"
+    baseline = _codex_session(native_id, (("user", "question"), ("assistant", "::note: first retained note")))
+    delta = (
+        json.dumps(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": f"{native_id}-append-m0",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "::note: second retained note"}],
+                },
+            },
+            sort_keys=True,
+        ).encode()
+        + b"\n"
+    )
 
-        def acquire(revision: int = revision, note: str = note) -> str:
-            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-                return acquire_full_revision(
-                    archive,
-                    provider=Provider.CODEX,
-                    source_path=source_path,
-                    payload=_codex_session(
-                        "coalesced-profile", (("user", "question"), ("assistant", f"::note: {note}"))
-                    ),
-                    native_id="coalesced-profile",
-                    generation=revision - 1,
-                    acquired_at_ms=revision,
-                )
+    def acquire() -> tuple[str, str]:
+        with retained_append_fixture(
+            root=archive_root,
+            provider=Provider.CODEX,
+            source_path=source_path,
+            native_id=native_id,
+            logical_source_key=f"codex-session:{native_id}",
+            baseline=baseline,
+            delta=delta,
+        ) as (_reader, baseline_raw_id, append_raw_id, *_evidence):
+            return baseline_raw_id, append_raw_id
 
-        await asyncio.to_thread(acquire)
-        # Each call is a fresh pass with no carried cursor, so its discovery
-        # bound must reach past the already-current earlier revision.
-        result = await asyncio.to_thread(
-            converge_pending_raws_with_owner,
-            archive_root,
-            limit=revision,
-            validation_mode=ValidationMode.ADVISORY,
-        )
-        assert result.done == 1 and result.failed == 0, result
+    baseline_raw_id, append_raw_id = await asyncio.to_thread(acquire)
+    assert baseline_raw_id != append_raw_id
+
+    # Prove these are both accepted members of one chain before exercising one
+    # retained preparation. This cannot pass by replaying R1 and R2 separately.
+    with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+        plan = archive.raw_revision_replay_plan(f"codex-session:{native_id}")
+        assert plan.accepted_raw_ids == (baseline_raw_id, append_raw_id)
+
+    await asyncio.to_thread(replay_retained_raws, archive_root, (baseline_raw_id, append_raw_id))
 
     with sqlite3.connect(archive_root / "source.db") as source:
         retained = source.execute("SELECT sequence, raw_id FROM accepted_marker_inputs ORDER BY sequence").fetchall()

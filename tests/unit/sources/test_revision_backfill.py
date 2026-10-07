@@ -1128,9 +1128,9 @@ def test_targeted_rebuild_expands_same_session_across_source_paths_only(
     original_parse = revision_backfill.prepare_retained_jsonl_artifact
     opened: list[str] = []
 
-    def observed_parse(evidence_reader: Any, raw_id: str, *, directory: Path) -> Any:
+    def observed_parse(evidence_reader: Any, raw_id: str, *, directory: Path, **kwargs: Any) -> Any:
         opened.append(raw_id)
-        return original_parse(evidence_reader, raw_id, directory=directory)
+        return original_parse(evidence_reader, raw_id, directory=directory, **kwargs)
 
     monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", observed_parse)
     result = replay_retained_components(tmp_path, selected_raw_ids=[selected_raw])
