@@ -150,6 +150,11 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/schemas/retained_validation.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/schemas/source_cache.py",
     "tiers": []
   },
