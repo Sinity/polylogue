@@ -22,6 +22,7 @@ from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.core.compute import DaemonBackpressureError, DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
+from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.dispatch import admit_parsed_sessions_for_publication
 from polylogue.sources.parsers import codex
@@ -136,7 +137,7 @@ def _plain_text_message(record: object) -> tuple[str, str, str] | None:
         or len(content) != 1
         or not isinstance(content[0], dict)
         or set(content[0]) != {"type", "text"}
-        or content[0].get("type") not in {"input_text", "output_text"}
+        or content[0].get("type") != "input_text"
         or not isinstance(content[0].get("text"), str)
         or not content[0]["text"]
     ):
@@ -178,6 +179,7 @@ def _hash_and_compare_prefix(
 def _read_head_and_prove(
     source_read: PreparedSessionSourceRead,
     raw_ids: Sequence[str],
+    head_blob: BinaryIO,
 ) -> tuple[BinaryIO, list[int], list[str], str, int]:
     if len(raw_ids) < 4 or len(set(raw_ids)) != len(raw_ids):
         raise ValueError("checkpoint cohort needs three probes and an interior revision")
@@ -192,9 +194,6 @@ def _read_head_and_prove(
     if any(profile_key != profile_keys[0] for profile_key in profile_keys):
         raise ValueError("checkpoint cohort profile identity changed")
 
-    # The returned preparation owns this spool until its artifact iterator is
-    # exhausted or explicitly closed.
-    head_blob = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115
     hashes: list[str] = []
     sizes: list[int] = []
     for raw_id in raw_ids:
@@ -312,8 +311,11 @@ def prepare_codex_prefix_checkpoints(
     """
     head_blob: BinaryIO | None = None
     try:
+        # The result object owns this spool from the moment it is opened, even
+        # when source verification fails before `_read_head_and_prove` returns.
+        head_blob = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115
         head_blob, prefix_record_counts, hashes, header_id, head_message_count = _read_head_and_prove(
-            source_read, raw_ids
+            source_read, raw_ids, head_blob
         )
         if head_artifact.blob_hash != hashes[-1]:
             raise ValueError("canonical head artifact is not bound to this cohort's exact head blob")
@@ -361,6 +363,10 @@ def prepare_codex_prefix_checkpoints(
                     message_count,
                     _prefix_accounting(message_count),
                     timestamp_pair[1] if timestamp_pair is not None else None,
+                )
+                canonical = normalize_session_timestamps(
+                    canonical,
+                    fallback_timestamp=source_read.raw_revision_file_mtime(raw_ids[index]),
                 )
                 source_path = source_read.raw_revision_descriptor(raw_ids[index])[2]
                 finalized = iter(prepare_sessions(raw_ids[index], iter((canonical,))))

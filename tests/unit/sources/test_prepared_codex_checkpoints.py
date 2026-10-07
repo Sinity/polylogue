@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tempfile
 from contextlib import contextmanager
 from io import BytesIO
 
@@ -9,6 +10,7 @@ import pytest
 
 from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.core.enums import Provider
+from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers import codex
 from polylogue.sources.parsers.base_models import AdmissionUnit
@@ -126,6 +128,15 @@ def test_checkpoint_grammar_falls_back_for_future_sensitive_codex_shapes() -> No
     assert _plain_text_message({**message, "extra": "unknown"}) is None
     assert (
         _plain_text_message(
+            {
+                "type": "response_item",
+                "payload": {**message["payload"], "content": [{"type": "output_text", "text": "x"}]},
+            }
+        )
+        is None
+    )
+    assert (
+        _plain_text_message(
             {"type": "response_item", "payload": {**message["payload"], "content": [{"type": "image", "url": "x"}]}}
         )
         is None
@@ -161,7 +172,10 @@ def test_source_read_proof_checks_hash_prefix_and_complete_record_boundaries() -
         text = "\n".join(json.dumps(row, separators=(",", ":")) for row in records[:count]) + "\n"
         captures.append(text.encode())
     source_read = _SourceRead(captures)
-    head_blob, counts, hashes, header, message_count = _read_head_and_prove(source_read, tuple(source_read.payloads))
+    head_blob = tempfile.TemporaryFile(mode="w+b")
+    head_blob, counts, hashes, header, message_count = _read_head_and_prove(
+        source_read, tuple(source_read.payloads), head_blob
+    )
     try:
         assert counts == [1, 2, 3, 4]
         assert header == "prefix-session"
@@ -172,10 +186,37 @@ def test_source_read_proof_checks_hash_prefix_and_complete_record_boundaries() -
 
     replaced = list(captures)
     replaced[2] = captures[2].replace(b"content-1", b"changed-1")
-    with pytest.raises(ValueError, match="exact byte prefixes"):
-        _read_head_and_prove(_SourceRead(replaced), tuple(source_read.payloads))
+    replaced_blob = tempfile.TemporaryFile(mode="w+b")
+    try:
+        with pytest.raises(ValueError, match="exact byte prefixes"):
+            _read_head_and_prove(_SourceRead(replaced), tuple(source_read.payloads), replaced_blob)
+    finally:
+        replaced_blob.close()
 
     incomplete = list(captures)
     incomplete[1] = captures[1][:-1]
-    with pytest.raises(ValueError, match="ends inside a JSONL record"):
-        _read_head_and_prove(_SourceRead(incomplete), tuple(source_read.payloads))
+    incomplete_blob = tempfile.TemporaryFile(mode="w+b")
+    try:
+        with pytest.raises(ValueError, match="ends inside a JSONL record"):
+            _read_head_and_prove(_SourceRead(incomplete), tuple(source_read.payloads), incomplete_blob)
+    finally:
+        incomplete_blob.close()
+
+
+def test_each_prefix_keeps_its_own_fallback_timestamp_provenance() -> None:
+    records = _records(3)
+    records[0]["payload"].pop("timestamp")
+    head = codex.parse_stream(records, "fallback")
+    checkpoint = _finalize_codex_prefix(head, head.messages, 2, _prefix_accounting(2), head.created_at)
+
+    for fallback in ("2026-06-01T01:00:00Z", "2026-06-02T01:00:00Z"):
+        ordinary = normalize_session_timestamps(
+            codex.parse_stream(records[:3], "fallback"), fallback_timestamp=fallback
+        )
+        prepared = normalize_session_timestamps(checkpoint, fallback_timestamp=fallback)
+        prepared_value = prepared.model_copy(update={"messages": list(prepared.messages)})
+        assert prepared_value.model_dump(mode="json", exclude={"unit_accounting"}) == ordinary.model_dump(
+            mode="json", exclude={"unit_accounting"}
+        )
+        assert prepared.created_at_provenance == "fallback"
+        assert prepared.updated_at_provenance == "fallback"
