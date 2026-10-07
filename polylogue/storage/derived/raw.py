@@ -90,6 +90,41 @@ if TYPE_CHECKING:
 RAW_OBSERVATION_DOMAIN = "raw_observation"
 
 
+def _record_retained_schema_drift(
+    archive_root: Path,
+    prepared_inputs: Mapping[str, PreparedRetainedInput] | None,
+    *,
+    index_db_path: Path,
+    strict_refusals_only: bool = False,
+) -> None:
+    """Persist admitted retained-validation observations without gating writes."""
+    if not prepared_inputs:
+        return
+    observations = []
+    for retained in prepared_inputs.values():
+        artifact = retained.prepared_artifact
+        verdict = None if artifact is None else artifact.validation_verdict
+        if verdict is None or verdict.drift_observation is None:
+            continue
+        if strict_refusals_only and not verdict.strict_refusal:
+            continue
+        observations.append(verdict.drift_observation)
+    if not observations:
+        return
+    try:
+        from polylogue.schemas.drift_sentinel_sampling import record_schema_drift_observations_to_ops_sync
+
+        record_schema_drift_observations_to_ops_sync(
+            index_db_path,
+            observations,
+            archive_root=archive_root,
+        )
+    except Exception:
+        from polylogue.logging import get_logger
+
+        get_logger(__name__).debug("schema drift sampling failed after retained receipt", exc_info=True)
+
+
 def raw_observation_recipe_version(validation_mode: ValidationMode = ValidationMode.ADVISORY) -> str:
     """Identify the parser and effective validation policy for raw replay."""
     parser_fingerprint = raw_authority_parser_fingerprint()
@@ -2590,6 +2625,15 @@ class RawObservationDerivation(RawObservationInspection):
             raise RetainedPreparationNoProgressError(
                 f"retained {phase} left its durable inputs unchanged: {replacement.key}"
             )
+        # A terminal STRICT schema refusal is durable as soon as its Source
+        # census/classification receipt commits. That route returns before the
+        # later Index replay hook, so persist its best-effort drift signal here.
+        _record_retained_schema_drift(
+            self.archive_root,
+            replacement.prepared_inputs,
+            index_db_path=Path(self.archive_root / "index.db"),
+            strict_refusals_only=True,
+        )
         if phase_receipt is not None:
             for committed_phase, committed_receipt in receipts:
                 phase_receipt(committed_phase, committed_receipt)
@@ -2719,35 +2763,11 @@ class RawObservationDerivation(RawObservationInspection):
                     if publication_failure is not None:
                         publication_failure(failure)
                     return False
-                drift_observations = [
-                    artifact.validation_verdict.drift_observation
-                    for retained in replacement.prepared_inputs.values()
-                    if (artifact := retained.prepared_artifact) is not None
-                    and artifact.validation_verdict is not None
-                    and artifact.validation_verdict.drift_observation is not None
-                ]
-                if drift_observations:
-                    # Drift telemetry is best effort and follows the durable
-                    # replay receipt. In particular, a committed STRICT
-                    # refusal still records its validation signal without
-                    # making ops.db part of the ingest outcome.
-                    try:
-                        from polylogue.schemas.drift_sentinel_sampling import (
-                            record_schema_drift_observations_to_ops_sync,
-                        )
-
-                        record_schema_drift_observations_to_ops_sync(
-                            Path(frame.source_revision),
-                            drift_observations,
-                            archive_root=self.archive_root,
-                        )
-                    except Exception:
-                        from polylogue.logging import get_logger
-
-                        get_logger(__name__).debug(
-                            "schema drift sampling failed after retained replay",
-                            exc_info=True,
-                        )
+                _record_retained_schema_drift(
+                    self.archive_root,
+                    replacement.prepared_inputs,
+                    index_db_path=Path(frame.source_revision),
+                )
                 replay_receipt.stage_timings_s["provider_parse"] = (
                     replay_receipt.stage_timings_s.get("provider_parse", 0.0) + replacement.provider_parse_seconds
                 )
