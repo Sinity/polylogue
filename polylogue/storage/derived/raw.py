@@ -23,7 +23,7 @@ from dataclasses import field as dataclasses_field
 from functools import partial
 from itertools import chain
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, BinaryIO, Literal, Protocol, TypeVar, cast
 
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
@@ -1520,6 +1520,7 @@ class RawObservationDerivation(RawObservationInspection):
         A new witness then proves the same selected raws and parser operands
         before enrichment and publication artifacts are made.
         """
+        from polylogue.archive.revision_authority import RawRevisionKind
         from polylogue.sources.dispatch import is_jsonl_source_path, is_stream_record_provider
         from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
         from polylogue.sources.sqlite_export import looks_like_logical_source_path
@@ -1527,14 +1528,20 @@ class RawObservationDerivation(RawObservationInspection):
         from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
 
         blob_store = BlobStore(self.archive_root / "blob")
-        captures: dict[str, tuple[tuple[object, ...], str | None, str | None, str | None, object, Path]] = {}
+        captures: dict[
+            str,
+            tuple[tuple[object, ...], str | None, str | None, str | None, object, str | None, Path],
+        ] = {}
         with seal.original_read_snapshot(), seal.source_producer():
             read = PreparedSessionSourceRead(seal, blob_store=blob_store)
             selected = (key,) if selection is None else tuple(selection(read))
             raw_ids, logical_keys = read.expand_raw_membership_selection(selected)
             if not raw_ids:
                 return seal
-            operands: dict[str, tuple[tuple[object, ...], str | None, str | None, str | None, object]] = {}
+            operands: dict[
+                str,
+                tuple[tuple[object, ...], str | None, str | None, str | None, object, str | None],
+            ] = {}
             for raw_id in raw_ids:
                 descriptor = read.raw_revision_descriptor(raw_id)
                 provider, _blob_hash, source_path, kind, _raw_size = descriptor
@@ -1542,7 +1549,6 @@ class RawObservationDerivation(RawObservationInspection):
                     provider is not Provider.CODEX
                     or not is_jsonl_source_path(source_path)
                     or looks_like_logical_source_path(Path(source_path))
-                    or kind.value not in {"full", "unknown"}
                 ):
                     return seal
                 operands[raw_id] = (
@@ -1551,6 +1557,7 @@ class RawObservationDerivation(RawObservationInspection):
                     read.raw_revision_file_mtime(raw_id),
                     read.raw_native_id(raw_id) if kind.value == "append" else None,
                     read.raw_captured_zip_coordinate(raw_id),
+                    read.raw_append_logical_key(raw_id) if kind.value == "append" else None,
                 )
 
             if carry.scratch_owner is None:
@@ -1561,7 +1568,9 @@ class RawObservationDerivation(RawObservationInspection):
                 weakref.finalize(carry.scratch_owner, discard_decoded_sessions_under, Path(carry.scratch_owner.name))
             scratch = Path(carry.scratch_owner.name)
             for raw_id in raw_ids:
-                descriptor, profile, fallback_timestamp, native_id, zip_coordinate = operands[raw_id]
+                descriptor, profile, fallback_timestamp, native_id, zip_coordinate, append_logical_key = operands[
+                    raw_id
+                ]
                 provider, blob_hash, _source_path, _kind, raw_size = descriptor
                 input_hash, input_size = seal.retain_original_blob_input(raw_id)
                 if input_hash != bytes.fromhex(blob_hash) or input_size != raw_size:
@@ -1593,6 +1602,7 @@ class RawObservationDerivation(RawObservationInspection):
                     fallback_timestamp,
                     native_id,
                     zip_coordinate,
+                    append_logical_key,
                     staged_blob,
                 )
             original_selection = (raw_ids, logical_keys)
@@ -1610,16 +1620,30 @@ class RawObservationDerivation(RawObservationInspection):
         neutral_by_raw: dict[str, PreparedJsonl] = {}
 
         def prepare_neutral(raw_id: str) -> PreparedJsonl:
-            descriptor, profile, fallback_timestamp, native_id, _zip_coordinate, staged_blob = captures[raw_id]
-            provider, blob_hash, source_path, _kind, _raw_size = descriptor
+            descriptor, profile, fallback_timestamp, native_id, _zip_coordinate, append_logical_key, staged_blob = (
+                captures[raw_id]
+            )
+            provider, blob_hash, source_path, kind, _raw_size = descriptor
             neutral_directory = staged_blob.parent
             with staged_blob.open("rb") as staged_input:
                 parse_prefix_size = jsonl_parse_prefix_size_of_handle(staged_input)
+            fallback_id = fallback_session_id(source_path, raw_id)
+            if kind.value == "append":
+                from polylogue.sources.revision_backfill import _append_session_native_id
+
+                fallback_id = (
+                    _append_session_native_id(
+                        append_logical_key,
+                        provider=provider,
+                        captured_native_id=native_id,
+                    )
+                    or fallback_id
+                )
             neutral = prepare_jsonl_blob(
                 str(staged_blob),
                 source_path,
                 provider.value,
-                fallback_session_id(source_path, raw_id),
+                fallback_id,
                 is_stream=is_stream_record_provider(source_path, provider),
                 profile_identity=profile,
                 shard_directory=str(scratch),
@@ -1647,14 +1671,16 @@ class RawObservationDerivation(RawObservationInspection):
             return neutral
 
         for raw_id in raw_ids:
-            descriptor, profile, fallback_timestamp, native_id, _zip_coordinate, _staged_blob = captures[raw_id]
+            descriptor, profile, fallback_timestamp, native_id, _zip_coordinate, _append_key, _staged_blob = captures[
+                raw_id
+            ]
             _provider, blob_hash, source_path, _kind, _raw_size = descriptor
             artifact_key = (
                 raw_id,
                 Provider.CODEX,
                 blob_hash,
                 source_path,
-                False,
+                descriptor[3].value == "append",
                 native_id,
                 fallback_timestamp,
                 profile,
@@ -1668,11 +1694,12 @@ class RawObservationDerivation(RawObservationInspection):
         groups: dict[str, list[str]] = {}
         for raw_id in raw_ids:
             descriptor = captures[raw_id][0]
-            groups.setdefault(descriptor[2], []).append(raw_id)
+            if descriptor[3].value in {"full", "unknown"}:
+                groups.setdefault(descriptor[2], []).append(raw_id)
 
         class CapturedCodexRead:
-            def raw_revision_descriptor(self, raw_id: str) -> tuple[object, ...]:
-                return captures[raw_id][0]
+            def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
+                return cast(tuple[Provider, str, str, RawRevisionKind, int], captures[raw_id][0])
 
             def raw_profile_identity(self, raw_id: str) -> str | None:
                 return captures[raw_id][1]
@@ -1681,8 +1708,10 @@ class RawObservationDerivation(RawObservationInspection):
                 return captures[raw_id][2]
 
             @contextmanager
-            def open_raw_revision_material(self, raw_id: str) -> Iterator[tuple[Provider, object, str, object]]:
-                descriptor, _profile, _fallback, _native, _zip, staged_blob = captures[raw_id]
+            def open_raw_revision_material(
+                self, raw_id: str
+            ) -> Iterator[tuple[Provider, BinaryIO, str, RawRevisionKind]]:
+                descriptor, _profile, _fallback, _native, _zip, _append_key, staged_blob = captures[raw_id]
                 with staged_blob.open("rb") as payload:
                     yield descriptor[0], payload, descriptor[2], descriptor[3]
 
@@ -1717,7 +1746,7 @@ class RawObservationDerivation(RawObservationInspection):
                 existing = options_by_raw.get(raw_id)
                 if existing is not None:
                     return existing
-                descriptor, profile, fallback_timestamp, _native_id, _zip, _staged_blob = captures[raw_id]
+                descriptor, profile, fallback_timestamp, _native_id, _zip, _append_key, _staged_blob = captures[raw_id]
                 _provider, _blob_hash, source_path, _kind, raw_size = descriptor
                 options = CodexCheckpointArtifactOptions(
                     source_path=source_path,
@@ -1765,7 +1794,10 @@ class RawObservationDerivation(RawObservationInspection):
                 fresh_read = PreparedSessionSourceRead(fresh, blob_store=blob_store)
                 fresh_selected = (key,) if selection is None else tuple(selection(fresh_read))
                 fresh_raw_ids, fresh_logical_keys = fresh_read.expand_raw_membership_selection(fresh_selected)
-                fresh_operands: dict[str, tuple[tuple[object, ...], str | None, str | None, str | None, object]] = {}
+                fresh_operands: dict[
+                    str,
+                    tuple[tuple[object, ...], str | None, str | None, str | None, object, str | None],
+                ] = {}
                 if fresh_raw_ids == raw_ids:
                     for raw_id in fresh_raw_ids:
                         descriptor = fresh_read.raw_revision_descriptor(raw_id)
@@ -1775,6 +1807,7 @@ class RawObservationDerivation(RawObservationInspection):
                             fresh_read.raw_revision_file_mtime(raw_id),
                             fresh_read.raw_native_id(raw_id) if descriptor[3].value == "append" else None,
                             fresh_read.raw_captured_zip_coordinate(raw_id),
+                            fresh_read.raw_append_logical_key(raw_id) if descriptor[3].value == "append" else None,
                         )
                 if (fresh_raw_ids, fresh_logical_keys) != original_selection or fresh_operands != operands:
                     raise _CarryInvalidatedError
@@ -1785,7 +1818,15 @@ class RawObservationDerivation(RawObservationInspection):
                 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
                 for raw_id in raw_ids:
-                    descriptor, profile, fallback_timestamp, _native_id, zip_coordinate, _staged_blob = captures[raw_id]
+                    (
+                        descriptor,
+                        profile,
+                        fallback_timestamp,
+                        _native_id,
+                        zip_coordinate,
+                        _append_key,
+                        _staged_blob,
+                    ) = captures[raw_id]
                     provider, _blob_hash, source_path, _kind, _raw_size = descriptor
                     neutral = carry.neutral_artifacts[neutral_keys[raw_id]]
                     if neutral.error is not None or neutral.deferred:

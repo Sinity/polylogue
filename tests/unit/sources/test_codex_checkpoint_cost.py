@@ -10,7 +10,7 @@ import pytest
 
 from polylogue.core.enums import ValidationMode
 from polylogue.schemas import retained_validation
-from polylogue.sources import revision_backfill
+from polylogue.sources import prepared_jsonl
 from tests.infra.retained_replay import replay_retained_components
 from tests.infra.revision_backfill_benchmark import build_revision_chain_corpus
 
@@ -36,21 +36,36 @@ def test_codex_prefix_checkpoint_cost_is_constant_and_each_capture_gets_a_verdic
         final_payload_bytes=capture_count,
         native_singleton=True,
     )
-    prepared_ids: list[str] = []
+    prepared_hashes: list[str | None] = []
     observed_records = 0
-    original_prepare = revision_backfill.prepare_retained_jsonl_artifact
+    original_prepare = prepared_jsonl.prepare_jsonl_blob
     original_observe = retained_validation.PrefixValidationState.observe
 
-    def counted_prepare(evidence_reader: Any, raw_id: str, *, directory: Path, **kwargs: Any) -> Any:
-        prepared_ids.append(raw_id)
-        return original_prepare(evidence_reader, raw_id, directory=directory, **kwargs)
+    def counted_prepare(
+        blob_path: str,
+        source_path: str,
+        provider_value: str,
+        fallback_id: str,
+        *,
+        source_sha256: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        prepared_hashes.append(source_sha256)
+        return original_prepare(
+            blob_path,
+            source_path,
+            provider_value,
+            fallback_id,
+            source_sha256=source_sha256,
+            **kwargs,
+        )
 
     def counted_observe(state: Any, record: Any) -> None:
         nonlocal observed_records
         observed_records += 1
         original_observe(state, record)
 
-    monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", counted_prepare)
+    monkeypatch.setattr(prepared_jsonl, "prepare_jsonl_blob", counted_prepare)
     monkeypatch.setattr(retained_validation.PrefixValidationState, "observe", counted_observe)
 
     result = replay_retained_components(tmp_path, validation_mode=validation_mode)
@@ -58,8 +73,13 @@ def test_codex_prefix_checkpoint_cost_is_constant_and_each_capture_gets_a_verdic
     assert result.scanned == capture_count
     assert result.classified_full == capture_count - 1
     assert result.replayed_logical_sources == 1
-    assert len(prepared_ids) == 3, prepared_ids
-    assert set(prepared_ids) == {raw_ids[0], raw_ids[1], raw_ids[-1]}
+    assert len(prepared_hashes) == 3, prepared_hashes
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        raw_hashes = {
+            str(raw_id): str(blob_hash).lower()
+            for raw_id, blob_hash in conn.execute("SELECT raw_id, hex(blob_hash) FROM raw_sessions")
+        }
+    assert set(prepared_hashes) == {raw_hashes[raw_ids[0]], raw_hashes[raw_ids[1]], raw_hashes[raw_ids[-1]]}
     # The generated head has one session_meta record plus one response_item
     # for each later capture, and the checkpoint scan observes each once.
     assert observed_records == capture_count, observed_records
