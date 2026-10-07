@@ -617,6 +617,7 @@
       };
 
       devShells.${system}.default = pkgs.mkShell {
+        POLYLOGUE_FAKE_INDEXEDDB_PACKAGE = "${fakeIndexedDB}/package";
         buildInputs = [
           python
           pkgs.uv
@@ -632,7 +633,6 @@
         ];
 
         shellHook = ''
-          export POLYLOGUE_FAKE_INDEXEDDB_PACKAGE=${fakeIndexedDB}/package
           export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
           # Permit bytecode in the checkout cache even when a parent shell
           # forbids writes. The prefix keeps caches outside source directories.
