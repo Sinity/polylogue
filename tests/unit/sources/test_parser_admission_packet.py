@@ -144,7 +144,19 @@ def test_chatgpt_bundle_reports_rejected_siblings_even_with_valid_match(
 
     monkeypatch.setattr(dispatch.logger, "warning", capture_warning)
     payloads = [
-        {"id": "valid", "mapping": {"node": {"id": "node", "message": None}}},
+        {
+            "id": "valid",
+            "mapping": {
+                "node": {
+                    "id": "node",
+                    "message": {
+                        "id": "valid-message",
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["neutral test content"]},
+                    },
+                }
+            },
+        },
         *[
             {"id": f"drift-{index}", "mapping": {"node": {"id": "node", "message": {"author": "future"}}}}
             for index in range(5)
