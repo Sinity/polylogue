@@ -3841,6 +3841,51 @@ async def test_full_drive_capture_retains_acquisition_mode_after_gemini_detectio
 
 
 @pytest.mark.asyncio
+async def test_empty_default_claude_history_cursor_settles_as_raw_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty history sidecar has no Claude transcript semantic frontier."""
+    from polylogue.api import Polylogue
+    from polylogue.sources.live.watcher import default_sources
+    from polylogue.sources.source_layout import declared_source_layout
+
+    home = tmp_path / "home"
+    claude_home = home / ".claude"
+    claude_home.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    source = next(item for item in default_sources() if item.name == "claude-code-history")
+    assert source.layout == declared_source_layout("claude-code-history")
+    path = source.root / "history.jsonl"
+    path.write_bytes(b"")
+
+    archive = Polylogue(archive_root=tmp_path / "archive")
+    run_off_event_loop(lambda: bootstrap_archive_root(archive.archive_root))
+    cursor = CursorStore(archive.backend.db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (source,),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    try:
+        result = await ingest_files_with_owners(processor, [path], emit_event=False)
+        assert result.excluded_reasons == {"no_sessions": 1}
+        assert result.stale_cursor_write_count == 0
+        row = cursor.get_record(path)
+        assert row is not None and row.content_fingerprint == sha256(b"").hexdigest()
+        assert row.failure_count == 0
+
+        with sqlite3.connect(archive.archive_root / "source.db") as conn:
+            artifact = conn.execute(
+                "SELECT artifact_kind, parse_as_session FROM raw_artifacts WHERE source_path = ?",
+                (str(path),),
+            ).fetchone()
+        assert artifact == ("prompt_history_log", 0)
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
 async def test_inbox_browser_capture_json_replacement_uses_full_ingest(tmp_path: Path) -> None:
     from polylogue.api import Polylogue
 

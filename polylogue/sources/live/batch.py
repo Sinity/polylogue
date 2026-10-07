@@ -187,6 +187,7 @@ from polylogue.sources.origin_specs import (
     artifact_rule_for_path,
     database_capability_for_provider,
     frontier_kind_for_origin,
+    path_declaration_refuses_session,
 )
 from polylogue.sources.parsers import antigravity
 from polylogue.sources.parsers.base import ParsedSession
@@ -2366,9 +2367,12 @@ class LiveBatchProcessor:
                 )
             tail_hash = encode_cursor_hash_authority(prefix_hash, tail_hash, ctime_ns=stat.st_ctime_ns)
             bytes_read += cursor_state_bytes + prefix_bytes
-        if frontier_kind_for_origin(
-            origin_from_provider(Provider.from_string(resolved_source_name))
-        ) == "claude-header-body" and path.suffix.lower() in {".jsonl", ".ndjson"}:
+        cursor_provider = Provider.from_string(resolved_source_name)
+        if (
+            frontier_kind_for_origin(origin_from_provider(cursor_provider)) == "claude-header-body"
+            and path.suffix.lower() in {".jsonl", ".ndjson"}
+            and not path_declaration_refuses_session(cursor_provider, path)
+        ):
             semantic_authority = claude_semantic_frontier_for_prefix(
                 path, frontier_byte_size if frontier_byte_size is not None else byte_size
             )
@@ -4977,17 +4981,11 @@ class LiveBatchProcessor:
         else:
             byte_offset = head.blob_size
             tail_hash = encode_cursor_hash_authority(blob_hash_hex, blob_hash_hex, ctime_ns=0)
+        source_name = self._source_name_for(path)
+        source_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
         if (
-            frontier_kind_for_origin(
-                origin_from_provider(
-                    Provider.from_string(
-                        canonical_acquisition_provider(
-                            self._source_name_for(path), source_name=self._source_name_for(path)
-                        )
-                    )
-                )
-            )
-            == "claude-header-body"
+            not path_declaration_refuses_session(source_provider, path)
+            and frontier_kind_for_origin(origin_from_provider(source_provider)) == "claude-header-body"
         ):
             # The frontier is composed from the live file, so it describes
             # whatever bytes are on disk now -- not the retained bytes this
@@ -5123,6 +5121,8 @@ class LiveBatchProcessor:
         # mutable browser snapshots can arrive through the generic inbox.
         source_name = self._source_name_for(path)
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        if path_declaration_refuses_session(provider, path):
+            return None
         path_artifact = classify_artifact_path(str(path), provider=provider)
         is_hook_carrier = path_artifact is not None and path_artifact.kind is ArtifactKind.HOOK_EVENT_CARRIER
         if path.suffix.lower() != ".jsonl" and not (path.suffix.lower() == ".ndjson" and is_hook_carrier):
@@ -5167,33 +5167,14 @@ class LiveBatchProcessor:
         if self._cursor_references_raw_failure_requiring_full_replay(path, cursor):
             return None
         expected_prefix_hash = cursor_prefix_hash(cursor.tail_hash)
-        claude_frontier = (
-            decode_claude_semantic_frontier(cursor.tail_hash)
-            if frontier_kind_for_origin(
-                origin_from_provider(
-                    Provider.from_string(
-                        canonical_acquisition_provider(
-                            self._source_name_for(path), source_name=self._source_name_for(path)
-                        )
-                    )
-                )
-            )
-            == "claude-header-body"
-            else None
+        source_name = self._source_name_for(path)
+        source_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        claude_session_stream = (
+            not path_declaration_refuses_session(source_provider, path)
+            and frontier_kind_for_origin(origin_from_provider(source_provider)) == "claude-header-body"
         )
-        if (
-            frontier_kind_for_origin(
-                origin_from_provider(
-                    Provider.from_string(
-                        canonical_acquisition_provider(
-                            self._source_name_for(path), source_name=self._source_name_for(path)
-                        )
-                    )
-                )
-            )
-            == "claude-header-body"
-            and claude_frontier is None
-        ):
+        claude_frontier = decode_claude_semantic_frontier(cursor.tail_hash) if claude_session_stream else None
+        if claude_session_stream and claude_frontier is None:
             return None
         if claude_frontier is None and expected_prefix_hash is None:
             return None
@@ -5782,9 +5763,10 @@ class LiveBatchProcessor:
         stored_tail_hash: str | None = None
         publication_end = plan.last_complete_newline
         self._last_append_cursor_proof_bytes = 0
-        is_claude_frontier = (
-            frontier_kind_for_origin(origin_from_provider(Provider.from_string(plan.source_name)))
-            == "claude-header-body"
+        is_claude_frontier = frontier_kind_for_origin(
+            origin_from_provider(Provider.from_string(plan.source_name))
+        ) == "claude-header-body" and not path_declaration_refuses_session(
+            Provider.from_string(plan.source_name), plan.path
         )
         disappeared_after_admission = False
         try:
