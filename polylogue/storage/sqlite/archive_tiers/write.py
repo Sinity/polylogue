@@ -3328,32 +3328,6 @@ def _purge_session_message_fts_when_delete_trigger_missing(conn: sqlite3.Connect
     conn.execute(delete_session_identity_rows_sql(1), (session_id,))
 
 
-def upsert_session_profile_costs(
-    conn: sqlite3.Connection,
-    session_id: str,
-    *,
-    cost_credits: float | None = None,
-    cost_usd: float | None = None,
-    cost_is_estimated: bool = False,
-    cost_provenance: str | None = None,
-    priced_with: str | None = None,
-    priced_at_ms: int | None = None,
-) -> None:
-    """Seed canonical session-scoped money for legacy test callers.
-
-    The historical helper name is retained as a narrow compatibility shim for
-    fixtures while the profile columns are removed.  It deliberately writes
-    ``sessions.reported_cost_usd`` (the canonical provider-money evidence),
-    never ``session_profiles``.
-    """
-    conn.execute("PRAGMA foreign_keys = ON")
-    with conn:
-        conn.execute(
-            "UPDATE sessions SET reported_cost_usd = ? WHERE session_id = ?",
-            (cost_usd, session_id),
-        )
-
-
 @dataclass(frozen=True, slots=True)
 class _TranscriptSegment:
     """One contiguous run of a single session's own rows in a composed transcript.
@@ -17063,7 +17037,6 @@ __all__ = [
     "rebuild_archive_messages_fts",
     "replace_parser_ingest_flag_tags",
     "repo_identity_key",
-    "upsert_session_profile_costs",
     "upsert_parser_ingest_flag_tags",
     "upsert_session_tag",
     "raw_source_path",

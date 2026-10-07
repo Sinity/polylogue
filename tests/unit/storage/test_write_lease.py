@@ -37,6 +37,7 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.write_lease import (
     UnleasedWriteError,
+    WriteLeaseThreadGrant,
     adopt_write_lease,
     arm_write_lease_enforcement,
     async_write_lease,
@@ -1541,6 +1542,67 @@ def test_a_grant_authorizes_exactly_one_thread(tmp_path: Path) -> None:
         second.join()
 
     assert outcomes == ["bound", "refused"]
+
+
+@pytest.mark.parametrize("thread_context", ["inherited", "empty"])
+def test_two_granted_threads_bind_concurrently_in_either_context_mode(tmp_path: Path, thread_context: str) -> None:
+    """Two owner grants bind two threads at once, whatever the thread context.
+
+    ``thread_context`` emulates both interpreter modes on any build:
+    ``inherited`` starts each worker with a copy of the owner's context (the
+    free-threading default), ``empty`` with a fresh one (the GIL-build
+    default). Both workers bind behind a barrier, so the two
+    ``authorize_thread`` calls race on ``bound_thread_ids``.
+
+    Anti-vacuity: make ``bind_write_lease_thread`` install the lease only when
+    the context already carries it and the ``empty`` case fails its write;
+    drop ``_bind_guard`` and a lost update can leave one worker unbound.
+    """
+    from polylogue.storage.sqlite.write_lease import bind_write_lease_thread, grant_write_lease_thread
+
+    barrier = threading.Barrier(2)
+    observed: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    with arm_write_lease_enforcement(), write_lease("daemon.writer", archive_root=tmp_path) as lease:
+        grants = [grant_write_lease_thread(), grant_write_lease_thread()]
+
+        def worker(name: str, grant: WriteLeaseThreadGrant) -> None:
+            try:
+                observed[f"{name}:ambient"] = current_write_lease()
+                barrier.wait()
+                bind_write_lease_thread(grant)
+                observed[name] = require_write_lease(f"{name} write", archive_root=tmp_path)
+                observed[f"{name}:ident"] = threading.get_ident()
+                barrier.wait()
+            except BaseException as exc:
+                errors.append(exc)
+                barrier.abort()
+            finally:
+                grant.complete()
+
+        threads = [
+            threading.Thread(
+                target=worker,
+                args=(f"worker-{index}", grant),
+                context=contextvars.copy_context() if thread_context == "inherited" else contextvars.Context(),
+            )
+            for index, grant in enumerate(grants)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert errors == []
+        expected_ambient = lease if thread_context == "inherited" else None
+        assert observed["worker-0:ambient"] is expected_ambient
+        assert observed["worker-1:ambient"] is expected_ambient
+        assert observed["worker-0"] is lease
+        assert observed["worker-1"] is lease
+        assert {observed["worker-0:ident"], observed["worker-1:ident"], lease.owner_thread_id} <= set(
+            lease.authorized_threads()
+        )
 
 
 def test_a_nested_lease_in_an_inheriting_thread_is_refused(tmp_path: Path) -> None:

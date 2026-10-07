@@ -7,7 +7,7 @@ import hashlib
 import json
 import socket
 import sqlite3
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -800,7 +800,7 @@ def test_orphan_census_reports_unreadable_files_and_refreshes_diagnostics(tmp_pa
         connection.close()
 
 
-def test_orphan_diagnostic_normalization_preserves_unobserved_messages_on_every_page(tmp_path: Path) -> None:
+def test_orphan_listing_preserves_every_diagnostic_message_across_pages(tmp_path: Path) -> None:
     registry = CaptureJobRegistry(tmp_path, "receiver")
     with registry._connection() as connection:
         for ordinal in range(31):
@@ -809,7 +809,11 @@ def test_orphan_diagnostic_normalization_preserves_unobserved_messages_on_every_
                 (
                     f"sha256:{ordinal:064x}",
                     "unreadable_legacy_checkpoint",
-                    f"retained message e\u0301 {ordinal}",
+                    json.dumps(
+                        {"message": f"retained message e\u0301 {ordinal}", "errno_class": None},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
                     "2026-01-01T00:00:00Z",
                 ),
             )
@@ -832,7 +836,7 @@ def test_orphan_diagnostic_normalization_preserves_unobserved_messages_on_every_
 
 
 def test_concurrent_first_registry_opens_serialize_schema_upgrade(tmp_path: Path) -> None:
-    """Anti-vacuity: racing ALTER TABLE callers must not see duplicate-column errors."""
+    """Anti-vacuity: racing first openers must serialize fresh schema creation."""
     registries = [CaptureJobRegistry(tmp_path, f"receiver-{index}") for index in range(8)]
 
     def open_and_close(registry: CaptureJobRegistry) -> None:
@@ -1149,9 +1153,6 @@ def test_source_bearing_registry_checkpoint_remains_readable_after_reopen(tmp_pa
         saved = _checkpoint(
             host, port, job["job_id"], adopted["lease"], adopted["job"]["revision"], 1, payload, "source-checkpoint"
         )
-        path = capture_job_database_path(tmp_path)
-        with sqlite3.connect(path) as connection:
-            connection.execute("ALTER TABLE capture_jobs DROP COLUMN retention_declared")
         capture_jobs_module._SCHEMA_READY.clear()
         status, read = request(
             host,
@@ -1604,86 +1605,6 @@ def test_explicit_default_retention_is_durable_declaration(tmp_path: Path) -> No
         status, terminal = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", body)
         assert status == 200
         assert terminal["job"]["retention"]["state"] == "active"
-
-
-def _declared_after_upgrade(tmp_path: Path, job_id: str, retention: Mapping[str, object]) -> int:
-    """Rewind the registry to its pre-``retention_declared`` shape and reopen it."""
-    path = capture_job_database_path(tmp_path)
-    with sqlite3.connect(path) as connection:
-        connection.execute(
-            "UPDATE capture_jobs SET retention_json=? WHERE job_id=?", (canonical_json(retention), job_id)
-        )
-        connection.execute("ALTER TABLE capture_jobs DROP COLUMN retention_declared")
-    # An upgrade runs in a fresh process; forget this one's once-per-file schema check.
-    capture_jobs_module._SCHEMA_READY.clear()
-    registry = CaptureJobRegistry(spool_path=tmp_path, receiver_id="upgrade-test")
-    with registry._connection() as connection:
-        row = connection.execute("SELECT retention_declared FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
-    return int(row[0])
-
-
-def test_checkpoint_column_conversion_preserves_original_until_verified_artifact_reference_commit(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    """A crash after artifact publication cannot retire old payload custody."""
-    with receiver(tmp_path) as (host, port):
-        job = create(host, port)
-    payload = {"generic": [None, {"\U0001f600": "value", "\ue000": "other"}], "text": "retained"}
-    digest = canonical_digest(payload)
-    original = canonical_json({"sequence": 7, "digest": digest, "payload": payload})
-    path = capture_job_database_path(tmp_path)
-    pause = canonical_json({"state": "held", "reason": "operator_paused", "attempt": 0, "next_eligible_at": None})
-    with sqlite3.connect(path) as connection:
-        connection.execute("ALTER TABLE capture_jobs ADD COLUMN checkpoint_json TEXT")
-        connection.execute("ALTER TABLE capture_jobs DROP COLUMN checkpoint_artifact_ref")
-        connection.execute("ALTER TABLE capture_jobs DROP COLUMN checkpoint_size")
-        connection.execute(
-            "UPDATE capture_jobs SET checkpoint_json=?, checkpoint_digest=?, checkpoint_sequence=7, retry_json=? WHERE job_id=?",
-            (original, digest, pause, job["job_id"]),
-        )
-    capture_jobs_module._SCHEMA_READY.clear()
-    registry = CaptureJobRegistry(spool_path=tmp_path, receiver_id="checkpoint-conversion")
-    publish = CaptureJobRegistry._publish_checkpoint_artifact
-
-    def interrupted(self: CaptureJobRegistry, staged: Any, declared: str) -> str:
-        publish(self, staged, declared)
-        raise OSError("synthetic_after_artifact_publication")
-
-    monkeypatch.setattr(CaptureJobRegistry, "_publish_checkpoint_artifact", interrupted)
-    with pytest.raises(OSError, match="synthetic_after_artifact_publication"):
-        registry.get(job["job_id"], {"provider": "chatgpt", "scope": ACCOUNT_SCOPE, "client_protocol": 2})
-    with sqlite3.connect(path) as connection:
-        row = connection.execute(
-            "SELECT checkpoint_json, retry_json, scope_key FROM capture_jobs WHERE job_id=?", (job["job_id"],)
-        ).fetchone()
-        assert row == (original, pause, SCOPE)
-    artifact = registry._checkpoint_artifact_path(digest)
-    assert artifact.read_bytes() == canonical_json(payload).encode()
-    inode = artifact.stat().st_ino
-    monkeypatch.setattr(CaptureJobRegistry, "_publish_checkpoint_artifact", publish)
-    registry.get(job["job_id"], {"provider": "chatgpt", "scope": ACCOUNT_SCOPE, "client_protocol": 2})
-    with sqlite3.connect(path) as connection:
-        assert "checkpoint_json" not in {row[1] for row in connection.execute("PRAGMA table_info(capture_jobs)")}
-        row = connection.execute(
-            "SELECT checkpoint_artifact_ref, checkpoint_size, retry_json, scope_key FROM capture_jobs WHERE job_id=?",
-            (job["job_id"],),
-        ).fetchone()
-        assert row == (digest, len(canonical_json(payload).encode()), pause, SCOPE)
-    assert artifact.stat().st_ino == inode
-
-
-def test_upgrade_marks_only_non_default_retention_as_declared(tmp_path: Path) -> None:
-    """Anti-vacuity: comparing retention_json by spelling marks the sorted-key
-    default declared, so the first assertion fails and terminal jobs never
-    become eligible for collection.
-    """
-    with receiver(tmp_path) as (host, port):
-        job = create(host, port)
-    default = {"state": "active", "hold_reason": None, "timeline_authoritative": True}
-    assert _declared_after_upgrade(tmp_path, job["job_id"], default) == 0
-    held = {"state": "held", "hold_reason": "operator", "timeline_authoritative": True}
-    assert _declared_after_upgrade(tmp_path, job["job_id"], held) == 1
 
 
 def _retired_job(host: str, port: int) -> str:

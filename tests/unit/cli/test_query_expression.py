@@ -72,7 +72,6 @@ from polylogue.archive.query.predicate import (
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.protocols import ScopedVectorQuery
 from polylogue.core.refs import ObjectRef
-from polylogue.storage.runtime import MessageRecord
 from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.identity import archive_block_id, archive_message_id
 from tests.infra.live_ingest import write_index_session
@@ -5380,15 +5379,6 @@ class TestBooleanQueryExpression:
 
             def query(self, text: str, limit: int = 10) -> Never:
                 raise AssertionError("this fixture uses scoped retrieval")
-
-            def upsert(
-                self,
-                session_id: str,
-                messages: list[MessageRecord],
-                *,
-                origin: str | None = None,
-            ) -> None:
-                raise NotImplementedError
 
             @contextmanager
             def scoped_query(

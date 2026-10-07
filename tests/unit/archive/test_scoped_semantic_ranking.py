@@ -725,19 +725,19 @@ def test_scoped_ranking_keeps_borrowed_index_after_path_replacement(
     assert len(requests) == 1
 
 
-def test_public_upsert_preserves_original_hash_for_compatible_scoped_query(
+def test_session_embedding_preserves_index_hash_for_compatible_scoped_query(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.core.enums import MaterialOrigin, Role
-    from polylogue.core.types import ContentHash, MessageId, SessionId
-    from polylogue.storage.runtime import MessageRecord
+    """The session embedding route keys its vector by the index content hash,
+    and a compatible model's scoped query reads it without a new purchase."""
+    from polylogue.storage.embeddings.materialization import embed_archive_session_sync
     from tests.infra.scoped_semantic import axis_vector
 
     root = tmp_path / "archive"
     text = "Actual public producer sends this exact canonical authored prose"
     config, provider, ids, requests = ranking_archive(
-        root, [("only", "m", text, 2.0)], query_axis=0.0, monkeypatch=monkeypatch
+        root, [("only", "m", text, None)], query_axis=0.0, monkeypatch=monkeypatch
     )
     sid, mid = ids[("only", "m")]
     calls: list[str] = []
@@ -748,15 +748,8 @@ def test_public_upsert_preserves_original_hash_for_compatible_scoped_query(
 
     monkeypatch.setattr(provider, "_get_embeddings", embed)
     provider.model = "voyage-4"
-    message = MessageRecord(
-        message_id=MessageId(mid),
-        session_id=SessionId(sid),
-        role=Role.USER,
-        material_origin=MaterialOrigin.HUMAN_AUTHORED,
-        text=text,
-        content_hash=ContentHash((b"m" * 32).hex()),
-    )
-    provider.upsert(sid, [message], origin="codex-session")
+    outcome = embed_archive_session_sync(root / "index.db", provider, sid)
+    assert (outcome.status, outcome.embedded_message_count) == ("embedded", 1)
     with closing(sqlite3.connect(root / "embeddings.db")) as observer, closing(observer.cursor()) as cursor:
         assert (
             cursor.execute(

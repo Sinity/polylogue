@@ -28,7 +28,6 @@ from polylogue.storage.embeddings.materialization import (
     select_pending_session_window,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
-from polylogue.storage.runtime import MessageRecord
 from tests.infra.live_ingest import write_index_session
 
 
@@ -38,16 +37,6 @@ class _FakeV1VectorProvider:
 
     def __init__(self) -> None:
         self.texts: list[str] = []
-
-    def upsert(
-        self,
-        session_id: str,
-        messages: list[MessageRecord],
-        *,
-        origin: str | None = None,
-    ) -> None:
-        del session_id, messages, origin
-        raise AssertionError("archive embedding helper must not call old upsert")
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         return []
@@ -1343,3 +1332,30 @@ def test_pending_window_measures_concatenated_block_prose() -> None:
         assert [(item.session_id, item.message_count) for item in pending] == [("multi", 1)]
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize(
+    ("material_origin", "message_type", "role", "text", "should_embed"),
+    [
+        ("human_authored", "message", "user", "12345678901234567890", True),
+        ("human_authored", "message", "user", "1234567890123456789", False),
+        ("human_authored", "message", "user", "   \n\t  ", False),
+        ("assistant_authored", "message", "assistant", "A sufficiently long assistant answer.", True),
+        ("assistant_authored", "message", "system", "This is a sufficiently long system message.", False),
+        ("tool_result", "tool_result", "tool", "File contents: def hello(): print('world')", False),
+        ("context_generated", "message", "user", "Runtime context that is long enough.", False),
+    ],
+)
+def test_archive_embedding_eligibility_admits_only_authored_prose(
+    material_origin: str, message_type: str, role: str, text: str, should_embed: bool
+) -> None:
+    """The archive embedding route's per-message eligibility law.
+
+    Moved from the retired provider-side ``_should_embed_message``: the
+    20-character floor applies to stripped prose, and only authored user or
+    assistant messages are bought. Anti-vacuity: drop the floor and the
+    19-character row embeds; admit the ``system`` role and its row embeds.
+    """
+    from polylogue.storage.embeddings.materialization import _should_embed_archive_message
+
+    assert _should_embed_archive_message(material_origin, message_type, role, text) is should_embed

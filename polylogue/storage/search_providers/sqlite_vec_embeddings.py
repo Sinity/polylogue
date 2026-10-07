@@ -14,7 +14,6 @@ from tenacity import (
 )
 
 from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingRequestSpec
-from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec_support import (
     BATCH_SIZE,
     VOYAGE_API_URL,
@@ -86,20 +85,6 @@ class SqliteVecEmbeddingMixin:
                 raise SqliteVecError(f"Embedding generation failed: {detail}") from exc
 
         return all_embeddings
-
-    def _should_embed_message(self, msg: MessageRecord) -> bool:
-        """Determine if a message should be embedded."""
-        if not msg.text or not msg.text.strip():
-            return False
-        if len(msg.text.strip()) < 20:
-            return False
-        if msg.role == "system":
-            return False
-        if msg.role == "tool":
-            text = msg.text.strip().lower()
-            if text in ("ok", "success", "done", "error", "failed"):
-                return False
-        return True
 
 
 __all__ = ["SqliteVecEmbeddingMixin"]
