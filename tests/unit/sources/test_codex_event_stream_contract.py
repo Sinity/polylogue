@@ -1212,3 +1212,25 @@ class TestItemCompletedExecEvidence:
             "exec-dddd4444",
             "exec-eeee5555",
         ]
+
+
+@pytest.mark.parametrize("fixture", ["text_only_stream.jsonl", "tool_call_stream.jsonl", "interleaved_stream.jsonl"])
+def test_parse_stream_preserves_supplied_list_sinks(fixture: str) -> None:
+    """Final active-leaf marking must retain the caller's original stores."""
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSessionEvent
+
+    records = _load_catalog(fixture)
+    messages: list[ParsedMessage] = []
+    events: list[ParsedSessionEvent] = []
+    session = parse_stream(iter(records), fixture, message_sink=messages, event_sink=events)
+    assert session.messages is messages
+    assert session.session_events is events
+    assert messages
+    assert [message.is_active_leaf for message in messages] == [False] * (len(messages) - 1) + [True]
+    expected = _parse(records, fixture)
+    assert [message.model_dump(mode="json") for message in messages] == [
+        message.model_dump(mode="json") for message in expected.messages
+    ]
+    assert [event.model_dump(mode="json") for event in events] == [
+        event.model_dump(mode="json") for event in expected.session_events
+    ]

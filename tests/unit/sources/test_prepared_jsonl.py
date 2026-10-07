@@ -1368,11 +1368,11 @@ def test_gemini_cli_sidecar_scope_streams_and_matches_object_parser(
     assert artifact.error is None
     assert appended == 2
     [actual] = artifact.iter_sessions()
-    assert actual.content_hash == session_content_hash(expected)
     assert _gemini_message_payloads(actual) == _gemini_message_payloads(expected)
     assert [event.model_dump(mode="json") for event in actual.session_events] == [
         event.model_dump(mode="json") for event in expected.session_events
     ]
+    assert actual.content_hash == session_content_hash(expected)
     sidecar_events = [
         event.payload for event in actual.session_events if event.event_type == "gemini_cli_tool_output_sidecar"
     ]
@@ -1390,6 +1390,12 @@ def test_gemini_cli_sidecar_scope_streams_and_matches_object_parser(
         ("prefix_run_1_long_slug.txt", "run_1_long"),
         ("run_1.txt", "run_1"),
         ("run_1.txt", "run_1"),
+    ]
+    from polylogue.core.hashing import hash_text
+
+    assert [event["content_hash"] for event in sidecar_events[2:4]] == [
+        hash_text("first complete output"),
+        hash_text("second complete output"),
     ]
     assert [event["reason"] for event in sidecar_events[4:]] == [
         # A sidecar no SQLite cell can hold; smaller ones are joined whole.

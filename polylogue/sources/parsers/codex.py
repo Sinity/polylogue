@@ -653,7 +653,7 @@ def finalize_codex_session(
     """
     if mark_active_leaf:
         if isinstance(messages, list):
-            messages = mark_last_occurrence_as_active_leaf(cast(list[ParsedMessage], messages))
+            messages[:] = mark_last_occurrence_as_active_leaf(cast(list[ParsedMessage], messages))
         elif messages and isinstance(messages, MutableSequence):
             messages[-1] = messages[-1].model_copy(update={"is_active_leaf": True})
     if active_leaf_message_provider_id is None and messages:

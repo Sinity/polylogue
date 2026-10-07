@@ -346,8 +346,8 @@ def apply_gemini_tool_output_sidecars(session: ParsedSession, join_result: Sidec
         return session
 
     replacements = {match.tool_use_id: match for match in join_result.matched if match.was_truncated}
-    attached_hashes: dict[str, str] = {}
-    attachment_debt: dict[str, SidecarDebt] = {}
+    attached_hashes: dict[SidecarMatch, str] = {}
+    attachment_debt: dict[SidecarMatch, SidecarDebt] = {}
     messages = session.messages
     if replacements:
         updated_messages: list[ParsedMessage] = []
@@ -370,7 +370,7 @@ def apply_gemini_tool_output_sidecars(session: ParsedSession, join_result: Sidec
                 try:
                     text = value_bounds.require_storable_string(match.read_text(), kind="gemini tool sidecar")
                 except OSError as exc:
-                    attachment_debt[match.filename] = SidecarDebt(
+                    attachment_debt[match] = SidecarDebt(
                         filename=match.filename,
                         byte_size=match.byte_size,
                         reason=f"read_error:{type(exc).__name__}",
@@ -378,7 +378,7 @@ def apply_gemini_tool_output_sidecars(session: ParsedSession, join_result: Sidec
                     )
                     blocks.append(block)
                 except value_bounds.ValueBoundRefusedError:
-                    attachment_debt[match.filename] = SidecarDebt(
+                    attachment_debt[match] = SidecarDebt(
                         filename=match.filename,
                         byte_size=match.byte_size,
                         reason=value_bounds.VALUE_BOUND_REFUSED,
@@ -386,17 +386,17 @@ def apply_gemini_tool_output_sidecars(session: ParsedSession, join_result: Sidec
                     )
                     blocks.append(block)
                 else:
-                    attached_hashes[match.filename] = hash_text(text)
+                    attached_hashes[match] = hash_text(text)
                     blocks.append(block.model_copy(update={"text": text}))
             updated_messages.append(message.model_copy(update={"blocks": blocks}))
         messages = updated_messages
 
     events = list(session.session_events)
     for match in join_result.matched:
-        if debt := attachment_debt.get(match.filename):
+        if debt := attachment_debt.get(match):
             events.append(gemini_sidecar_event(debt))
         else:
-            events.append(gemini_sidecar_event(match, content_hash=attached_hashes.get(match.filename)))
+            events.append(gemini_sidecar_event(match, content_hash=attached_hashes.get(match)))
     for debt in join_result.debt:
         events.append(gemini_sidecar_event(debt))
     return session.model_copy(update={"messages": messages, "session_events": events})
