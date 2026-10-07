@@ -2819,12 +2819,15 @@ def write_parsed_session_to_archive(
                 position_offset = 0
                 stale_attachment_ids: set[str] = set()
                 projection_carry_forward: _ProjectionCarryForward | None = None
+                append_has_new_messages = False
                 t0 = time.perf_counter()
                 if merge_append:
                     position_offset = _next_message_position(conn, session_id)
                     _assert_unique_message_coordinates(session_id, messages, position_offset=position_offset)
-                    if not event_only:
-                        # An append without messages cannot move the active leaf.
+                    append_has_new_messages = _append_has_new_native_messages(
+                        conn, session_id, prepared_rows_to_use.message_rows
+                    )
+                    if not event_only and append_has_new_messages:
                         conn.execute(
                             """
                             UPDATE messages
@@ -3169,7 +3172,7 @@ def write_parsed_session_to_archive(
             write_outcome.append(
                 ArchiveWriteOutcome(
                     session_id=session_id,
-                    wrote=True,
+                    wrote=(not merge_append or append_has_new_messages or _append_has_auxiliary_input(session)),
                     unresolved_attachment_owners=unresolved_attachment_owners,
                 )
             )
@@ -4266,11 +4269,14 @@ def _write_append_messages_and_blocks(
     pending_messages: list[tuple[object, ...]] = []
     pending_blocks: list[tuple[object, ...]] = []
 
-    def flush() -> None:
+    def flush_messages() -> None:
         if pending_messages:
             conn.executemany(_messages_insert_sql(), pending_messages)
-            conn.executemany(_blocks_insert_sql(), pending_blocks)
             pending_messages.clear()
+
+    def flush_blocks() -> None:
+        if pending_blocks:
+            conn.executemany(_blocks_insert_sql(), pending_blocks)
             pending_blocks.clear()
 
     for message, message_row in zip(messages, message_iter, strict=True):
@@ -4281,15 +4287,59 @@ def _write_append_messages_and_blocks(
                 pass
             continue
         pending_messages.append(message_row)
+        if len(pending_messages) >= 256:
+            flush_messages()
         for block_row in aligned_blocks:
             pending_blocks.append(block_row)
             if len(pending_blocks) >= 4096:
-                flush()
-        if len(pending_messages) >= 256:
-            flush()
+                # The owning message row must exist before its first block,
+                # while blocks can flush independently of message batches.
+                flush_messages()
+                flush_blocks()
     if next(block_iter, None) is not None or next(message_iter, None) is not None:
         raise RuntimeError("prepared append rows exceeded their parsed message owners")
-    flush()
+    flush_messages()
+    flush_blocks()
+
+
+def _append_has_new_native_messages(
+    conn: sqlite3.Connection, session_id: str, rows: Iterable[tuple[object, ...]]
+) -> bool:
+    columns = [
+        column.name
+        for column in archive_tiers_specs.MESSAGES_SPEC.writable_columns
+        if column.extract_placeholder == "?"
+    ]
+    native_index = columns.index("native_id")
+    return any(not _stored_native_id_exists(conn, session_id, row[native_index]) for row in rows)
+
+
+def _append_has_auxiliary_input(session: ParsedSession) -> bool:
+    """Whether an append carries product data beyond its message delta."""
+    return bool(
+        session.attachments
+        or session.session_events
+        or session.parent_session_provider_id
+        or session.branch_point_provider_message_id
+        or session.branch_type
+        or session.title
+        or session.title_source
+        or session.title_ref
+        or session.instructions_text
+        or session.reported_duration_ms is not None
+        or session.reported_cost_usd is not None
+        or session.models_used
+        or session.working_directories
+        or session.git_branch
+        or session.git_repository_url
+        or session.provider_project_ref
+        or session.team_name
+        or session.git_commit_hash
+        or session.ingest_flags
+        or session.display_name
+        or session.pending_drafts
+        or session.session_refs
+    )
 
 
 def _write_messages(
