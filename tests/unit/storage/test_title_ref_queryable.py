@@ -102,6 +102,22 @@ async def test_session_filter_full_session_exposes_title_ref(workspace_env: dict
     assert sessions[0].title_ref == _TITLE_REF
 
 
+@pytest.mark.asyncio
+async def test_repository_get_hydrates_title_provenance_from_session_row(tmp_path: Path) -> None:
+    """The repository's Session read keeps provenance fields from its row record."""
+    from polylogue.storage.repository import SessionRepository
+
+    db_path = tmp_path / "index.db"
+    _write_codex_session(db_path, native_id="codex-repository-title", title="Keep title evidence")
+
+    async with SessionRepository(db_path=bootstrapped_tier_path(db_path)) as repository:
+        session = await repository.get("codex-session:codex-repository-title")
+
+    assert session is not None
+    assert session.title_source is TitleSource.ORIGIN
+    assert session.title_ref == _TITLE_REF
+
+
 def test_session_list_row_payload_carries_title_ref() -> None:
     """The CLI/MCP row payload surfaces ``title_ref``."""
     from polylogue.archive.message.messages import MessageCollection
