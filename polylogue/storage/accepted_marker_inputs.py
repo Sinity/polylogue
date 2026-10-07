@@ -8,7 +8,11 @@ import sqlite3
 import uuid
 from collections.abc import Awaitable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
+
+if TYPE_CHECKING:
+    from polylogue.storage.accepted_marker_producer import PreparedAcceptedMarkerCarrier
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 
 
 class AcceptedMarkerInputRefusedError(ValueError):
@@ -74,6 +78,118 @@ class MarkerInputExcisionTarget:
     #: The carrier was erased during an interrupted earlier source phase; its
     #: terminal evidence still owns index-witness cleanup on retry.
     tombstoned: bool = False
+
+
+def stage_accepted_marker_input(seal: PreparedIndexMutation, carrier: PreparedAcceptedMarkerCarrier) -> None:
+    """Add one generated immutable marker root to an original Source seal.
+
+    The caller owns the surrounding ``seal.source_producer()`` and later
+    publishes its exact Source permit. A matching prior root is idempotent;
+    a conflicting root or excision tombstone is a typed refusal.
+    """
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealError
+
+    try:
+        batch = carrier.batch
+        if not batch.raw_id or len(batch.identity) != 64 or len(batch.payload_sha256) != 64 or carrier.byte_length < 0:
+            raise AcceptedMarkerInputRefusedError("invalid prepared accepted marker carrier metadata")
+        with seal.source_rows(
+            "SELECT raw_id,payload_sha256,length(payload) FROM accepted_marker_inputs WHERE identity=?",
+            (batch.identity,),
+        ) as rows:
+            existing = rows.fetchone()
+        if existing is None:
+            with seal.original_rows(
+                "source",
+                "SELECT raw_id,payload_sha256,length(payload) FROM accepted_marker_inputs WHERE identity=?",
+                (batch.identity,),
+            ) as rows:
+                existing = rows.fetchone()
+        if existing is not None:
+            if tuple(existing) != (batch.raw_id, batch.payload_sha256, carrier.byte_length):
+                raise AcceptedMarkerInputRefusedError("conflicting replay of accepted marker input")
+            for _chunk in carrier.verified_chunks():
+                pass
+            return
+        with seal.source_rows(
+            "SELECT 1 FROM excised_marker_inputs WHERE identity=? OR raw_id=? LIMIT 1",
+            (batch.identity, batch.raw_id),
+        ) as rows:
+            excised = rows.fetchone()
+        if excised is None:
+            with seal.original_rows(
+                "source",
+                "SELECT 1 FROM excised_marker_inputs WHERE identity=? OR raw_id=? LIMIT 1",
+                (batch.identity, batch.raw_id),
+            ) as rows:
+                excised = rows.fetchone()
+        if excised is not None:
+            raise AcceptedMarkerInputExcisedError("accepted marker carrier was excised and cannot be restored")
+        with seal.source_rows("SELECT stream_id FROM accepted_marker_stream WHERE singleton=1") as rows:
+            stream_row = rows.fetchone()
+        if stream_row is None:
+            with seal.original_rows("source", "SELECT stream_id FROM accepted_marker_stream WHERE singleton=1") as rows:
+                stream_row = rows.fetchone()
+        if stream_row is None:
+            import uuid
+
+            stream_cells = {
+                "singleton": seal.retain_literal_scalar(1),
+                "stream_id": seal.retain_literal_scalar(str(uuid.uuid4())),
+            }
+            expressions: list[str] = []
+            parameters: list[object] = []
+            for column in ("singleton", "stream_id"):
+                expression, operands = seal.source_literal_expression(stream_cells[column])
+                expressions.append(expression)
+                parameters.extend(operands)
+            singleton = stream_cells["singleton"]
+            with seal.source_statement(
+                "INSERT INTO accepted_marker_stream(singleton,stream_id) VALUES (" + ",".join(expressions) + ")",
+                tuple(parameters),
+                table="accepted_marker_stream",
+                writable_targets=(("accepted_marker_stream", (singleton,)),),
+                prepared_cells=stream_cells,
+            ):
+                pass
+
+        payload_cell = seal.retain_literal_stream("blob", carrier.byte_length, carrier.verified_chunks())
+        cells = {
+            "identity": seal.retain_literal_scalar(batch.identity),
+            "raw_id": seal.retain_literal_scalar(batch.raw_id),
+            "payload": payload_cell,
+            "index_incarnation_id": seal.retain_literal_scalar(None),
+            "payload_sha256": seal.retain_literal_scalar(batch.payload_sha256),
+        }
+        expressions: list[str] = []
+        parameters: list[object] = [None]
+        for column in ("identity", "raw_id", "payload", "index_incarnation_id", "payload_sha256"):
+            expression, operands = seal.source_literal_expression(cells[column])
+            expressions.append(expression)
+            parameters.extend(operands)
+        sql = (
+            "INSERT INTO accepted_marker_inputs(sequence, identity, raw_id, payload, index_incarnation_id, payload_sha256) "
+            "VALUES (?, " + ", ".join(expressions) + ") RETURNING sequence"
+        )
+        with seal.source_statement(
+            sql,
+            tuple(parameters),
+            table="accepted_marker_inputs",
+            writable_targets=(),
+            prepared_cells=cells,
+            allocation_parameter=0,
+            generated_primary_key=True,
+        ) as inserted:
+            if inserted.fetchone() is None:
+                raise ReferenceSealError("accepted marker root omitted its generated sequence")
+    except (sqlite3.DataError, OverflowError) as exc:
+        if "too big" in str(exc).lower() or isinstance(exc, OverflowError):
+            raise AcceptedMarkerInputRefusedError(
+                "accepted marker carrier exceeds SQLite's physical value limit"
+            ) from exc
+        raise
+    finally:
+        carrier.close()
 
 
 def marker_input_session_ids(batch: PreparedAcceptedMarkerInput) -> frozenset[str]:

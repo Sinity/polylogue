@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 
 from polylogue.core.enums import AssertionStatus, AssertionVisibility
 from polylogue.markers.models import MarkerCandidate, marker_provenance
@@ -19,16 +19,19 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 def candidates_for_block(
     message_id: str, block_id: str, text: str, *, registry: MarkerRegistry = MARKER_REGISTRY
 ) -> tuple[MarkerCandidate, ...]:
-    from polylogue.markers.parser import parse_markers
+    return tuple(iter_candidates_for_block(message_id, block_id, text, registry=registry))
+
+
+def iter_candidates_for_block(
+    message_id: str, block_id: str, text: str, *, registry: MarkerRegistry = MARKER_REGISTRY
+) -> Iterator[MarkerCandidate]:
+    """Yield block candidates without collecting every marker in one block."""
+    from polylogue.markers.parser import iter_parse_markers
 
     provenance = marker_provenance(message_id, block_id)
-    result: list[MarkerCandidate] = []
-    for match in parse_markers(text, registry=registry):
+    for match in iter_parse_markers(text, registry=registry):
         spec = registry.get(match.kind)
-        result.append(
-            MarkerCandidate(match, provenance, None if spec is None or match.malformed else spec.lowering_target)
-        )
-    return tuple(result)
+        yield MarkerCandidate(match, provenance, None if spec is None or match.malformed else spec.lowering_target)
 
 
 def assertion_id_for_marker(candidate: MarkerCandidate) -> str | None:
