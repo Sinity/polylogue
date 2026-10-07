@@ -3109,8 +3109,10 @@ class LiveBatchProcessor:
                 "live.ingest.retained_preparation_failed",
                 level=WARNING,
                 outcome="error",
+                reason="retryable_preparation",
                 raw_id=failure.raw_id,
                 error_type=type(failure.error).__name__,
+                error_detail=str(failure.error),
             )
         retry_failed = self._retained_retryable_failures(result) | {
             path for path, raw_id in result.raw_fingerprints.items() if raw_id in failed_raw_ids

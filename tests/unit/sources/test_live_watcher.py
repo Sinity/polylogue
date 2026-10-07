@@ -53,7 +53,10 @@ from polylogue.sources.live.cursor import CursorPathAuthority, CursorRecord, Cur
 from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, LiveBatchMetrics
 from polylogue.sources.live.watcher import WriteCoordinator, default_sources
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.sources.revision_backfill import RetainedReplayOutcome
+from polylogue.sources.revision_backfill import (
+    RetainedRawRetryableFailure,
+    RetainedReplayOutcome,
+)
 from polylogue.sources.source_layout import export_drop_layout
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
@@ -3866,6 +3869,70 @@ def test_page_admission_acquires_source_without_reading_unavailable_index(
             (str(path),),
         ).fetchone()
     assert row == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_retryable_retained_preparation_event_keeps_error_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retry event preserves the stale-seal comparison for diagnosis."""
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+    source_path = tmp_path / "session.jsonl"
+    source_path.write_bytes(b"{}\n")
+    result = _FullIngestResult(
+        succeeded=[source_path],
+        failed=[],
+        source_payload_read_bytes=source_path.stat().st_size,
+        acquired_raw_ids=("raw-1",),
+        raw_fingerprints={source_path: "raw-1"},
+    )
+    stale_error = ReferenceSealStaleError("the index.db file incarnation changed after preparation")
+    failure = RetainedRawRetryableFailure(raw_id="raw-1", error=stale_error)
+
+    async def source_writer(*_args: object, **_kwargs: object) -> _FullIngestResult:
+        return result
+
+    async def retained_runner(
+        _raw_ids: Sequence[str],
+        *,
+        on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
+    ) -> RetainedReplayOutcome:
+        del on_terminal_refusal
+        return RetainedReplayOutcome(failures=(failure,))
+
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path)),
+        (),
+        cursor=cast(CursorStore, SimpleNamespace(_db_path=tmp_path / "cursor.sqlite")),
+        parser_fingerprint="test",
+        retained_runner=retained_runner,
+    )
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
+    monkeypatch.setattr(processor, "_run_source_writer", source_writer)
+    monkeypatch.setattr(live_batch, "_source_tier_acquisition_required", lambda: False)
+    events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(live_batch, "emit", lambda event, **fields: events.append((event, fields)))
+
+    await processor._ingest_full_paths_prepared(
+        [source_path],
+        source_name="codex",
+        pre_writer_admissions={},
+    )
+
+    assert events == [
+        (
+            "live.ingest.retained_preparation_failed",
+            {
+                "level": live_batch.WARNING,
+                "outcome": "error",
+                "reason": "retryable_preparation",
+                "raw_id": "raw-1",
+                "error_type": "ReferenceSealStaleError",
+                "error_detail": "the index.db file incarnation changed after preparation",
+            },
+        )
+    ]
 
 
 def test_a_cursored_file_is_rediscovered_without_being_ingested_again(tmp_path: Path) -> None:
