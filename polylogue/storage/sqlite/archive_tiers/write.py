@@ -11565,6 +11565,10 @@ def _write_session_events(
         def _flush_rows() -> None:
             if session_event_rows:
                 conn.executemany(
+                    "DELETE FROM session_event_array_items WHERE session_id = ? AND event_position = ?",
+                    ((str(row[0]), int(row[3])) for row in session_event_rows),
+                )
+                conn.executemany(
                     "INSERT OR REPLACE INTO session_events (session_id, source_message_id, "
                     "source_message_provider_id, position, event_type, payload_json, occurred_at_ms, "
                     "boundary_start_position, boundary_end_position, boundary_message_id) "
@@ -11585,6 +11589,10 @@ def _write_session_events(
                 provider_usage_rows.clear()
 
         def _insert_streamed_event(row: tuple[object, ...], arrays: Mapping[str, object]) -> None:
+            conn.execute(
+                "DELETE FROM session_event_array_items WHERE session_id = ? AND event_position = ?",
+                (str(row[0]), int(row[3])),
+            )
             conn.execute(
                 "INSERT OR REPLACE INTO session_events (session_id, source_message_id, "
                 "source_message_provider_id, position, event_type, payload_json, occurred_at_ms, "
@@ -11671,7 +11679,13 @@ def _write_session_events(
                 streamed_arrays = {
                     key: value for key, value in stored_payload.items() if isinstance(value, StreamedJsonArray)
                 }
-                ordinary_payload = {key: value for key, value in stored_payload.items() if key not in streamed_arrays}
+                ordinary_payload: dict[str, object] = {}
+                for key, value in stored_payload.items():
+                    if isinstance(value, StreamedJsonArray):
+                        if len(value) == 0:
+                            ordinary_payload[key] = []
+                    else:
+                        ordinary_payload[key] = value
                 row = (
                     session_id,
                     source_message_id,
