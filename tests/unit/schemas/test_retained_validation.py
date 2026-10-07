@@ -203,6 +203,106 @@ def test_retained_strict_counts_late_failure_and_advisory_accepts(tmp_path: Path
     )
 
 
+def test_spilled_object_membership_checks_only_the_key_index(tmp_path: Path) -> None:
+    from polylogue.schemas.observation_spill import SpilledObject, StreamedJSONDocument
+
+    path = tmp_path / "membership.json"
+    path.write_text(json.dumps({"present": None, "surrogate\ud800": "value"}), encoding="utf-8")
+    document = StreamedJSONDocument(path)
+    with document as payload:
+        assert isinstance(payload, SpilledObject)
+        statements: list[str] = []
+        document.connection.set_trace_callback(statements.append)
+        before = len(statements)
+
+        assert "present" in payload
+        assert "missing" not in payload
+        assert "surrogate\ud800" in payload
+        assert None not in payload
+        assert 1 not in payload
+
+        membership_sql = statements[before:]
+        assert len(membership_sql) == 3
+        assert all("SELECT 1 FROM json_object_members" in sql for sql in membership_sql)
+        assert all("json_nodes" not in sql for sql in membership_sql)
+
+
+def test_retained_schema_validation_membership_does_not_decode_spilled_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "retained-membership.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {
+                "nullable": None,
+                "count": 4,
+                "large": "x" * 1_000_000,
+                "nested": {"enabled": True},
+            }
+        ],
+    )
+    schema: dict[str, object] = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "x-polylogue-sample-granularity": "document",
+        "type": "object",
+        "properties": {
+            "nullable": {"type": "null"},
+            "count": {"type": "integer"},
+            "large": {"type": "string"},
+            "nested": {"type": "object", "properties": {"enabled": {"type": "boolean"}}},
+            "absent": {"type": "string"},
+        },
+    }
+    registry = SchemaRegistry(storage_root=tmp_path / "membership-schemas")
+    registry.write_schema_version("claude-code", "v2", schema, element_kind="session_record_stream")
+
+    original_contains = observation_spill.SpilledObject.__contains__
+    original_load_node = observation_spill._load_node
+    inside_membership = False
+    membership_calls = 0
+    membership_node_loads = 0
+
+    def contains(self: observation_spill.SpilledObject, key: object) -> bool:
+        nonlocal inside_membership, membership_calls
+        previous = inside_membership
+        inside_membership = True
+        membership_calls += 1
+        try:
+            return original_contains(self, key)
+        finally:
+            inside_membership = previous
+
+    def load_node(connection: object, node_id: int) -> object:
+        nonlocal membership_node_loads
+        if inside_membership:
+            membership_node_loads += 1
+        return original_load_node(connection, node_id)  # type: ignore[arg-type,return-value]
+
+    monkeypatch.setattr(observation_spill.SpilledObject, "__contains__", contains)
+    monkeypatch.setattr(observation_spill, "_load_node", load_node)
+
+    verdict = validate_retained_document(
+        "claude-code",
+        path,
+        mode=ValidationMode.ADVISORY,
+        raw_id="raw-membership",
+        revision_sha256="c" * 64,
+        evidence_id="raw-membership",
+        source_path=str(path),
+        jsonl=True,
+        schema_resolution=_resolution("v2"),
+        schema_resolution_is_explicit=True,
+        registry=registry,
+    )
+
+    assert verdict.status is ValidationStatus.PASSED
+    assert verdict.invalid_count == 0
+    assert verdict.sample_count == 1
+    assert membership_calls > 0
+    assert membership_node_loads == 0
+
+
 def test_retained_historical_fallback_replays_every_jsonl_record(tmp_path: Path) -> None:
     path = tmp_path / "raw.jsonl"
     _write_jsonl(path, [{"type": "record", "kind": "text"}, {"type": "record", "kind": 17}])

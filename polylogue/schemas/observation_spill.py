@@ -132,7 +132,15 @@ class SpilledObject(dict[str, JSONValue]):
             yield bytes(bucket).decode("utf-8", "surrogatepass"), fields(bucket)
 
     def __contains__(self, key: object) -> bool:
-        return isinstance(key, str) and self.get(key, _MISSING) is not _MISSING
+        if not isinstance(key, str):
+            return False
+        return (
+            self._connection.execute(
+                "SELECT 1 FROM json_object_members WHERE parent_id = ? AND key_bytes = ?",
+                (self._node_id, key.encode("utf-8", "surrogatepass")),
+            ).fetchone()
+            is not None
+        )
 
     def __eq__(self, other: object) -> bool:
         return (
