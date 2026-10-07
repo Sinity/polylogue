@@ -14,6 +14,8 @@ capture receiver together with live source watching.
 
 CaptureJob update receipts validate the full current request digest. A request ID does not certify an obsolete digest shape. Browser capture files and source-bearing checkpoint carriers are original inputs; bookkeeping retirement preserves their normal readers and does not exclude them because they were previously acknowledged.
 
+Protocol 2 CaptureJobs use the receiver store at `capture-jobs/v2/` under the browser-capture spool. The earlier `capture-jobs/registry.sqlite3` and its artifacts remain intact as retained evidence. The receiver does not upgrade or read that earlier registry in place.
+
 The receiver listens on `127.0.0.1:8765` by default and accepts the route contracts in `polylogue/browser_capture/route_contracts.py`:
 
 - `GET /v1/status` -> `BrowserCaptureReceiverStatusPayload`

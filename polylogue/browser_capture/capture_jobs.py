@@ -169,7 +169,18 @@ def _canonical_checkpoint_digest(stream: BinaryIO) -> tuple[str, str | None]:
 
 
 def capture_job_database_path(spool_path: Path | None = None) -> Path:
-    return (spool_path or browser_capture_spool_root()) / "capture-jobs" / "registry.sqlite3"
+    return capture_job_store_root(spool_path) / "registry.sqlite3"
+
+
+def capture_job_store_root(spool_path: Path | None = None) -> Path:
+    """Return the isolated filesystem namespace for protocol-2 receiver state.
+
+    The earlier registry schema is durable recovery evidence. A schema change
+    must not open it with ``CREATE TABLE IF NOT EXISTS`` and then mutate it.
+    Keep its registry and artifacts in place while the current protocol owns a
+    separate store.
+    """
+    return (spool_path or browser_capture_spool_root()) / "capture-jobs" / "v2"
 
 
 def capture_job_scope_namespace(spool_path: Path | None = None) -> str:
@@ -362,7 +373,7 @@ class CaptureJobRegistry:
             raise CaptureJobError(400, "invalid_checkpoint_digest") from exc
         if digest[7:] != digest[7:].lower():
             raise CaptureJobError(400, "invalid_checkpoint_digest")
-        return self._spool_root() / "capture-jobs" / "artifacts" / (digest[7:] + ".checkpoint")
+        return capture_job_store_root(self._spool_root()) / "artifacts" / (digest[7:] + ".checkpoint")
 
     def _publish_checkpoint_artifact(self, staged: StagedCapture, digest: str) -> str:
         if "sha256:" + staged.sha256 != digest:
@@ -1393,7 +1404,7 @@ class CaptureJobRegistry:
         return {"deleted": deleted, "count": len(deleted)}
 
     def _collect_checkpoint_artifacts(self) -> None:
-        directory = self._spool_root() / "capture-jobs" / "artifacts"
+        directory = capture_job_store_root(self._spool_root()) / "artifacts"
         if not directory.is_dir():
             return
         with self._connection() as connection:
@@ -1438,7 +1449,7 @@ class CaptureJobRegistry:
                 raise ValueError
         except ValueError as exc:
             raise CaptureJobError(400, "invalid_native_digest") from exc
-        return self._spool_root() / "capture-jobs" / "artifacts" / (sha256 + ".native")
+        return capture_job_store_root(self._spool_root()) / "artifacts" / (sha256 + ".native")
 
     def _publish_native_artifact(self, staged: StagedCapture) -> None:
         target = self._native_artifact_path(staged.sha256)
@@ -1710,7 +1721,7 @@ class CaptureJobRegistry:
                         "summary": json.loads(acquisition["header_json"])["summary"],
                         "duplicate": True,
                     }
-            scratch_root = self._spool_root() / "capture-jobs" / "preparation"
+            scratch_root = capture_job_store_root(self._spool_root()) / "preparation"
             scratch_root.mkdir(parents=True, exist_ok=True)
             directory = tempfile.TemporaryDirectory(prefix="native-", dir=scratch_root)
             store = None

@@ -107,6 +107,77 @@ def _stored_job_ids(spool_path: Path) -> set[str]:
         return {row[0] for row in connection.execute("SELECT job_id FROM capture_jobs")}
 
 
+def test_protocol_two_discovery_preserves_the_previous_registry_and_artifacts(tmp_path: Path) -> None:
+    """The production receiver opens a fresh namespace without upgrading v1."""
+    legacy_root = tmp_path / "capture-jobs"
+    legacy_artifacts = legacy_root / "artifacts"
+    legacy_artifacts.mkdir(parents=True)
+    checkpoint = b'{"conversation_ref":"legacy-checkpoint"}'
+    digest = hashlib.sha256(checkpoint).hexdigest()
+    artifact = legacy_artifacts / f"{digest}.checkpoint"
+    artifact.write_bytes(checkpoint)
+    legacy_database = legacy_root / "registry.sqlite3"
+    with sqlite3.connect(legacy_database) as connection:
+        connection.execute(
+            """CREATE TABLE capture_jobs (
+                job_id TEXT PRIMARY KEY, provider TEXT NOT NULL, account_scope TEXT NOT NULL,
+                intent_key TEXT NOT NULL, intent_json TEXT NOT NULL, revision INTEGER NOT NULL,
+                checkpoint_json TEXT, checkpoint_sequence INTEGER, checkpoint_digest TEXT,
+                receipt_json TEXT, retry_json TEXT NOT NULL, lease_json TEXT,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                retention_json TEXT NOT NULL DEFAULT '{"state":"active","hold_reason":null,"timeline_authoritative":true}',
+                retention_declared INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(provider, account_scope, intent_key)
+            ) STRICT"""
+        )
+        connection.execute(
+            """INSERT INTO capture_jobs (
+                job_id, provider, account_scope, intent_key, intent_json, revision,
+                checkpoint_json, checkpoint_sequence, checkpoint_digest, retry_json,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "legacy-job",
+                "chatgpt",
+                SCOPE,
+                INTENT_KEY,
+                "{}",
+                1,
+                checkpoint.decode(),
+                1,
+                "sha256:" + digest,
+                '{"state":"ready"}',
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+    legacy_database_bytes = legacy_database.read_bytes()
+    legacy_database_inode = legacy_database.stat().st_ino
+    checkpoint_bytes = artifact.read_bytes()
+    checkpoint_inode = artifact.stat().st_ino
+
+    with receiver(tmp_path) as (host, port):
+        status, result = request(
+            host,
+            port,
+            "POST",
+            "/v1/capture-jobs/discover",
+            {"provider": "chatgpt", "scope": ACCOUNT_SCOPE},
+        )
+        assert status == 200
+        assert result["jobs"] == []
+
+    current_database = capture_job_database_path(tmp_path)
+    assert current_database == legacy_root / "v2" / "registry.sqlite3"
+    with sqlite3.connect(current_database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(capture_jobs)")}
+        assert "scope_key" in columns and "account_scope" not in columns
+    assert legacy_database.read_bytes() == legacy_database_bytes
+    assert legacy_database.stat().st_ino == legacy_database_inode
+    assert artifact.read_bytes() == checkpoint_bytes
+    assert artifact.stat().st_ino == checkpoint_inode
+
+
 def housekeeping(host: str, port: int, spool_path: Path, *, now: datetime | None = None) -> list[str]:
     """Drive discovery, the route every extension capture cycle opens with, and
     return the job IDs the receiver collected on that pass."""
