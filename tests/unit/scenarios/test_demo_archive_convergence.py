@@ -68,8 +68,8 @@ EXPECTED_DEMO_SESSIONS = (
 EXPECTED_DEMO_SOURCE_RELATIVE_PATHS = (
     "gemini/demo-00.json",
     "chatgpt/demo-00.json",
-    "claude-code/demo-00.jsonl",
-    "codex/demo-00.jsonl",
+    "claude-code/-synthetic-project/demo-00.jsonl",
+    "codex/2026/01/01/rollout-demo-00.jsonl",
 )
 
 

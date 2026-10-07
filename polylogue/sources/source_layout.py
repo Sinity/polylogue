@@ -42,7 +42,6 @@ ANY_DEPTH = "**"
 
 #: One visible path segment of any name.
 NAME = r"(?!\.)[^/]+"
-_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _DATE = r"\d{4}-\d{2}-\d{2}"
 
 
@@ -151,7 +150,10 @@ def _claude_code_projects_layout() -> SourceLayout:
     # Claude Code names a project directory after its working directory with
     # every separator replaced by ``-``, so the name always begins with ``-``.
     project = r"-[^/]*"
-    session = _UUID
+    # A session directory is named by its session id; any visible name is
+    # accepted at that depth, since only the subdirectories below it
+    # (``subagents``, ``tool-results``, ``workflows``) carry artifacts.
+    session = NAME
     return SourceLayout(
         Provider.CLAUDE_CODE,
         (
@@ -284,17 +286,20 @@ def hook_carrier_layout(provider: Provider) -> SourceLayout:
     )
 
 
-def inbox_layout(suffixes: Sequence[str]) -> SourceLayout:
-    """The archive inbox holds operator drops whose structure is the export's own.
+def export_drop_layout(suffixes: Sequence[str]) -> SourceLayout:
+    """An export drop: material whose structure is the export's own.
 
-    Its admission boundary is the file format, not a provider position:
-    ``polylogue import`` binds each drop to its declared origin.
+    The archive inbox holds operator drops, and a directory declared for an
+    export-only origin (ChatGPT, Claude.ai, Gemini, ...) is the same kind of
+    material. Neither has a provider-written position, so the admission
+    boundary is the file format; ``polylogue import`` and the bound
+    acquisition boundary then hold each file to its declared origin.
     """
 
     suffix = "|".join(re.escape(item) for item in suffixes)
     return SourceLayout(
         None,
-        (LayoutEntry("inbox_drop", (ANY_DEPTH, rf"[^/]+(?:{suffix})"), "export/conversations.json"),),
+        (LayoutEntry("export_drop", (ANY_DEPTH, rf"[^/]+(?:{suffix})"), "export/conversations.json"),),
     )
 
 
@@ -380,8 +385,15 @@ def declared_source_layouts() -> Mapping[str, SourceLayout]:
                 ),
             ),
         ),
+        # Antigravity's CLI keeps one trajectory SQLite store per conversation
+        # beside the IDE state directory; ``conversation_summaries.db`` next to
+        # it is a summary index the parser does not consume.
+        "antigravity-cli": SourceLayout(
+            Provider.ANTIGRAVITY,
+            (LayoutEntry("trajectory_store", ("conversations", r"[^/]+\.db"), "conversations/c1.db"),),
+        ),
         "browser-capture": _browser_capture_layout(),
-        "inbox": inbox_layout(INBOX_SOURCE_SUFFIXES),
+        "inbox": export_drop_layout(INBOX_SOURCE_SUFFIXES),
     }
     for provider_token in HOOK_CARRIER_PROVIDERS:
         layouts[f"{provider_token}-hooks"] = hook_carrier_layout(Provider.from_string(provider_token))
@@ -395,6 +407,68 @@ def declared_source_layout(name: str) -> SourceLayout:
         return declared_source_layouts()[name]
     except KeyError:
         raise KeyError(f"watch source {name!r} declares no layout") from None
+
+
+def source_layout_for(name: str) -> SourceLayout:
+    """The layout a source named ``name`` is walked by, on every route.
+
+    A canonical watch-source name resolves to its declared layout, wherever
+    its root is: a one-shot source named ``codex`` is walked as
+    ``~/.codex/sessions`` is. Any other name labels an explicitly
+    declared input -- an export-only origin's directory, an operator drop --
+    which has no provider-written position and is walked as an export drop.
+    """
+
+    layouts = declared_source_layouts()
+    if name in layouts:
+        return layouts[name]
+    return explicit_input_layout()
+
+
+def explicit_input_layout() -> SourceLayout:
+    """The layout of an explicitly named input directory: an export drop.
+
+    An operator-named root (``polylogue import``, a schema-inference
+    ``provider=path`` argument) is input, not discovery of a provider-written
+    location, so it is bounded by file format, as the inbox is.
+    """
+
+    from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES
+
+    return _export_drop(tuple(INBOX_SOURCE_SUFFIXES))
+
+
+@functools.cache
+def _export_drop(suffixes: tuple[str, ...]) -> SourceLayout:
+    return export_drop_layout(suffixes)
+
+
+#: The project directory synthetic and demo Claude Code sessions live in.
+SYNTHETIC_CLAUDE_CODE_PROJECT = "-synthetic-project"
+
+
+def canonical_session_position(source_name: str, stem: str, suffix: str) -> PurePosixPath:
+    """Where a source holds a session document named ``stem``, relative to its root.
+
+    Writers of synthetic and demo source trees place each session where the
+    provider itself would, so every route admits it through the same
+    declared layout as real material. An export label keeps the file at the
+    root of its drop.
+    """
+
+    if source_name == "claude-code":
+        return PurePosixPath(SYNTHETIC_CLAUDE_CODE_PROJECT, f"{stem}.jsonl")
+    if source_name == "codex":
+        return PurePosixPath("2026", "01", "01", f"rollout-{stem}.jsonl")
+    if source_name == "gemini-cli":
+        return PurePosixPath("synthetic", "chats", f"session-{stem}{suffix}")
+    if source_name == "hermes":
+        if suffix == ".jsonl":
+            return PurePosixPath("observability", "nemo-relay", "atof", f"{stem}.jsonl")
+        return PurePosixPath("sessions", f"session_{stem}{suffix}")
+    if source_name == "antigravity":
+        return PurePosixPath("conversations", f"{stem}.pb")
+    return PurePosixPath(f"{stem}{suffix}")
 
 
 def layout_declaration_defects(root_for: Mapping[str, str]) -> tuple[str, ...]:
@@ -435,12 +509,16 @@ def layout_declaration_defects(root_for: Mapping[str, str]) -> tuple[str, ...]:
 
 __all__ = [
     "ANY_DEPTH",
+    "SYNTHETIC_CLAUDE_CODE_PROJECT",
+    "canonical_session_position",
     "NAME",
     "LayoutEntry",
     "SourceLayout",
     "declared_source_layout",
     "declared_source_layouts",
+    "explicit_input_layout",
+    "export_drop_layout",
     "hook_carrier_layout",
-    "inbox_layout",
     "layout_declaration_defects",
+    "source_layout_for",
 ]

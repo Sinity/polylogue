@@ -68,6 +68,7 @@ from polylogue.sources.live.cursor import ConvergenceDebtSettlement, CursorStore
 from polylogue.sources.live.metrics import REFUSED_CORRUPT_INPUT, REFUSED_NO_SESSIONS, SETTLED_EXCLUSION_REASONS
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.source_acquisition_components import stream_preserved_zip_entry_raw_data
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.sources.source_parsing import has_decoded_session_evidence
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
@@ -1277,7 +1278,7 @@ def test_unreadable_state_database_stays_retryable_instead_of_excluded(tmp_path:
     cursor = CursorStore(index_db)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
-        (WatchSource(name="codex", root=root, suffixes=(".sqlite",)),),
+        (WatchSource(name="codex", root=root, layout=export_drop_layout((".sqlite",))),),
         cursor=cursor,
         parser_fingerprint="test-parser",
     )
@@ -1477,7 +1478,7 @@ def test_source_only_full_ingest_bounds_oversized_ndjson_sampling(
     source.write_bytes(payload)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
-        (WatchSource(name="inbox", root=root, suffixes=(".ndjson",)),),
+        (WatchSource(name="inbox", root=root, layout=export_drop_layout((".ndjson",))),),
         cursor=CursorStore(tmp_path / "index.db"),
         parser_fingerprint="test-parser",
     )
@@ -1800,7 +1801,7 @@ def test_source_only_foreign_sqlite_name_cannot_claim_codex_authority(tmp_path: 
     index_db = tmp_path / "index.db"
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
-        (WatchSource(name="inbox", root=root, suffixes=(".sqlite",)),),
+        (WatchSource(name="inbox", root=root, layout=export_drop_layout((".sqlite",))),),
         cursor=CursorStore(index_db),
         parser_fingerprint="test-parser",
     )
@@ -2139,7 +2140,7 @@ def test_full_ingest_unknown_weak_path_ndjson_records_terminal_evidence(tmp_path
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
-        (WatchSource(name="unknown", root=root, suffixes=(".jsonl", ".ndjson")),),
+        (WatchSource(name="unknown", root=root, layout=export_drop_layout((".jsonl", ".ndjson"))),),
         cursor=CursorStore(db_path),
         parser_fingerprint="test-parser",
     )
@@ -2224,7 +2225,7 @@ def test_full_ingest_unknown_weak_directory_still_excludes_strong_sidecar(tmp_pa
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "ops.db"))),
-        (WatchSource(name="unknown", root=root, suffixes=(".json",)),),
+        (WatchSource(name="unknown", root=root, layout=export_drop_layout((".json",))),),
         cursor=CursorStore(tmp_path / "ops.db"),
         parser_fingerprint="test-parser",
     )
@@ -2826,7 +2827,7 @@ def test_large_weak_path_uses_streaming_route_before_decoded_evidence(
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
-        (WatchSource(name="chatgpt", root=root, suffixes=(".json",)),),
+        (WatchSource(name="chatgpt", root=root, layout=export_drop_layout((".json",))),),
         cursor=CursorStore(db_path),
         parser_fingerprint="test-parser",
     )
@@ -2867,7 +2868,7 @@ def test_threshold_crossing_strong_sidecar_is_excluded_before_streaming(
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
-        (WatchSource(name="chatgpt", root=root, suffixes=(".json",)),),
+        (WatchSource(name="chatgpt", root=root, layout=export_drop_layout((".json",))),),
         cursor=CursorStore(db_path),
         parser_fingerprint="test-parser",
     )
@@ -3643,7 +3644,7 @@ def test_unknown_zip_live_route_retains_declared_binary_and_markdown_artifacts(t
         f"{bundle}:brain/one.md",
     }
     baseline = capture_production_source_baseline(
-        (WatchSource(name="inbox", root=tmp_path, suffixes=(".zip",)),), operation_id="artifacts"
+        (WatchSource(name="inbox", root=tmp_path, layout=export_drop_layout((".zip",))),), operation_id="artifacts"
     )
     assert {(row.path, row.source_index, row.revision) for row in baseline.accepted} == {
         (record.source_path, record.source_index, record.blob_hash) for _raw_id, record in records
@@ -3835,7 +3836,7 @@ async def test_full_drive_capture_retains_acquisition_mode_after_gemini_detectio
     run_off_event_loop(lambda: bootstrap_archive_root(archive.archive_root))
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="drive", root=root, suffixes=(".json",)),),
+        (WatchSource(name="drive", root=root, layout=export_drop_layout((".json",))),),
         cursor=CursorStore(archive.backend.db_path),
         parser_fingerprint="test-parser",
     )
@@ -3897,7 +3898,7 @@ async def test_inbox_browser_capture_json_replacement_uses_full_ingest(tmp_path:
     run_off_event_loop(lambda: bootstrap_archive_root(archive.archive_root))
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="inbox", root=root, suffixes=(".json", ".jsonl")),),
+        (WatchSource(name="inbox", root=root, layout=export_drop_layout((".json", ".jsonl"))),),
         cursor=CursorStore(archive.backend.db_path),
         parser_fingerprint="test-parser",
     )
@@ -3990,7 +3991,7 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
     run_off_event_loop(lambda: bootstrap_archive_root(archive.archive_root))
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
+        (WatchSource(name="browser-capture", root=root, layout=export_drop_layout((".json",))),),
         cursor=CursorStore(archive.backend.db_path),
         parser_fingerprint="test-parser",
     )
@@ -4155,7 +4156,7 @@ async def test_browser_capture_provider_timestamp_advances_reordered_native_snap
     run_off_event_loop(lambda: bootstrap_archive_root(archive.archive_root))
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
+        (WatchSource(name="browser-capture", root=root, layout=export_drop_layout((".json",))),),
         cursor=CursorStore(archive.backend.db_path),
         parser_fingerprint="test-parser",
     )
@@ -4222,7 +4223,7 @@ def test_generic_inbox_jsonl_stream_takes_the_full_route_instead_of_an_append_pl
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
-        (WatchSource(name="inbox", root=root, suffixes=(".jsonl",)),),
+        (WatchSource(name="inbox", root=root, layout=export_drop_layout((".jsonl",))),),
         cursor=cursor,
         parser_fingerprint="test-parser",
     )
@@ -7172,7 +7173,7 @@ def test_live_multi_session_divergence_keeps_accepted_head_as_debt(tmp_path: Pat
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
-        (WatchSource(name="inbox", root=root, suffixes=(".json",)),),
+        (WatchSource(name="inbox", root=root, layout=export_drop_layout((".json",))),),
         cursor=CursorStore(index_db),
         parser_fingerprint="test-parser",
     )
@@ -7419,7 +7420,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
-        (WatchSource(name="inbox", root=root, suffixes=(".json",)),),
+        (WatchSource(name="inbox", root=root, layout=export_drop_layout((".json",))),),
         cursor=CursorStore(index_db),
         parser_fingerprint="test-parser",
     )
@@ -7618,7 +7619,7 @@ def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_hea
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
-        (WatchSource(name="inbox", root=root, suffixes=(".json",)),),
+        (WatchSource(name="inbox", root=root, layout=export_drop_layout((".json",))),),
         cursor=CursorStore(tmp_path / "index.db"),
         parser_fingerprint="current-parser",
     )
@@ -8526,7 +8527,7 @@ async def test_live_full_ingest_skips_convergence_without_session_changes(
     run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path))),
-        (WatchSource(name="sessions", root=root, suffixes=(".json",)),),
+        (WatchSource(name="sessions", root=root, layout=export_drop_layout((".json",))),),
         cursor=cursor,
         parser_fingerprint="test-parser",
     )
@@ -8806,7 +8807,7 @@ def test_codex_state_filename_alone_does_not_route_a_foreign_file_to_codex_acqui
     index_db = tmp_path / "index.db"
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
-        (WatchSource(name="inbox", root=root, suffixes=(".sqlite",)),),
+        (WatchSource(name="inbox", root=root, layout=export_drop_layout((".sqlite",))),),
         cursor=CursorStore(index_db),
         parser_fingerprint="test-parser",
     )
@@ -9429,7 +9430,7 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
     run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path))),
-        (WatchSource(name="sessions", root=root, suffixes=(".json",)),),
+        (WatchSource(name="sessions", root=root, layout=export_drop_layout((".json",))),),
         cursor=cursor,
         parser_fingerprint="test-parser",
     )

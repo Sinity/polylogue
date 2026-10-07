@@ -34,6 +34,7 @@ from polylogue.sources.live.cold_build import (
     clear_cold_build_generation,
     register_cold_build_generation,
 )
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.archive_identity import GENERATIONS_DIRNAME, MAINTENANCE_STATE_DIRNAME
 from polylogue.storage.index_generation import UnpublishedPromotionRecoveryError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -52,7 +53,9 @@ def _codex_session(native_id: str, text: str) -> bytes:
 
 async def _ingest_paths(archive_root: Path, root: Path, paths: list[Path]) -> LiveBatchMetrics:
     async with prepared_live_batch_processor(
-        archive_root, (WatchSource(name="codex", root=root),), parser_fingerprint="test-parser"
+        archive_root,
+        (WatchSource(name="codex", root=root, layout=export_drop_layout((".jsonl",))),),
+        parser_fingerprint="test-parser",
     ) as processor:
         return await processor.ingest_files(paths, emit_event=False)
 
@@ -224,7 +227,7 @@ def test_restart_completes_pointer_swapped_cold_promotion(tmp_path: Path, monkey
     source_root.mkdir()
     member = source_root / "one.jsonl"
     member.write_bytes(_codex_session("one", "interrupted"))
-    source = WatchSource("codex", source_root, suffixes=(".jsonl",), required=True)
+    source = WatchSource("codex", source_root, layout=export_drop_layout((".jsonl",)), required=True)
     generation = ColdBuildGeneration.begin(
         archive, reason="first", observed=ColdBuildGeneration.observe_source_baseline((source,))
     )
@@ -769,7 +772,11 @@ def test_a_file_intake_excludes_does_not_block_promotion(tmp_path: Path) -> None
     sidecar = root / "no-session.jsonl"
     sidecar.write_bytes(b'{"x":1}\n')
     generation = ColdBuildGeneration.begin(
-        tmp_path, reason="test", observed=ColdBuildGeneration.observe_source_baseline((WatchSource("codex", root),))
+        tmp_path,
+        reason="test",
+        observed=ColdBuildGeneration.observe_source_baseline(
+            (WatchSource("codex", root, layout=export_drop_layout((".jsonl",))),)
+        ),
     )
     register_cold_build_generation(generation)
     try:
@@ -1017,7 +1024,7 @@ def test_fresh_capacity_uses_sealed_material_without_a_second_source_read(
             large_root,
             reason="test",
             observed=ColdBuildGeneration.observe_source_baseline(
-                (WatchSource("fixture", large_source, suffixes=(".json",)),)
+                (WatchSource("fixture", large_source, layout=export_drop_layout((".json",))),)
             ),
         )
     assert reads == 1
@@ -1033,7 +1040,7 @@ def test_fresh_capacity_uses_sealed_material_without_a_second_source_read(
         small_root,
         reason="test",
         observed=ColdBuildGeneration.observe_source_baseline(
-            (WatchSource("fixture", large_source, suffixes=(".json",)),)
+            (WatchSource("fixture", large_source, layout=export_drop_layout((".json",))),)
         ),
     )
     try:
@@ -1090,7 +1097,7 @@ def test_cold_build_captures_effective_source_baseline(tmp_path: Path) -> None:
     """Removing the production source capture leaves the accepted revision unbound."""
     archive = _fresh_archive_root(tmp_path)
     source_root = _declared_source_root(tmp_path)
-    source = WatchSource(name="codex", root=source_root)
+    source = WatchSource(name="codex", root=source_root, layout=export_drop_layout((".jsonl",)))
     generation = ColdBuildGeneration.begin(
         archive, reason="test", observed=ColdBuildGeneration.observe_source_baseline((source,))
     )
@@ -1108,7 +1115,9 @@ def test_required_missing_source_blocks_promotion(tmp_path: Path) -> None:
     from polylogue.sources.live.production_baseline import ProductionBaselineError
 
     archive = _fresh_archive_root(tmp_path)
-    source = WatchSource(name="account", root=tmp_path / "missing", suffixes=(".json",), required=True)
+    source = WatchSource(
+        name="account", root=tmp_path / "missing", layout=export_drop_layout((".json",)), required=True
+    )
     generation = ColdBuildGeneration.begin(
         archive, reason="test", observed=ColdBuildGeneration.observe_source_baseline((source,))
     )
@@ -1130,8 +1139,8 @@ def test_faulted_baseline_refresh_retains_prior_accepted_revisions(tmp_path: Pat
     first.write_bytes(_codex_session("first", "first"))
     second_root = tmp_path / "second"
     sources = (
-        WatchSource("codex", first_root, suffixes=(".jsonl",), required=True),
-        WatchSource("codex", second_root, suffixes=(".jsonl",), required=True),
+        WatchSource("codex", first_root, layout=export_drop_layout((".jsonl",)), required=True),
+        WatchSource("codex", second_root, layout=export_drop_layout((".jsonl",)), required=True),
     )
     generation = ColdBuildGeneration.begin(
         archive, reason="test", observed=ColdBuildGeneration.observe_source_baseline(sources)
@@ -1184,7 +1193,7 @@ def test_faulted_baseline_refresh_reuses_candidate_and_retained_evidence_capacit
 
     archive = _fresh_archive_root(tmp_path)
     source_root = tmp_path / "later-source"
-    sources = (WatchSource("codex", source_root, suffixes=(".jsonl",), required=True),)
+    sources = (WatchSource("codex", source_root, layout=export_drop_layout((".jsonl",)), required=True),)
     generation = ColdBuildGeneration.begin(
         archive, reason="test", observed=ColdBuildGeneration.observe_source_baseline(sources)
     )
@@ -1269,7 +1278,7 @@ def test_orphan_replacement_does_not_charge_already_retained_source_again(
     source_root.mkdir()
     member = source_root / "one.jsonl"
     member.write_bytes(_codex_session("one", "retained"))
-    source = WatchSource("codex", source_root, suffixes=(".jsonl",), required=True)
+    source = WatchSource("codex", source_root, layout=export_drop_layout((".jsonl",)), required=True)
     orphan = ColdBuildGeneration.begin(
         archive, reason="first", observed=ColdBuildGeneration.observe_source_baseline((source,))
     )
@@ -1313,7 +1322,7 @@ def test_discarded_generation_carries_deleted_source_into_retry(tmp_path: Path) 
     source_root.mkdir()
     member = source_root / "A.json"
     member.write_text('{"session":"A"}')
-    source = WatchSource("account", source_root, suffixes=(".json",), required=True)
+    source = WatchSource("account", source_root, layout=export_drop_layout((".json",)), required=True)
     first = ColdBuildGeneration.begin(
         archive, reason="first", observed=ColdBuildGeneration.observe_source_baseline((source,))
     )

@@ -17,6 +17,7 @@ from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import _AppendPlan, encode_cursor_hash_authority
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.source_layout import export_drop_layout
 from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
@@ -152,7 +153,11 @@ def test_page_selection_repairs_missing_cursor_from_archive_source_row(tmp_path:
         )
         conn.commit()
     _write_archive_blob(tmp_path, blob_hash, archived.read_bytes())
-    watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="codex", root=root),), cursor=cursor)
+    watcher = LiveWatcher(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=root, layout=export_drop_layout((".jsonl",))),),
+        cursor=cursor,
+    )
 
     plan = _select_plan(watcher, root)
     record = cursor.get_record(archived)
@@ -188,7 +193,11 @@ def test_page_selection_does_not_repair_cursor_from_archive_row_with_missing_blo
             acquired_at_ms=1,
             native_id="archived",
         )
-    watcher = LiveWatcher(cast(Any, polylogue), (WatchSource(name="codex", root=root),), cursor=cursor)
+    watcher = LiveWatcher(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=root, layout=export_drop_layout((".jsonl",))),),
+        cursor=cursor,
+    )
 
     plan = _select_plan(watcher, root)
 
@@ -245,7 +254,7 @@ def test_page_selection_reconciles_browser_capture_cursor_from_archive_origin(tm
     _write_archive_blob(tmp_path, blob_hash, archived.read_bytes())
     watcher = LiveWatcher(
         cast(Any, polylogue),
-        (WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
+        (WatchSource(name="browser-capture", root=root, layout=export_drop_layout((".json",))),),
         cursor=cursor,
     )
 
@@ -317,7 +326,7 @@ def test_codex_append_plan_recovers_identity_from_session_meta_when_source_row_m
     )
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
-        (WatchSource(name="codex", root=root),),
+        (WatchSource(name="codex", root=root, layout=export_drop_layout((".jsonl",))),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )

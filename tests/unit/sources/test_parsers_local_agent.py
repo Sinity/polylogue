@@ -1164,11 +1164,12 @@ def test_hermes_state_db_source_iterator_captures_raw_blob(tmp_path: Path) -> No
 
 
 def test_hermes_configured_directory_admits_only_its_state_database(tmp_path: Path) -> None:
-    """Enumeration is broad; admission is structural.
+    """Enumeration is the declared layout; admission is structural.
 
-    Anti-vacuity: dropping the recognizer from admission would make
-    ``unrelated.sqlite`` produce sessions (or a parse failure) instead of a
-    typed non-session observation.
+    ``unrelated.sqlite`` and ``notes.txt`` have no Hermes position, so the
+    walk never offers them.
+
+    Anti-vacuity: walking by suffix again enumerates ``unrelated.sqlite``.
     """
 
     source_root = tmp_path / "hermes"
@@ -1190,7 +1191,7 @@ def test_hermes_configured_directory_admits_only_its_state_database(tmp_path: Pa
         )
     )
 
-    assert _resolve_source_paths(hermes_source) == [db_path, unrelated_path]
+    assert _resolve_source_paths(hermes_source) == [db_path]
     assert [session.provider_session_id.split("@", 1)[0] for _raw, session in rows] == [
         "hermes-root",
         "hermes-child",
@@ -1198,7 +1199,8 @@ def test_hermes_configured_directory_admits_only_its_state_database(tmp_path: Pa
 
 
 def test_unrelated_configured_hermes_sqlite_is_enumerated_but_not_admitted(tmp_path: Path) -> None:
-    db_path = tmp_path / "unrelated.sqlite"
+    """A database at the declared ``state.db`` position is offered, then refused by structure."""
+    db_path = tmp_path / "state.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
 

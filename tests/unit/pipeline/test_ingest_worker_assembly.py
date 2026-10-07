@@ -22,6 +22,7 @@ from polylogue.core.enums import Provider, TitleSource
 from polylogue.pipeline.services import ingest_worker as ingest_worker_module
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.sources.live import WatchSource
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.runtime import RawSessionRecord
 from tests.infra.archive_templates import run_off_event_loop
@@ -462,7 +463,6 @@ async def test_claude_index_and_history_resolve_with_the_original_tree_gone(
 ) -> None:
     """The curated title and paste evidence come back from retained bytes."""
     from polylogue.sources.live import WatchSource
-    from polylogue.sources.origin_specs import artifact_suffixes_for_provider
 
     archive_root = tmp_path / "archive"
     claude_home = tmp_path / "live" / ".claude"
@@ -505,13 +505,12 @@ async def test_claude_index_and_history_resolve_with_the_original_tree_gone(
         WatchSource(
             name="claude-code",
             root=project.parent,
-            suffixes=artifact_suffixes_for_provider(Provider.CLAUDE_CODE, defaults=(".jsonl",)),
         ),
         [index_path],
     )
     await _acquire_evidence(
         archive_root,
-        WatchSource(name="claude-code-history", root=claude_home, suffixes=()),
+        WatchSource(name="claude-code-history", root=claude_home),
         [history_path],
     )
     kinds = _retained_artifact_kinds(archive_root)
@@ -548,7 +547,6 @@ async def test_claude_index_and_history_resolve_with_the_original_tree_gone(
 async def test_claude_retained_index_is_scoped_to_its_own_install(blob_store: BlobStore, tmp_path: Path) -> None:
     """A second install's index never titles the first install's session."""
     from polylogue.sources.live import WatchSource
-    from polylogue.sources.origin_specs import artifact_suffixes_for_provider
 
     archive_root = tmp_path / "archive"
     other = tmp_path / "live" / "install-b" / ".claude" / "projects" / "-realm-project-x"
@@ -563,7 +561,6 @@ async def test_claude_retained_index_is_scoped_to_its_own_install(blob_store: Bl
         WatchSource(
             name="claude-code",
             root=other.parent,
-            suffixes=artifact_suffixes_for_provider(Provider.CLAUDE_CODE, defaults=(".jsonl",)),
         ),
         [other_index],
     )
@@ -610,7 +607,7 @@ async def _acquire_chatgpt_export(archive_root: Path, root: Path) -> tuple[Path,
     asset, library, names, conversations = _write_chatgpt_export(root)
     await _acquire_evidence(
         archive_root,
-        WatchSource(name="chatgpt", root=root, suffixes=(".json",)),
+        WatchSource(name="chatgpt", root=root, layout=export_drop_layout((".json",))),
         [asset, library, names],
     )
     return asset, library, names, conversations
@@ -773,7 +770,7 @@ async def test_retained_replay_archives_every_duplicate_asset_rendition(blob_sto
 
     await _acquire_evidence(
         archive_root,
-        WatchSource(name="chatgpt", root=root, suffixes=(".json",)),
+        WatchSource(name="chatgpt", root=root, layout=export_drop_layout((".json",))),
         [*renditions, library, names],
     )
     live_keys = set(
@@ -868,7 +865,7 @@ async def test_retained_zip_sidecar_binds_the_member_live_assembly_binds(blob_st
     root = tmp_path / "live" / "exports"
     root.mkdir(parents=True)
     zip_path = root / "chatgpt-export.zip"
-    source = WatchSource(name="chatgpt", root=root, suffixes=(".json", ".zip"))
+    source = WatchSource(name="chatgpt", root=root, layout=export_drop_layout((".json", ".zip")))
 
     _write_chatgpt_zip(zip_path, ["first.png", "second.png"])
     await _acquire_evidence(archive_root, source, [zip_path])

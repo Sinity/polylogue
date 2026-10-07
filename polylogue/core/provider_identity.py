@@ -108,6 +108,7 @@ _RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
     "cursor": "codex",
     "codex-state": "codex",
     "codex-memories": "codex",
+    "antigravity-cli": "antigravity",
 }
 
 

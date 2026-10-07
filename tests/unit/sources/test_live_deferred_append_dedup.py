@@ -38,6 +38,7 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import CursorPathAuthority, CursorStore
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.raw_owner_routes import ingest_append_with_owner
@@ -71,7 +72,7 @@ def _seed_native_session(tmp_path: Path, *, session_id: str) -> None:
 def _processor(tmp_path: Path, cursor: CursorStore) -> LiveBatchProcessor:
     return LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
-        (WatchSource(name="codex", root=tmp_path),),
+        (WatchSource(name="codex", root=tmp_path, layout=export_drop_layout((".jsonl",))),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )

@@ -682,12 +682,13 @@ def test_antigravity_non_json_inputs_are_counted_with_declared_terminal_reasons(
     conversation = tmp_path / "conversations" / "session.pb"
     conversation.parent.mkdir()
     conversation.write_bytes(b"opaque-protobuf")
-    brain = tmp_path / "brain" / "notes.md"
-    brain.parent.mkdir()
+    brain = tmp_path / "brain" / "c1" / "notes.md"
+    brain.parent.mkdir(parents=True)
     brain.write_text("sidecar", encoding="utf-8")
 
+    # The canonical Antigravity root, walked by its declared layout.
     result = infer_sources(
-        (SchemaSourceInput("antigravity", tmp_path),),
+        (SchemaSourceInput("antigravity", tmp_path, source_name="antigravity"),),
         cache_path=tmp_path / "source-cache.sqlite3",
         max_workers=1,
     )

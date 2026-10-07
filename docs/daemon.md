@@ -57,7 +57,11 @@ Discovery descends only into directories that layout reaches and admits only
 files at a declared position. Anything else under a root, including a copy of
 the provider tree nested inside it (an agent worktree under
 `.claude/worktrees/`), is reported once as an `outside_declared_layout`
-excluded entry and is never walked or parsed. There are no custom watch roots and no
+excluded entry and is never walked or parsed. The live inotify watch follows the
+same layouts: it is installed only on directories a layout reaches and is
+re-armed when a new reachable directory (a fresh session's `subagents/`) appears.
+Antigravity's CLI trajectory stores are watched at
+`~/.gemini/antigravity-cli/conversations/<id>.db`. There are no custom watch roots and no
 way to narrow the watch set. A tool whose logs live elsewhere is followed by
 a symlink at its canonical path. Account exports (ChatGPT, Claude, Gemini) are
 imported deliberately with `polylogue import <path>`, which stages them in the

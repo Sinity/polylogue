@@ -40,6 +40,7 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
+from polylogue.sources.source_layout import export_drop_layout
 from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.raw_owner_routes import ingest_files_with_owners
 from tests.infra.retained_jsonl import prepared_source_fixture
@@ -293,7 +294,7 @@ async def test_claude_full_tool_text_survives_the_loss_of_its_source_tree(
     root.mkdir(parents=True)
     tree = _claude_tree(root)
     archive, _cursor, processor = _processor(
-        workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
+        workspace_env, (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
     )
     try:
         await ingest_files_with_owners(
@@ -338,7 +339,7 @@ async def test_claude_subagent_scope_keeps_ownership_after_the_tree_is_gone(
     root.mkdir(parents=True)
     tree = _claude_tree(root)
     archive, _cursor, processor = _processor(
-        workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
+        workspace_env, (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
     )
     try:
         await ingest_files_with_owners(
@@ -394,7 +395,7 @@ async def test_missing_expected_sidecar_stays_explicit_and_a_late_one_reconverge
     root.mkdir(parents=True)
     tree = _claude_tree(root, orphan=False)
     archive, _cursor, processor = _processor(
-        workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
+        workspace_env, (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
     )
     try:
         # The parent's own sidecar is never acquired: its scope is observed
@@ -422,7 +423,7 @@ async def test_missing_expected_sidecar_stays_explicit_and_a_late_one_reconverge
 
     # The sidecar arrives late and is acquired on its own.
     archive, _cursor, processor = _processor(
-        workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
+        workspace_env, (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
     )
     try:
         await ingest_files_with_owners(processor, [tree["parent_sidecar"]], emit_event=False)
@@ -453,7 +454,7 @@ async def test_gemini_full_tool_output_survives_the_loss_of_its_source_tree(
     root.mkdir(parents=True)
     tree = _gemini_tree(root)
     archive, _cursor, processor = _processor(
-        workspace_env, (WatchSource(name="gemini-cli", root=root, suffixes=(".json",)),)
+        workspace_env, (WatchSource(name="gemini-cli", root=root, layout=export_drop_layout((".json",))),)
     )
     try:
         await ingest_files_with_owners(processor, [tree["sidecar"], tree["snapshot"]], emit_event=False)
@@ -487,7 +488,7 @@ async def test_retained_resolution_is_what_carries_the_full_text(
     root.mkdir(parents=True)
     tree = _claude_tree(root, orphan=False)
     archive, _cursor, processor = _processor(
-        workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
+        workspace_env, (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
     )
     try:
         await ingest_files_with_owners(
@@ -534,7 +535,7 @@ async def test_original_sidecar_bytes_stay_recoverable_beside_normalized_text(
     original_bytes = tree["parent_sidecar"].read_bytes()
 
     archive, _cursor, processor = _processor(
-        workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
+        workspace_env, (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
     )
     try:
         await ingest_files_with_owners(

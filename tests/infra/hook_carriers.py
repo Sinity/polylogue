@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.sources.source_layout import export_drop_layout
+
 if TYPE_CHECKING:
     from polylogue.sources.live.watcher import WatchSource
 
@@ -73,7 +75,7 @@ def _carrier_sources(spool_root: Path) -> tuple[WatchSource, ...]:
         WatchSource(
             name=f"{provider}-hooks",
             root=hook_carrier_provider_dir(provider, spool_root),
-            suffixes=(".ndjson",),
+            layout=export_drop_layout((".ndjson",)),
             source_id=f"primary-hook-spool:{provider}",
             role="primary-writable",
         )

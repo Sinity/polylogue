@@ -163,11 +163,7 @@ def _ordered_children(
                         # for admission, so a nested copy of a provider tree
                         # costs one entry, not its whole contents.
                         if on_disposition is not None:
-                            on_disposition(
-                                path,
-                                "excluded",
-                                "outside_declared_layout" if source.layout is not None else "ignored_directory",
-                            )
+                            on_disposition(path, "excluded", "outside_declared_layout")
                         continue
                     if is_link and not _admit_linked_directory(
                         source,
@@ -211,6 +207,11 @@ def _ordered_children(
                         )
                         continue
                     else:
+                        # A FIFO, socket or device at a declared position is
+                        # never admitted, but it is evidence: a census counts
+                        # it instead of the entry silently vanishing.
+                        if on_disposition is not None and source.accepts(path):
+                            on_disposition(path, "excluded", "non_regular_file")
                         continue
             except FileNotFoundError:
                 # Ordinary producer churn: the entry vanished between the
@@ -242,11 +243,7 @@ def _log_unclaimed_intake_candidate(path: Path, *, source: WatchSource) -> None:
         path=path,
         size=size,
         mtime=mtime,
-        reason=(
-            f"outside the declared layout of source {source.name!r}"
-            if source.layout is not None
-            else f"suffix not in watched set {source.suffixes} for source {source.name!r}"
-        ),
+        reason=f"outside the declared layout of source {source.name!r}",
         source_name=source.name,
     )
 
@@ -355,7 +352,7 @@ def _source_path_steps(
                 continue
             if not source.accepts(path):
                 if on_disposition is not None:
-                    on_disposition(path, "excluded", source.exclusion_reason())
+                    on_disposition(path, "excluded", "outside_declared_layout")
                 # A file this source's own walk reached but does not admit.
                 # The record exists whether or not an operator runs the
                 # standalone sweep, and discovery is the only production walk

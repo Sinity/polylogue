@@ -459,7 +459,8 @@ def test_source_manifest_counts_the_derivative_apart_from_its_original() -> None
     """
     with tempfile.TemporaryDirectory() as raw_root:
         root = Path(raw_root)
-        project = root / "projects" / "proj"
+        projects = root / "projects"
+        project = projects / "-proj"
         project.mkdir(parents=True)
         (project / "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl").write_text(
             "\n".join(json.dumps(record) for record in _PROVIDER_TURNS) + "\n", encoding="utf-8"
@@ -468,7 +469,7 @@ def test_source_manifest_counts_the_derivative_apart_from_its_original() -> None
             "\n".join(json.dumps(record) for record in _EXTRACTED_TURNS) + "\n", encoding="utf-8"
         )
 
-        census = census_source_root(root, provider=Provider.CLAUDE_CODE)
+        census = census_source_root(projects, provider=Provider.CLAUDE_CODE)
 
     assert census.candidate_count == 2
     assert census.disposition_counts == {"session": 1, "non_session": 1, "unsupported": 0}

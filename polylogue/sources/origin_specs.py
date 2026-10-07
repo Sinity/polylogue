@@ -573,9 +573,6 @@ class OriginArtifactRule:
     coverage_role: str
     fidelity_note: str
     path_suffixes: tuple[str, ...]
-    # Suffixes safe to project onto a whole watched root. Path-scoped forms
-    # such as opaque sidecars stay governed by ``path_pattern``.
-    watch_suffixes: tuple[str, ...] | None = None
     # Schema admission is intentionally independent from session admission.
     # ``raw-only`` JSON sidecars can still contribute privacy-safe structure;
     # opaque bytes have a typed, explicit non-applicability outcome.
@@ -1441,10 +1438,6 @@ class OriginSpecRegistry:
                     raise ValueError(
                         f"{spec.origin.value}: {rule.kind} acquisition suffixes must be lowercase dot suffixes or empty"
                     )
-                if rule.watch_suffixes is not None and any(
-                    not suffix.startswith(".") or suffix != suffix.lower() for suffix in rule.watch_suffixes
-                ):
-                    raise ValueError(f"{spec.origin.value}: {rule.kind} watch suffixes must be lowercase dot suffixes")
             if any("db" in mode or "sqlite" in mode for mode in spec.acquisition_modes):
                 if spec.database_capability is None:
                     raise ValueError(f"{spec.origin.value}: database acquisition requires a database capability")
@@ -1741,7 +1734,6 @@ def _claude_code_spec() -> OriginSpec:
                     "within a session, joined to it by session_native_id."
                 ),
                 path_suffixes=(".ndjson",),
-                watch_suffixes=(".ndjson",),
             ),
             OriginArtifactRule(
                 kind="tool_result_sidecar",
@@ -1769,7 +1761,6 @@ def _claude_code_spec() -> OriginSpec:
                 # ordinary suffix projection because text and HTML are
                 # path-scoped and must not widen the Claude root globally.
                 path_suffixes=(".json", ".txt", ".html", ""),
-                watch_suffixes=(".json",),
                 schema_observation_strategy="opaque-non-applicable",
                 schema_non_applicability_reason=(
                     "Tool output is provider payload, not a stable sidecar record contract; retain bytes and join "
@@ -1883,7 +1874,6 @@ def _claude_code_spec() -> OriginSpec:
                 path_suffixes=(".md",),
                 # Path-scoped: ``.md`` must not become an admitted suffix for
                 # the whole ``projects/`` root, only for ``memory/`` inside it.
-                watch_suffixes=(),
             ),
             OriginArtifactRule(
                 kind="session_index",
@@ -1905,7 +1895,6 @@ def _claude_code_spec() -> OriginSpec:
                 path_suffixes=(".json",),
                 # ``.json`` is already an admitted Claude Code suffix; this
                 # rule states a location, not a new suffix family.
-                watch_suffixes=(),
             ),
             OriginArtifactRule(
                 kind="prompt_history_log",
@@ -1924,7 +1913,6 @@ def _claude_code_spec() -> OriginSpec:
                     "scope, so two installs never share one history."
                 ),
                 path_suffixes=(".jsonl",),
-                watch_suffixes=(),
             ),
         ),
         assembly_spec_path="polylogue/sources/assembly_claude_code.py:ClaudeCodeAssemblySpec",
@@ -2002,26 +1990,6 @@ def path_declaration_refuses_session(provider: Provider, source_path: str | Path
     """
     rule = artifact_rule_for_path(provider, str(source_path))
     return rule is not None and rule.parse_policy == "raw-only"
-
-
-def artifact_suffixes_for_provider(
-    provider: Provider,
-    *,
-    defaults: tuple[str, ...] = (),
-) -> tuple[str, ...]:
-    """Project live-acquisition suffixes from the owning OriginSpec rules.
-
-    Acquisition may add a generic default, but provider artifact families must
-    not maintain a second suffix inventory beside OriginSpec.
-    """
-
-    suffixes = list(defaults)
-    for spec in ORIGIN_SPECS:
-        if provider not in spec.provider_wires:
-            continue
-        for rule in spec.artifact_rules:
-            suffixes.extend(rule.watch_suffixes if rule.watch_suffixes is not None else rule.path_suffixes)
-    return tuple(dict.fromkeys(suffix.lower() for suffix in suffixes))
 
 
 def database_capability_for_provider(provider: Provider) -> DatabaseSourceCapability | None:
@@ -2110,7 +2078,6 @@ def _chatgpt_spec() -> OriginSpec:
                     "the same asset id in two exports names two objects and never cross-binds."
                 ),
                 path_suffixes=(".json",),
-                watch_suffixes=(),
             ),
             OriginArtifactRule(
                 kind="export_asset",
@@ -2136,7 +2103,6 @@ def _chatgpt_spec() -> OriginSpec:
                 path_suffixes=(".dat", ".png", ".jpg", ".jpeg", ".webp", ".wav", ".pdf", ".json", ""),
                 # Path-scoped by id-bearing member name: no suffix family may
                 # be projected onto a whole watched root from this rule.
-                watch_suffixes=(),
                 schema_observation_strategy="opaque-non-applicable",
                 schema_non_applicability_reason=(
                     "Export attachment bytes are heterogeneous payloads; preserve the content-addressed bytes and "
@@ -2317,7 +2283,6 @@ def _codex_spec() -> OriginSpec:
                     "within a session, joined to it by session_native_id."
                 ),
                 path_suffixes=(".ndjson",),
-                watch_suffixes=(".ndjson",),
             ),
             OriginArtifactRule(
                 kind="agent_memory_document",
@@ -2343,7 +2308,6 @@ def _codex_spec() -> OriginSpec:
                 ),
                 path_suffixes=(".md",),
                 # Path-scoped: the Codex roots must not admit ``.md`` globally.
-                watch_suffixes=(),
             ),
             OriginArtifactRule(
                 kind="session_index",
@@ -2362,7 +2326,6 @@ def _codex_spec() -> OriginSpec:
                 path_suffixes=(".jsonl",),
                 # The Codex state root stays suffix-narrow. Its path-rule
                 # escape hatch admits only this declared exact coordinate.
-                watch_suffixes=(),
             ),
             OriginArtifactRule(
                 kind="prompt_history_log",
@@ -2378,7 +2341,6 @@ def _codex_spec() -> OriginSpec:
                     "supply a title only to rollouts from the same install and are never parsed as sessions."
                 ),
                 path_suffixes=(".jsonl",),
-                watch_suffixes=(),
             ),
         ),
         display_description="Codex CLI local sessions (lab: OpenAI)",
@@ -2698,7 +2660,6 @@ def _gemini_cli_spec() -> OriginSpec:
                 # suffix is projected onto the watched root because the
                 # directory shape is the whole admission evidence.
                 path_suffixes=(".txt", ".json", ".md", ".log", ""),
-                watch_suffixes=(),
                 schema_observation_strategy="opaque-non-applicable",
                 schema_non_applicability_reason=(
                     "Tool output is provider payload, not a stable sidecar record contract; retain bytes and join "
@@ -2720,7 +2681,6 @@ def _gemini_cli_spec() -> OriginSpec:
                     "prompts only and duplicate what the chat checkpoints carry, so they are never a session."
                 ),
                 path_suffixes=(".json",),
-                watch_suffixes=(),
             ),
         ),
         fidelity_notes=(
@@ -2792,7 +2752,6 @@ def _hermes_spec() -> OriginSpec:
                     "within a session, joined to it by session_native_id."
                 ),
                 path_suffixes=(".ndjson",),
-                watch_suffixes=(".ndjson",),
             ),
             OriginArtifactRule(
                 kind="skill_asset",
@@ -2811,7 +2770,6 @@ def _hermes_spec() -> OriginSpec:
                     "Skill-shipped prompt templates are retained as raw artifact evidence and never create a session."
                 ),
                 path_suffixes=(".json", ".jsonl", ".md", ".txt", ""),
-                watch_suffixes=(),
                 schema_observation_strategy="opaque-non-applicable",
                 schema_non_applicability_reason=(
                     "A shipped prompt template is skill content, not a provider record contract; retain the "
@@ -2902,7 +2860,6 @@ def _antigravity_spec() -> OriginSpec:
                 coverage_role="conversation_protobuf",
                 fidelity_note="Opaque conversation protobufs are converted only by Antigravity's language server.",
                 path_suffixes=(".pb",),
-                watch_suffixes=(".pb", ".db", ".sqlite", ".sqlite3"),
             ),
             OriginArtifactRule(
                 kind="agent_sidecar_meta",
@@ -3082,7 +3039,6 @@ def _aistudio_drive_spec() -> OriginSpec:
                     "observation has no retained blob to re-inspect."
                 ),
                 path_suffixes=(".json",),
-                watch_suffixes=(),
             ),
             OriginArtifactRule(
                 kind="metadata_document",
@@ -3102,7 +3058,6 @@ def _aistudio_drive_spec() -> OriginSpec:
                 path_suffixes=(".json",),
                 # One named file, not a suffix family: enumeration of the
                 # Drive root stays governed by ``path_pattern``.
-                watch_suffixes=(),
             ),
         ),
         assembly_paths=("polylogue/sources/dispatch.py:_lower_payload_specs",),
@@ -3194,7 +3149,6 @@ def _otel_genai_spec() -> OriginSpec:
                     "document with a normalizable GenAI span."
                 ),
                 path_suffixes=(".json",),
-                watch_suffixes=(".json",),
             ),
         ),
         fidelity_notes=(
@@ -4255,7 +4209,6 @@ __all__ = [
     "artifact_rule_for_path",
     "artifact_observation_contracts",
     "path_declaration_refuses_session",
-    "artifact_suffixes_for_provider",
     "recognize_source_class",
     "schema_observed_leaf_values",
     "undeclared_schema_values",

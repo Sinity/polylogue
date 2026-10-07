@@ -18,6 +18,7 @@ from typing import Any, cast
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import write_fixture_index_session
@@ -40,7 +41,7 @@ def _processor(archive_root: Path, root: Path) -> LiveBatchProcessor:
     bootstrap_archive_root(archive_root)
     return LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
-        (WatchSource(name="codex", root=root),),
+        (WatchSource(name="codex", root=root, layout=export_drop_layout((".jsonl",))),),
         cursor=CursorStore(index_db),
         parser_fingerprint="test-parser",
     )

@@ -13,6 +13,7 @@ from polylogue.core import content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.raw_coordinates import zip_member_source_index
 from polylogue.sources.source_acquisition import iter_source_acquisition_records
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 from tests.infra.source_builders import acquired_payloads, live_zip_capture
@@ -65,7 +66,7 @@ def test_a_refused_member_is_a_typed_production_baseline_fault(tmp_path: Path, m
         archive.writestr("b.json", json.dumps([{"id": "kept", "mapping": {}}]).encode())
 
     baseline = capture_production_source_baseline(
-        (WatchSource("chatgpt", root, suffixes=(".zip",)),), operation_id="identity-refusal"
+        (WatchSource("chatgpt", root, layout=export_drop_layout((".zip",))),), operation_id="identity-refusal"
     )
 
     faults = {row.path: row.reason for row in baseline.decisions if row.disposition == "fault"}
@@ -296,7 +297,7 @@ def test_a_refused_split_element_is_a_baseline_fault_beside_its_siblings(
         archive.writestr("conversations.json", _split_member_with_a_refused_element())
 
     baseline = capture_production_source_baseline(
-        (WatchSource("chatgpt", root, suffixes=(".zip",)),), operation_id="split-refusal"
+        (WatchSource("chatgpt", root, layout=export_drop_layout((".zip",))),), operation_id="split-refusal"
     )
     member = f"{zip_path}:conversations.json"
     faults = {row.path: row.reason for row in baseline.decisions if row.disposition == "fault"}

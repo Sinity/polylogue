@@ -20,6 +20,7 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
 from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.raw_owner_routes import (
@@ -54,7 +55,7 @@ def _ingest(archive_root: Path, source: Path, *, provider: Provider = Provider.C
     processor = LiveBatchProcessor(
         Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
         # The production Hermes source watches its JSON session snapshots too.
-        (WatchSource(name=provider.value, root=source.parent, suffixes=(".json", ".jsonl")),),
+        (WatchSource(name=provider.value, root=source.parent, layout=export_drop_layout((".json", ".jsonl"))),),
         cursor=CursorStore(archive_root / "index.db"),
         parser_fingerprint=_PARSER_FINGERPRINT,
     )
@@ -164,7 +165,6 @@ def test_live_claude_code_intake_uses_retained_index_titles_parsed_once(
     """
     import polylogue.sources.parsers.claude.index as claude_index
     import polylogue.sources.retained_assembly as retained_assembly
-    from polylogue.sources.origin_specs import artifact_suffixes_for_provider
 
     project = tmp_path / "live" / ".claude" / "projects" / "-synthetic-project"
     project.mkdir(parents=True)
@@ -206,7 +206,6 @@ def test_live_claude_code_intake_uses_retained_index_titles_parsed_once(
     watch = WatchSource(
         name="claude-code",
         root=project.parent,
-        suffixes=artifact_suffixes_for_provider(Provider.CLAUDE_CODE, defaults=(".jsonl",)),
     )
 
     def ingest(paths: list[Path]) -> None:
@@ -254,7 +253,6 @@ def _claude_project(root: Path) -> tuple[Path, Path, Path]:
 
 
 def _claude_ingest(archive_root: Path, project: Path, paths: list[Path]) -> None:
-    from polylogue.sources.origin_specs import artifact_suffixes_for_provider
 
     archive_root.mkdir(parents=True, exist_ok=True)
     bootstrap_archive_root(archive_root)
@@ -264,7 +262,6 @@ def _claude_ingest(archive_root: Path, project: Path, paths: list[Path]) -> None
             WatchSource(
                 name="claude-code",
                 root=project.parent,
-                suffixes=artifact_suffixes_for_provider(Provider.CLAUDE_CODE, defaults=(".jsonl",)),
             ),
         ),
         cursor=CursorStore(archive_root / "index.db"),

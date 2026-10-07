@@ -31,6 +31,7 @@ from polylogue.sources.hooks import (
 )
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, PER_TURN_END
+from polylogue.sources.source_layout import export_drop_layout
 from tests.infra.hook_carriers import (
     acquire_hook_carriers,
     hook_event_count,
@@ -344,7 +345,7 @@ def test_grown_carrier_retains_only_an_append_revision(tmp_path: Path, monkeypat
     source = WatchSource(
         name="codex-hooks",
         root=hook_carrier_provider_dir("codex", spool_root),
-        suffixes=(".ndjson",),
+        layout=export_drop_layout((".ndjson",)),
         source_id="primary-hook-spool:codex",
         role="primary-writable",
     )

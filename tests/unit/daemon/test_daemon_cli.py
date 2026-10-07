@@ -40,6 +40,7 @@ from polylogue.logging import capture
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.revision_backfill import RetainedReplayOutcome
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 from polylogue.storage.derived.raw import RawObservationScope
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -2704,7 +2705,11 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
             task = asyncio.create_task(
                 daemon_cli.run_daemon_services(
                     sources=(
-                        WatchSource(name=source_name, root=source_root, suffixes=(".json" if browser else ".jsonl",)),
+                        WatchSource(
+                            name=source_name,
+                            root=source_root,
+                            layout=export_drop_layout((".json" if browser else ".jsonl",)),
+                        ),
                     ),
                     enable_watch=True,
                     enable_browser_capture=False,
@@ -3906,7 +3911,7 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
             )
             task = asyncio.create_task(
                 daemon_cli.run_daemon_services(
-                    sources=(WatchSource("codex", source_root, suffixes=(".jsonl",)),),
+                    sources=(WatchSource("codex", source_root, layout=export_drop_layout((".jsonl",))),),
                     enable_watch=True,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
@@ -4099,7 +4104,7 @@ async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_pa
             )
             task = asyncio.create_task(
                 daemon_cli.run_daemon_services(
-                    sources=(WatchSource("codex", source_root, suffixes=(".jsonl",)),),
+                    sources=(WatchSource("codex", source_root, layout=export_drop_layout((".jsonl",))),),
                     enable_watch=True,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
@@ -4202,15 +4207,19 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
     for root, path in ((source_root, watched_file), (imports_root, imported_file)):
         # The supplied live owners: writer, retained publication and convergence.
         async with prepared_live_batch_processor(
-            archive_root, (WatchSource("codex", root, suffixes=(".jsonl",)),), parser_fingerprint=_PARSER_FINGERPRINT
+            archive_root,
+            (WatchSource("codex", root, layout=export_drop_layout((".jsonl",))),),
+            parser_fingerprint=_PARSER_FINGERPRINT,
         ) as processor:
             metrics = await processor.ingest_files([path], emit_event=False)
         assert metrics.succeeded_file_count == 1, metrics
     assert session_ids(resolve_active_index_path(archive_root)) == served
 
-    daemon_sources: tuple[WatchSource, ...] = (WatchSource("codex", source_root, suffixes=(".jsonl",)),)
+    daemon_sources: tuple[WatchSource, ...] = (
+        WatchSource("codex", source_root, layout=export_drop_layout((".jsonl",))),
+    )
     if imported_source_kept:
-        daemon_sources += (WatchSource("imports", imports_root, suffixes=(".jsonl",)),)
+        daemon_sources += (WatchSource("imports", imports_root, layout=export_drop_layout((".jsonl",))),)
     else:
         imported_file.unlink()
 
@@ -4386,8 +4395,8 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
             task = asyncio.create_task(
                 daemon_cli.run_daemon_services(
                     sources=(
-                        WatchSource("codex", source_root, suffixes=(".jsonl",), required=True),
-                        WatchSource("missing", missing_root, suffixes=(".jsonl",), required=True),
+                        WatchSource("codex", source_root, layout=export_drop_layout((".jsonl",)), required=True),
+                        WatchSource("missing", missing_root, layout=export_drop_layout((".jsonl",)), required=True),
                     ),
                     enable_watch=True,
                     enable_browser_capture=False,

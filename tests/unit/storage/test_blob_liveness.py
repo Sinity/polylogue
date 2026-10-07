@@ -11,6 +11,7 @@ from typing import get_args
 
 import pytest
 
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.blob_gc import run_blob_gc_report
 from polylogue.storage.blob_liveness import (
     LivenessState,
@@ -415,7 +416,7 @@ async def test_acquired_sidecar_bytes_outlive_their_source_tree_and_the_index_ti
     # coordinator, capture stage and retained Raw owner.
     async with prepared_live_batch_processor(
         archive_root,
-        (WatchSource(name="claude-code", root=tree_root, suffixes=(".jsonl",)),),
+        (WatchSource(name="claude-code", root=tree_root, layout=export_drop_layout((".jsonl",))),),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     ) as processor:
         await processor.ingest_files([sidecar, owner], emit_event=False)

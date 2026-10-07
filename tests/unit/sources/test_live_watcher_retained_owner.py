@@ -12,6 +12,7 @@ from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.live_ingest import prepared_live_convergence_owner
@@ -62,7 +63,7 @@ async def test_watcher_routes_acquired_raw_to_its_supplied_retained_owner(
         archive = Polylogue(archive_root=root)
         watcher = LiveWatcher(
             archive,
-            [WatchSource(name="chatgpt", root=source_root, suffixes=(".json",))],
+            [WatchSource(name="chatgpt", root=source_root, layout=export_drop_layout((".json",)))],
             cursor=cursor,
             write_coordinator=coordinator,
             sqlite_capture_stage=LiveSQLiteCaptureStage(compute_adapter=owner._compute_adapter),

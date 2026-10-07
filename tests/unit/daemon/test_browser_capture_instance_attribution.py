@@ -19,6 +19,7 @@ from polylogue.browser_capture.receiver import (
     write_capture_envelope,
 )
 from polylogue.sources.live import WatchSource
+from polylogue.sources.source_layout import export_drop_layout
 from tests.infra.live_batch import prepared_live_batch_processor
 
 
@@ -128,7 +129,7 @@ async def test_concurrent_extension_instances_deduplicate_without_corrupting_spo
     archive_root.mkdir()
     async with prepared_live_batch_processor(
         archive_root,
-        (WatchSource(name="browser-capture", root=tmp_path, suffixes=(".json",)),),
+        (WatchSource(name="browser-capture", root=tmp_path, layout=export_drop_layout((".json",))),),
         parser_fingerprint="test-parser",
     ) as processor:
         metrics = await processor.ingest_files([results[0].path], emit_event=False)

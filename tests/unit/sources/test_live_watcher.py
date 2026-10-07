@@ -55,6 +55,7 @@ from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, LiveBatchMetrics
 from polylogue.sources.live.watcher import WriteCoordinator, default_sources
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import RetainedReplayOutcome
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -140,8 +141,9 @@ async def _seed_live_cursor_authority_case(
     exact_frontier: bool = False,
 ) -> tuple[LiveBatchProcessor, LiveWatcher, CursorStore, Path]:
     source_root = root / "sessions"
-    source_root.mkdir(parents=True)
-    source_path = source_root / "session.jsonl"
+    # The declared Codex position: YYYY/MM/DD/rollout-*.jsonl.
+    source_path = source_root / "2026" / "05" / "01" / "rollout-session-1.jsonl"
+    source_path.parent.mkdir(parents=True)
     prefix = (
         json.dumps(_codex_session_meta("session-1")).encode()
         + b"\n"
@@ -1764,7 +1766,7 @@ def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path
         watcher, _full_ingest = _make_watcher(
             tmp_path,
             root,
-            sources=(WatchSource(name="hermes", root=root, suffixes=(".db",)),),
+            sources=(WatchSource(name="hermes", root=root, layout=export_drop_layout((".db",))),),
         )
         initial_revision = sqlite_source_revision(state_db)
         from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
@@ -1857,7 +1859,7 @@ def test_watch_filter_accepts_directories_but_not_unmatched_files_under_broad_ro
     watcher, _full_ingest = _make_watcher(
         tmp_path,
         root,
-        sources=(WatchSource(name="codex-state", root=root, suffixes=(".jsonl",)),),
+        sources=(WatchSource(name="codex-state", root=root, layout=export_drop_layout((".jsonl",))),),
     )
 
     assert watcher._watch_filter(object(), str(unmatched)) is False
@@ -1882,7 +1884,7 @@ def test_added_directory_scan_rejects_file_symlinks_escaping_source_root(
     watcher, _full_ingest = _make_watcher(
         tmp_path,
         root,
-        sources=(WatchSource(name="codex", root=root, suffixes=(".jsonl",)),),
+        sources=(WatchSource(name="codex", root=root, layout=export_drop_layout((".jsonl",))),),
     )
     assert watcher._canonical_watch_path(escaping) is None
     watcher._enqueue_added_directory(added)
@@ -1907,13 +1909,9 @@ def test_added_directory_scan_retains_a_deeper_root_under_outer_ignore(
         tmp_path,
         outer,
         sources=(
-            WatchSource(
-                name="codex-state",
-                root=outer,
-                suffixes=(".sqlite",),
-                ignored_dir_names=frozenset({"runtime"}),
-            ),
-            WatchSource(name="codex", root=inner, suffixes=(".jsonl",)),
+            # The declared codex-state layout never reaches ``runtime/``.
+            WatchSource(name="codex-state", root=outer),
+            WatchSource(name="codex", root=inner, layout=export_drop_layout((".jsonl",))),
         ),
     )
     assert watcher._watch_filter(object(), str(ignored)) is True
@@ -1933,7 +1931,7 @@ def test_hermes_cursor_records_acquisition_revision_not_live_tail(tmp_path: Path
     watcher, _full_ingest = _make_watcher(
         tmp_path,
         root,
-        sources=(WatchSource(name="hermes", root=root, suffixes=(".db",)),),
+        sources=(WatchSource(name="hermes", root=root, layout=export_drop_layout((".db",))),),
     )
 
     bytes_read = watcher._batch_processor._record_full_cursor(
@@ -1960,7 +1958,7 @@ def test_hermes_cursor_keeps_snapshot_time_fingerprint(tmp_path: Path) -> None:
     watcher, _full_ingest = _make_watcher(
         tmp_path,
         root,
-        sources=(WatchSource(name="hermes", root=root, suffixes=(".db",)),),
+        sources=(WatchSource(name="hermes", root=root, layout=export_drop_layout((".db",))),),
     )
 
     watcher._batch_processor._record_full_cursor(
@@ -2572,7 +2570,7 @@ async def test_live_full_ingest_admits_claude_originspec_fact_artifact(
     run_off_event_loop(lambda: bootstrap_archive_root(workspace_env["archive_root"]))
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="claude-code", root=root, suffixes=(".json", ".jsonl", ".ndjson")),),
+        (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".json", ".jsonl", ".ndjson"))),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
@@ -2635,7 +2633,7 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
     run_off_event_loop(lambda: bootstrap_archive_root(workspace_env["archive_root"]))
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="claude-code", root=root, suffixes=(".json", ".jsonl", ".ndjson")),),
+        (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".json", ".jsonl", ".ndjson"))),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
@@ -2928,7 +2926,7 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
+        (WatchSource(name="browser-capture", root=root, layout=export_drop_layout((".json",))),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
@@ -3993,7 +3991,7 @@ def test_watch_source_exists_false(tmp_path: Path) -> None:
 
 
 def test_watch_source_accepts_configured_suffixes(tmp_path: Path) -> None:
-    src = WatchSource(name="x", root=tmp_path, suffixes=(".json", ".jsonl"))
+    src = WatchSource(name="x", root=tmp_path, layout=export_drop_layout((".json", ".jsonl")))
     assert src.accepts(tmp_path / "session.json") is True
     assert src.accepts(tmp_path / "session.jsonl") is True
     assert src.accepts(tmp_path / "README.md") is False
@@ -4002,15 +4000,16 @@ def test_watch_source_accepts_configured_suffixes(tmp_path: Path) -> None:
 def test_claude_watch_source_accepts_declared_tool_result_extensions_and_extensionless_files(
     tmp_path: Path,
 ) -> None:
-    """Watcher admission follows the Claude OriginSpec path declaration."""
-    source = WatchSource(name="claude-code", root=tmp_path, suffixes=(".jsonl",))
-    tool_results = tmp_path / "session" / "tool-results"
+    """Watcher admission follows the declared Claude Code layout."""
+    source = WatchSource(name="claude-code", root=tmp_path)
+    session = tmp_path / "-home-user-repo" / "00000000-0000-4000-8000-000000000001"
+    tool_results = session / "tool-results"
 
     assert source.accepts(tool_results / "toolu.json") is True
     assert source.accepts(tool_results / "toolu.txt") is True
     assert source.accepts(tool_results / "toolu.html") is True
     assert source.accepts(tool_results / "toolu") is True
-    assert source.accepts(tmp_path / "session" / "notes.txt") is False
+    assert source.accepts(session / "notes.txt") is False
 
 
 def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> None:
@@ -4023,8 +4022,8 @@ def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> Non
     watcher = LiveWatcher(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
         (
-            WatchSource(name="codex-state", root=root, suffixes=(".sqlite",)),
-            WatchSource(name="codex", root=sessions, suffixes=(".jsonl",)),
+            WatchSource(name="codex-state", root=root, layout=export_drop_layout((".sqlite",))),
+            WatchSource(name="codex", root=sessions, layout=export_drop_layout((".jsonl",))),
         ),
         cursor=CursorStore(tmp_path / "cursor.db"),
     )
@@ -4580,40 +4579,40 @@ def test_cursor_reconciliation_restores_the_newest_archived_outcome(
 def test_discovery_claims_nested_sessions_and_declared_suffixes_only(tmp_path: Path) -> None:
     """The one production walk: which files the dispatcher's discovery claims.
 
-    Covers what the deleted catch-up scan used to prove -- nested project
-    directories, subagent transcripts, an orphan at the root, a declared
-    non-``.jsonl`` suffix, and the runtime-dependency prune -- against the
-    walk that actually runs now.
+    A Claude Code projects root claims the session in its project directory
+    and the subagent transcript below its session directory, and nothing
+    else: not a stray file at the root, not undeclared files beside the
+    session, not a runtime dependency tree.
 
     Anti-vacuity: accept every suffix and the ``.toml``/``.md`` files appear;
-    drop the ignored-directory check and the ``site-packages`` file appears;
-    stop descending and the subagent transcript disappears.
+    walk outside the layout and the root orphan and ``site-packages`` file
+    appear; stop descending and the subagent transcript disappears.
     """
 
     root = tmp_path / "src"
-    subagents = root / "my-project" / "some-uuid" / "subagents"
+    subagents = root / "-my-project" / "some-uuid" / "subagents"
     subagents.mkdir(parents=True)
-    session = root / "my-project" / "session.jsonl"
+    session = root / "-my-project" / "session.jsonl"
     session.write_text('{"a":1}\n')
     orphan = root / "orphan.jsonl"
     orphan.write_text('{"a":1}\n')
     agent = subagents / "agent-abc123.jsonl"
     agent.write_text('{"a":1}\n')
-    (root / "my-project" / "config.toml").write_text("x=1")
-    (root / "my-project" / "README.md").write_text("# hi")
+    (root / "-my-project" / "config.toml").write_text("x=1")
+    (root / "-my-project" / "README.md").write_text("# hi")
     dependency = root / "venv" / "lib" / "site-packages" / "generated.jsonl"
     dependency.parent.mkdir(parents=True)
     dependency.write_text('{"not":"a session"}\n')
 
-    source = WatchSource(name="test", root=root)
-    assert set(_bounded_source_paths(source, (source,), limit=32, after=None)) == {session, orphan, agent}
+    source = WatchSource(name="claude-code", root=root)
+    assert set(_bounded_source_paths(source, (source,), limit=32, after=None)) == {session, agent}
 
     gemini_root = tmp_path / "gemini"
     gemini_root.mkdir()
     gemini_session = gemini_root / "session.json"
     gemini_session.write_text('{"sessionId":"s1","messages":[]}\n')
     (gemini_root / "notes.md").write_text("# no")
-    gemini = WatchSource(name="gemini-cli", root=gemini_root, suffixes=(".json", ".jsonl"))
+    gemini = WatchSource(name="gemini-cli", root=gemini_root, layout=export_drop_layout((".json", ".jsonl")))
     assert _bounded_source_paths(gemini, (gemini,), limit=32, after=None) == [gemini_session]
 
 

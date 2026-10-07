@@ -56,6 +56,7 @@ def detect_chat_sources() -> tuple[DetectedSource, ...]:
         ("gemini-cli", source_paths.gemini_cli, "Gemini CLI workspace exports"),
         ("hermes", source_paths.hermes, "Hermes agent state.db and fallback session exports"),
         ("antigravity", source_paths.antigravity, "Antigravity brain artifacts"),
+        ("antigravity-cli", source_paths.antigravity_cli, "Antigravity CLI trajectory SQLite stores"),
         ("hooks", hooks_sidecar_dir(), "Agent hook sidecar spool"),
     )
     detected: list[DetectedSource] = []

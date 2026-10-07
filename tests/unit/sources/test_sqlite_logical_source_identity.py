@@ -33,6 +33,7 @@ from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.watcher import LiveWatcher
 from polylogue.sources.origin_specs import database_capability_for_provider
 from polylogue.sources.parsers.base import RawSessionData
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.sources.sqlite_export import (
     logical_source_context,
     looks_like_logical_export_path,
@@ -648,7 +649,7 @@ def test_commit_after_export_cannot_authorize_a_cursor_skip(tmp_path: Path, monk
             mtime_ns=current_stat.st_mtime_ns,
         )
         watcher = LiveWatcher.__new__(LiveWatcher)
-        watcher._sources = (WatchSource(name="codex-state", root=tmp_path, suffixes=(".sqlite",)),)
+        watcher._sources = (WatchSource(name="codex-state", root=tmp_path, layout=export_drop_layout((".sqlite",))),)
         corroboration_probes: list[Path] = []
 
         def corroborated(path: Path) -> bool:
@@ -774,7 +775,9 @@ def test_declared_logical_tables_exist_in_the_parsed_schema(tmp_path: Path) -> N
 
 
 def _hermes_source(root: Path) -> WatchSource:
-    return WatchSource(name="hermes", root=root, suffixes=(".json", ".jsonl", ".db", ".sqlite", ".sqlite3"))
+    return WatchSource(
+        name="hermes", root=root, layout=export_drop_layout((".json", ".jsonl", ".db", ".sqlite", ".sqlite3"))
+    )
 
 
 def _processor(
@@ -1025,7 +1028,7 @@ def test_an_out_of_scope_database_is_not_a_declared_codex_member(tmp_path: Path)
                 archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "cursor.db"), config=None
             ),
         ),
-        (WatchSource(name="codex-state", root=root, suffixes=(".sqlite", ".db")),),
+        (WatchSource(name="codex-state", root=root, layout=export_drop_layout((".sqlite", ".db"))),),
         cursor=cursor,
     )
 

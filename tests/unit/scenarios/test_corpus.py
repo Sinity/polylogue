@@ -240,8 +240,8 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
     capture_gap_family = DEMO_CORPUS_FAMILIES[3]
     assert capture_gap_family.synthetic is False
     assert capture_gap_family.source_paths == (
-        "browser-capture/chatgpt-raw-provider.json",
-        "browser-capture/chatgpt-dom-fallback.json",
+        "browser-capture/chatgpt/chatgpt-raw-provider.json",
+        "browser-capture/chatgpt/chatgpt-dom-fallback.json",
     )
     assert capture_gap_family.construct_ids == (
         "capture_gap_events",
@@ -253,7 +253,7 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
     assert cross_material_family.synthetic is False
     assert cross_material_family.source_paths == (
         "chatgpt/duplicate-source-export.json",
-        "browser-capture/duplicate-capture.json",
+        "browser-capture/chatgpt/duplicate-capture.json",
     )
     assert cross_material_family.construct_ids == ("ambiguous_cross_material_duplicate",)
     assert DEMO_CORPUS_FAMILIES[-1].synthetic is False
@@ -278,7 +278,7 @@ def test_build_demo_corpus_specs_declares_release_fixture_world() -> None:
         "error_terminal_state_rows",
         "compaction_omits_failed_attempt",
     }
-    assert "codex/terminal-error.jsonl" in lineage_family.source_paths
+    assert "codex/2026/01/01/rollout-terminal-error.jsonl" in lineage_family.source_paths
     assert tuple(spec.style for spec in specs) == (
         "demo",
         "demo-tool-heavy",
@@ -313,8 +313,8 @@ def test_build_demo_corpus_specs_materializes_with_synthetic_generator(tmp_path:
     files = tuple(path.relative_to(tmp_path).as_posix() for batch in written for path in batch.files)
     assert files == (
         "chatgpt/demo-00.json",
-        "claude-code/demo-00.jsonl",
-        "codex/demo-00.jsonl",
+        "claude-code/-synthetic-project/demo-00.jsonl",
+        "codex/2026/01/01/rollout-demo-00.jsonl",
         "gemini/demo-00.json",
     )
 

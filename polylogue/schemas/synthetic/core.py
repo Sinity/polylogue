@@ -24,6 +24,7 @@ from polylogue.schemas.synthetic.relations import RelationConstraintSolver
 from polylogue.schemas.synthetic.selection import available_synthetic_providers, select_synthetic_schema
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator
 from polylogue.schemas.synthetic.wire_formats import WireFormat
+from polylogue.sources.source_layout import canonical_session_position
 
 if TYPE_CHECKING:
     from polylogue.archive.raw_payload.decode import JSONValue
@@ -259,21 +260,23 @@ class SyntheticCorpus:
         batch = cls._generate_batch_for_corpus(corpus, spec)
         written_files: list[Path] = []
         for idx, artifact in enumerate(batch.artifacts):
+            # Each artifact sits where the provider writes it, so every route
+            # admits it through the provider's declared source layout.
             if corpus.provider == "antigravity":
-                # Sidecars describe artifacts and are intentionally not sessions.
-                # Synthetic conversations must use the same rooted trajectory shape
-                # as the real acquisition path: conversations/<cascade_id>.pb.
-                conversations_dir = output_dir / "conversations"
-                conversations_dir.mkdir(parents=True, exist_ok=True)
+                # Synthetic conversations use the rooted trajectory shape of the
+                # real acquisition path: conversations/<cascade_id>.pb.
                 cascade_id = (
                     spec.session_native_ids[idx]
                     if idx < len(spec.session_native_ids)
                     else f"{prefix}-{idx:0{index_width}d}"
                 )
-                file_path = conversations_dir / f"{cascade_id}.pb"
+                file_path = output_dir / canonical_session_position(corpus.provider, cascade_id, ".pb")
+                file_path.parent.mkdir(parents=True, exist_ok=True)
                 file_path.write_bytes(b"fake-protobuf-bytes-" + cascade_id.encode("utf-8"))
             else:
-                file_path = output_dir / f"{prefix}-{idx:0{index_width}d}{ext}"
+                stem = f"{prefix}-{idx:0{index_width}d}"
+                file_path = output_dir / canonical_session_position(corpus.provider, stem, ext)
+                file_path.parent.mkdir(parents=True, exist_ok=True)
                 file_path.write_bytes(artifact.raw_bytes)
             written_files.append(file_path)
         return SyntheticWrittenBatch(batch=batch, files=tuple(written_files))
