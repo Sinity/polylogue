@@ -37,6 +37,7 @@ from polylogue.scenarios import (
 )
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.parsers.browser_capture import parse as parse_browser_capture
+from polylogue.sources.source_layout import canonical_session_position
 from polylogue.storage.archive_identity import (
     DEMO_OWNERSHIP_MANIFEST_FILENAME,
     read_demo_ownership_manifest,
@@ -479,7 +480,7 @@ def _write_demo_browser_capture_gap_sources(source_root: Path) -> None:
 
     native_id = DEMO_CHATGPT_SESSION_ID.split(":", maxsplit=1)[1]
     _write_json(
-        source_root / "browser-capture" / "chatgpt-raw-provider.json",
+        source_root / "browser-capture" / "chatgpt" / "chatgpt-raw-provider.json",
         {
             "polylogue_capture_kind": "browser_llm_session",
             "schema_version": 1,
@@ -557,7 +558,7 @@ def _write_demo_browser_capture_gap_sources(source_root: Path) -> None:
         },
     )
     _write_json(
-        source_root / "browser-capture" / "chatgpt-dom-fallback.json",
+        source_root / "browser-capture" / "chatgpt" / "chatgpt-dom-fallback.json",
         {
             "polylogue_capture_kind": "browser_llm_session",
             "schema_version": 1,
@@ -651,7 +652,7 @@ def _write_demo_cross_material_duplicate_sources(source_root: Path) -> None:
         ),
     )
     _write_json(
-        source_root / "browser-capture" / "duplicate-capture.json",
+        source_root / "browser-capture" / "chatgpt" / "duplicate-capture.json",
         {
             "polylogue_capture_kind": "browser_llm_session",
             "schema_version": 1,
@@ -835,7 +836,7 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
         )
 
     _write_jsonl(
-        source_root / "codex" / "lineage-parent.jsonl",
+        source_root / "codex" / canonical_session_position("codex", "lineage-parent", ".jsonl"),
         (
             _codex_session_meta(parent_id, timestamp="2026-07-04T10:00:00Z"),
             _codex_message("parent-u0", "user", "2026-07-04T10:00:01Z", [_input_text(base_user)]),
@@ -859,11 +860,11 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
         ),
     )
     _write_jsonl(
-        source_root / "claude-code" / "lineage-compaction-parent.jsonl",
+        source_root / "claude-code" / canonical_session_position("claude-code", "lineage-compaction-parent", ".jsonl"),
         _compaction_narrative_records(uuid_prefix="compaction-parent"),
     )
     _write_jsonl(
-        source_root / "claude-code" / "agent-acompact-demo.jsonl",
+        source_root / "claude-code" / canonical_session_position("claude-code", "agent-acompact-demo", ".jsonl"),
         (
             # Literal replay of the parent's own messages, matching real Claude
             # Code auto-compact behavior (the compactor re-reads and re-emits
@@ -882,7 +883,7 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
         ),
     )
     _write_jsonl(
-        source_root / "claude-code" / "lineage-sidechain.jsonl",
+        source_root / "claude-code" / canonical_session_position("claude-code", "lineage-sidechain", ".jsonl"),
         (
             _claude_code_record(
                 record_type="user",
@@ -905,7 +906,7 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
         ),
     )
     _write_jsonl(
-        source_root / "codex" / "lineage-fork.jsonl",
+        source_root / "codex" / canonical_session_position("codex", "lineage-fork", ".jsonl"),
         (
             _codex_session_meta(fork_id, timestamp="2026-07-04T10:01:00Z", forked_from_id=parent_id),
             _codex_message("fork-u0", "user", "2026-07-04T10:01:01Z", [_input_text(base_user)]),
@@ -925,7 +926,7 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
         ),
     )
     _write_jsonl(
-        source_root / "codex" / "lineage-subagent.jsonl",
+        source_root / "codex" / canonical_session_position("codex", "lineage-subagent", ".jsonl"),
         (
             _codex_session_meta(
                 subagent_id,
@@ -942,7 +943,7 @@ def _write_demo_lineage_sources(source_root: Path) -> None:
         ),
     )
     _write_jsonl(
-        source_root / "codex" / "terminal-error.jsonl",
+        source_root / "codex" / canonical_session_position("codex", "terminal-error", ".jsonl"),
         (
             _codex_session_meta(terminal_error_id, timestamp="2026-07-04T10:05:00Z"),
             _codex_message(
@@ -1029,7 +1030,7 @@ def _write_demo_receipts_sources(source_root: Path) -> None:
     receipts_id = DEMO_CODEX_RECEIPTS_SESSION_ID.removeprefix("codex-session:")
     anti_grep_id = DEMO_CODEX_ANTI_GREP_SESSION_ID.removeprefix("codex-session:")
     _write_jsonl(
-        source_root / "codex" / "receipts.jsonl",
+        source_root / "codex" / canonical_session_position("codex", "receipts", ".jsonl"),
         (
             _codex_session_meta(receipts_id, timestamp="2026-07-04T14:32:00Z"),
             _codex_message(
@@ -1094,7 +1095,7 @@ def _write_demo_receipts_sources(source_root: Path) -> None:
         ),
     )
     _write_jsonl(
-        source_root / "codex" / "anti-grep-control.jsonl",
+        source_root / "codex" / canonical_session_position("codex", "anti-grep-control", ".jsonl"),
         (
             _codex_session_meta(anti_grep_id, timestamp="2026-07-04T14:31:00Z"),
             _codex_message(
@@ -1128,7 +1129,7 @@ def _write_demo_gemini_cli_sources(source_root: Path) -> None:
 
     native_id, kind, start_time = DEMO_GEMINI_CLI_WIRE
     _write_json(
-        source_root / "gemini-cli" / "demo-00.json",
+        source_root / "gemini-cli" / canonical_session_position("gemini-cli", "demo-00", ".json"),
         {
             "sessionId": native_id,
             "kind": kind,
@@ -1228,7 +1229,7 @@ def _write_demo_hermes_sources(source_root: Path) -> None:
 
     native_id = DEMO_HERMES_SESSION_ID.removeprefix("hermes-session:")
     _write_json(
-        source_root / "hermes" / "demo-00.json",
+        source_root / "hermes" / canonical_session_position("hermes", "demo-00", ".json"),
         {
             "session_id": native_id,
             "platform": "hermes",
@@ -1520,7 +1521,9 @@ def demo_source_specs(source_root: Path) -> list[Source]:
         Source(name="codex", path=Path("codex")),
         Source(name="gemini", path=Path("gemini")),
         Source(name="gemini-cli", path=Path("gemini-cli")),
-        Source(name="antigravity", path=Path("antigravity")),
+        # The language-server export document has no provider-written
+        # position; it is an explicitly declared input file.
+        Source(name="antigravity", path=Path("antigravity") / "demo-00.json"),
         Source(name="hermes", path=Path("hermes")),
         Source(name="browser-capture", path=Path("browser-capture")),
     ]

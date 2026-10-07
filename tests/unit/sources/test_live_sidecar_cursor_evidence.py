@@ -29,6 +29,7 @@ import pytest
 import polylogue.sources.live.watcher as live_watcher
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
+from polylogue.sources.source_layout import export_drop_layout
 from tests.infra.live_batch import prepared_live_batch_processor
 
 _SESSION_ID = "de99ba60-ccc4-43a7-b882-1dd1f2672db7"
@@ -116,7 +117,7 @@ async def _processor(workspace_env: dict[str, Path], root: Path) -> AsyncIterato
     """The production live batch: its Source bodies run on the daemon writer."""
     async with prepared_live_batch_processor(
         workspace_env["archive_root"],
-        (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
+        (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     ) as processor:
         yield processor

@@ -9,11 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import pickle
 import re
 import sqlite3
-import stat
 import tempfile
 import time
 import zipfile
@@ -53,16 +51,16 @@ from polylogue.schemas.source_recipe import (
     relevant_normalization_paths,
 )
 from polylogue.sources.decoder_zip import ZipEntryValidator, open_zip_entry
-from polylogue.sources.live.watcher import WatchSource, default_sources
+from polylogue.sources.live.watcher import default_sources
 from polylogue.sources.origin_specs import (
     DatabaseMemberBinding,
     _fingerprint_sources,
     artifact_rule_for_path,
-    artifact_suffixes_for_provider,
     database_member_for_filename,
     recognize_source_class,
 )
-from polylogue.sources.source_walk import _iter_source_entries
+from polylogue.sources.source_layout import explicit_input_layout
+from polylogue.sources.source_walk import layout_source_paths
 from polylogue.sources.sqlite_export import (
     looks_like_logical_export_path,
     read_export_header,
@@ -103,10 +101,16 @@ class SchemaSubjectExcludedError(SourceInferenceError, ValueError):
 
 @dataclass(frozen=True, slots=True)
 class SchemaSourceInput:
-    """One explicitly selected source root for a provider subject."""
+    """One explicitly selected source root for a provider subject.
+
+    ``source_name`` names the watch source whose declared layout walks the
+    root (``codex-state`` for ``~/.codex``); an explicit ``provider=path``
+    input leaves it empty and is walked as explicit input, bounded by format.
+    """
 
     provider: str
     root: Path
+    source_name: str = ""
 
     def __post_init__(self) -> None:
         _canonical_schema_provider(self.provider)
@@ -541,14 +545,14 @@ def default_schema_source_inputs(*, provider: str) -> tuple[SchemaSourceInput, .
     rows: list[SchemaSourceInput] = []
     for source in default_sources():
         if source.name == subject:
-            rows.append(SchemaSourceInput(provider=subject, root=source.root))
+            rows.append(SchemaSourceInput(provider=subject, root=source.root, source_name=source.name))
             continue
         try:
             source_provider = _canonical_schema_provider(source.name)
         except ValueError:
             continue
         if source_provider == subject:
-            rows.append(SchemaSourceInput(provider=subject, root=source.root))
+            rows.append(SchemaSourceInput(provider=subject, root=source.root, source_name=source.name))
     return tuple(rows)
 
 
@@ -562,13 +566,15 @@ def _root_identity(root: Path) -> str:
 
 def _canonical_inputs(inputs: Iterable[SchemaSourceInput]) -> tuple[SchemaSourceInput, ...]:
     """Keep one spelling per physical root/provider pair."""
-    canonical: dict[tuple[str, str], SchemaSourceInput] = {}
+    canonical: dict[tuple[str, str, str], SchemaSourceInput] = {}
     for source_input in inputs:
         provider = _canonical_schema_provider(source_input.provider)
-        key = provider, _root_identity(source_input.root)
+        key = provider, source_input.source_name, _root_identity(source_input.root)
         existing = canonical.get(key)
         if existing is None or str(source_input.root) < str(existing.root):
-            canonical[key] = SchemaSourceInput(provider=provider, root=source_input.root)
+            canonical[key] = SchemaSourceInput(
+                provider=provider, root=source_input.root, source_name=source_input.source_name
+            )
     return tuple(sorted(canonical.values(), key=lambda item: (item.provider, str(item.root))))
 
 
@@ -577,26 +583,18 @@ def inventory_schema_sources(inputs: Iterable[SchemaSourceInput]) -> tuple[_Sour
     candidates: list[_SourceCandidate] = []
     for source_input in _canonical_inputs(inputs):
         provider = _canonical_schema_provider(source_input.provider)
-        provider_token = Provider.from_string(provider)
         root = source_input.root
-        watcher_source = WatchSource(
-            name=provider,
-            root=root,
-            suffixes=artifact_suffixes_for_provider(
-                provider_token,
-                defaults=(".json", ".jsonl", ".ndjson", ".zip", ".db", ".sqlite", ".sqlite3"),
-            ),
-        )
         root_identity = _root_identity(root)
         explicit_file = root.is_file()
-        paths = (root.resolve(),) if explicit_file else _iter_source_entries(root)
+        if explicit_file:
+            paths: list[Path] = [root.resolve()]
+        elif source_input.source_name:
+            paths = layout_source_paths(source_input.source_name, root)
+        else:
+            # An explicit ``provider=path`` root is operator-named input,
+            # bounded by format like an import, not a provider location.
+            paths = layout_source_paths(provider, root, layout=explicit_input_layout())
         for path in paths:
-            try:
-                mode = os.stat(path, follow_symlinks=False).st_mode
-            except OSError:
-                continue
-            if not stat.S_ISREG(mode) or not watcher_source.accepts(path):
-                continue
             relative = Path(path.name) if explicit_file else path.relative_to(root)
             candidates.append(
                 _SourceCandidate(

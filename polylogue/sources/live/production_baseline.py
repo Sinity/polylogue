@@ -769,11 +769,9 @@ def capture_production_source_baseline(
                 (
                     source.name,
                     str(source.root),
-                    source.suffixes,
-                    sorted(source.ignored_dir_names),
                     source.source_id,
                     source.role,
-                    None if source.layout is None else source.layout.identity(),
+                    source.layout.identity(),
                     source.required,
                 )
                 for source in sources

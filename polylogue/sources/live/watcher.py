@@ -65,7 +65,12 @@ from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 from polylogue.sources.parsers.hermes_identity import declares_profile_identity
-from polylogue.sources.source_layout import SourceLayout, declared_source_layout, hook_carrier_layout
+from polylogue.sources.source_layout import (
+    SourceLayout,
+    declared_source_layout,
+    hook_carrier_layout,
+    source_layout_for,
+)
 from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
 from polylogue.sources.sqlite_snapshot import (
     is_sqlite_path,
@@ -212,10 +217,6 @@ def _directory_identity(path: Path) -> tuple[int, int] | None:
     return (stat.st_dev, stat.st_ino)
 
 
-#: Directory names a source without a declared layout never descends into.
-_DEFAULT_IGNORED_DIR_NAMES: frozenset[str] = frozenset({".git", "__pycache__", "node_modules", "venv", ".venv"})
-
-
 def _relative_parts(path: Path, root: Path) -> tuple[str, ...] | None:
     """``path`` relative to ``root``: lexically first, then by resolved location."""
 
@@ -229,27 +230,54 @@ def _relative_parts(path: Path, root: Path) -> tuple[str, ...] | None:
         return None
 
 
+#: Pause before re-listing the watched directories after one vanished mid-arm.
+_WATCH_REARM_RETRY_S = 0.5
+
+
+class _RearmSignal:
+    """The ``stop_event`` handed to one ``awatch`` arming.
+
+    It reports set when the watcher stops or when the watched directory set
+    has to change; ``watchfiles`` polls ``is_set`` between steps.
+    """
+
+    def __init__(self, stop: asyncio.Event) -> None:
+        self._stop = stop
+        self._requested = False
+
+    def request(self) -> None:
+        self._requested = True
+
+    def is_set(self) -> bool:
+        return self._requested or self._stop.is_set()
+
+
 @dataclass(frozen=True, slots=True)
 class WatchSource:
-    """A directory to watch for live session files."""
+    """A source root and the declared layout of the material below it.
+
+    Every route that enumerates a source -- daemon discovery, the live event
+    filter, the cold-build baseline, one-shot ingest and schema inference --
+    admits only what ``layout`` places (``polylogue.sources.source_layout``).
+    A canonical watch-source name resolves its declared layout; a caller with
+    a synthetic root passes one explicitly. ``exact_paths`` names explicitly
+    declared input files, which are admitted as given.
+    """
 
     name: str
     root: Path
-    suffixes: tuple[str, ...] = (".jsonl",)
-    ignored_dir_names: frozenset[str] = _DEFAULT_IGNORED_DIR_NAMES
+    # Resolved from ``name`` in ``__post_init__`` when not given explicitly.
+    layout: SourceLayout = cast(SourceLayout, None)
     # Hook sources carry durable topology identity.  Ordinary sources retain
     # their historical name-only contract.
     source_id: str | None = None
     role: str | None = None
     required: bool = False
     exact_paths: frozenset[Path] | None = None
-    # Every canonical watch source declares where its provider writes each
-    # artifact kind (``polylogue.sources.source_layout``). With a layout,
-    # discovery descends only into directories the layout reaches and admits
-    # only files at a declared position; suffixes, ignored directory names and
-    # unanchored artifact-rule matches play no part. A source without one is an
-    # explicitly declared one-shot root, admitted by suffix and artifact rule.
-    layout: SourceLayout | None = None
+
+    def __post_init__(self) -> None:
+        if self.layout is None:
+            object.__setattr__(self, "layout", source_layout_for(self.name))
 
     def exists(self) -> bool:
         return self.root.exists()
@@ -257,8 +285,6 @@ class WatchSource:
     def artifact_kind(self, path: Path) -> str | None:
         """The declared artifact kind at ``path``, or ``None`` outside the layout."""
 
-        if self.layout is None:
-            return None
         parts = _relative_parts(path, self.root)
         if not parts:
             return None
@@ -270,21 +296,7 @@ class WatchSource:
                 return path.resolve() in self.exact_paths
             except OSError:
                 return False
-        if self.layout is not None:
-            return self.artifact_kind(path) is not None
-        name = path.name.lower()
-        # A declared artifact rule is the source-owned escape hatch for
-        # extensionless and path-scoped artifacts. Check it before suffixes,
-        # then keep suffixes as the ordinary source filter.
-        from polylogue.sources.origin_specs import artifact_rule_for_path
-
-        try:
-            provider = Provider.from_string(self.name)
-        except ValueError:
-            return any(name.endswith(suffix) for suffix in self.suffixes)
-        if artifact_rule_for_path(provider, str(path)) is not None:
-            return True
-        return any(name.endswith(suffix) for suffix in self.suffixes)
+        return self.artifact_kind(path) is not None
 
     def admits_directory(self, path: Path) -> bool:
         """Whether a directory under the root can hold an artifact of this source."""
@@ -292,14 +304,7 @@ class WatchSource:
         parts = _relative_parts(path, self.root)
         if parts is None:
             return False
-        if self.layout is not None:
-            return not parts or self.layout.admits_directory(parts)
-        return not any(part in self.ignored_dir_names for part in parts)
-
-    def exclusion_reason(self) -> str:
-        """The disposition reason for an entry this source does not admit."""
-
-        return "outside_declared_layout" if self.layout is not None else "artifact_rule"
+        return not parts or self.layout.admits_directory(parts)
 
 
 #: The harnesses that write hook carriers. Each gets its own watched
@@ -326,7 +331,6 @@ def hook_carrier_watch_sources(specs: Iterable[HookSpoolSourceSpec]) -> tuple[Wa
             # by-name lookup silently sees only the last one.
             name=f"{provider}-hooks",
             root=hook_carrier_provider_dir(provider, spec.root),
-            suffixes=(".ndjson",),
             source_id=f"{spec.source_id}:{provider}",
             role=spec.role,
             layout=hook_carrier_layout(Provider.from_string(provider)),
@@ -557,7 +561,7 @@ class LiveWatcher:
             self._watcher_ready.set()
             raise WatcherRootsUnavailableError("no configured source root exists")
 
-        watch_task = asyncio.create_task(self._watch_changes(roots))
+        watch_task = asyncio.create_task(self._watch_changes())
         await asyncio.sleep(0)
         try:
             # Discovery is owned by FairIntakeDispatcher, so nothing here
@@ -573,19 +577,91 @@ class LiveWatcher:
             with suppress(asyncio.CancelledError):
                 await watch_task
 
-    async def _watch_changes(self, roots: list[Path]) -> None:
+    def watched_directories(self) -> list[Path]:
+        """Every existing directory some source's declared layout reaches.
+
+        The live watch is installed on exactly these directories, each
+        non-recursively, so a subtree outside every layout (a nested copy of
+        a provider tree, ``.git``, an install's caches) costs no inotify watch
+        and raises no event. A directory symlink is followed only while its
+        target stays inside the source root, as discovery follows it; a
+        target already entered is not entered again.
+        """
+
+        directories: list[Path] = []
+        listed: set[Path] = set()
+        for source in self._sources:
+            root = source.root
+            if not root.is_dir():
+                continue
+            try:
+                root_real = os.path.realpath(root)
+            except OSError:
+                continue
+            entered = {root_real}
+            stack = [root]
+            while stack:
+                directory = stack.pop()
+                if directory not in listed:
+                    listed.add(directory)
+                    directories.append(directory)
+                try:
+                    with os.scandir(directory) as entries:
+                        children = [Path(entry.path) for entry in entries if entry.is_dir()]
+                except OSError:
+                    continue
+                for child in sorted(children):
+                    if not source.admits_directory(child):
+                        continue
+                    try:
+                        real = os.path.realpath(child)
+                    except OSError:
+                        continue
+                    if real in entered or (real != root_real and not real.startswith(root_real + os.sep)):
+                        continue
+                    entered.add(real)
+                    stack.append(child)
+        return directories
+
+    async def _watch_changes(self) -> None:
+        """Watch the layout-reachable directories, re-arming as the set changes.
+
+        A new directory a layout reaches (a fresh session's ``subagents/``)
+        re-arms the watch with it included, and a watched directory that
+        disappears re-arms it without. Files written into a new directory
+        before its watch exists are covered by the intake hint its creation
+        event raises: discovery rescans the source.
+        """
+
         from watchfiles import Change, awatch
 
-        async for changes in awatch(
-            *roots,
-            watch_filter=self._watch_filter,
-            stop_event=self._stop,
-            recursive=True,
-        ):
-            for change, raw_path in changes:
-                if change is Change.deleted:
-                    continue
-                self._note_intake_hint(Path(raw_path))
+        while not self._stop.is_set():
+            directories = await asyncio.to_thread(self.watched_directories)
+            if not directories:
+                return
+            watched = set(directories)
+            rearm = _RearmSignal(self._stop)
+            try:
+                async for changes in awatch(
+                    *directories,
+                    watch_filter=self._watch_filter,
+                    stop_event=rearm,
+                    recursive=False,
+                ):
+                    for change, raw_path in changes:
+                        path = Path(raw_path)
+                        if change is Change.deleted:
+                            if path in watched:
+                                rearm.request()
+                            continue
+                        if path not in watched and path.is_dir() and self._source_for_directory(path) is not None:
+                            rearm.request()
+                        self._note_intake_hint(path)
+            except FileNotFoundError:
+                # A directory vanished between listing and watching: list
+                # again. Its disappearance is ordinary producer churn.
+                self._note_intake_hint(directories[0])
+                await asyncio.sleep(_WATCH_REARM_RETRY_S)
 
     def stop(self) -> None:
         self._stop.set()
@@ -1603,6 +1679,7 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
 
     """
     from polylogue.paths import (
+        antigravity_cli_path,
         antigravity_path,
         archive_root,
         browser_capture_spool_root,
@@ -1651,6 +1728,9 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         # batch route hands those files to the vendor language-server adapter;
         # brain documents and metadata remain source artifacts.
         declared("antigravity", antigravity_path()),
+        # Antigravity's CLI writes one trajectory SQLite store per
+        # conversation under ~/.gemini/antigravity-cli/conversations/.
+        declared("antigravity-cli", antigravity_cli_path()),
         declared("browser-capture", browser_capture_spool_root()),
         # #1683: the inbox admits archive, zip, and json-line formats at any
         # depth so that GDPR exports (typically .zip) and raw .json dumps are

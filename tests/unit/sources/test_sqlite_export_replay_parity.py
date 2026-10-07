@@ -28,6 +28,7 @@ import polylogue.sources.live.watcher as live_watcher
 from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
 from polylogue.sources.revision_backfill import _parse_one
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.sources.sqlite_export import read_export_header
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.agent_thread_state import read_spawn_edges, read_thread_titles
@@ -165,7 +166,7 @@ async def test_hermes_state_export_replays_into_the_same_sessions(workspace_env:
     root = workspace_env["data_root"] / "hermes"
     state_db = root / "state.db"
     _write_hermes_state_db(state_db)
-    source = WatchSource(name="hermes", root=root, suffixes=(".db", ".sqlite", ".json", ".jsonl"))
+    source = WatchSource(name="hermes", root=root, layout=export_drop_layout((".db", ".sqlite", ".json", ".jsonl")))
 
     await _ingest(archive_root, source, [state_db])
     live = _derived_rows(archive_root / "index.db", _HERMES_ROWS)
@@ -184,7 +185,7 @@ async def test_hermes_backup_db_export_replays_into_the_same_sessions(workspace_
     backup_db = root / "backup.db"
     _write_hermes_state_db(backup_db)
     _add_hermes_verification_tables(backup_db)
-    source = WatchSource(name="hermes", root=root, suffixes=(".db", ".sqlite", ".json", ".jsonl"))
+    source = WatchSource(name="hermes", root=root, layout=export_drop_layout((".db", ".sqlite", ".json", ".jsonl")))
 
     await _ingest(archive_root, source, [backup_db])
     live = _derived_rows(archive_root / "index.db", _HERMES_ROWS)
@@ -213,7 +214,7 @@ async def test_codex_state_export_replays_into_the_same_projection(workspace_env
     root = workspace_env["data_root"] / "codex-state"
     state_db = root / "state_5.sqlite"
     _write_codex_state_db(state_db)
-    source = WatchSource(name="codex-state", root=root, suffixes=(".sqlite", ".db"))
+    source = WatchSource(name="codex-state", root=root, layout=export_drop_layout((".sqlite", ".db")))
 
     await _ingest(archive_root, source, [state_db])
     live = _derived_rows(archive_root / "index.db", _CODEX_ROWS)

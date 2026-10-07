@@ -44,6 +44,7 @@ from polylogue.security.excision import plan_session_excision
 from polylogue.sources.live import WatchSource
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -159,7 +160,7 @@ async def _ingest(
             ops.commit()
     async with prepared_live_batch_processor(
         archive_root,
-        (source or WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
+        (source or WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     ) as processor:
         await processor.ingest_files(files, emit_event=False)
@@ -406,7 +407,7 @@ async def test_excising_a_gemini_chat_forgets_its_tool_output_sidecar(workspace_
         workspace_env,
         root,
         [sidecar, unclaimed, snapshot],
-        source=WatchSource(name="gemini-cli", root=root, suffixes=(".json",)),
+        source=WatchSource(name="gemini-cli", root=root, layout=export_drop_layout((".json",))),
     )
     with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
         [(session_id,)] = conn.execute(

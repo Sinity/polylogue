@@ -24,6 +24,7 @@ from polylogue.sources.source_layout import (
     declared_source_layout,
     declared_source_layouts,
     layout_declaration_defects,
+    source_layout_for,
 )
 
 SESSION = "00000000-0000-4000-8000-000000000001"
@@ -40,17 +41,35 @@ SYNTHETIC_ROOTS = {
     "gemini-cli": "/home/user/.gemini/tmp",
     "hermes": "/home/user/.hermes",
     "antigravity": "/home/user/.gemini/antigravity",
+    "antigravity-cli": "/home/user/.gemini/antigravity-cli",
     **{f"{provider}-hooks": f"/state/polylogue/hooks/carriers/{provider}" for provider in HOOK_CARRIER_PROVIDERS},
 }
 
 
 def test_every_daemon_watch_source_declares_a_layout() -> None:
-    """Removing ``layout=`` from any canonical source in ``default_sources`` turns this red."""
+    """Every canonical source walks by its own declared layout, never a stand-in."""
 
     sources = daemon_watch_sources()
     assert sources
-    assert [source.name for source in sources if source.layout is None] == []
+    assert all(source.layout.identity() == declared_source_layout(source.name).identity() for source in sources)
     assert {source.name for source in sources} <= set(declared_source_layouts())
+
+
+def test_every_route_resolves_a_layout_from_the_source_name() -> None:
+    """A canonical name walks by its declaration anywhere; any other name is an export drop.
+
+    Anti-vacuity: resolving an export-only origin's directory by provider
+    position, or a canonical name by format, turns the respective line red.
+    """
+
+    assert source_layout_for("codex") is declared_source_layout("codex")
+    assert WatchSource(name="claude-code", root=Path("/synthetic")).layout is declared_source_layout("claude-code")
+    for label in ("chatgpt", "claude-ai", "gemini", "operator-label"):
+        layout = source_layout_for(label)
+        assert layout.provider is None
+        assert layout.artifact_kind(("export", "conversations.json")) == "export_drop"
+        assert layout.artifact_kind(("readme.txt",)) is None
+        assert layout.artifact_kind((".claude", "worktrees", "conversations.json")) is None
 
 
 def test_layout_entries_agree_with_their_origin_artifact_rules() -> None:
@@ -141,11 +160,14 @@ OTHER_ORIGIN_CASES = (
     ("antigravity", "implicit/c1.pb", None),
     ("antigravity", "user_settings.pb", None),
     ("antigravity", "code_tracker/active/repo/notes.md", None),
+    ("antigravity-cli", "conversations/00000000-0000-4000-8000-000000000001.db", "trajectory_store"),
+    ("antigravity-cli", "conversation_summaries.db", None),
+    ("antigravity-cli", "conversations/nested/c1.db", None),
     ("browser-capture", "chatgpt/session-0123456789ab.json", "browser_capture_envelope"),
     ("browser-capture", "browser-actions/a1/action.json", None),
     ("browser-capture", "not-a-provider/session-0123456789ab.json", None),
-    ("inbox", "export.zip", "inbox_drop"),
-    ("inbox", "export/conversations.json", "inbox_drop"),
+    ("inbox", "export.zip", "export_drop"),
+    ("inbox", "export/conversations.json", "export_drop"),
     ("inbox", ".staging/export.json", None),
     ("inbox", "export/readme.txt", None),
     *(
@@ -178,7 +200,7 @@ def test_declared_layout_pins_each_artifact_position(name: str, relative: str, k
         (f"-home-user-repo/{SESSION}/subagents/.ruff_cache", False),
         ("-home-user-repo/memory/archive", True),
         ("-home-user-repo/memory/.git", False),
-        ("-home-user-repo/scratch", False),
+        ("-home-user-repo/scratch/notes", False),
     ],
 )
 def test_claude_code_layout_reaches_only_declared_directories(relative: str, reached: bool) -> None:
@@ -214,10 +236,9 @@ def _discover(source: WatchSource) -> tuple[set[Path], list[tuple[Path, str, str
 def test_nested_worktree_copy_of_claude_code_projects_is_never_walked(tmp_path: Path) -> None:
     """The real tree is admitted; its nested git-worktree copy is one excluded entry.
 
-    Anti-vacuity: without the declared layout (the source falling back to
-    suffixes and unanchored rules), the copied ``subagents/`` and
-    ``tool-results/`` files are admitted and the copy's directories are
-    scanned.
+    Anti-vacuity: the previous recursive suffix-and-rule walk admitted the
+    copied ``subagents/`` and ``tool-results/`` files and scanned every
+    directory of the copy.
     """
 
     root = tmp_path / ".claude" / "projects"
@@ -241,7 +262,9 @@ def test_nested_worktree_copy_of_claude_code_projects_is_never_walked(tmp_path: 
     excluded = {(path, reason) for path, disposition, reason in decisions if disposition == "excluded"}
     assert (root / ".claude", "outside_declared_layout") in excluded
     assert (root / ".git", "outside_declared_layout") in excluded
-    assert (root / "-home-user-repo" / "scratch", "outside_declared_layout") in excluded
+    # A session-level directory is walked (session ids name it), but nothing
+    # in it outside ``subagents/``, ``tool-results/`` or ``workflows/`` is.
+    assert (root / "-home-user-repo" / "scratch" / "notes.md", "outside_declared_layout") in excluded
     assert not [path for path in scanned if path == root / ".claude" or root / ".claude" in path.parents]
     assert not [path for path, _, _ in decisions if copy in path.parents]
     for path in real:
@@ -249,9 +272,6 @@ def test_nested_worktree_copy_of_claude_code_projects_is_never_walked(tmp_path: 
         assert not source.accepts(copied)
         assert deepest_source_for_path(copied, (source,)) is source
         assert not source.admits_directory(copied.parent)
-
-    layout_less = WatchSource(name="claude-code", root=root, suffixes=(".jsonl", ".json"))
-    assert copy / "-home-user-repo" / SESSION / "subagents" / "agent-a1.jsonl" in _discover(layout_less)[0]
 
 
 def _layout_names() -> list[str]:
@@ -323,3 +343,116 @@ def test_overlapping_canonical_roots_do_not_walk_each_others_trees(tmp_path: Pat
     assert _discover(by_name["codex-memories"])[0] == {memory}
     assert deepest_source_for_path(rollout, sources) is by_name["codex"]
     assert deepest_source_for_path(memory, sources) is by_name["codex-memories"]
+
+
+def test_one_shot_and_census_routes_walk_the_same_layout(tmp_path: Path) -> None:
+    """A one-shot root named for a canonical source never admits its nested copy.
+
+    Anti-vacuity: the previous one-shot walk (every supported suffix at any
+    depth) returns the copied transcript too.
+    """
+
+    from polylogue.config import Source
+    from polylogue.core.enums import Provider
+    from polylogue.sources.source_walk import _resolve_source_paths, census_source_root
+
+    root = tmp_path / "claude-code"
+    session = _write(root / "-home-user-repo" / f"{SESSION}.jsonl")
+    _write(root / ".claude" / "worktrees" / "agent-1" / "-home-user-repo" / f"{SESSION}.jsonl")
+    _write(root / "notes" / "copy.jsonl")
+
+    assert _resolve_source_paths(Source(name="claude-code", path=root)) == [session]
+    assert census_source_root(root, provider=Provider.CLAUDE_CODE).candidate_count == 1
+
+
+def test_live_watch_installs_only_on_layout_reachable_directories(tmp_path: Path) -> None:
+    """The inotify set is the layout's reach: a nested copy gets no watch.
+
+    Anti-vacuity: a recursive watch of the root (the previous behaviour)
+    includes ``.claude/worktrees/...`` and ``.git``.
+    """
+
+    from types import SimpleNamespace
+
+    from polylogue.sources.live.watcher import LiveWatcher
+
+    root = tmp_path / ".claude" / "projects"
+    _write(root / "-home-user-repo" / SESSION / "subagents" / "agent-a1.jsonl")
+    _write(root / "-home-user-repo" / "memory" / "archive" / "old.md")
+    _write(root / ".claude" / "worktrees" / "agent-1" / "-home-user-repo" / SESSION / "subagents" / "agent-a1.jsonl")
+    _write(root / ".git" / "objects" / "pack")
+    _write(root / "-home-user-repo" / "scratch" / "notes.md")
+    source = WatchSource(name="claude-code", root=root)
+    watcher = SimpleNamespace(_sources=(source,))
+
+    watched = set(LiveWatcher.watched_directories(watcher))  # type: ignore[arg-type]
+
+    assert watched == {
+        root,
+        root / "-home-user-repo",
+        root / "-home-user-repo" / SESSION,
+        root / "-home-user-repo" / SESSION / "subagents",
+        root / "-home-user-repo" / "memory",
+        root / "-home-user-repo" / "memory" / "archive",
+        # A visible directory at the session depth may be a session directory.
+        root / "-home-user-repo" / "scratch",
+    }
+
+
+@pytest.mark.asyncio
+async def test_live_watch_rearms_with_a_new_reachable_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory a layout reaches is watched as soon as it appears; others never are.
+
+    Anti-vacuity: without the re-arm, the second arming never happens and the
+    new session's ``subagents/`` directory stays unwatched; re-arming on any
+    created directory also arms the nested copy.
+    """
+
+    import asyncio
+    from types import SimpleNamespace
+
+    import watchfiles
+
+    from polylogue.sources.live.watcher import LiveWatcher
+
+    root = tmp_path / "projects"
+    project = root / "-home-user-repo"
+    project.mkdir(parents=True)
+    source = WatchSource(name="claude-code", root=root)
+    armed: list[set[Path]] = []
+    hints: list[Path] = []
+    stop = asyncio.Event()
+    new_session = project / SESSION / "subagents"
+    copy = root / ".claude"
+
+    async def fake_awatch(*paths: Path, stop_event: Any, **_kwargs: Any) -> Any:
+        armed.append({Path(path) for path in paths})
+        if len(armed) == 1:
+            copy.mkdir()
+            yield {(watchfiles.Change.added, str(copy))}
+            assert not stop_event.is_set()
+            new_session.mkdir(parents=True)
+            yield {(watchfiles.Change.added, str(project / SESSION))}
+            assert stop_event.is_set()
+            return
+        stop.set()
+        return
+
+    monkeypatch.setattr(watchfiles, "awatch", fake_awatch)
+    watcher: Any = SimpleNamespace(
+        _sources=(source,),
+        _stop=stop,
+        _watch_filter=lambda _change, _path: True,
+        _note_intake_hint=hints.append,
+    )
+    watcher._source_for_directory = lambda path: LiveWatcher._source_for_directory(watcher, path)
+    watcher.watched_directories = lambda: LiveWatcher.watched_directories(watcher)
+
+    await LiveWatcher._watch_changes(watcher)
+
+    assert armed[0] == {root, project}
+    assert armed[1] == {root, project, project / SESSION, new_session}
+    assert copy not in armed[1]
+    assert project / SESSION in hints

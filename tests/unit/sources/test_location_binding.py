@@ -19,6 +19,7 @@ from polylogue.core.json import JSONDocumentList
 from polylogue.sources.acquisition_boundary import refuse_foreign_path
 from polylogue.sources.dispatch import ForeignOriginContentError, detect_provider
 from polylogue.sources.live.batch_support import _jsonl_provider_and_session_artifact
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.sources.source_parsing import parse_one_source_path
 from tests.infra.source_builders import acquired_payloads
 
@@ -350,7 +351,7 @@ def test_production_baseline_excludes_refused_plain_files(tmp_path: Path) -> Non
     (project / "c0ffee00-1111-2222-3333-444455556666.jsonl").write_bytes(_jsonl(_CODEX_ROLLOUT))
     (project / "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl").write_bytes(_jsonl(_CLAUDE_CODE_TRANSCRIPT))
     baseline = capture_production_source_baseline(
-        (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
+        (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),),
         operation_id="op-test",
     )
     by_name = {Path(decision.path).name: decision for decision in baseline.decisions}

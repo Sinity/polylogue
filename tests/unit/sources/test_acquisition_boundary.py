@@ -27,6 +27,7 @@ from polylogue.sources.acquisition_boundary import (
     refuse_foreign_path,
 )
 from polylogue.sources.dispatch import ForeignOriginContentError
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
@@ -354,7 +355,7 @@ def _route_production_baseline(tmp_path: Path, store: ArchiveBlobPublisher) -> b
 
     path = _plain(tmp_path)
     baseline = capture_production_source_baseline(
-        (WatchSource(name="claude-code", root=path.parent.parent, suffixes=(".jsonl",)),),
+        (WatchSource(name="claude-code", root=path.parent.parent, layout=export_drop_layout((".jsonl",))),),
         operation_id="op-test",
     )
     [decision] = [decision for decision in baseline.decisions if Path(decision.path).name == _NAME]

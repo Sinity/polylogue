@@ -93,9 +93,11 @@ def _make_claude_code_session(uuid: str, n_messages: int, *, include_tools: bool
 def _generate_corpus(tmp_path: Path, tier: str) -> Path:
     """Generate a synthetic corpus at the given scale tier."""
     workload = convergence_corpus_specs(tier)[0]
-    root = tmp_path / "corpus" / "test-project"
+    # The writer places each session at its declared layout position below
+    # the source root.
+    root = tmp_path / "corpus"
     SyntheticCorpus.write_spec_artifacts(workload, root, prefix="convergence", index_width=4)
-    return root.parent
+    return root
 
 
 # ── Probe: convergence model ────────────────────────────────────────

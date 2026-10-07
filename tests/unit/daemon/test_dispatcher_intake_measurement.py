@@ -78,12 +78,14 @@ def _write_corpus(root: Path, *, prefix: str = "dispatcher-measure", keep_files:
     with a 120 s default per-test timeout.
     """
     spec = convergence_corpus_specs("xs-tiny-files")[0]
-    project = root / "corpus" / "test-project"
-    SyntheticCorpus.write_spec_artifacts(spec, project, prefix=prefix, index_width=4)
+    # The corpus root is a Claude Code projects directory; the writer puts
+    # each session in a project directory below it.
+    corpus = root / "corpus"
+    SyntheticCorpus.write_spec_artifacts(spec, corpus, prefix=prefix, index_width=4)
     if keep_files is not None:
-        for extra in _jsonl_files(project.parent)[keep_files:]:
+        for extra in _jsonl_files(corpus)[keep_files:]:
             extra.unlink()
-    return project.parent
+    return corpus
 
 
 def _jsonl_files(corpus_root: Path) -> list[Path]:

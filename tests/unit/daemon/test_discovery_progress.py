@@ -27,6 +27,7 @@ from polylogue.daemon.status_snapshot import (
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live import discovery as discovery_module
+from polylogue.sources.source_layout import export_drop_layout
 
 
 def test_halted_owner_can_abandon_its_parked_discovery_progress() -> None:
@@ -59,7 +60,7 @@ async def test_status_shows_first_discovery_while_sibling_sort_is_held(
     source_root.mkdir()
     accepted = source_root / "session.json"
     accepted.write_text("{}")
-    source = WatchSource(name="synthetic", root=source_root, suffixes=(".json",))
+    source = WatchSource(name="synthetic", root=source_root, layout=export_drop_layout((".json",)))
     watcher = SimpleNamespace(intake_revision=lambda _source: 0)
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
@@ -187,7 +188,7 @@ async def test_cancelled_discovery_keeps_worker_progress_until_walk_finishes(
     source_root.mkdir()
     accepted = source_root / "session.json"
     accepted.write_text("{}")
-    source = WatchSource(name="synthetic", root=source_root, suffixes=(".json",))
+    source = WatchSource(name="synthetic", root=source_root, layout=export_drop_layout((".json",)))
     watcher = SimpleNamespace(intake_revision=lambda _source: 0)
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
@@ -274,7 +275,7 @@ def test_cold_build_preparation_is_visible_before_the_first_intake_page(
     ]
     for index, payload in enumerate(payloads):
         (source_root / f"session-{index}.jsonl").write_bytes(payload)
-    source = WatchSource(name="codex", root=source_root, suffixes=(".jsonl",))
+    source = WatchSource(name="codex", root=source_root, layout=export_drop_layout((".jsonl",)))
     observed: dict[str, dict[str, Any]] = {}
 
     def observing_progress(phase: str, **counts: int) -> None:

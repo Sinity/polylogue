@@ -493,7 +493,7 @@ def test_import_demo_materializes_fixture_world_before_daemon_request(
         "gemini-cli",
         "hermes",
     ]
-    assert len(tuple(staged.rglob("demo-*.json*"))) == 7
+    assert len(tuple(staged.rglob("*demo-00.json*"))) == 7
 
     assert submit.payload == {
         "path": str(staged),

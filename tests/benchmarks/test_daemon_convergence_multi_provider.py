@@ -32,9 +32,11 @@ from tests.infra.workload_declarations import (
 
 def _generate_corpus(tmp_path: Path, tier: str, provider: str) -> Path:
     spec = convergence_corpus_specs(tier, provider=provider)[0]
-    root = tmp_path / "corpus" / f"{provider}-project"
+    # The writer places each session at its declared layout position below
+    # the source root.
+    root = tmp_path / "corpus"
     SyntheticCorpus.write_spec_artifacts(spec, root, prefix=provider, index_width=4)
-    return root.parent
+    return root
 
 
 # ── Probe ──────────────────────────────────────────────────────────────

@@ -88,8 +88,9 @@ process with `ingest_one_shot_archive()`, and verifies:
 - three sessions are stored: ChatGPT export, Claude Code session, and Codex
   session;
 - nineteen messages are indexed;
-- raw source paths remain relative (`chatgpt/demo-00.json`,
-  `claude-code/demo-00.jsonl`, `codex/demo-00.jsonl`);
+- raw source paths remain relative and sit at each provider's declared layout
+  position (`chatgpt/demo-00.json`, `claude-code/-synthetic-project/demo-00.jsonl`,
+  `codex/2026/01/01/rollout-demo-00.jsonl`);
 - `polylogue` full-text search for `pytest` is backed by the Claude Code demo
   session;
 - deterministic user overlays are stored in `user.db`: the `pytest-triage`

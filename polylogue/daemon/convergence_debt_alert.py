@@ -149,6 +149,7 @@ _WATCHSOURCE_TO_FAMILY: dict[str, str] = {
     "gemini-cli": "gemini-cli-session",
     "hermes": "hermes-session",
     "antigravity": "antigravity-session",
+    "antigravity-cli": "antigravity-session",
     "inbox": "inbox",
     "hooks": "hooks",
     "aistudio": "gemini-export",

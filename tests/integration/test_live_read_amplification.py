@@ -42,6 +42,7 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import _AppendResult, _DeferredAppend, _FullIngestResult
 from polylogue.sources.live.cursor import CursorPathAuthority, CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
@@ -227,7 +228,7 @@ def processor(tmp_path: Path) -> Iterator[tuple[LiveBatchProcessor, Path, Path]]
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path), config=None)
     proc = LiveBatchProcessor(
         cast(Any, polylogue),
-        (WatchSource(name="claude-code", root=root),),
+        (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
@@ -503,7 +504,7 @@ class TestMtimeDriftCatchUp:
         # Seed: one ingested file, cursor populated.
         path = root / "session-abc.jsonl"
         _write_jsonl(path, [_claude_code_record(session_id="abc", uuid=f"m-{i}") for i in range(5)])
-        sources = (WatchSource(name="claude-code", root=root),)
+        sources = (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
 
         proc = LiveBatchProcessor(
             cast(Any, polylogue),
@@ -562,7 +563,7 @@ class TestRestartedCursorReconcile:
             path,
             [_claude_code_record(session_id="abc", uuid="m-appended", text="new tail")],
         )
-        sources = (WatchSource(name="claude-code", root=root),)
+        sources = (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
         watcher = LiveWatcher(cast(Any, polylogue), sources, cursor=cursor)
 
         needs_work = watcher._needs_work_from_state(path, stat=path.stat(), cursor=None)
@@ -653,7 +654,7 @@ class TestCatchUpReadsEachFileAtMostOnce:
         db_path = tmp_path / "index.db"
         cursor = CursorStore(db_path)
         polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path), config=None)
-        sources = (WatchSource(name="claude-code", root=root),)
+        sources = (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
 
         # Seed 50 files with first-time full ingest (smaller than the AC's
         # 1000 to keep the test fast; the per-file behaviour is what we're

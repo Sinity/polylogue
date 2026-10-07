@@ -8,10 +8,10 @@ distinguish "the subtree is empty" from "the subtree could not be read", and
 on a from-scratch rebuild there is no prior row count that would reveal the
 difference afterwards.
 
-This is the recorder side of the ``onerror`` hook that
-:func:`polylogue.sources.source_walk._iter_source_entries` already accepts and
-that the antigravity source census already uses; it exists so the daemon's
-discovery routes record the same evidence rather than inventing their own.
+Every directory route enumerates through the daemon's discovery walk
+(:func:`polylogue.sources.live.discovery._source_path_steps`), so this is the
+one evidence type for an unreadable directory; the Antigravity source census
+records each fault as an unreadable item.
 """
 
 from __future__ import annotations

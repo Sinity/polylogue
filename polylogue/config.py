@@ -1752,6 +1752,7 @@ class ResolvedSourcePaths:
     gemini_cli: Path
     hermes: Path
     antigravity: Path
+    antigravity_cli: Path
     browser_capture: Path
     inbox: Path
     hooks_pending: Path
@@ -1895,6 +1896,7 @@ def resolve_runtime_config(
         gemini_cli=bootstrap.home / ".gemini" / "tmp",
         hermes=hermes_home(bootstrap.environment, home=bootstrap.home),
         antigravity=bootstrap.home / ".gemini" / "antigravity",
+        antigravity_cli=bootstrap.home / ".gemini" / "antigravity-cli",
         browser_capture=browser_spool,
         inbox=paths.inbox_root,
         hooks_pending=hook_sidecar / "pending",
@@ -1908,6 +1910,7 @@ def resolve_runtime_config(
         ("gemini-cli", source_paths.gemini_cli),
         ("hermes", source_paths.hermes),
         ("antigravity", source_paths.antigravity),
+        ("antigravity-cli", source_paths.antigravity_cli),
         ("browser-capture", source_paths.browser_capture),
         ("inbox", source_paths.inbox),
         ("hooks", source_paths.hooks_pending),

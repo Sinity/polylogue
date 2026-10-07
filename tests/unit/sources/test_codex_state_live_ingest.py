@@ -37,6 +37,7 @@ from polylogue.core.stage_admission import stage_write_admission
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.materials import MaterialObservation
 from polylogue.storage.sqlite.agent_thread_state import read_provenance, read_spawn_edges, read_thread_titles
@@ -211,7 +212,7 @@ async def test_codex_state_ingest_leaves_session_count_unchanged(
         workspace_env["archive_root"],
         (
             WatchSource(name="codex", root=codex_root),
-            WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
+            WatchSource(name="codex-state", root=codex_state_root, layout=export_drop_layout((".sqlite", ".db"))),
         ),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         failure_details=failures,
@@ -263,7 +264,7 @@ async def test_codex_state_thread_title_and_spawn_edge_reach_the_index_tier(
         workspace_env["archive_root"],
         (
             WatchSource(name="codex", root=codex_root),
-            WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
+            WatchSource(name="codex-state", root=codex_state_root, layout=export_drop_layout((".sqlite", ".db"))),
         ),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         failure_details=failures,
@@ -315,7 +316,7 @@ async def test_codex_out_of_scope_state_db_is_excluded_not_read(
     cursor = CursorStore(workspace_env["archive_root"] / "ops.db")
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),),
+        (WatchSource(name="codex-state", root=codex_state_root, layout=export_drop_layout((".sqlite", ".db"))),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
@@ -453,7 +454,7 @@ async def test_codex_goals_and_memories_survive_as_scoped_public_materials(
         workspace_env["archive_root"],
         (
             WatchSource(name="codex", root=codex_root),
-            WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
+            WatchSource(name="codex-state", root=codex_state_root, layout=export_drop_layout((".sqlite", ".db"))),
         ),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         failure_details=failures,
@@ -553,7 +554,7 @@ async def test_codex_state_embedded_nul_and_utf8_boundary_reach_complete_materia
         archive,
         (
             WatchSource(name="codex", root=codex_root),
-            WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
+            WatchSource(name="codex-state", root=codex_state_root, layout=export_drop_layout((".sqlite", ".db"))),
         ),
         cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
@@ -625,8 +626,8 @@ async def test_codex_goal_materials_do_not_cross_supersede_source_roots(
         archive,
         (
             WatchSource(name="codex", root=sessions_a),
-            WatchSource(name="codex-state", root=root_a, suffixes=(".sqlite", ".db")),
-            WatchSource(name="codex-state", root=root_b, suffixes=(".sqlite", ".db")),
+            WatchSource(name="codex-state", root=root_a, layout=export_drop_layout((".sqlite", ".db"))),
+            WatchSource(name="codex-state", root=root_b, layout=export_drop_layout((".sqlite", ".db"))),
         ),
         cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
@@ -691,7 +692,7 @@ async def test_codex_state_snapshot_raw_never_blocks_cursor_authority(
         archive,
         (
             WatchSource(name="codex", root=codex_root),
-            WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
+            WatchSource(name="codex-state", root=codex_state_root, layout=export_drop_layout((".sqlite", ".db"))),
         ),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
@@ -790,7 +791,7 @@ async def test_schema_drift_candidate_does_not_block_other_retained_state_receip
         archive,
         (
             WatchSource(name="codex", root=codex_root),
-            WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
+            WatchSource(name="codex-state", root=codex_state_root, layout=export_drop_layout((".sqlite", ".db"))),
         ),
         cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
@@ -862,18 +863,20 @@ async def test_a_fresh_root_admits_every_page_with_a_codex_state_snapshot_among_
     archive, codex_root, codex_state_root = _make_processor(workspace_env, "codex-home-catchup", "codex-catchup.db")
     archive_root = workspace_env["archive_root"]
     _write_goals_1_sqlite(codex_state_root / "goals_1.sqlite")
-    template = codex_root / f"rollout-2026-07-20T10-00-00-{_THREAD_ID}.jsonl"
+    day = codex_root / "2026" / "07" / "20"
+    day.mkdir(parents=True, exist_ok=True)
+    template = day / f"rollout-2026-07-20T10-00-00-{_THREAD_ID}.jsonl"
     _write_codex_rollout(template)
     rollout_count = 17
     thread_ids = [f"{index:08x}-1b42-43a5-977c-870299c489a6" for index in range(rollout_count)]
     for index, thread_id in enumerate(thread_ids):
-        path = codex_root / f"rollout-2026-07-20T10-00-{index:02d}-{thread_id}.jsonl"
+        path = day / f"rollout-2026-07-20T10-00-{index:02d}-{thread_id}.jsonl"
         path.write_text(template.read_text(encoding="utf-8").replace(_THREAD_ID, thread_id), encoding="utf-8")
     template.unlink()
 
     sources = (
         WatchSource(name="codex", root=codex_root),
-        WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
+        WatchSource(name="codex-state", root=codex_state_root),
     )
     async with live_owner_set(archive_root) as owners:
         watcher = live_watcher.LiveWatcher(
@@ -971,7 +974,7 @@ async def test_codex_state_title_does_not_depend_on_admission_order(tmp_path: Pa
         archive,
         (
             WatchSource(name="codex", root=sessions),
-            WatchSource(name="codex-state", root=install, suffixes=(".sqlite", ".db")),
+            WatchSource(name="codex-state", root=install, layout=export_drop_layout((".sqlite", ".db"))),
         ),
         cursor=CursorStore(archive_root / "index.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
@@ -1126,7 +1129,7 @@ async def test_a_rollout_takes_its_spawn_parent_from_its_own_install_root(
     for root in roots.values():
         (root / "sessions").mkdir(parents=True)
         sources.append(WatchSource(name="codex", root=root / "sessions"))
-        sources.append(WatchSource(name="codex-state", root=root, suffixes=(".sqlite", ".db")))
+        sources.append(WatchSource(name="codex-state", root=root, layout=export_drop_layout((".sqlite", ".db"))))
     db_path = workspace_env["archive_root"] / "index.db"
     run_off_event_loop(lambda: bootstrap_archive_root(workspace_env["archive_root"]))
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
@@ -1176,7 +1179,7 @@ async def test_live_state_publishes_every_captured_page_after_source_changes(
         archive,
         (
             WatchSource(name="codex", root=codex_root),
-            WatchSource(name="codex-state", root=state_root, suffixes=(".sqlite", ".db")),
+            WatchSource(name="codex-state", root=state_root, layout=export_drop_layout((".sqlite", ".db"))),
         ),
         cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,

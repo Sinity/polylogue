@@ -16,6 +16,7 @@ from polylogue.core.enums import Origin
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.origin_specs import _source_signature, origin_specs
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.sources.sqlite_snapshot import sqlite_logical_revision
 
 
@@ -113,7 +114,7 @@ def test_declared_subtree_alias_retains_provider_namespace_and_explicit_file_pri
     physical.write_text("{}")
     offered = declared / "sessions" / physical.name
     # The production Hermes source watches its JSON session snapshots.
-    hermes = WatchSource(name="hermes", root=declared, suffixes=(".json",))
+    hermes = WatchSource(name="hermes", root=declared, layout=export_drop_layout((".json",)))
     external_source = WatchSource(name="inbox", root=external)
     assert hermes.accepts(offered)
     assert deepest_source_for_path(offered, (external_source, hermes)) is hermes

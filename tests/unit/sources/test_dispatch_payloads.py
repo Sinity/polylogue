@@ -154,7 +154,9 @@ def test_source_parser_groups_real_shaped_hermes_atof_jsonl_as_one_retained_stre
     generic hook sidecar. The actual source walk stops producing the one
     observer session and its retained whole-file raw evidence.
     """
-    source = Source(name="hermes", path=HERMES_ATOF_FIXTURE.parent)
+    # The fixture directory is not a Hermes home, so the stream is declared
+    # as the one explicit input file.
+    source = Source(name="hermes", path=HERMES_ATOF_FIXTURE)
     pairs = list(iter_source_sessions_with_raw(source, capture_raw=True))
     # fs1.14 residual scope: the real fixture's hermes.subagent.start mark
     # (data.child_session_id="child-session-redacted") now materializes a

@@ -56,9 +56,9 @@ def _unauthorized_offsets(root: Path) -> list[str]:
 @pytest.mark.parametrize("writer", ["failed", "refused", "full_retry"])
 def test_first_cursor_write_claims_the_observed_file_authority(tmp_path: Path, writer: str) -> None:
     processor, cursor = _processor(tmp_path)
-    sessions = tmp_path / "sessions"
-    sessions.mkdir()
-    path = sessions / "rollout.jsonl"
+    day = tmp_path / "sessions" / "2026" / "06" / "02"
+    day.mkdir(parents=True)
+    path = day / "rollout-authority.jsonl"
     path.write_bytes(_ROLLOUT)
 
     if writer == "failed":

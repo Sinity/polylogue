@@ -48,7 +48,9 @@ def _acquire(source_root: Path, destination: Path) -> list[RawSessionData]:
     store = BlobStore(destination / "blob")
     return list(
         acquired_payloads(
-            iter_source_acquisition_records(Source(name="claude-code", path=source_root), blob_store=store)
+            # An explicitly named import directory: walked as an export drop at
+            # any depth, so nested archive roots are what bounds it.
+            iter_source_acquisition_records(Source(name="inbox", path=source_root), blob_store=store)
         )
     )
 
@@ -143,12 +145,14 @@ def test_acquisition_prunes_a_nested_foreign_archive_and_keeps_provider_capture(
 
 def test_nested_archive_pruning_is_shared_by_walk_and_census(tmp_path: Path) -> None:
     from polylogue.core.enums import Provider
-    from polylogue.sources.source_walk import _walk_source_paths, census_source_root
+    from polylogue.sources.source_walk import census_source_root, layout_source_paths
 
-    imports = tmp_path / "imports"
-    capture = _write_session(imports / ".claude" / "projects" / "neutral-project")
-    _write_session(_archive(imports / "foreign") / "drive-cache" / "gemini")
-    assert _walk_source_paths(imports, provider=Provider.CLAUDE_CODE) == [capture]
+    # A Claude Code projects root (its rules anchor at ``projects/``).
+    imports = tmp_path / "imports" / "projects"
+    capture = _write_session(imports / "-neutral-project")
+    # A copied archive sitting where the layout reaches (a project directory).
+    _write_session(_archive(imports / "-foreign-project"))
+    assert layout_source_paths("claude-code", imports) == [capture]
     census = census_source_root(imports, provider=Provider.CLAUDE_CODE)
     assert census.candidate_count == 1
     assert census.is_complete

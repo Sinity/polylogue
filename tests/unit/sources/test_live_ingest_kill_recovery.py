@@ -34,6 +34,7 @@ from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntake
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
 from tests.infra.raw_owner_routes import live_owner_set
 
@@ -58,6 +59,7 @@ _CHILD = textwrap.dedent(
     from polylogue.sources.live import LiveWatcher, WatchSource
     from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
+    from polylogue.sources.source_layout import export_drop_layout
     from polylogue.storage.sqlite.archive_tiers import revision_governance
 
     archive_root = Path(sys.argv[1])
@@ -91,7 +93,7 @@ _CHILD = textwrap.dedent(
         )
         watcher = LiveWatcher(
             archive,
-            (WatchSource(name="claude-code", root=source_root),),
+            (WatchSource(name="claude-code", root=source_root, layout=export_drop_layout((".jsonl",))),),
             cursor=CursorStore(archive_root / "index.db"),
             write_coordinator=coordinator,
             sqlite_capture_stage=LiveSQLiteCaptureStage(compute_adapter=compute),
@@ -163,7 +165,7 @@ async def _admit_pages(
     async with live_owner_set(archive_root) as owners:
         watcher = LiveWatcher(
             archive,
-            (WatchSource(name="claude-code", root=source_root),),
+            (WatchSource(name="claude-code", root=source_root, layout=export_drop_layout((".jsonl",))),),
             cursor=CursorStore(archive_root / "index.db"),
             **owners.watcher_kwargs(),
         )

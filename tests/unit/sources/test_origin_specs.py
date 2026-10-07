@@ -27,7 +27,6 @@ from polylogue.sources.origin_specs import (
     OriginSpecRegistry,
     TopologyCapabilities,
     TopologyCapability,
-    artifact_suffixes_for_provider,
     check_dropped_value_vocabularies,
     database_capability_for_provider,
     detector_registry,
@@ -115,28 +114,35 @@ def test_source_class_recognition_defers_zip_members_to_archive_extraction(tmp_p
 
 
 def test_hermes_root_census_accounts_for_every_candidate_without_parsing(tmp_path: Path) -> None:
-    """A broad root has one declared disposition for every enumerated file.
+    """A broad root has one declared disposition for every file its layout places.
 
     Anti-vacuity: dropping a candidate from the walk or admitting every JSON
-    by suffix changes the denominator or the typed disposition counts.
+    by suffix (the 40 shipped skill templates, the stray cache database)
+    changes the denominator or the typed disposition counts.
     """
 
+    templates = tmp_path / "hermes-agent" / "optional-skills" / "skill" / "templates"
+    templates.mkdir(parents=True)
     for index in range(40):
-        (tmp_path / f"template-{index}.json").write_text('{"name":"optional skill"}', encoding="utf-8")
-    (tmp_path / "moved-atif.json").write_text(
+        (templates / f"template-{index}.json").write_text('{"name":"optional skill"}', encoding="utf-8")
+    relay = tmp_path / "observability" / "nemo-relay"
+    (relay / "atif").mkdir(parents=True)
+    (relay / "atof").mkdir(parents=True)
+    (relay / "atif" / "trajectory-1.json").write_text(
         '{"schema_version":"ATIF-v1.7","session_id":"s-1","steps":[]}', encoding="utf-8"
     )
-    (tmp_path / "moved-atof.jsonl").write_text(
+    (relay / "atof" / "events.jsonl").write_text(
         '{"atof_version":"0.1","kind":"mark","uuid":"u-1",'
         '"timestamp":"2026-08-26T00:00:00Z","name":"hermes.turn.start"}\n',
         encoding="utf-8",
     )
     (tmp_path / "cache.sqlite").write_bytes(b"not sqlite")
+    (tmp_path / "state.db").write_bytes(b"not sqlite")
 
     census = census_source_root(tmp_path, provider=Provider.HERMES)
 
-    assert census.candidate_count == 43
-    assert census.disposition_counts == {"session": 2, "non_session": 0, "unsupported": 41}
+    assert census.candidate_count == 3
+    assert census.disposition_counts == {"session": 2, "non_session": 0, "unsupported": 1}
     assert census.accounted_count == census.candidate_count
     assert census.unexplained_candidates == ()
     assert census.is_complete
@@ -189,17 +195,8 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
         "prompt_history_log",
         "hook_event_carrier",
     }
-    # Membership, not order. The projection dedups with ``dict.fromkeys`` over
-    # ``artifact_rules`` declaration order, so adding or reordering a rule
-    # permutes the tuple -- and every consumer tests membership only
-    # (``any(name.endswith(suffix) for suffix in self.suffixes)`` in
-    # sources/live/watcher.py). Asserting the tuple made this line red the
-    # moment polylogue-k3ahm declared the carrier rule first, which is a
-    # declaration-order change, not a behaviour change.
-    assert set(artifact_suffixes_for_provider(Provider.CLAUDE_CODE)) == {".json", ".jsonl", ".ndjson"}
     tool_result_rule = next(rule for rule in claude.artifact_rules if rule.kind == "tool_result_sidecar")
     assert tool_result_rule.path_suffixes == (".json", ".txt", ".html", "")
-    assert tool_result_rule.watch_suffixes == (".json",)
     assert claude.detector_tightness == 60
     assert chatgpt.detector_tightness == 70
     assert chatgpt.acquisition_modes == ("takeout-json", "bundle", "browser-capture")
@@ -219,14 +216,6 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
         "brain_metadata_sidecar",
         "brain_document",
     }
-    assert artifact_suffixes_for_provider(Provider.ANTIGRAVITY) == (
-        ".pb",
-        ".db",
-        ".sqlite",
-        ".sqlite3",
-        ".metadata.json",
-        ".md",
-    )
     assert set(by_origin) == set(Origin)
     assert by_origin[Origin.UNKNOWN_EXPORT].lifecycle == "compatibility-only"
     assert by_origin[Origin.AISTUDIO_DRIVE].provider_wires == (Provider.GEMINI, Provider.DRIVE)
@@ -2301,8 +2290,10 @@ def test_root_census_accounts_for_rejected_nonregular_candidates(tmp_path: Path)
     """The regular-file filter used to remove links and FIFOs from the denominator."""
     target = tmp_path / "target.txt"
     target.write_text("neutral", encoding="utf-8")
-    (tmp_path / "linked.jsonl").symlink_to(target)
-    os.mkfifo(tmp_path / "pipe.jsonl")
+    project = tmp_path / "-home-user-repo"
+    project.mkdir()
+    (project / "linked.jsonl").symlink_to(target)
+    os.mkfifo(project / "pipe.jsonl")
 
     census = census_source_root(tmp_path, provider=Provider.CLAUDE_CODE)
 
@@ -2322,7 +2313,8 @@ def test_source_walk_keeps_uninspectable_candidate_and_census_records_it(
     from polylogue.config import Source
     from polylogue.sources.source_walk import _resolve_source_paths
 
-    source = tmp_path / "unreadable.jsonl"
+    source = tmp_path / "-home-user-repo" / "unreadable.jsonl"
+    source.parent.mkdir()
     source.write_text("{}\n", encoding="utf-8")
     real_stat = os.stat
 

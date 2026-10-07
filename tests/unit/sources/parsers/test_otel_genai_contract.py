@@ -16,6 +16,7 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.origin_specs import SEMCONV_SCHEMA_URL, origin_specs
 from polylogue.sources.parsers import otel_genai
+from polylogue.sources.source_layout import export_drop_layout
 
 FIXTURE = Path(__file__).parents[3] / "fixtures" / "otel-genai" / "trace.json"
 
@@ -35,7 +36,7 @@ def test_configured_file_root_acquires_and_archives_otel_trace(tmp_path: Path) -
         # The live processor publishes through the daemon's retained Raw owner.
         async with prepared_live_batch_processor(
             archive_root,
-            (WatchSource(name="otel-genai", root=source_root, suffixes=(".json",)),),
+            (WatchSource(name="otel-genai", root=source_root, layout=export_drop_layout((".json",))),),
             parser_fingerprint="test-otel-parser",
         ) as processor:
             result = await processor.ingest_files([source_path], emit_event=False)

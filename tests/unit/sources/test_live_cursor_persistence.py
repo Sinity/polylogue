@@ -13,6 +13,7 @@ from polylogue import Polylogue
 from polylogue.core.enums import Provider
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveRawParsedWriteResult, ArchiveStore
 from tests.infra.raw_owner_routes import LiveOwnerSet, live_owner_set
@@ -100,7 +101,7 @@ def _watcher(archive: Polylogue, root: Path, owners: LiveOwnerSet | None = None)
     # to exercise is never reached.
     return LiveWatcher(
         archive,
-        (WatchSource(name="claude-code", root=root),),
+        (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),),
         cursor=CursorStore(archive.archive_root / "index.db"),
         **(owners.watcher_kwargs() if owners is not None else {}),
     )

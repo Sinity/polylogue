@@ -30,13 +30,11 @@ from polylogue.core.json import JSONDocument, JSONValue, json_document
 _HERMES_STATE_DB_MARKER = "hermes_state_db"
 _HERMES_VERIFICATION_DB_MARKER = "hermes_verification_evidence_db"
 
-# Mirrors ``polylogue.sources.source_walk._SKIP_DIRS``'s "analysis" entry at
-# the taxonomy layer (polylogue-omsw / polylogue-9ykn).  The directory-name
-# skip in the recursive source walk was meant to keep self-generated agent
-# side-output (scratch analysis artifacts an agent writes into its own
-# Claude Code project directory, e.g. an index of prior conversation ids)
-# out of the archive entirely.  It only guards the recursive walk, though --
-# a single-file acquisition route (``Source.path`` pointing directly at one
+# The taxonomy layer's exclusion of self-generated agent side-output
+# (polylogue-omsw / polylogue-9ykn): scratch analysis artifacts an agent
+# writes into its own Claude Code project directory, e.g. an index of prior
+# conversation ids. The declared source layouts never reach an ``analysis/``
+# directory, but a single-file acquisition route (``Source.path`` pointing directly at one
 # file, bypassing ``os.walk``) never consults it, so a path like
 # ``.../analysis/problem_solutions/problems_index.jsonl`` can still reach
 # payload classification, where a generic JSONL-of-dicts heuristic
@@ -84,7 +82,7 @@ def _self_generated_artifact_dir_classification(
         schema_eligible=False,
         default_priority=0,
         reason="self-generated analysis artifact under an 'analysis/' directory "
-        "(agent side-output, not conversation content; mirrors source_walk _SKIP_DIRS)",
+        "(agent side-output, not conversation content)",
     )
 
 

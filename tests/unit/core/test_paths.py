@@ -262,6 +262,7 @@ class TestPathsPublicBoundary:
 
         assert set(paths.__all__) == {
             "GEMINI_DRIVE_FOLDER",
+            "antigravity_cli_path",
             "antigravity_path",
             "api_auth_token_path",
             "archive_root",

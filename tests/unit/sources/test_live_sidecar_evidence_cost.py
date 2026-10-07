@@ -30,6 +30,7 @@ from polylogue import Polylogue
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.source_layout import export_drop_layout
 from tests.infra.raw_owner_routes import ingest_files_with_owners
 
 _SESSION_ID = "6f0a1c2d-4e5b-4a7c-9d1e-2b3c4d5e6f70"
@@ -89,7 +90,7 @@ def _make_processor(workspace_env: dict[str, Path], root: Path) -> tuple[Polylog
     cursor = CursorStore(workspace_env["archive_root"] / "index.db")
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="claude-code", root=root, suffixes=(".jsonl", ".txt")),),
+        (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl", ".txt"))),),
         cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )

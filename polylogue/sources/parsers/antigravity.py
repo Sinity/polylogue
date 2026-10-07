@@ -324,16 +324,19 @@ def census_source(root: Path) -> AntigravitySourceCensus:
             )
         )
 
-    def on_walk_error(error: OSError) -> None:
-        path = Path(error.filename) if error.filename else root
-        record_unreadable(path, f"source item is unreadable: {error}")
+    from polylogue.sources.source_walk import layout_source_candidates
+    from polylogue.sources.walk_faults import WalkRefusedError
 
-    from polylogue.sources.source_walk import _iter_source_entries
-
-    # Use the same skip-directory traversal as production admission.  Census
-    # still inspects non-regular files (including symlinks) so they remain
-    # accounted for as unsupported evidence, while admission excludes them.
-    for path in _iter_source_entries(root, onerror=on_walk_error):
+    # The declared Antigravity layout bounds the census exactly as it bounds
+    # admission. Links the layout places are still inspected, so they remain
+    # accounted for as unsupported evidence while admission excludes them.
+    try:
+        candidates = layout_source_candidates("antigravity", root)
+    except WalkRefusedError as exc:
+        candidates = []
+        for fault in exc.faults:
+            record_unreadable(fault.path, f"source item is unreadable: {fault.detail}")
+    for path in candidates:
         try:
             link_stat = path.lstat()
         except OSError as exc:
@@ -1869,11 +1872,11 @@ def iter_language_server_export_results(
 
 def _conversation_pb_paths(root: Path) -> list[Path]:
     """List every production-discovered conversation trajectory."""
-    from polylogue.sources.source_walk import _walk_source_paths
+    from polylogue.sources.source_walk import layout_source_paths
 
     return [
         path
-        for path in _walk_source_paths(root, provider=Provider.ANTIGRAVITY)
+        for path in layout_source_paths("antigravity", root)
         if path.suffix.lower() == ".pb"
         and classify_source_path(path).role is AntigravitySourceRole.CONVERSATION_PROTOBUF
     ]

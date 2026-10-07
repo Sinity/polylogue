@@ -7,7 +7,7 @@ visible on disk and acquired by nothing.
 
 Anti-vacuity: delete the ``agent_memory_document`` ``OriginArtifactRule`` from
 ``_claude_code_spec``/``_codex_spec`` in ``sources/origin_specs.py``. Every
-acquisition test below then goes red at discovery -- ``_walk_source_paths``
+acquisition test below then goes red at discovery -- ``layout_source_paths``
 returns no candidate, so the production ingest it feeds writes no
 ``raw_sessions`` row, no ``raw_artifacts`` row and retains no bytes. The
 classification assertions are secondary; the acquisition ones are the
@@ -25,7 +25,6 @@ import polylogue.sources.live.watcher as live_watcher
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
-from polylogue.sources.origin_specs import artifact_suffixes_for_provider
 from polylogue.sources.source_walk import census_source_root
 from tests.infra.live_batch import prepared_live_batch_processor
 
@@ -37,19 +36,18 @@ def _claude_source(root: Path) -> WatchSource:
     return WatchSource(
         name="claude-code",
         root=root,
-        suffixes=artifact_suffixes_for_provider(Provider.CLAUDE_CODE, defaults=(".jsonl",)),
     )
 
 
 def _codex_source(root: Path) -> WatchSource:
-    return WatchSource(name="codex-memories", root=root, suffixes=())
+    return WatchSource(name="codex-memories", root=root)
 
 
-def _discover(root: Path, *, provider: Provider) -> list[Path]:
-    """The production source walk, which is what a rule removal disables."""
-    from polylogue.sources.source_walk import _walk_source_paths
+def _discover(root: Path, *, source: str) -> list[Path]:
+    """The production layout walk of one declared source."""
+    from polylogue.sources.source_walk import layout_source_paths
 
-    return _walk_source_paths(root, provider=provider)
+    return layout_source_paths(source, root)
 
 
 async def _acquire(
@@ -96,7 +94,7 @@ async def test_claude_memory_document_is_discovered_and_retained(workspace_env: 
     root = workspace_env["data_root"] / "projects"
     memory = _claude_memory(root, "-realm-project-x", "MEMORY.md", _CLAUDE_MEMORY)
 
-    discovered = _discover(root, provider=Provider.CLAUDE_CODE)
+    discovered = _discover(root, source="claude-code")
     assert discovered == [memory]
     assert _claude_source(root).accepts(memory)
 
@@ -127,7 +125,7 @@ async def test_codex_memory_document_is_discovered_and_retained(workspace_env: d
     nested.parent.mkdir(parents=True)
     nested.write_text(_CODEX_MEMORY, encoding="utf-8")
 
-    discovered = _discover(root, provider=Provider.CODEX)
+    discovered = _discover(root, source="codex-memories")
     assert discovered == [nested]
     assert _codex_source(root).accepts(nested)
 
@@ -183,7 +181,7 @@ async def test_removing_the_original_preserves_the_archived_document(
     root = workspace_env["data_root"] / "projects"
     memory = _claude_memory(root, "-realm-project-x", "MEMORY.md", _CLAUDE_MEMORY)
 
-    await _acquire(workspace_env, _claude_source(root), _discover(root, provider=Provider.CLAUDE_CODE))
+    await _acquire(workspace_env, _claude_source(root), _discover(root, source="claude-code"))
     memory.unlink()
     assert not memory.exists()
 
@@ -246,7 +244,7 @@ async def test_same_basename_in_two_projects_stays_two_scoped_objects(
     first = _claude_memory(root, "-realm-project-x", "MEMORY.md", "# x\n")
     second = _claude_memory(root, "-realm-project-y", "MEMORY.md", "# y\n")
 
-    discovered = _discover(root, provider=Provider.CLAUDE_CODE)
+    discovered = _discover(root, source="claude-code")
     assert discovered == sorted([first, second])
 
     await _acquire(workspace_env, _claude_source(root), discovered)
@@ -279,7 +277,7 @@ def test_markdown_outside_the_declared_memory_roots_is_not_swept_in(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# unrelated\n", encoding="utf-8")
 
-    assert _discover(root, provider=Provider.CLAUDE_CODE) == [inside]
+    assert _discover(root, source="claude-code") == [inside]
     source = _claude_source(root)
     assert source.accepts(inside)
     assert [path for path in outside_names if source.accepts(path)] == []
@@ -308,7 +306,8 @@ def test_codex_markdown_outside_the_memories_root_is_not_swept_in(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# unrelated\n", encoding="utf-8")
 
-    assert _discover(install, provider=Provider.CODEX) == [inside]
+    assert _discover(install, source="codex-state") == []
+    assert _discover(memories, source="codex-memories") == [inside]
     source = _codex_source(memories)
     assert source.accepts(inside)
     assert [path for path in outside if source.accepts(path)] == []

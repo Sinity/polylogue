@@ -25,6 +25,7 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers import antigravity
 from polylogue.sources.parsers.antigravity import AntigravityBinaryUnavailableError
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
 from polylogue.sources.source_walk import census_source_root
 from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
@@ -78,6 +79,7 @@ def test_source_census_accounts_for_all_roles_and_unknown_items(tmp_path: Path) 
     (root / "brain" / "work").mkdir(parents=True)
     (root / "brain" / "work" / "plan.md").write_text("# plan", encoding="utf-8")
     (root / "brain" / "work" / "plan.md.metadata.json").write_text("{}", encoding="utf-8")
+    # Outside the declared Antigravity layout: never a census candidate.
     (root / "settings" / "opaque.bin").parent.mkdir()
     (root / "settings" / "opaque.bin").write_bytes(b"unknown")
 
@@ -87,11 +89,11 @@ def test_source_census_accounts_for_all_roles_and_unknown_items(tmp_path: Path) 
         antigravity.AntigravitySourceRole.EXPORT_DOCUMENT: 0,
         antigravity.AntigravitySourceRole.BRAIN_DOCUMENT: 1,
         antigravity.AntigravitySourceRole.METADATA_SIDECAR: 1,
-        antigravity.AntigravitySourceRole.UNKNOWN: 1,
+        antigravity.AntigravitySourceRole.UNKNOWN: 0,
     }
-    assert source_census.unknown_count == 1
+    assert source_census.unknown_count == 0
     assert source_census.inspection_counts == {
-        antigravity.AntigravitySourceInspection.REGULAR: 4,
+        antigravity.AntigravitySourceInspection.REGULAR: 3,
         antigravity.AntigravitySourceInspection.NON_REGULAR: 0,
         antigravity.AntigravitySourceInspection.UNREADABLE: 0,
     }
@@ -99,15 +101,15 @@ def test_source_census_accounts_for_all_roles_and_unknown_items(tmp_path: Path) 
     source_census.assert_conserved()
 
     root_census = census_source_root(root, provider=Provider.ANTIGRAVITY)
-    assert root_census.candidate_count == 4
-    assert root_census.disposition_counts == {"session": 1, "non_session": 2, "unsupported": 1}
+    assert root_census.candidate_count == 3
+    assert root_census.disposition_counts == {"session": 1, "non_session": 2, "unsupported": 0}
     assert root_census.is_complete
 
 
 def test_source_census_rejects_mutation_during_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "antigravity"
-    root.mkdir()
-    source = root / "settings.bin"
+    (root / "conversations").mkdir(parents=True)
+    source = root / "conversations" / "cascade.pb"
     source.write_bytes(b"before")
     original_digest = antigravity._file_digest
 
@@ -123,8 +125,8 @@ def test_source_census_rejects_mutation_during_read(tmp_path: Path, monkeypatch:
 
 def test_source_census_rejects_an_unclassified_item(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "antigravity"
-    root.mkdir()
-    (root / "settings.bin").write_bytes(b"unknown")
+    (root / "conversations").mkdir(parents=True)
+    (root / "conversations" / "cascade.pb").write_bytes(b"opaque")
 
     monkeypatch.setattr(antigravity, "classify_source_path", lambda _path: None)
 
@@ -134,22 +136,23 @@ def test_source_census_rejects_an_unclassified_item(tmp_path: Path, monkeypatch:
 
 def test_source_census_counts_non_regular_and_unreadable_items(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "antigravity"
-    root.mkdir()
-    readable = root / "readable.bin"
+    conversations = root / "conversations"
+    conversations.mkdir(parents=True)
+    readable = conversations / "readable.pb"
     readable.write_bytes(b"readable")
-    fifo = root / "pipe"
+    fifo = conversations / "pipe.pb"
     os.mkfifo(fifo)
-    dangling = root / "dangling"
+    dangling = conversations / "dangling.pb"
     dangling.symlink_to(root / "missing")
-    socket_path = root / "socket"
+    socket_path = conversations / "socket.pb"
     server = socket.socket(socket.AF_UNIX)
     original_cwd = Path.cwd()
-    os.chdir(root)
+    os.chdir(conversations)
     try:
-        server.bind("socket")
+        server.bind("socket.pb")
     finally:
         os.chdir(original_cwd)
-    unreadable = root / "unreadable.bin"
+    unreadable = conversations / "unreadable.pb"
     unreadable.write_bytes(b"unreadable")
     original_digest = antigravity._file_digest
 
@@ -171,11 +174,16 @@ def test_source_census_counts_non_regular_and_unreadable_items(tmp_path: Path, m
         antigravity.AntigravitySourceInspection.NON_REGULAR: 3,
         antigravity.AntigravitySourceInspection.UNREADABLE: 1,
     }
-    assert census.unknown_count == 5
-    assert {item.classification.reason for item in census.items if item.classification is not None} == {
+    # Every regular file the layout places has a declared role; only the
+    # non-regular and unreadable entries are unknown.
+    assert census.unknown_count == 4
+    assert {
+        item.classification.reason
+        for item in census.items
+        if item.classification is not None and item.classification.role is antigravity.AntigravitySourceRole.UNKNOWN
+    } == {
         "non-regular Antigravity source item",
         "source item is unreadable: synthetic unreadable source",
-        "unrecognized Antigravity source item",
     }
     assert census.unexplained_items == ()
 
@@ -391,7 +399,7 @@ async def test_trajectory_sqlite_wal_reaches_the_daemon_owned_public_read_route(
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["archive_root"] / "index.db")
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="antigravity", root=root, suffixes=(".sqlite", ".db")),),
+        (WatchSource(name="antigravity", root=root, layout=export_drop_layout((".sqlite", ".db"))),),
         cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
@@ -472,7 +480,7 @@ async def test_inbox_staged_trajectory_is_admitted_without_a_provider_label(
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["archive_root"] / "index.db")
     processor = LiveBatchProcessor(
         archive,
-        (WatchSource(name="inbox", root=root, suffixes=(".sqlite", ".db")),),
+        (WatchSource(name="inbox", root=root, layout=export_drop_layout((".sqlite", ".db"))),),
         cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
@@ -516,23 +524,23 @@ def test_antigravity_export_json_census_requires_canonical_parser_evidence(tmp_p
         path.parent.mkdir(parents=True)
     content = b'{"broken":' if shape == "malformed" else json.dumps(payload).encode()
     path.write_bytes(content)
-    source_census = antigravity.census_source(root)
-    [item] = source_census.items
-    assert item.content_sha256 == hashlib.sha256(content).hexdigest()
-    assert item.size_bytes == len(content)
-    classification = item.classification
-    assert classification is not None
     expected_session = shape in {"export", "renamed_export"}
+    classification = antigravity.classify_source_path(path)
     assert classification.parse_as_session is expected_session
-    assert source_census.counts[antigravity.AntigravitySourceRole.EXPORT_DOCUMENT] == int(expected_session)
-    assert antigravity.classify_source_path(path) == classification
+    source_census = antigravity.census_source(root)
     root_census = census_source_root(root, provider=Provider.ANTIGRAVITY)
-    assert root_census.candidate_count == 1
-    assert root_census.disposition_counts == {
-        "session": int(expected_session),
-        "non_session": int(shape == "brain_metadata"),
-        "unsupported": int(shape not in {"export", "renamed_export", "brain_metadata"}),
-    }
+    if shape == "brain_metadata":
+        [item] = source_census.items
+        assert item.content_sha256 == hashlib.sha256(content).hexdigest()
+        assert item.size_bytes == len(content)
+        assert item.classification == classification
+        assert root_census.candidate_count == 1
+        assert root_census.disposition_counts == {"session": 0, "non_session": 1, "unsupported": 0}
+    else:
+        # A language-server export document has no position in the declared
+        # Antigravity layout; it reaches the archive only as explicit input.
+        assert source_census.items == ()
+        assert root_census.candidate_count == 0
     assert root_census.is_complete
     if expected_session:
         recognized = recognize_source_class(Provider.ANTIGRAVITY, path, payload=payload)
@@ -553,18 +561,9 @@ def test_antigravity_export_census_rechecks_identity_after_structural_probe(
     import json
 
     root = tmp_path / "antigravity"
-    root.mkdir()
-    path = root / "export.json"
-    path.write_text(
-        json.dumps(
-            {
-                "source": "antigravity_language_server",
-                "cascadeId": "neutral",
-                "markdown": "### User Input\n\nneutral\n",
-            }
-        ),
-        encoding="utf-8",
-    )
+    path = root / "brain" / "work" / "plan.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"note": "neutral"}), encoding="utf-8")
     original = antigravity.classify_source_path
     reached = False
 
@@ -573,7 +572,7 @@ def test_antigravity_export_census_rechecks_identity_after_structural_probe(
     ) -> antigravity.AntigravitySourceClassification:
         nonlocal reached
         classification = original(source_path, payload=payload)
-        assert classification.role is antigravity.AntigravitySourceRole.EXPORT_DOCUMENT
+        assert classification.role is antigravity.AntigravitySourceRole.BRAIN_DOCUMENT
         reached = True
         path.write_text("{}", encoding="utf-8")
         return classification

@@ -22,7 +22,7 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers import antigravity
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions, parse_one_source_path
-from polylogue.sources.source_walk import _walk_source_paths
+from polylogue.sources.source_walk import layout_source_paths
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.live_batch import prepared_live_batch_processor
@@ -119,7 +119,7 @@ def test_single_path_parser_uses_vendor_route_for_conversation_protobuf(
         vendor_route,
     )
 
-    assert conversation in _walk_source_paths(root, provider=Provider.ANTIGRAVITY)
+    assert conversation in layout_source_paths("antigravity", root)
 
     admitted = list(
         parse_one_source_path(

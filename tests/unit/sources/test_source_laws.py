@@ -84,7 +84,7 @@ from polylogue.sources.source_parsing import (
     iter_source_sessions,
     iter_source_sessions_with_raw,
 )
-from polylogue.sources.source_walk import _has_supported_extension, _is_supported_source_path
+from polylogue.sources.source_walk import layout_source_paths
 from polylogue.storage.blob_store import BlobStore, Heartbeat
 from polylogue.storage.cursor_state import CursorFailurePayload, CursorStatePayload
 from tests.infra.source_builders import GenericSessionBuilder, acquired_payloads, make_claude_chat_message
@@ -623,11 +623,12 @@ def test_iter_source_sessions_tracks_file_disappearance_contract(tmp_path: Path)
     assert first.exists()
 
 
-@pytest.mark.parametrize("skip_dir_name", ["analysis", "__pycache__"])
-def test_source_iteration_prunes_skip_dirs_contract(tmp_path: Path, skip_dir_name: str) -> None:
-    skip_dir = tmp_path / skip_dir_name
-    skip_dir.mkdir()
-    _write_generic_session(skip_dir / "skipped.json", "skipped")
+@pytest.mark.parametrize("hidden_dir_name", [".git", ".claude"])
+def test_source_iteration_never_enters_hidden_directories_contract(tmp_path: Path, hidden_dir_name: str) -> None:
+    """An explicit input walks visible directories only: a nested copy under a dot-directory stays out."""
+    hidden = tmp_path / hidden_dir_name
+    hidden.mkdir()
+    _write_generic_session(hidden / "skipped.json", "skipped")
 
     assert list(iter_source_sessions(Source(name="test", path=tmp_path))) == []
     assert list(iter_source_sessions_with_raw(Source(name="test", path=tmp_path))) == []
@@ -1040,28 +1041,15 @@ def test_decode_json_bytes_cleaning_contract(raw: bytes, expected: dict[str, obj
         assert json.loads(decoded) == expected
 
 
-@pytest.mark.parametrize(
-    ("filename", "expected"),
-    [
-        ("CHATGPT.JSON", True),
-        ("Export.JSONL", True),
-        ("data.jsonl.txt", True),
-        ("session.ndjson", True),
-        ("notes.txt", False),
-    ],
-)
-def test_has_supported_extension_contract(filename: str, expected: bool) -> None:
-    assert _has_supported_extension(Path(filename)) is expected
-
-
 def test_declared_claude_tool_result_paths_are_discovered_without_global_suffix_widening(tmp_path: Path) -> None:
-    """The OriginSpec path rule admits every observed sidecar filename form.
+    """The declared layout admits every observed sidecar filename form at its position.
 
-    Anti-vacuity: removing the declaration-backed path check drops the
-    extensionless sidecar, while adding a global ``.txt`` or ``.html`` rule
-    would admit the unrelated files below.
+    Anti-vacuity: removing the ``tool-results`` entry from the Claude Code
+    layout drops every sidecar, while widening a suffix there would admit
+    the unrelated file beside the session directory's sidecars.
     """
-    sidecar_dir = tmp_path / "session" / "tool-results"
+    session_dir = tmp_path / "-home-user-repo" / "00000000-0000-4000-8000-000000000001"
+    sidecar_dir = session_dir / "tool-results"
     sidecar_dir.mkdir(parents=True)
     sidecars = [
         sidecar_dir / "toolu.json",
@@ -1071,11 +1059,10 @@ def test_declared_claude_tool_result_paths_are_discovered_without_global_suffix_
     ]
     for path in sidecars:
         path.write_bytes(b"opaque tool output")
-    unrelated = tmp_path / "session" / "notes.txt"
+    unrelated = session_dir / "notes.txt"
     unrelated.write_bytes(b"ordinary text")
 
-    assert all(_is_supported_source_path(path, provider=Provider.CLAUDE_CODE) for path in sidecars)
-    assert not _is_supported_source_path(unrelated, provider=Provider.CLAUDE_CODE)
+    assert layout_source_paths("claude-code", tmp_path) == sorted(sidecars)
 
 
 def test_record_cursor_failure_updates_state_exactly() -> None:
@@ -1282,8 +1269,9 @@ def test_parse_sessions_index_contract(tmp_path: Path) -> None:
 
 def test_iter_source_sessions_skips_agent_meta_sidecars(tmp_path: Path) -> None:
     source_dir = tmp_path / "claude-ai"
-    source_dir.mkdir()
-    (source_dir / "agent-a123.meta.json").write_text('{"agentType":"general-purpose"}', encoding="utf-8")
+    subagents = source_dir / "-home-user-repo" / "00000000-0000-4000-8000-000000000001" / "subagents"
+    subagents.mkdir(parents=True)
+    (subagents / "agent-a123.meta.json").write_text('{"agentType":"general-purpose"}', encoding="utf-8")
 
     sessions = list(iter_source_sessions(Source(name="claude-code", path=source_dir)))
     raw_items = list(acquired_payloads(iter_source_acquisition_records(Source(name="claude-code", path=source_dir))))
@@ -2943,8 +2931,10 @@ def test_iter_source_acquisition_records_skips_zero_byte_plain_files_and_tracks_
 def test_iter_source_acquisition_records_summarizes_zero_byte_plain_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    first = tmp_path / "first.jsonl"
-    second = tmp_path / "second.jsonl"
+    day = tmp_path / "2026" / "01" / "01"
+    day.mkdir(parents=True)
+    first = day / "rollout-first.jsonl"
+    second = day / "rollout-second.jsonl"
     first.write_bytes(b"")
     second.write_bytes(b"")
 

@@ -371,7 +371,6 @@ async def test_retained_raw_replay_resolves_the_curated_title(tmp_path: Path) ->
     from polylogue.core.enums import TitleSource
     from polylogue.sources.dispatch import parse_stream_payload
     from polylogue.sources.live import WatchSource
-    from polylogue.sources.origin_specs import artifact_suffixes_for_provider
     from polylogue.sources.revision_backfill import _replay_safe_enrich_sessions
     from tests.infra.live_batch import prepared_live_batch_processor
 
@@ -406,7 +405,6 @@ async def test_retained_raw_replay_resolves_the_curated_title(tmp_path: Path) ->
             WatchSource(
                 name="claude-code",
                 root=project.parent,
-                suffixes=artifact_suffixes_for_provider(Provider.CLAUDE_CODE, defaults=(".jsonl",)),
             ),
         ),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,

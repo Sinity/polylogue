@@ -28,7 +28,7 @@ from polylogue.sources.live.production_baseline import (
     unretained_source_material,
 )
 from polylogue.sources.live.watcher import WatchSource
-from polylogue.sources.source_layout import declared_source_layout
+from polylogue.sources.source_layout import declared_source_layout, export_drop_layout
 from polylogue.sources.sqlite_snapshot import sqlite_member_revision
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -87,7 +87,7 @@ def test_only_typed_io_revision_fault_is_retryable(tmp_path: Path, monkeypatch: 
     root = tmp_path / "account"
     root.mkdir()
     (root / "one.json").write_bytes(b"{}")
-    source = (WatchSource("account", root, suffixes=(".json",), required=True),)
+    source = (WatchSource("account", root, layout=export_drop_layout((".json",)), required=True),)
 
     def io_fault(*_args: object, **_kwargs: object) -> tuple[str, int]:
         raise OSError(errno.EIO, "source read failed")
@@ -127,7 +127,7 @@ def test_zip_member_fault_preserves_typed_retry_classification(
     with monkeypatch.context() as patcher:
         patcher.setattr(production_baseline, "replay_zip_entry_acquisition_revisions", unreadable_member)
         baseline = capture_production_source_baseline(
-            (WatchSource("account", root, suffixes=(".zip",)),), operation_id="zip-fault"
+            (WatchSource("account", root, layout=export_drop_layout((".zip",))),), operation_id="zip-fault"
         )
     member_faults = [row for row in baseline.decisions if row.disposition == "fault"]
     assert len(member_faults) == 1
@@ -147,7 +147,7 @@ def test_directory_walk_io_fault_retries_and_resolves_after_walk_recovers(
     nested.mkdir(parents=True)
     member = nested / "one.json"
     member.write_bytes(b"{}")
-    source = (WatchSource("account", root, suffixes=(".json",)),)
+    source = (WatchSource("account", root, layout=export_drop_layout((".json",))),)
     original_scandir = os.scandir
 
     def fail_nested(path: os.PathLike[str] | str) -> Any:
@@ -178,7 +178,7 @@ def test_recovered_zip_open_clears_its_archive_level_fault(tmp_path: Path, monke
     bundle = root / "export.zip"
     with zipfile.ZipFile(bundle, "w") as archive:
         archive.writestr("conversations.json", b"[]")
-    source = (WatchSource("account", root, suffixes=(".zip",)),)
+    source = (WatchSource("account", root, layout=export_drop_layout((".zip",))),)
 
     def unreadable_archive(*_args: object, **_kwargs: object) -> None:
         raise OSError(errno.EIO, "archive open temporarily failed")
@@ -204,7 +204,7 @@ def test_baseline_uses_typed_acceptance_before_cursor_and_requires_retained_revi
     accepted = root / "session.json"
     accepted.write_bytes(b'{"session":1}')
     (root / "note.txt").write_text("excluded")
-    source = WatchSource("account", root, suffixes=(".json",), required=True)
+    source = WatchSource("account", root, layout=export_drop_layout((".json",)), required=True)
     baseline = capture_production_source_baseline((source,), operation_id="build-1")
     assert [(row.path, row.disposition) for row in baseline.decisions] == [
         (str(root), "excluded"),
@@ -252,8 +252,8 @@ def test_baseline_records_intake_exclusions_instead_of_requiring_retention(tmp_p
     logs.write_text('[{"sessionId":"a","messageId":0,"type":"user","message":"hi","timestamp":"2026"}]')
     baseline = capture_production_source_baseline(
         (
-            WatchSource("codex", codex, suffixes=(".jsonl", ".sqlite")),
-            WatchSource("gemini-cli", gemini, suffixes=(".json",)),
+            WatchSource("codex", codex, layout=export_drop_layout((".jsonl", ".sqlite"))),
+            WatchSource("gemini-cli", gemini, layout=export_drop_layout((".json",))),
         ),
         operation_id="intake-exclusions",
     )
@@ -282,8 +282,8 @@ def test_external_link_is_alias_only_with_independent_source(tmp_path: Path) -> 
     inbox = tmp_path / "inbox"
     inbox.mkdir()
     (inbox / "account").symlink_to(account, target_is_directory=True)
-    typed = WatchSource("account", account, suffixes=(".json",), required=True)
-    alias = WatchSource("inbox", inbox, suffixes=(".json",))
+    typed = WatchSource("account", account, layout=export_drop_layout((".json",)), required=True)
+    alias = WatchSource("inbox", inbox, layout=export_drop_layout((".json",)))
     baseline = capture_production_source_baseline((alias, typed), operation_id="build-2")
     assert any(row.path == str(inbox / "account") and row.disposition == "alias" for row in baseline.decisions)
     assert len(baseline.accepted) == 1
@@ -295,7 +295,7 @@ def test_broken_accepted_looking_link_is_fault(tmp_path: Path) -> None:
     root = tmp_path / "account"
     root.mkdir()
     (root / "gone.json").symlink_to(root / "missing.json")
-    source = WatchSource("account", root, suffixes=(".json",), required=True)
+    source = WatchSource("account", root, layout=export_drop_layout((".json",)), required=True)
     baseline = capture_production_source_baseline((source,), operation_id="build-4")
     assert any(row.disposition == "fault" and row.path.endswith("gone.json") for row in baseline.decisions)
 
@@ -306,7 +306,7 @@ def test_directory_cycle_is_alias_when_canonical_target_is_accepted(tmp_path: Pa
     (root / "one.json").write_text("{}")
     (root / "cycle").symlink_to(root, target_is_directory=True)
     baseline = capture_production_source_baseline(
-        (WatchSource("account", root, suffixes=(".json",)),), operation_id="cycle"
+        (WatchSource("account", root, layout=export_drop_layout((".json",))),), operation_id="cycle"
     )
     assert any(row.path == str(root / "cycle") and row.disposition == "alias" for row in baseline.decisions)
 
@@ -390,7 +390,7 @@ def test_zip_members_keep_live_coordinates_and_exclusions(tmp_path: Path) -> Non
         archive.writestr("conversations.json", b"[]")
         archive.writestr("README.txt", b"not a session")
     baseline = capture_production_source_baseline(
-        (WatchSource("account", root, suffixes=(".zip",)),), operation_id="build-7"
+        (WatchSource("account", root, layout=export_drop_layout((".zip",))),), operation_id="build-7"
     )
     assert any(
         row.path == f"{bundle}:conversations.json" and row.disposition == "accepted" for row in baseline.decisions
@@ -432,7 +432,7 @@ def test_zip_split_records_require_each_production_revision_and_coordinate(tmp_p
     with zipfile.ZipFile(bundle, "w") as archive:
         archive.writestr("conversations.json", json.dumps(sessions, separators=(",", ":")))
     baseline = capture_production_source_baseline(
-        (WatchSource("account", root, suffixes=(".zip",)),), operation_id="split"
+        (WatchSource("account", root, layout=export_drop_layout((".zip",))),), operation_id="split"
     )
     members = [row for row in baseline.accepted if row.path == f"{bundle}:conversations.json"]
     assert len(members) == 2
@@ -456,7 +456,7 @@ def test_zip_declared_binary_and_markdown_artifacts_follow_live_validator(tmp_pa
         archive.writestr("tool-results/one.bin", b"\xff\x00opaque")
         archive.writestr("brain/one.md", b"# note\n")
     baseline = capture_production_source_baseline(
-        (WatchSource("account", root, suffixes=(".zip",)),), operation_id="artifacts"
+        (WatchSource("account", root, layout=export_drop_layout((".zip",))),), operation_id="artifacts"
     )
     members = [row for row in baseline.accepted if row.path.startswith(f"{bundle}:")]
     assert {row.path for row in members} == {f"{bundle}:tool-results/one.bin", f"{bundle}:brain/one.md"}
@@ -503,7 +503,7 @@ def test_hash_phase_starts_before_each_accepted_revision_is_read(
 
     monkeypatch.setattr(module, "_revision", observed_revision)
     capture_production_source_baseline(
-        (WatchSource("codex", root, suffixes=(".jsonl",)),),
+        (WatchSource("codex", root, layout=export_drop_layout((".jsonl",))),),
         operation_id="phase",
         progress=lambda phase, **counts: calls.append((phase, counts)),
     )
@@ -524,7 +524,9 @@ def test_intake_exclusion_retires_an_earlier_accepted_observation(tmp_path: Path
         b'{"timestamp":"2026-06-02T00:00:00Z","type":"session_meta","payload":{"id":"meta",'
         b'"timestamp":"2026-06-02T00:00:00Z","cwd":"/tmp","originator":"codex_cli_rs"}}\n'
     )
-    current = capture_production_source_baseline((WatchSource("codex", root, suffixes=(".jsonl",)),), operation_id="op")
+    current = capture_production_source_baseline(
+        (WatchSource("codex", root, layout=export_drop_layout((".jsonl",))),), operation_id="op"
+    )
     [row] = [row for row in current.decisions if row.path == str(sidecar)]
     assert row.disposition == "excluded" and row.reason.startswith("intake_excluded:")
 
@@ -562,7 +564,7 @@ def test_a_foreign_origin_file_intake_refuses_is_never_demanded(tmp_path: Path) 
         b'{"type":"session_meta","payload":{"id":"s","timestamp":"2026-06-02T00:00:00Z"}}\n'
     )
     current = capture_production_source_baseline(
-        (WatchSource("claude-code", root, suffixes=(".jsonl",)),), operation_id="op"
+        (WatchSource("claude-code", root, layout=export_drop_layout((".jsonl",))),), operation_id="op"
     )
     [row] = [row for row in current.decisions if row.path == str(path)]
     assert row.disposition == "excluded"
@@ -605,7 +607,7 @@ def test_a_refused_zip_member_retires_its_earlier_acceptance(tmp_path: Path) -> 
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("rollout.jsonl", member)
     current = capture_production_source_baseline(
-        (WatchSource("claude-code", root, suffixes=(".zip",)),), operation_id="op"
+        (WatchSource("claude-code", root, layout=export_drop_layout((".zip",))),), operation_id="op"
     )
     coordinate = f"{archive}:rollout.jsonl"
     [row] = [row for row in current.decisions if row.path == coordinate]
@@ -662,7 +664,9 @@ def test_a_rewritten_path_keeps_its_earlier_accepted_revision(tmp_path: Path) ->
         ),
     )
     path.write_bytes(b'{"type":"session_meta","payload":{"id":"s","timestamp":"2026-06-02T00:00:00Z"}}\n')
-    current = capture_production_source_baseline((WatchSource("codex", root, suffixes=(".jsonl",)),), operation_id="op")
+    current = capture_production_source_baseline(
+        (WatchSource("codex", root, layout=export_drop_layout((".jsonl",))),), operation_id="op"
+    )
     assert {row.path: row.disposition for row in current.decisions}[str(path)] == "excluded"
 
     merged = merge_pending_production_baseline(current, earlier)
@@ -688,7 +692,7 @@ def test_an_unreadable_state_database_is_a_retryable_fault_not_an_exclusion(tmp_
     state.chmod(0)
     try:
         baseline = capture_production_source_baseline(
-            (WatchSource("codex", root, suffixes=(".sqlite",)),), operation_id="unreadable"
+            (WatchSource("codex", root, layout=export_drop_layout((".sqlite",))),), operation_id="unreadable"
         )
     finally:
         state.chmod(0o600)
@@ -709,7 +713,7 @@ def test_non_database_bytes_under_a_state_name_stay_an_intake_exclusion(tmp_path
     state = root / "state_5.sqlite"
     state.write_bytes(b"not a database, just text\n" * 64)
     baseline = capture_production_source_baseline(
-        (WatchSource("codex", root, suffixes=(".sqlite",)),), operation_id="not-a-database"
+        (WatchSource("codex", root, layout=export_drop_layout((".sqlite",))),), operation_id="not-a-database"
     )
     [row] = [row for row in baseline.decisions if row.path == str(state)]
     assert row.disposition == "excluded"
@@ -792,7 +796,7 @@ def test_whole_zip_member_revision_is_hashed_without_buffering_the_member(
         lambda zf, info: ChunkOnlyReader(original_open(zf, info)),
     )
     baseline = capture_production_source_baseline(
-        (WatchSource("claude-code", root, suffixes=(".zip",)),), operation_id="stream"
+        (WatchSource("claude-code", root, layout=export_drop_layout((".zip",))),), operation_id="stream"
     )
     accepted = baseline.accepted
     assert [(row.path, row.revision, row.material_bytes) for row in accepted] == [
@@ -816,7 +820,7 @@ def _baselined_growing_file(tmp_path: Path, content: bytes) -> tuple[Path, Produ
     root.mkdir()
     path = root / "rollout-2026-06-02T00-00-00-grow.jsonl"
     path.write_bytes(content)
-    source = WatchSource("codex", root, suffixes=(".jsonl",))
+    source = WatchSource("codex", root, layout=export_drop_layout((".jsonl",)))
     baseline = capture_production_source_baseline((source,), operation_id="op")
     assert [(row.path, row.revision) for row in baseline.accepted] == [
         (str(path), hashlib.sha256(content).hexdigest())

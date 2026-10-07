@@ -21,6 +21,7 @@ from unittest.mock import patch
 from polylogue.core.enums import Provider
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
+from polylogue.sources.source_layout import export_drop_layout
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.cursor_authority import fixture_cursor_authority
@@ -272,7 +273,7 @@ def _run_case(
         async with live_owner_set(root) as owners:
             watcher = LiveWatcher(
                 cast(Any, polylogue),
-                (WatchSource(name="codex", root=source_root),),
+                (WatchSource(name="codex", root=source_root, layout=export_drop_layout((".jsonl",))),),
                 cursor=cursor,
                 **owners.watcher_kwargs(),
             )

@@ -172,21 +172,23 @@ def test_seal_detects_a_same_size_edit_and_an_added_file(tmp_path: Path) -> None
 
 def test_explicit_corpus_admits_only_watched_transcripts(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    sessions = home / ".codex" / "sessions"
+    sessions = home / ".codex" / "sessions" / "2026" / "01" / "01"
     sessions.mkdir(parents=True)
-    (sessions / "rollout.jsonl").write_text("{}\n", encoding="utf-8")
+    (sessions / "rollout-a.jsonl").write_text("{}\n", encoding="utf-8")
     (sessions / "large.bin").write_bytes(b"x")
     with pytest.raises(ValueError, match="not a transcript"):
         corpus_from_files(tmp_path / "bad", [sessions / "large.bin"], home=home)
-    manifest = corpus_from_files(tmp_path / "good", [sessions / "rollout.jsonl"], home=home)
+    manifest = corpus_from_files(tmp_path / "good", [sessions / "rollout-a.jsonl"], home=home)
     assert manifest["kind"] == "files"
 
 
 def test_a_sample_that_draws_nothing_still_seals(tmp_path: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
-    (root / "one.jsonl").write_bytes(b"x" * 1000)
-    sources = (SampleSource("codex", root, "home/.codex/sessions", (".jsonl",)),)
+    day = root / "2026" / "01" / "01"
+    day.mkdir(parents=True)
+    (day / "rollout-one.jsonl").write_bytes(b"x" * 1000)
+    sources = (SampleSource("codex", root, "home/.codex/sessions"),)
     for seed in range(20):
         manifest = sample_real(tmp_path / f"s{seed}", seed=seed, fraction=0.01, sources=sources)
         assert manifest["file_count"] in {0, 1}
@@ -283,15 +285,16 @@ def test_sample_is_seeded_and_keeps_session_units_together(tmp_path: Path) -> No
     """Anti-vacuity: sampling files instead of session units separates a
     subagent transcript from its parent in some seed."""
     home = tmp_path / "home"
-    projects = home / ".claude" / "projects" / "proj"
+    projects = home / ".claude" / "projects" / "-proj"
     for index in range(20):
-        session = projects / f"s{index:02d}.jsonl"
+        session_id = f"00000000-0000-4000-8000-{index:012d}"
+        session = projects / f"{session_id}.jsonl"
         session.parent.mkdir(parents=True, exist_ok=True)
         session.write_bytes(b"x" * (1000 + index))
-        child = projects / f"s{index:02d}" / "subagents" / "agent-a.jsonl"
+        child = projects / session_id / "subagents" / "agent-a.jsonl"
         child.parent.mkdir(parents=True)
         child.write_bytes(b"y" * 500)
-    sources = (SampleSource("claude-code", home / ".claude" / "projects", "home/.claude/projects", (".jsonl",), True),)
+    sources = (SampleSource("claude-code", home / ".claude" / "projects", "home/.claude/projects", True),)
     first = sample_real(tmp_path / "a", seed=5, fraction=0.3, sources=sources)
     again = sample_real(tmp_path / "b", seed=5, fraction=0.3, sources=sources)
     assert first["digest"] == again["digest"]
@@ -362,9 +365,11 @@ def test_stratum_boundary_is_one_draw(tmp_path: Path) -> None:
     file in nearly every seed instead of about one in ten."""
     root = tmp_path / "src"
     root.mkdir()
+    day = root / "2026" / "01" / "01"
+    day.mkdir(parents=True)
     for index in range(50):
-        (root / f"f{index:02d}.jsonl").write_bytes(b"x" * 1000)
-    sources = (SampleSource("codex", root, "home/.codex/sessions", (".jsonl",)),)
+        (day / f"rollout-f{index:02d}.jsonl").write_bytes(b"x" * 1000)
+    sources = (SampleSource("codex", root, "home/.codex/sessions"),)
     seeds = 60
     selected = sum(
         sample_real(tmp_path / f"s{seed}", seed=seed, fraction=0.002, sources=sources)["file_count"]
@@ -414,13 +419,13 @@ def test_seal_detects_an_edited_population_parameter(tmp_path: Path) -> None:
 def test_private_corpora_are_owner_only(tmp_path: Path) -> None:
     """Anti-vacuity: default creation modes leave the copy world-readable."""
     home = tmp_path / "home"
-    sessions = home / ".codex" / "sessions"
+    sessions = home / ".codex" / "sessions" / "2026" / "01" / "01"
     sessions.mkdir(parents=True)
-    (sessions / "rollout.jsonl").write_text("{}\n", encoding="utf-8")
+    (sessions / "rollout-a.jsonl").write_text("{}\n", encoding="utf-8")
     out = tmp_path / "corpus"
-    corpus_from_files(out, [sessions / "rollout.jsonl"], home=home)
+    corpus_from_files(out, [sessions / "rollout-a.jsonl"], home=home)
     assert out.stat().st_mode & 0o077 == 0
-    copied = out / "home" / ".codex" / "sessions" / "rollout.jsonl"
+    copied = out / "home" / ".codex" / "sessions" / "2026" / "01" / "01" / "rollout-a.jsonl"
     assert copied.stat().st_mode & 0o077 == 0
 
 
@@ -570,10 +575,12 @@ def test_sampled_units_carry_their_sidecars(tmp_path: Path) -> None:
     from devtools.fresh_build_bench.corpus import default_sample_sources
 
     home = tmp_path / "home"
-    project = home / ".claude" / "projects" / "proj"
-    (project / "s1" / "tool-results").mkdir(parents=True)
-    (project / "s1.jsonl").write_text("{}\n", encoding="utf-8")
-    (project / "s1" / "tool-results" / "toolu_1.txt").write_text("full output", encoding="utf-8")
+    project = home / ".claude" / "projects" / "-proj"
+    (project / "11111111-1111-4111-8111-111111111111" / "tool-results").mkdir(parents=True)
+    (project / "11111111-1111-4111-8111-111111111111.jsonl").write_text("{}\n", encoding="utf-8")
+    (project / "11111111-1111-4111-8111-111111111111" / "tool-results" / "toolu_1.txt").write_text(
+        "full output", encoding="utf-8"
+    )
     gemini = home / ".gemini" / "tmp" / "hash1"
     (gemini / "chats").mkdir(parents=True)
     (gemini / "tool-outputs" / "session-x").mkdir(parents=True)
@@ -581,7 +588,7 @@ def test_sampled_units_carry_their_sidecars(tmp_path: Path) -> None:
     (gemini / "tool-outputs" / "session-x" / "shell_1.txt").write_text("output", encoding="utf-8")
     manifest = sample_real(tmp_path / "corpus", seed=1, fraction=1.0, sources=default_sample_sources(home))
     paths = {row[0] for row in manifest["files"]}
-    assert "home/.claude/projects/proj/s1/tool-results/toolu_1.txt" in paths
+    assert "home/.claude/projects/-proj/11111111-1111-4111-8111-111111111111/tool-results/toolu_1.txt" in paths
     assert "home/.gemini/tmp/hash1/tool-outputs/session-x/shell_1.txt" in paths
 
 
@@ -699,10 +706,12 @@ def test_component_commands_refuse_a_corpus_inside_the_checkout(tmp_path: Path) 
 
 def _sidecar_corpus(tmp_path: Path) -> Path:
     corpus = tmp_path / "corpus"
-    project = corpus / "home" / ".claude" / "projects" / "proj"
-    (project / "s1" / "tool-results").mkdir(parents=True)
-    (project / "s1.jsonl").write_text("{}\n", encoding="utf-8")
-    (project / "s1" / "tool-results" / "toolu_1.txt").write_text("full output", encoding="utf-8")
+    project = corpus / "home" / ".claude" / "projects" / "-proj"
+    (project / "11111111-1111-4111-8111-111111111111" / "tool-results").mkdir(parents=True)
+    (project / "11111111-1111-4111-8111-111111111111.jsonl").write_text("{}\n", encoding="utf-8")
+    (project / "11111111-1111-4111-8111-111111111111" / "tool-results" / "toolu_1.txt").write_text(
+        "full output", encoding="utf-8"
+    )
     seal(corpus, kind="sample", parameters={})
     return corpus
 
@@ -715,7 +724,10 @@ def test_blob_component_stores_sidecars(tmp_path: Path) -> None:
     corpus = _sidecar_corpus(tmp_path)
     manifest = load_manifest(corpus)
     blob_files = components._corpus_files(corpus, manifest, None, None)
-    assert sorted(path.name for path, _origin, _size in blob_files) == ["s1.jsonl", "toolu_1.txt"]
+    assert sorted(path.name for path, _origin, _size in blob_files) == [
+        "11111111-1111-4111-8111-111111111111.jsonl",
+        "toolu_1.txt",
+    ]
 
 
 def test_an_empty_component_selection_fails(tmp_path: Path) -> None:
@@ -736,21 +748,40 @@ def test_seal_covers_sidecar_mtimes_and_a_sample_keeps_them(tmp_path: Path) -> N
     from devtools.fresh_build_bench.corpus import default_sample_sources
 
     corpus = _sidecar_corpus(tmp_path)
-    sidecar = corpus / "home" / ".claude" / "projects" / "proj" / "s1" / "tool-results" / "toolu_1.txt"
+    sidecar = (
+        corpus
+        / "home"
+        / ".claude"
+        / "projects"
+        / "-proj"
+        / "11111111-1111-4111-8111-111111111111"
+        / "tool-results"
+        / "toolu_1.txt"
+    )
     verify_manifest(corpus, load_manifest(corpus))
     os.utime(sidecar, ns=(sidecar.stat().st_atime_ns, sidecar.stat().st_mtime_ns + 10**9))
     with pytest.raises(ValueError, match="changed mtime"):
         verify_manifest(corpus, load_manifest(corpus))
 
     home = tmp_path / "home"
-    source = home / ".claude" / "projects" / "proj" / "s1" / "tool-results" / "toolu_1.txt"
+    source = (
+        home
+        / ".claude"
+        / "projects"
+        / "-proj"
+        / "11111111-1111-4111-8111-111111111111"
+        / "tool-results"
+        / "toolu_1.txt"
+    )
     source.parent.mkdir(parents=True)
-    (home / ".claude" / "projects" / "proj" / "s1.jsonl").write_text("{}\n", encoding="utf-8")
+    (home / ".claude" / "projects" / "-proj" / "11111111-1111-4111-8111-111111111111.jsonl").write_text(
+        "{}\n", encoding="utf-8"
+    )
     source.write_text("full output", encoding="utf-8")
     os.utime(source, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
     manifest = sample_real(tmp_path / "sampled", seed=1, fraction=1.0, sources=default_sample_sources(home))
     assert manifest["sidecar_mtimes_ns"] == {
-        "home/.claude/projects/proj/s1/tool-results/toolu_1.txt": 1_700_000_000_000_000_000
+        "home/.claude/projects/-proj/11111111-1111-4111-8111-111111111111/tool-results/toolu_1.txt": 1_700_000_000_000_000_000
     }
 
 
@@ -1420,17 +1451,18 @@ def test_sampling_follows_symlinked_source_directories(tmp_path: Path) -> None:
     behind a linked directory are missing from the sample and its population."""
     from devtools.fresh_build_bench.corpus import SampleSource, _units
 
-    elsewhere = tmp_path / "mnt" / "sessions"
-    elsewhere.mkdir(parents=True)
-    (elsewhere / "rollout.jsonl").write_bytes(b"{}\n")
     root = tmp_path / "home" / ".codex" / "sessions"
-    root.mkdir(parents=True)
-    (root / "team").symlink_to(elsewhere, target_is_directory=True)
-    source = SampleSource("codex", root, "home/.codex/sessions", (".jsonl",))
+    # A link whose target stays inside the root is followed, as discovery
+    # follows it; the target itself sits where the layout never reaches.
+    elsewhere = root / ".store" / "2026"
+    (elsewhere / "01" / "01").mkdir(parents=True)
+    (elsewhere / "01" / "01" / "rollout-a.jsonl").write_bytes(b"{}\n")
+    (root / "2026").symlink_to(elsewhere, target_is_directory=True)
+    source = SampleSource("codex", root, "home/.codex/sessions")
 
     units = _units(source)
 
-    assert [Path(key).name for key, _paths, _size in units] == ["rollout.jsonl"]
+    assert [Path(key).name for key, _paths, _size in units] == ["rollout-a.jsonl"]
 
 
 def test_a_progressing_shutdown_is_never_killed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1570,15 +1602,16 @@ def test_sampling_skips_linked_files_and_refuses_unreadable_subtrees(tmp_path: P
     from devtools.fresh_build_bench.corpus import SampleSource, _units
 
     root = tmp_path / "sessions"
-    root.mkdir()
-    (root / "real.jsonl").write_bytes(b"{}\n")
+    day = root / "2026" / "01" / "01"
+    day.mkdir(parents=True)
+    (day / "rollout-real.jsonl").write_bytes(b"{}\n")
     (tmp_path / "elsewhere.jsonl").write_bytes(b"{}\n")
-    (root / "latest.jsonl").symlink_to(tmp_path / "elsewhere.jsonl")
-    source = SampleSource("codex", root, "home/.codex/sessions", (".jsonl",))
+    (day / "rollout-latest.jsonl").symlink_to(tmp_path / "elsewhere.jsonl")
+    source = SampleSource("codex", root, "home/.codex/sessions")
 
-    assert [Path(key).name for key, _paths, _size in _units(source)] == ["real.jsonl"]
+    assert [Path(key).name for key, _paths, _size in _units(source)] == ["rollout-real.jsonl"]
 
-    locked = root / "locked"
+    locked = root / "2026" / "02"
     locked.mkdir()
     (locked / "hidden.jsonl").write_bytes(b"{}\n")
     locked.chmod(0)
@@ -1621,42 +1654,45 @@ def test_named_transcripts_bring_their_sidecar_units(tmp_path: Path) -> None:
     from devtools.fresh_build_bench.corpus import corpus_from_files
 
     home = tmp_path / "home"
-    project = home / ".claude" / "projects" / "proj"
-    (project / "s1" / "tool-results").mkdir(parents=True)
-    transcript = project / "s1.jsonl"
+    project = home / ".claude" / "projects" / "-proj"
+    (project / "11111111-1111-4111-8111-111111111111" / "tool-results").mkdir(parents=True)
+    transcript = project / "11111111-1111-4111-8111-111111111111.jsonl"
     transcript.write_text('{"type": "user", "message": {"role": "user", "content": "hi"}}\n', encoding="utf-8")
-    (project / "s1" / "tool-results" / "toolu_1.txt").write_text("full output", encoding="utf-8")
+    (project / "11111111-1111-4111-8111-111111111111" / "tool-results" / "toolu_1.txt").write_text(
+        "full output", encoding="utf-8"
+    )
 
     corpus_from_files(tmp_path / "corpus", [transcript], home=home)
 
-    sealed = tmp_path / "corpus" / "home" / ".claude" / "projects" / "proj"
-    assert (sealed / "s1.jsonl").is_file()
-    assert (sealed / "s1" / "tool-results" / "toolu_1.txt").is_file()
+    sealed = tmp_path / "corpus" / "home" / ".claude" / "projects" / "-proj"
+    assert (sealed / "11111111-1111-4111-8111-111111111111.jsonl").is_file()
+    assert (sealed / "11111111-1111-4111-8111-111111111111" / "tool-results" / "toolu_1.txt").is_file()
 
 
 def test_a_file_below_a_linked_source_directory_is_a_member_by_its_lexical_path(tmp_path: Path) -> None:
     """``corpus files`` accepts a transcript production reaches through a linked directory.
 
     Anti-vacuity (Codex P2, #5678): resolve the file before the membership
-    check and ``/mnt/team/session.jsonl`` is outside the sessions root.
+    check and ``.store/team/...`` is outside the declared Codex layout.
     """
     from devtools.fresh_build_bench.corpus import corpus_from_files
 
     home = tmp_path / "home"
     sessions = home / ".codex" / "sessions"
     sessions.mkdir(parents=True)
-    team = tmp_path / "mnt" / "team"
-    team.mkdir(parents=True)
-    rollout = team / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl"
+    team = sessions / ".store" / "team"
+    (team / "01" / "01").mkdir(parents=True)
+    rollout = team / "01" / "01" / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl"
     rollout.write_text(
         json.dumps({"type": "session_meta", "payload": {"id": "00000000-0000-0000-0000-000000000001"}}) + "\n",
         encoding="utf-8",
     )
-    (sessions / "team").symlink_to(team, target_is_directory=True)
+    (sessions / "2026").symlink_to(team, target_is_directory=True)
+    linked = sessions / "2026" / "01" / "01" / rollout.name
 
-    corpus_from_files(tmp_path / "corpus", [sessions / "team" / rollout.name], home=home)
+    corpus_from_files(tmp_path / "corpus", [linked], home=home)
 
-    assert (tmp_path / "corpus" / "home" / ".codex" / "sessions" / "team" / rollout.name).is_file()
+    assert (tmp_path / "corpus" / "home" / ".codex" / "sessions" / "2026" / "01" / "01" / rollout.name).is_file()
 
 
 def test_a_cancellation_interrupts_the_fingerprint_sort(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1854,9 +1890,11 @@ def test_a_full_fraction_sample_takes_zero_byte_units(tmp_path: Path) -> None:
     and the empty file is in the population but not the corpus.
     """
     root = tmp_path / "src"
-    root.mkdir()
-    (root / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl").write_bytes(b"")
-    sources = (SampleSource("codex", root, "home/.codex/sessions", (".jsonl",)),)
+    (root / "2026" / "01" / "01").mkdir(parents=True)
+    (
+        root / "2026" / "01" / "01" / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl"
+    ).write_bytes(b"")
+    sources = (SampleSource("codex", root, "home/.codex/sessions"),)
 
     manifest = sample_real(tmp_path / "corpus", seed=1, fraction=1.0, sources=sources)
 
@@ -1872,10 +1910,11 @@ def test_a_source_rewritten_after_its_copy_refuses_the_sample(tmp_path: Path, mo
     from devtools.fresh_build_bench import corpus
 
     root = tmp_path / "src"
-    root.mkdir()
-    first = root / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl"
+    day = root / "2026" / "01" / "01"
+    day.mkdir(parents=True)
+    first = day / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl"
     first.write_bytes(b"aaaa\n")
-    (root / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000002.jsonl").write_bytes(b"bbbb\n")
+    (day / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000002.jsonl").write_bytes(b"bbbb\n")
     real_copy = corpus._copy_private
     copies: list[Path] = []
 
@@ -1886,7 +1925,7 @@ def test_a_source_rewritten_after_its_copy_refuses_the_sample(tmp_path: Path, mo
             first.write_bytes(b"cccc\n")
 
     monkeypatch.setattr(corpus, "_copy_private", copy_then_rewrite_the_first)
-    sources = (SampleSource("codex", root, "home/.codex/sessions", (".jsonl",)),)
+    sources = (SampleSource("codex", root, "home/.codex/sessions"),)
 
     with pytest.raises(ValueError, match="changed after it was copied"):
         sample_real(tmp_path / "corpus", seed=1, fraction=1.0, sources=sources)

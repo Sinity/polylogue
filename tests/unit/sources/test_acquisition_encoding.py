@@ -78,8 +78,10 @@ class TestZipBomHandling:
 
     def test_bom_in_jsonl_lines_stripped(self, tmp_path: Path) -> None:
         """JSONL with BOM chars on individual lines inside ZIP."""
-        EncodingFixtureBuilder.bom_in_jsonl_zip(tmp_path)
-        results = _collect_sessions(tmp_path, provider="codex")
+        # A Codex ZIP is an export, not a ~/.codex/sessions position: it is
+        # declared as the one explicit input file.
+        archive = EncodingFixtureBuilder.bom_in_jsonl_zip(tmp_path)
+        results = _collect_sessions(archive, provider="codex")
         assert len(results) >= 1
         conv = results[0]
         assert conv.messages
@@ -105,8 +107,8 @@ class TestZipLineEndings:
 
     def test_mixed_line_endings_jsonl_in_zip(self, tmp_path: Path) -> None:
         """JSONL with mixed CRLF/LF/CR endings inside ZIP parses correctly."""
-        EncodingFixtureBuilder.mixed_line_endings_zip(tmp_path)
-        results = _collect_sessions(tmp_path, provider="codex")
+        archive = EncodingFixtureBuilder.mixed_line_endings_zip(tmp_path)
+        results = _collect_sessions(archive, provider="codex")
         assert len(results) >= 1
         conv = results[0]
         # Should have parsed messages from the JSONL despite mixed endings
