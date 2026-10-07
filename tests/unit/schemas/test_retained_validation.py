@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from polylogue.core.enums import ValidationMode, ValidationStatus
+from polylogue.schemas import observation_spill
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.retained_validation import _bounded_validator, _normalized
 from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
@@ -201,6 +203,77 @@ def test_public_validator_shares_spill_safe_extended_keywords() -> None:
     assert not validator.validate(
         {"chosen": 1, "unique": [1, 1.0], "items": [2, 3], "branch": 3}, include_drift=False
     ).is_valid
+
+
+def test_public_validator_preserves_local_refs_anyof_and_oneof() -> None:
+    validator = SchemaValidator(
+        {
+            "$defs": {"choice": {"anyOf": [{"type": "string"}, {"type": "integer"}]}},
+            "type": "object",
+            "properties": {
+                "referenced": {"$ref": "#/$defs/choice"},
+                "exclusive": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
+            },
+            "required": ["referenced", "exclusive"],
+        },
+        strict=False,
+    )
+
+    assert validator.validate({"referenced": 2, "exclusive": "text"}, include_drift=False).is_valid
+    assert not validator.validate({"referenced": True, "exclusive": "text"}, include_drift=False).is_valid
+
+
+def test_retained_reduces_many_invalid_records_and_closes_spill_on_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = _registry(tmp_path, {"type": "string"})
+    path = tmp_path / "invalid.jsonl"
+    _write_jsonl(path, [{"type": "record", "kind": index} for index in range(512)])
+    resolution = _resolution("v2", explicit_reason="exact_structure")
+    verdict = validate_retained_document(
+        "claude_code",
+        path,
+        mode=ValidationMode.ADVISORY,
+        raw_id="raw-many",
+        revision_sha256="f" * 64,
+        evidence_id="raw-many",
+        jsonl=True,
+        schema_resolution=resolution,
+        schema_resolution_is_explicit=True,
+        registry=registry,
+    )
+    assert verdict.sample_count == 512
+    assert verdict.invalid_count == 512
+    assert verdict.error_count == 512
+
+    captured: dict[str, str] = {}
+    original_enter = observation_spill.StreamedJSONDocument.__enter__
+
+    def enter(document: Any) -> Any:
+        payload = original_enter(document)
+        captured["database"] = str(document.connection.execute("PRAGMA database_list").fetchone()[2])
+        return payload
+
+    monkeypatch.setattr(observation_spill.StreamedJSONDocument, "__enter__", enter)
+    monkeypatch.setattr(
+        "polylogue.schemas.retained_validation.check_compute_cancelled",
+        lambda: (_ for _ in ()).throw(RuntimeError("cancelled")),
+    )
+    with pytest.raises(RuntimeError, match="cancelled"):
+        validate_retained_document(
+            "claude-code",
+            path,
+            mode=ValidationMode.ADVISORY,
+            raw_id="raw-cancel",
+            revision_sha256="e" * 64,
+            evidence_id="raw-cancel",
+            jsonl=True,
+            schema_resolution=resolution,
+            schema_resolution_is_explicit=True,
+            registry=registry,
+        )
+    assert captured["database"]
+    assert not Path(captured["database"]).exists()
 
 
 def test_committed_schema_files_match_draft202012_validity() -> None:
