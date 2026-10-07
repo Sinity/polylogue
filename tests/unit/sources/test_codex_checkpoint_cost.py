@@ -8,12 +8,52 @@ from typing import Any
 
 import pytest
 
-from polylogue.core.enums import ValidationMode
+from polylogue.archive.revision_authority import RawRevisionKind
+from polylogue.core.enums import Provider, ValidationMode
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.schemas import retained_validation
 from polylogue.sources import prepared_jsonl
 from polylogue.sources.prepared_jsonl import PreparedJsonl
+from polylogue.storage.derived.raw import (
+    _neutral_artifact_key,
+    _neutral_cohort_identity,
+    _NeutralParserOperand,
+)
 from tests.infra.retained_replay import replay_retained_components
 from tests.infra.revision_backfill_benchmark import build_revision_chain_corpus
+
+
+def test_neutral_cohort_digest_is_stable_typed_and_shared_by_local_keys() -> None:
+    raw_ids = tuple(f"raw-{index:03d}" for index in range(51))
+    operands: dict[str, _NeutralParserOperand] = {}
+    for index, raw_id in enumerate(raw_ids):
+        source_path = f"codex/{raw_id}.jsonl" if index != 25 else "codex/surrogate-\udcff.jsonl"
+        coordinate = CapturedZipMemberCoordinate(
+            canonical_container="/archive/capture.zip",
+            declared_container="/declared/capture.zip",
+            member_name=raw_id,
+            entry_ordinal=index,
+            split_index=0,
+            addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+            container_blob_hash="a" * 64,
+            decoder_fingerprint="b" * 64,
+        )
+        operands[raw_id] = _NeutralParserOperand(
+            descriptor=(Provider.CODEX, f"{index:064x}", source_path, RawRevisionKind.FULL, index + 1),
+            profile_identity=None,
+            fallback_timestamp=None,
+            native_id=None,
+            zip_coordinate=coordinate,
+            append_logical_key=None,
+        )
+
+    digest = _neutral_cohort_identity(raw_ids, operands)
+    assert len(digest) == 64
+    assert _neutral_cohort_identity(raw_ids, operands) == digest
+    assert _neutral_cohort_identity(tuple(reversed(raw_ids)), operands) != digest
+    keys = tuple(_neutral_artifact_key(raw_id, operands[raw_id], ValidationMode.ADVISORY, digest) for raw_id in raw_ids)
+    assert all(key[-1] == ("eligible-cohort-sha256", digest) for key in keys)
+    assert all(key[-1] != raw_ids for key in keys)
 
 
 @pytest.mark.parametrize("capture_count", [5, 51, 804])

@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import hashlib
+import json
 import sqlite3
 import sys
 import tempfile
@@ -316,29 +317,63 @@ def _neutral_artifact_key(
     raw_id: str,
     operand: _NeutralParserOperand,
     validation_mode: ValidationMode,
-    cohort_identity: tuple[object, ...],
+    cohort_identity: str,
 ) -> tuple[object, ...]:
-    """Identify parsed artifacts by every typed parser input and selected cohort."""
-    return (_neutral_parser_cache_identity(raw_id, operand), validation_mode, cohort_identity)
+    """Identify one parsed artifact by local inputs and one shared cohort digest."""
+    return (
+        _neutral_parser_cache_identity(raw_id, operand),
+        ("validation-mode", validation_mode.value),
+        ("eligible-cohort-sha256", cohort_identity),
+    )
 
 
 def _neutral_parser_cache_identity(raw_id: str, operand: _NeutralParserOperand) -> tuple[object, ...]:
     """Keep source kind exact for rebind proof while sharing equivalent full/unknown parses."""
     provider, blob_hash, source_path, kind, size = operand.descriptor
+    coordinate = operand.zip_coordinate
+    zip_identity: tuple[object, ...] | None = None
+    if coordinate is not None:
+        zip_identity = (
+            "captured-zip-coordinate",
+            coordinate.canonical_container,
+            coordinate.declared_container,
+            coordinate.member_name,
+            coordinate.entry_ordinal,
+            coordinate.split_index,
+            ("enum", type(coordinate.addressing_mode).__qualname__, coordinate.addressing_mode.value),
+            coordinate.container_blob_hash,
+            coordinate.decoder_fingerprint,
+            coordinate.profile_namespace,
+        )
     return (
-        raw_id,
-        provider,
-        blob_hash,
-        source_path,
-        kind.value == "append",
-        size,
-        operand.profile_identity,
-        operand.fallback_timestamp,
-        operand.native_id,
-        operand.zip_coordinate,
-        operand.append_logical_key,
-        operand.sidecar_signature,
+        ("raw-id", raw_id),
+        ("provider-enum", type(provider).__module__, type(provider).__qualname__, provider.value),
+        ("blob-sha256", blob_hash),
+        ("source-path", source_path),
+        ("append-revision", kind.value == "append"),
+        ("blob-size", size),
+        ("profile-identity", operand.profile_identity),
+        ("fallback-timestamp", operand.fallback_timestamp),
+        ("native-id", operand.native_id),
+        ("zip-coordinate", zip_identity),
+        ("append-logical-key", operand.append_logical_key),
+        ("sidecar-signature", operand.sidecar_signature),
     )
+
+
+def _neutral_cohort_identity(raw_ids: Sequence[str], operands: Mapping[str, _NeutralParserOperand]) -> str:
+    """Digest the exact ordered eligible cohort once for all of its cache keys."""
+    recipe = (
+        "neutral-parser-cohort-v1",
+        tuple(_neutral_parser_cache_identity(raw_id, operands[raw_id]) for raw_id in raw_ids),
+    )
+    return _neutral_identity_digest(recipe)
+
+
+def _neutral_identity_digest(recipe: tuple[object, ...]) -> str:
+    """Hash the typed, JSON-safe identity without lossy text coercion."""
+    encoded = json.dumps(recipe, ensure_ascii=True, separators=(",", ":"), allow_nan=False).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _neutral_parser_operand(
@@ -1891,9 +1926,7 @@ class RawObservationDerivation(RawObservationInspection):
                 strict_jsonl_records=True,
                 parse_prefix_size=parse_prefix_size,
                 sidecar_resolver=captured_sidecar_resolver,
-                progress_identity=hashlib.sha256(
-                    repr(neutral_keys[raw_id]).encode("utf-8", "surrogatepass")
-                ).hexdigest(),
+                progress_identity=_neutral_identity_digest(("neutral-parser-work-v1", neutral_keys[raw_id])),
             )
             # Transfer ownership before validation or checkpoint work can fail.
             carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
@@ -1916,10 +1949,7 @@ class RawObservationDerivation(RawObservationInspection):
                 carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
             return neutral
 
-        cohort_identity: tuple[object, ...] = (
-            eligible_raw_ids,
-            tuple(_neutral_parser_cache_identity(raw_id, operands[raw_id]) for raw_id in eligible_raw_ids),
-        )
+        cohort_identity = _neutral_cohort_identity(eligible_raw_ids, operands)
         for raw_id in eligible_raw_ids:
             artifact_key = _neutral_artifact_key(
                 raw_id,
@@ -2212,13 +2242,7 @@ class RawObservationDerivation(RawObservationInspection):
                     neutral_operands = {
                         raw_id: _neutral_parser_operand(selection_read, raw_id) for raw_id in neutral_raw_ids
                     }
-                    neutral_cohort: tuple[object, ...] = (
-                        neutral_raw_ids,
-                        tuple(
-                            _neutral_parser_cache_identity(raw_id, neutral_operands[raw_id])
-                            for raw_id in neutral_raw_ids
-                        ),
-                    )
+                    neutral_cohort = _neutral_cohort_identity(neutral_raw_ids, neutral_operands)
                     neutral_artifact_keys = {
                         raw_id: _neutral_artifact_key(
                             raw_id, neutral_operands[raw_id], self._validation_mode, neutral_cohort
