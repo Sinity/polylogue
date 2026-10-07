@@ -27,7 +27,7 @@ from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.provider_identity import normalize_provider_token
 from polylogue.core.sources import origin_from_provider
-from polylogue.core.work_progress import advance_work_progress, reports_work_progress
+from polylogue.core.work_progress import advance_work_progress, reports_work_progress, utf8_byte_length
 from polylogue.schemas.drift_sentinel import (
     FIELD_CHANGED,
     KNOWN_FIELD_UNREAD,
@@ -682,7 +682,7 @@ def _diagnostic(error: ValidationError) -> str:
 def _validation_value_size(value: object) -> int:
     """Count the scalar JSON content actually reached by schema traversal."""
     if isinstance(value, str):
-        return len(value.encode("utf-8", "surrogatepass"))
+        return utf8_byte_length(value)
     if value is None:
         return 4
     if isinstance(value, bool):
@@ -740,7 +740,7 @@ class _NormalizedObject(dict[str, object]):
     def __iter__(self) -> Iterator[str]:
         for key in self._value:
             check_compute_cancelled()
-            advance_work_progress(bytes=len(key.encode("utf-8", "surrogatepass")))
+            advance_work_progress(bytes=utf8_byte_length(key))
             yield key
 
     def __len__(self) -> int:
@@ -761,12 +761,10 @@ class _NormalizedObject(dict[str, object]):
 
     def __getitem__(self, key: str) -> object:
         check_compute_cancelled()
-        advance_work_progress(
-            bytes=len(key.encode("utf-8", "surrogatepass")) + _validation_value_size(self._value[key])
-        )
+        value = self._value[key]
+        advance_work_progress(bytes=utf8_byte_length(key) + _validation_value_size(value))
         from polylogue.schemas.validator import _schema_for_property
 
-        value = self._value[key]
         child_schema = _schema_for_property(self._schema, key, value, self._root, connection=self._connection)
         return _normalized(value, child_schema, self._root, self._connection)
 
@@ -779,13 +777,13 @@ class _NormalizedObject(dict[str, object]):
     def items(self) -> Iterator[tuple[str, object]]:  # type: ignore[override]
         for key in self._value:
             check_compute_cancelled()
-            advance_work_progress(bytes=len(key.encode("utf-8", "surrogatepass")))
+            advance_work_progress(bytes=utf8_byte_length(key))
             yield key, self[key]
 
     def values(self) -> Iterator[object]:  # type: ignore[override]
         for key in self._value:
             check_compute_cancelled()
-            advance_work_progress(bytes=len(key.encode("utf-8", "surrogatepass")))
+            advance_work_progress(bytes=utf8_byte_length(key))
             yield self[key]
 
     def __eq__(self, other: object) -> bool:

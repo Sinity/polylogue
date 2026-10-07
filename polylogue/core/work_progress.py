@@ -107,11 +107,21 @@ def advance_work_progress(*, messages: int = 0, bytes: int = 0) -> None:
         progress.advance(messages=messages, bytes=bytes)
 
 
+def utf8_byte_length(value: str) -> int:
+    """Count UTF-8 bytes without allocating a second copy of a large string."""
+    chunk_size = 64 * 1024
+    return sum(
+        len(value[offset : offset + chunk_size].encode("utf-8", "surrogatepass"))
+        for offset in range(0, len(value), chunk_size)
+    )
+
+
 __all__ = [
     "PROGRESS_INTERVAL_S",
     "WORK_PROGRESS_EVENT",
     "WorkProgress",
     "advance_work_progress",
     "reports_work_progress",
+    "utf8_byte_length",
     "work_progress",
 ]
