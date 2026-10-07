@@ -374,6 +374,30 @@ def test_an_unleased_scratch_open_is_refused(
     assert not (stray / "index.db").exists()
 
 
+def test_scoped_offline_archive_owner_can_write_its_separate_scratch_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The one-shot demo owner is an explicit scratch authority without a write lease."""
+    import sqlite3
+
+    from polylogue.maintenance.offline_guard import scoped_offline_archive_writer
+
+    configured = _archive_root(monkeypatch, tmp_path)
+    scratch = tmp_path / "demo-scratch"
+
+    with cli_archive_writer_ownership():
+        with scoped_offline_archive_writer(scratch, owner_id="test-demo-scratch"):
+            connection = sqlite3.connect(str(scratch / "index.db"))
+            try:
+                connection.execute("CREATE TABLE owned (id INTEGER PRIMARY KEY)")
+            finally:
+                connection.close()
+
+    assert (scratch / "index.db").exists()
+    assert not (configured / "index.db").exists()
+
+
 def test_scratch_lease_root_may_not_contain_the_configured_archive(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

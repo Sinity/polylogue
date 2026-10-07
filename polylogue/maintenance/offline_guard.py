@@ -8,6 +8,7 @@ import sqlite3
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,21 @@ class DaemonResidencyUndecidableError(RuntimeError):
     """
 
     code = "daemon_residency_undecidable"
+
+
+_OFFLINE_ARCHIVE_WRITER_ROOT: ContextVar[Path | None] = ContextVar(
+    "polylogue_offline_archive_writer_root", default=None
+)
+
+
+def current_offline_archive_writer_root() -> Path | None:
+    """Return the archive owned by the current scoped offline writer, if any.
+
+    ``asyncio.to_thread`` propagates this context to the actual writer thread,
+    so a CLI boundary can recognize the one-shot archive owner that holds the
+    shared daemon-start lock and archive identity claim.
+    """
+    return _OFFLINE_ARCHIVE_WRITER_ROOT.get()
 
 
 class ArchiveWriterOwnershipError(RuntimeError):
@@ -173,7 +189,11 @@ def scoped_offline_archive_writer(archive_root: Path, *, owner_id: str) -> Itera
                 resident_writer=writer,
             ) from exc
         with OwnedArchiveLocation.acquire(ArchiveLocation.resolve(root), owner_id=owner_id) as owner:
-            yield owner
+            token = _OFFLINE_ARCHIVE_WRITER_ROOT.set(root)
+            try:
+                yield owner
+            finally:
+                _OFFLINE_ARCHIVE_WRITER_ROOT.reset(token)
     finally:
         os.close(fd)
 

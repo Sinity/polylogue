@@ -16,9 +16,9 @@ for the configured root at entry?**
   -- the CLI has no offline writer for it, empty or not -- or, if a daemon
   has arrived since entry, with an ownership refusal naming it. An open
   outside the configured archive is admitted only for a scratch archive held
-  under this command's own write lease and physical custody, which is how
-  demo seeding (``demo seed``/``receipts``/``tour``) builds its synthetic
-  root. Anything else has no owner and is refused.
+  by a scoped one-shot archive owner or a matching write lease plus physical
+  custody. Demo seeding (``demo seed``/``receipts``/``tour``) uses the
+  one-shot owner. Anything else has no owner and is refused.
 * The platform cannot answer the residency question. The boundary **refuses
   loudly**; an unprovable owner is never treated as an absent one.
 
@@ -121,34 +121,44 @@ def _refuse_configured_archive_write(path: Path, root: Path) -> None:
 
 
 def _require_scratch_archive_owner(path: Path, *, configured_root: Path) -> None:
-    """Admit a writable open outside the configured archive only for its leased owner.
+    """Admit a writable open outside the configured archive only for its owner.
 
     Demo seeding (``demo seed``/``receipts``/``tour``) builds a synthetic
-    scratch archive under a write lease bound to that root, with the root's
-    physical custody held by :func:`~polylogue.maintenance.offline_guard.scoped_offline_archive_writer`.
-    Any other writable tier open from the CLI has no owner and is refused.
+    scratch archive under :func:`~polylogue.maintenance.offline_guard.scoped_offline_archive_writer`, which
+    holds both the daemon-start exclusion and the archive's physical identity
+    claim. A separate operation can also own its scratch root with a matching
+    write lease and SQL custody. Any other writable tier open from the CLI has
+    no owner and is refused.
     """
     from polylogue.core.write_lease import current_sql_custody, current_write_lease, require_write_lease
+    from polylogue.maintenance.offline_guard import current_offline_archive_writer_root
 
     lease = current_write_lease()
     lease_root = lease.archive_root.resolve() if lease is not None and lease.archive_root is not None else None
-    if lease_root is None or not path.resolve().is_relative_to(lease_root):
+    offline_root = current_offline_archive_writer_root()
+    if offline_root is not None and lease_root is not None and offline_root != lease_root:
         raise ArchiveWriterOwnershipError(
-            f"this CLI process may not write {path}: only a scratch archive owned under this "
-            "command's own write lease is writable from the CLI",
+            f"this CLI process has overlapping archive owners for {path}: offline owner {offline_root}, "
+            f"write lease {lease_root}",
+            archive_root=offline_root,
+        )
+    owner_root = lease_root or offline_root
+    if owner_root is None or not path.resolve().is_relative_to(owner_root):
+        raise ArchiveWriterOwnershipError(
+            f"this CLI process may not write {path}: only a separately owned scratch archive is writable from the CLI",
             archive_root=path.parent,
         )
     if (
-        configured_root == lease_root
-        or configured_root.is_relative_to(lease_root)
-        or lease_root.is_relative_to(configured_root)
+        configured_root == owner_root
+        or configured_root.is_relative_to(owner_root)
+        or owner_root.is_relative_to(configured_root)
     ):
         raise ArchiveWriterOwnershipError(
-            f"this CLI process may not write {path}: its scratch archive root {lease_root} overlaps the "
+            f"this CLI process may not write {path}: its scratch archive root {owner_root} overlaps the "
             f"configured archive {configured_root}",
             archive_root=configured_root,
         )
-    arrived = resident_archive_writer(lease_root)
+    arrived = resident_archive_writer(owner_root)
     if arrived is not None:
         owned_root, reason = arrived
         raise ArchiveWriterOwnershipError(
@@ -156,6 +166,11 @@ def _require_scratch_archive_owner(path: Path, *, configured_root: Path) -> None
             archive_root=owned_root,
             resident_writer=reason,
         )
+    if offline_root is not None and lease_root is None:
+        # The scoped offline owner holds the shared daemon.pid lock and the
+        # OwnedArchiveLocation claim for this exact root. CLI lease enforcement
+        # stays unarmed in this branch, so no write lease is involved.
+        return
     require_write_lease("CLI scratch archive writer", archive_root=lease_root)
     custody = current_sql_custody()
     if custody is None:
