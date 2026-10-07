@@ -2518,6 +2518,17 @@ def write_parsed_session_to_archive(
             if write_outcome is not None:
                 write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, suppression_skipped=True))
             return session_id
+        if merge_append and _append_rows_already_present_by_native_id(
+            conn, session_id, prepared_write.rows.message_rows
+        ):
+            # A provider may repeat an already stored native message ID with
+            # harmless surrounding whitespace. Prepared rows carry the same
+            # normalized ID that the generated SQLite identity uses, so an
+            # append consisting entirely of existing native identities is
+            # already complete and must not reach the UNIQUE/FK insert path.
+            if write_outcome is not None:
+                write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False))
+            return session_id
         parser_semantic_fingerprint = parser_fingerprint_for_origin(origin)
         lowering_semantic_fingerprint = lowering_fingerprint()
         # This session's own rows are about to be rewritten; drop any stale memoized
@@ -16596,6 +16607,42 @@ def _stored_message_native_id(message: ParsedMessage, duplicate_native_ids: froz
         return None
     stripped = native_id.strip()
     return stripped or None
+
+
+def _append_rows_already_present_by_native_id(
+    conn: sqlite3.Connection,
+    session_id: str,
+    rows: Sequence[tuple[object, ...]],
+) -> bool:
+    """Whether every prepared append row already names a stored native message.
+
+    The incoming row tuples are already lowered through
+    ``_stored_message_native_id``; querying by that value applies exactly the
+    identity normalization used by the generated ``message_id`` column.
+    Returning false for empty or content-addressed rows leaves ordinary
+    append semantics untouched.
+    """
+    if not rows:
+        return False
+    spec = archive_tiers_specs.MESSAGES_SPEC
+    columns = [column.name for column in spec.writable_columns if column.extract_placeholder == "?"]
+    try:
+        native_index = columns.index("native_id")
+    except ValueError as exc:  # pragma: no cover - schema contract
+        raise RuntimeError("messages insert specification has no native_id column") from exc
+    for row in rows:
+        native_id = row[native_index]
+        if not isinstance(native_id, str) or not native_id:
+            return False
+        if (
+            conn.execute(
+                "SELECT 1 FROM messages WHERE session_id = ? AND native_id = ? LIMIT 1",
+                (session_id, native_id),
+            ).fetchone()
+            is None
+        ):
+            return False
+    return True
 
 
 def _block_type(block: ParsedContentBlock) -> BlockType:
