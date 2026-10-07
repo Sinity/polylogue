@@ -81,6 +81,15 @@ responses expose this artifact as an `artifact_ref` relative to the spool root;
 absolute filesystem paths stay inside the receiver process.
 A response carries a typed `outcome`: `accepted` publishes the submission, `noop` retains semantically identical content, and `superseded` retains a different resident revision. `submitted_content_hash` binds the receipt to the exact posted bytes; `content_hash`, `capture_id` and `accepted_identities` identify the retained artifact. Backfill completes accepted/noop captures using the retained hash. It retires superseded items explicitly, releases their retained envelopes and does not advance the incoming provider revision. A superseded response is not proof that its incoming turns were captured.
 
+Snapshot convergence compares attachment occurrences within their observed
+owner and provider attachment ID. Stable provider descriptors and compatible
+known byte evidence guard replacement: an absent size or acquired byte carrier
+may be enriched, while unequal known sizes or different known bytes for the
+same occurrence remain a conflict. Native-plan acquisition outcomes, content
+hashes, and raw-revision ordinal coordinates remain in the accepted envelope
+but do not redefine the provider attachment across snapshots. Repeated
+attachment IDs on different owner messages remain separate occurrences.
+
 Every receiver response carries `X-Request-ID`. If the extension or a local
 debug probe sends a safe `X-Request-ID` header, the receiver echoes its
 sanitized value; otherwise it generates one. Receiver logs use the same id for

@@ -64,6 +64,12 @@ STAGING_DIRNAME = ".staging"
 # metadata a provider might add.
 _BACKFILL_OBSERVER_ATTRIBUTION_KEYS = frozenset({"job_id", "queue_id", "instance_id"})
 
+# These fields describe which retained raw revision produced a prepared asset
+# and what the receiver acquired for it. They remain in the serialized
+# envelope and its content fingerprint; they are not intrinsic attachment
+# identity when two snapshots of the same provider session are compared.
+_ATTACHMENT_RAW_COORDINATE_KEYS = frozenset({"native_attachment_ordinal", "native_turn_ordinal", "native_raw_position"})
+
 _DEDUP_DOMAIN = b"polylogue-browser-capture-dedup/v2\x00"
 
 _ENVELOPE_FIELDS = frozenset(BrowserCaptureEnvelope.model_fields) - {
@@ -318,7 +324,8 @@ def is_storage_exhausted(exc: OSError) -> bool:
 class AttachmentFact:
     """What convergence compares about one attachment, without its bytes.
 
-    ``identity`` digests the fields that identify the observed object;
+    ``identity`` digests the stable observed provider descriptor;
+    ``size_bytes`` is compatible evidence (unknown may be enriched);
     ``carrier`` digests the decoded ``content_base64`` bytes (``None`` when the
     attachment carries none); ``carrier_valid`` is false for a malformed one.
     ``scope`` (``session`` or ``turn:<provider_turn_id>``) and ``attachment_id``
@@ -327,6 +334,7 @@ class AttachmentFact:
     """
 
     identity: bytes
+    size_bytes: int | None
     carrier: bytes | None
     carrier_valid: bool
     scope: str
@@ -359,8 +367,9 @@ class CaptureSummary:
     observation-specific provenance: an extension instance and its capture
     time identify *who saw* a snapshot, not a different session revision, so
     two concurrently running instances converge on one spool artifact while
-    each poster's attribution is still echoed. ``carrierless_fingerprint`` is
-    the same fingerprint with every ``content_base64`` carrier removed.
+    each poster's attribution is still echoed. ``carrierless_fingerprint``
+    keeps the ordered stable attachment descriptors while omitting byte
+    carriers, acquisition outcomes and raw-revision attachment coordinates.
     """
 
     head: BrowserCaptureEnvelope
@@ -397,22 +406,7 @@ def carrier_digest(value: str) -> bytes | None:
 
 
 def _attachment_fact(attachment: BrowserCaptureAttachment, *, scope: str) -> AttachmentFact:
-    identity = dumps_bytes(
-        [
-            attachment.provider_attachment_id,
-            attachment.message_provider_id,
-            attachment.attachment_kind,
-            attachment.name,
-            attachment.mime_type,
-            attachment.size_bytes,
-            attachment.url,
-            attachment.extracted_content,
-            attachment.inline_base64,
-            attachment.data,
-            attachment.provider_meta,
-        ],
-        sort_keys=True,
-    )
+    identity = dumps_bytes(_attachment_comparison_payload(attachment), sort_keys=True)
     carrier: bytes | None = None
     valid = True
     if attachment.content_base64 is not None:
@@ -428,6 +422,7 @@ def _attachment_fact(attachment: BrowserCaptureAttachment, *, scope: str) -> Att
         inline_carrier = inline_digest if inline_digest is not None else hashlib.sha256(b"").digest()
     return AttachmentFact(
         identity=hashlib.sha256(identity).digest(),
+        size_bytes=attachment.size_bytes,
         carrier=carrier,
         carrier_valid=valid,
         scope=scope,
@@ -437,16 +432,42 @@ def _attachment_fact(attachment: BrowserCaptureAttachment, *, scope: str) -> Att
     )
 
 
+def _attachment_comparison_payload(attachment: BrowserCaptureAttachment) -> dict[str, object]:
+    """Return stable observed descriptors, separate from size and acquired bytes.
+
+    Size is retained as compatible evidence: absence may be enriched, while
+    two known unequal sizes conflict. Inline and content carriers are compared
+    by decoded bytes in ``AttachmentFact``. The explicit acquisition and
+    raw-coordinate fields stay in the envelope but do not change the observed
+    provider attachment's identity across retained revisions.
+    """
+    stable_owner = attachment.message_provider_id is not None
+    provider_meta = {
+        key: value
+        for key, value in attachment.provider_meta.items()
+        if key not in {"asset_acquisition", "content_sha256"}
+        and (not stable_owner or key not in _ATTACHMENT_RAW_COORDINATE_KEYS)
+    }
+    return {
+        "provider_attachment_id": attachment.provider_attachment_id,
+        "message_provider_id": attachment.message_provider_id,
+        "attachment_kind": attachment.attachment_kind,
+        "name": attachment.name,
+        "mime_type": attachment.mime_type,
+        "url": attachment.url,
+        "extracted_content": attachment.extracted_content,
+        "provider_meta": provider_meta,
+    }
+
+
+def _attachment_comparison_dump(attachments: list[BrowserCaptureAttachment]) -> list[dict[str, object]]:
+    """Keep attachment occurrences and order while folding stable descriptors."""
+    return [_attachment_comparison_payload(attachment) for attachment in attachments]
+
+
 def _framed(digest: hashlib._Hash, payload: bytes) -> None:
     digest.update(len(payload).to_bytes(8, "big"))
     digest.update(payload)
-
-
-def _without_carriers(attachments: object) -> None:
-    if isinstance(attachments, list):
-        for attachment in attachments:
-            if isinstance(attachment, dict):
-                attachment.pop("content_base64", None)
 
 
 @dataclass
@@ -463,7 +484,7 @@ class _ItemFold:
     def add_turn(self, turn: BrowserCaptureTurn) -> None:
         dump = turn.model_dump(mode="json", exclude_none=True)
         _framed(self.digest, dumps_bytes(dump, sort_keys=True))
-        _without_carriers(dump.get("attachments"))
+        dump["attachments"] = _attachment_comparison_dump(turn.attachments)
         _framed(self.carrierless, dumps_bytes(dump, sort_keys=True))
         scope = f"turn:{turn.provider_turn_id}"
         self.attachments.extend(_attachment_fact(attachment, scope=scope) for attachment in turn.attachments)
@@ -488,8 +509,7 @@ class _ItemFold:
     def add_attachment(self, attachment: BrowserCaptureAttachment) -> None:
         dump = attachment.model_dump(mode="json", exclude_none=True)
         _framed(self.digest, dumps_bytes(dump, sort_keys=True))
-        dump.pop("content_base64", None)
-        _framed(self.carrierless, dumps_bytes(dump, sort_keys=True))
+        _framed(self.carrierless, dumps_bytes(_attachment_comparison_payload(attachment), sort_keys=True))
         self.attachments.append(_attachment_fact(attachment, scope="session"))
         self.count += 1
 

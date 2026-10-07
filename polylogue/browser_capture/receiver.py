@@ -384,7 +384,10 @@ def _capture_has_invalid_content_carrier(summary: CaptureSummary) -> bool:
     return any(fact.carrier is not None and not fact.carrier_valid for fact in summary.attachments)
 
 
-def _capture_carrier_conflicts(incoming: CaptureSummary, existing: CaptureSummary) -> bool:
+def _capture_carrier_conflicts(
+    incoming: CaptureSummary,
+    existing: CaptureSummary,
+) -> bool:
     """Reject carrier bytes that contradict an existing attachment identity.
 
     Attachments pair by their scope and provider attachment ID, in observed
@@ -398,6 +401,12 @@ def _capture_carrier_conflicts(incoming: CaptureSummary, existing: CaptureSummar
             return True
         for current, previous in zip(current_group, previous_group, strict=False):
             if current.identity != previous.identity:
+                return True
+            if (
+                current.size_bytes is not None
+                and previous.size_bytes is not None
+                and current.size_bytes != previous.size_bytes
+            ):
                 return True
             current_carrier, current_valid = current.effective_carrier
             previous_carrier, previous_valid = previous.effective_carrier
@@ -433,6 +442,14 @@ def _attachment_content_enrichment(incoming: CaptureSummary, existing: CaptureSu
 
     added_carrier = False
     for incoming_attachment, existing_attachment in zip(incoming_attachments, existing_attachments, strict=True):
+        if incoming_attachment.identity != existing_attachment.identity:
+            return False
+        if (
+            incoming_attachment.size_bytes is not None
+            and existing_attachment.size_bytes is not None
+            and incoming_attachment.size_bytes != existing_attachment.size_bytes
+        ):
+            return False
         if incoming_attachment.carrier is None:
             if existing_attachment.carrier is not None:
                 return False
