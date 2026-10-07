@@ -166,7 +166,6 @@ from polylogue.storage.blob_liveness import (
     LivenessState,
     inspect_session_blob_references,
 )
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     is_blob_hash_excised,
 )
@@ -176,6 +175,7 @@ if TYPE_CHECKING:
     from polylogue.operations.mutation_actuators import SessionExcisionArgs
     from polylogue.operations.mutation_transaction import MutationPlan, RecoveryOperation, StartedBoundMutation
     from polylogue.storage.blob_liveness import BlobOwner
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.reference_seal import KnownTierCell, PreparedIndexMutation
 
 
