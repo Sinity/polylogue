@@ -2434,7 +2434,7 @@ def test_slow_aggregate_waits_for_valid_work_unless_the_caller_declares_a_deadli
     from polylogue.operations import daemon_execution
     from polylogue.operations.daemon_protocol import DaemonOperationRequest
     from polylogue.operations.mutation_transaction import MutationPrincipal
-    from polylogue.operations.operation_context import OperationContext
+    from polylogue.operations.operation_context_types import OperationContext
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     clock = {"now": monotonic()}

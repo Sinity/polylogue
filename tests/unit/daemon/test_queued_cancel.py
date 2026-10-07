@@ -143,7 +143,7 @@ def test_cancel_fences_a_live_redrive_despite_a_resent_exchange(
 
     from polylogue.daemon.operation_runtime import _Exchange
     from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
-    from polylogue.operations.operation_context import OperationContext
+    from polylogue.operations.operation_context_types import OperationContext
 
     fenced_actors: list[str] = []
     original_run_sync = DaemonWriteThreadBridge.run_sync_with_timeout

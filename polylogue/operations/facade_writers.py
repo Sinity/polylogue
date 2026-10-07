@@ -18,7 +18,7 @@ from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.refs import normalize_object_ref_text, parse_public_ref
 from polylogue.operations.archive_mutation import require_archive_write_authority as _require_archive_write_authority
 from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
-from polylogue.operations.operation_context import OperationContext
+from polylogue.operations.operation_context_types import OperationContext
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.connection_profile import open_connection
 

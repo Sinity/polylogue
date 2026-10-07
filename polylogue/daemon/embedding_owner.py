@@ -51,7 +51,8 @@ from polylogue.operations.mutation_transaction import (
     MutationTargetStatus,
     build_typed_plan,
 )
-from polylogue.operations.operation_context import OperationContext, PinnedOperationRead, open_operation_read
+from polylogue.operations.operation_context import PinnedOperationRead, open_operation_read
+from polylogue.operations.operation_context_types import OperationContext
 
 if TYPE_CHECKING:
     from typing import SupportsFloat, SupportsInt

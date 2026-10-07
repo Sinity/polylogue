@@ -21,7 +21,7 @@ from polylogue.storage.backup_package import BACKUP_PROFILES, BackupProfile, Bac
 
 if TYPE_CHECKING:
     from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
-    from polylogue.operations.operation_context import OperationContext
+    from polylogue.operations.operation_context_types import OperationContext
 
 
 def _require_exclusive_archive_ownership(root: Path) -> None:
