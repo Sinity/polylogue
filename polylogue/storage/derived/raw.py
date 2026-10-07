@@ -2183,6 +2183,7 @@ class RawObservationDerivation(RawObservationInspection):
                         raise refusal
                 descriptors = {raw_id: selection_read.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
                 neutral_artifact_keys: dict[str, tuple[object, ...]] = {}
+                neutral_operands: dict[str, _NeutralParserOperand] = {}
                 if raw_ids and all(
                     descriptor[0] in {Provider.CODEX, Provider.CLAUDE_CODE}
                     and is_jsonl_source_path(descriptor[2])
