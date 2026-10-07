@@ -33,7 +33,7 @@ from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.packages import SchemaResolution
-from polylogue.schemas.runtime_registry import SchemaRegistry
+from polylogue.schemas.runtime_registry import SchemaObservation, SchemaRegistry
 from polylogue.sources.parsers.hermes_state import looks_like_state_db_path
 from polylogue.sources.sqlite_export import LogicalExportError, logical_source_context
 from polylogue.storage.blob_store import BlobStore, get_blob_store
@@ -96,15 +96,16 @@ def _resolve_payload_support(
     payload_provider: Provider,
     payload: JSONValue,
     source_path: str | None,
+    observations: tuple[SchemaObservation, ...] | None = None,
 ) -> tuple[SchemaResolution | None, bool]:
     hermes_resolution = _resolve_hermes_state_db_support(payload_provider, payload)
     if hermes_resolution is not None:
         return hermes_resolution
 
-    resolution = registry.resolve_payload(
-        payload_provider,
-        payload,
-        source_path=source_path,
+    resolution = (
+        registry.resolve_payload(payload_provider, payload, source_path=source_path)
+        if observations is None
+        else registry.resolve_observation(payload_provider, observations, source_path=source_path)
     )
     if resolution is None:
         return None, False
@@ -189,14 +190,16 @@ def _is_hermes_state_db_candidate(record: RawSessionRecord) -> bool:
     return provider is Provider.HERMES and source_suffix in {".db", ".sqlite", ".sqlite3"}
 
 
-def _inspect_payload_envelope(record: RawSessionRecord, *, blob_store: BlobStore) -> RawPayloadEnvelope:
+def _inspect_payload_envelope(
+    record: RawSessionRecord, *, blob_store: BlobStore
+) -> tuple[RawPayloadEnvelope, tuple[SchemaObservation, ...] | None, str | None]:
     blob_ref = _record_blob_ref(record)
     blob_path = blob_store.blob_path(blob_ref)
     # SQLite recognition needs a filesystem path. Passing the retained blob,
     # rather than the mutable source path or an in-memory prefix, ensures the
     # durable observation describes the exact acquired bytes.
     if _is_hermes_state_db_candidate(record):
-        return _build_payload_envelope(blob_path, record, sqlite_immutable=True)
+        return _build_payload_envelope(blob_path, record, sqlite_immutable=True), None, None
     from polylogue.sources.dispatch import detect_provider_from_raw_stream_evidence
 
     provider = Provider.from_string(_normalize_payload_provider_hint(record) or record.source_name or "")
@@ -231,10 +234,27 @@ def _inspect_payload_envelope(record: RawSessionRecord, *, blob_store: BlobStore
     if blob_path.stat().st_size <= len(prefix) and (
         wire_format == "json" or (scan is not None and scan.valid_records <= 64 and not scan.malformed_records)
     ):
-        return _build_payload_envelope(prefix, record)
+        return _build_payload_envelope(prefix, record), None, None
     if artifact is None:
         artifact = ArtifactClassification(
             provider, ArtifactKind.UNKNOWN, False, False, 0, "no complete retained artifact evidence"
+        )
+    if wire_format == "json" and artifact.parse_as_session:
+        observations, cohort_id = _SCHEMA_REGISTRY.observe_stream(
+            provider,
+            blob_path,
+            source_path=record.source_path,
+            cohort=artifact.cohort,
+        )
+        return (
+            RawPayloadEnvelope(
+                payload=[],
+                provider=provider,
+                wire_format=wire_format,
+                artifact=replace(artifact, schema_eligible=bool(observations)),
+            ),
+            observations,
+            cohort_id,
         )
     diagnostic_payload: JSONValue = []
     if wire_format == "jsonl":
@@ -246,12 +266,16 @@ def _inspect_payload_envelope(record: RawSessionRecord, *, blob_store: BlobStore
                 max_samples=64,
                 max_record_bytes=_INSPECTION_PREFIX_BYTES,
             )
-    return RawPayloadEnvelope(
-        payload=diagnostic_payload,
-        provider=provider,
-        wire_format=wire_format,
-        artifact=replace(artifact, schema_eligible=False),
-        malformed_jsonl_lines=scan.malformed_records if scan is not None else 0,
+    return (
+        RawPayloadEnvelope(
+            payload=diagnostic_payload,
+            provider=provider,
+            wire_format=wire_format,
+            artifact=replace(artifact, schema_eligible=False),
+            malformed_jsonl_lines=scan.malformed_records if scan is not None else 0,
+        ),
+        None,
+        None,
     )
 
 
@@ -384,7 +408,7 @@ def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | No
     registry = _SCHEMA_REGISTRY
 
     try:
-        envelope = _inspect_payload_envelope(record, blob_store=resolved_blob_store)
+        envelope, schema_observations, cohort_id = _inspect_payload_envelope(record, blob_store=resolved_blob_store)
         payload_provider = envelope.provider
         artifact = envelope.artifact
         resolution: SchemaResolution | None = None
@@ -406,6 +430,7 @@ def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | No
                 payload_provider=payload_provider,
                 payload=envelope.payload,
                 source_path=record.source_path,
+                observations=schema_observations,
             )
         resolved_package_version = resolution.package_version if resolution is not None else None
         resolved_element_kind = resolution.element_kind if resolution is not None else None
@@ -438,7 +463,7 @@ def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | No
             malformed_jsonl_lines=malformed_jsonl_lines,
             decode_error=None,
             bundle_scope=bundle_scope,
-            cohort_id=schema_cluster_id(envelope.payload, artifact.cohort),
+            cohort_id=cohort_id or schema_cluster_id(envelope.payload, artifact.cohort),
             resolved_package_version=resolved_package_version,
             resolved_element_kind=resolved_element_kind,
             resolution_reason=resolution_reason,

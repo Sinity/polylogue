@@ -770,7 +770,7 @@ class TestInspectRawArtifactCoverage:
         sidecar_cohort = next(row for row in cohorts if row.artifact_kind == "agent_sidecar_meta")
         assert sidecar_cohort.linked_sidecar_count == 1
 
-    def test_large_json_documents_use_bounded_full_read_fallback(
+    def test_large_json_documents_use_complete_streamed_observation(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -845,7 +845,9 @@ class TestInspectRawArtifactCoverage:
                 return package
             return None
 
-        monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.resolve_payload", _resolve_payload)
+        monkeypatch.setattr(
+            "polylogue.storage.artifacts.inspection.SchemaRegistry.resolve_observation", _resolve_payload
+        )
         monkeypatch.setattr("polylogue.storage.artifacts.inspection.SchemaRegistry.get_package", _get_package)
 
         report = inspect_raw_artifact_coverage(
@@ -863,3 +865,25 @@ class TestInspectRawArtifactCoverage:
         assert row.wire_format == "json"
         assert row.artifact_kind == "session_document"
         assert row.support_status.value == "supported_parseable"
+
+
+@pytest.mark.parametrize("suffix", [b" trailing", b', {"later": true}', b' \n{"unfinished":'])
+def test_large_json_artifact_with_invalid_suffix_cannot_prove_schema_support(tmp_path: Path, suffix: bytes) -> None:
+    db_path = tmp_path / "index.db"
+    with open_connection(db_path):
+        pass
+    payload = {"uuid": "neutral-session", "chat_messages": [{"sender": "human", "text": "x" * 100_000}]}
+    _insert_raw_record(
+        db_path=db_path,
+        source_name="claude-ai",
+        source_path="/tmp/neutral.json",
+        raw_content=core_json.dumps_bytes(payload) + suffix,
+    )
+    report = inspect_raw_artifact_coverage(db_path=db_path, request=ArtifactCoverageRequest(providers=["claude-ai"]))
+    assert report.total_records == 1
+    assert report.contract_backed_records == 0
+    row = list_artifact_observation_rows(
+        db_path=db_path,
+        request=ArtifactObservationQuery(providers=["claude-ai"]),
+    )[0]
+    assert row.support_status.value in {"decode_failed", "partial_decode"}
