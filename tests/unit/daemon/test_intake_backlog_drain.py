@@ -99,7 +99,7 @@ def test_external_candidate_write_settles_when_watched_input_is_excluded(tmp_pat
             ParsedSession(
                 source_name=Provider.CHATGPT,
                 provider_session_id="external-fixture",
-                messages=[ParsedMessage(role=Role.USER, text="fixture message")],
+                messages=[ParsedMessage(provider_message_id="fixture-message", role=Role.USER, text="fixture message")],
             ),
         )
         conn.commit()
