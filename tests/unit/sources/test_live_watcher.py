@@ -367,7 +367,12 @@ async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path
     with sqlite3.connect(shadow_index) as conn:
         conn.execute("DELETE FROM sessions")
         conn.commit()
-    assert watcher._reconcile_archived_cursor(source_path, stat=source_path.stat()) is True
+    assert (
+        watcher._reconcile_archived_cursor(
+            source_path, stat=source_path.stat(), expected=watcher._cursor.get_record(source_path)
+        )
+        is True
+    )
     watcher.stop()
 
 
@@ -4810,30 +4815,35 @@ async def test_cursor_reconciliation_hashes_off_the_writer_and_rechecks_under_it
     source_path = source_root / "off-writer.jsonl"
     payload = b'{"native_id":"off-writer"}\n'
     source_path.write_bytes(payload)
-    initialize_active_archive_root(tmp_path)
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="off-writer",
         messages=[ParsedMessage(provider_message_id="m0", role=Role.USER, text="settled content")],
     )
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=payload,
-            source_path=str(source_path),
-            canonical_source_path=str(source_path),
-            acquired_at_ms=1,
-        )
-    seed_membership_census(tmp_path, [(raw_id, [session])], parser_fingerprint="test-parser")
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        publish_prepared_membership_classification(
-            archive,
-            "codex-session:off-writer",
-            MembershipClassification((), (), (raw_id,)),
-            {raw_id: session},
-            {raw_id: session_revision_projection(session)},
-            decided_at_ms=2,
-        )
+
+    def settle_decided_raw() -> None:
+        # Archive setup takes synchronous leases, so it runs off the loop.
+        initialize_active_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=str(source_path),
+                canonical_source_path=str(source_path),
+                acquired_at_ms=1,
+            )
+        seed_membership_census(tmp_path, [(raw_id, [session])], parser_fingerprint="test-parser")
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            publish_prepared_membership_classification(
+                archive,
+                "codex-session:off-writer",
+                MembershipClassification((), (), (raw_id,)),
+                {raw_id: session},
+                {raw_id: session_revision_projection(session)},
+                decided_at_ms=2,
+            )
+
+    await asyncio.to_thread(settle_decided_raw)
 
     admitted: list[str] = []
 

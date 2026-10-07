@@ -866,7 +866,7 @@ class LiveWatcher:
             if cursor.captured_profile_key is None or cursor.captured_profile_key != observed_profile.key:
                 return True
         if cursor is None:
-            if not self._reconcile_archived_cursor(path, stat=stat):
+            if not self._reconcile_archived_cursor(path, stat=stat, expected=None):
                 return True
             cursor = self._cursor.get_record(path)
             return cursor is not None and size > cursor.byte_offset
@@ -903,7 +903,7 @@ class LiveWatcher:
         if cursor.failure_count == 0 and cursor.content_fingerprint is None and cursor.next_retry_at is not None:
             if not _retry_due(cursor.next_retry_at):
                 return False
-            reconciliation = self._reconcile_archived_cursor_outcome(path, stat=stat)
+            reconciliation = self._reconcile_archived_cursor_outcome(path, stat=stat, expected=cursor)
             if reconciliation is _ArchivedCursorReconciliation.RECONCILED:
                 reconciled = self._cursor.get_record(path)
                 return reconciled is not None and size > reconciled.byte_offset
@@ -924,7 +924,7 @@ class LiveWatcher:
             )
             return True
         if cursor.failure_count > 0:
-            if self._reconcile_archived_cursor(path, stat=stat):
+            if self._reconcile_archived_cursor(path, stat=stat, expected=cursor):
                 cursor = self._cursor.get_record(path)
                 return cursor is not None and size > cursor.byte_offset
             return _retry_due(cursor.next_retry_at)
@@ -1005,7 +1005,7 @@ class LiveWatcher:
                 )
             prefix_hash = cursor_prefix_hash(cursor.tail_hash)
             if prefix_hash is None:
-                if self._reconcile_archived_cursor(path, stat=stat):
+                if self._reconcile_archived_cursor(path, stat=stat, expected=cursor):
                     reconciled = self._cursor.get_record(path)
                     return reconciled is None or size > reconciled.byte_offset
                 return True
@@ -1200,10 +1200,11 @@ class LiveWatcher:
         if not updated:
             raise sqlite3.OperationalError(f"failed to invalidate deferred cursor for {path}")
 
-    def _reconcile_archived_cursor(self, path: Path, *, stat: os.stat_result) -> bool:
+    def _reconcile_archived_cursor(self, path: Path, *, stat: os.stat_result, expected: CursorRecord | None) -> bool:
         """Restore a missing/stale cursor from proven archive raw state."""
 
-        return self._reconcile_archived_cursor_outcome(path, stat=stat) is _ArchivedCursorReconciliation.RECONCILED
+        outcome = self._reconcile_archived_cursor_outcome(path, stat=stat, expected=expected)
+        return outcome is _ArchivedCursorReconciliation.RECONCILED
 
     @contextmanager
     def _archived_cursor_reconciliation_scope(self) -> Iterator[None]:
@@ -1424,6 +1425,7 @@ class LiveWatcher:
         path: Path,
         *,
         stat: os.stat_result,
+        expected: CursorRecord | None,
     ) -> _ArchivedCursorReconciliation:
         """Restore a missing/stale cursor from proven archive raw state.
 
@@ -1440,7 +1442,8 @@ class LiveWatcher:
             # Force a fresh source observation instead of deferring on an
             # index that this mode is explicitly forbidden to read.
             return _ArchivedCursorReconciliation.INCOMPATIBLE
-        expected = self._cursor.get_record(path)
+        # ``expected`` is the cursor row the caller decided from (bulk-read
+        # for a page); the restore re-checks it under the writer.
         shared = self._archived_cursor_conns
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         try:

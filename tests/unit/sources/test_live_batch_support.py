@@ -5376,7 +5376,7 @@ def test_archive_cursor_reconciliation_rejects_restored_mtime_rewrite(
 
     monkeypatch.setattr(live_watcher, "sha256_range_from_path", rewrite_after_hash)
 
-    assert not watcher._reconcile_archived_cursor(path, stat=initial_stat)
+    assert not watcher._reconcile_archived_cursor(path, stat=initial_stat, expected=watcher._cursor.get_record(path))
     assert cursor.get_record(path) is None
     final_stat = path.stat()
     assert final_stat.st_mtime_ns == initial_stat.st_mtime_ns
