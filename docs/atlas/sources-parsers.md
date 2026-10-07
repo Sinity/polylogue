@@ -150,6 +150,16 @@ the original payload keys and ordering; unsupported-step events keep their
 complete per-step payloads. Cancellation closes the active source and grouping
 cursors, while the preparation owner controls scratch cleanup and lifetime.
 
+Retained non-JSON preparation creates its output store before SQLite parsing.
+`retained_sqlite.py` supplies both providers with that owner's message and event
+sinks; Antigravity grouping, parent arrays, and accounting share its connection.
+Each settled session is normalized, enriched, hashed, lowered into the shard,
+and written into the artifact before the iterator advances. The public source
+iterator and explicit resident replay API return independent models, copying
+complete arrays and accounting before closing scratch. These public collecting
+contracts still require memory for one complete session; fresh retained
+preparation does not call them.
+
 ## Detection and parse route
 
 1. Acquisition records raw bytes and source metadata in `source.db`.

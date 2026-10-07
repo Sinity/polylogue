@@ -167,3 +167,21 @@ def _codex_thread_state_page_image_bytes(tmp_path: Path, title: str) -> bytes:
         )
         conn.commit()
     return state_path.read_bytes()
+
+
+def _antigravity_trajectory_db_bytes(tmp_path: Path) -> bytes:
+    database = tmp_path / "trajectory.db"
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            "CREATE TABLE trajectory_meta(trajectory_id TEXT, cascade_id TEXT);"
+            "CREATE TABLE steps(idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT, trajectory_id TEXT);"
+            "CREATE TABLE parent_references(cascade_id TEXT, parent_id TEXT);"
+            "CREATE TABLE conversation_summaries(cascade_id TEXT, title TEXT, last_modified_time TEXT);"
+            "INSERT INTO trajectory_meta VALUES ('trajectory-1','cascade-1');"
+            "INSERT INTO conversation_summaries VALUES ('cascade-1','Complete title','2026-01-01T00:00:00Z');"
+            "INSERT INTO steps VALUES (0,'message','v1','{\"role\":\"user\",\"text\":\"retained text\"}','trajectory-1');"
+            "INSERT INTO steps VALUES (1,'future_step','v2','{\"opaque\":\"retained evidence\"}','trajectory-1');"
+            "INSERT INTO parent_references VALUES ('cascade-1','parent-a');"
+            "INSERT INTO parent_references VALUES ('cascade-1','parent-b');"
+        )
+    return logical_export_bytes(database)
