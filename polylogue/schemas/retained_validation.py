@@ -13,17 +13,18 @@ import re
 import sqlite3
 from collections.abc import Iterator, KeysView, Mapping, Sequence
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
+from types import TracebackType
 from typing import TYPE_CHECKING, Any, SupportsIndex, cast, overload
 
 from jsonschema import Draft202012Validator, ValidationError, validators
 
-from polylogue.archive.raw_payload.sampling_buckets import is_record_candidate
+from polylogue.archive.raw_payload.sampling_buckets import is_record_candidate, take_bucketed_samples
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.provider_identity import normalize_provider_token
 from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.drift_sentinel import (
@@ -35,9 +36,17 @@ from polylogue.schemas.drift_sentinel import (
     SchemaDriftObservation,
 )
 from polylogue.schemas.packages import SchemaResolution
-from polylogue.schemas.runtime_registry import SchemaRegistry
+from polylogue.schemas.runtime_registry import SchemaObservation, SchemaRegistry
 from polylogue.schemas.schema_parser_coverage import unread_field_names
-from polylogue.schemas.validator_resolution import resolve_retained_schema
+from polylogue.schemas.validator_resolution import (
+    _choose_retained_schema,
+    _historical_schemas,
+    _load_package,
+    _load_schema,
+    canonical_provider,
+    resolve_retained_schema,
+)
+from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
 if TYPE_CHECKING:
     pass
@@ -98,6 +107,396 @@ class RetainedValidationVerdict:
     schema_resolution: SchemaResolution | None
     drift_observation: SchemaDriftObservation | None
     strict_refusal: bool
+
+
+class _SampleValidationReducer:
+    """Accumulate the exact per-sample validation and drift result."""
+
+    def __init__(
+        self,
+        schema: Mapping[str, object],
+        provider: Provider,
+        resolution: SchemaResolution | None,
+        connection: sqlite3.Connection,
+        *,
+        source_path: str | None,
+    ) -> None:
+        self.schema = schema
+        self.provider = provider
+        self.resolution = resolution
+        self.connection = connection
+        self.source_path = source_path
+        self.sample_count = 0
+        self.invalid_count = 0
+        self.error_count = 0
+        self.drift_count = 0
+        self.first_diagnostic: str | None = None
+        self.strongest: SchemaDriftObservation | None = None
+
+    @property
+    def accepts(self) -> bool:
+        return self.invalid_count == 0
+
+    def observe(self, sample: Mapping[str, object]) -> None:
+        check_compute_cancelled()
+        self.sample_count += 1
+        validator = _bounded_validator(self.schema, self.connection)
+        normalized = _normalized(sample, self.schema, self.schema, self.connection)
+        sample_errors = 0
+        for error in validator.iter_errors(normalized):
+            check_compute_cancelled()
+            sample_errors += 1
+            self.error_count += 1
+            if self.first_diagnostic is None:
+                self.first_diagnostic = _diagnostic(error)
+        valid = sample_errors == 0
+        if not valid:
+            self.invalid_count += 1
+        self.drift_count += _collect_drift_paths(
+            sample,
+            self.schema,
+            self.connection,
+            self.sample_count,
+        )
+        sample_drift = _reduce_sample_drift(
+            sample,
+            self.schema,
+            self.provider,
+            self.resolution,
+            self.connection,
+            self.sample_count,
+            raw_id="",
+            native_id_example=self.source_path or "",
+            is_valid=valid,
+        )
+        self.strongest = _stronger_drift(self.strongest, sample_drift)
+
+    def verdict(
+        self,
+        *,
+        raw_id: str,
+        revision_sha256: str,
+        evidence_id: str,
+        mode: ValidationMode,
+        resolution: SchemaResolution | None,
+        source_path: str | None,
+    ) -> RetainedValidationVerdict:
+        status = (
+            ValidationStatus.FAILED if mode is ValidationMode.STRICT and self.invalid_count else ValidationStatus.PASSED
+        )
+        diagnostic = (
+            f"Schema validation failed: {self.first_diagnostic}"
+            if status is ValidationStatus.FAILED and self.first_diagnostic is not None
+            else self.first_diagnostic
+        )
+        drift = self.strongest
+        if drift is not None:
+            drift = replace(drift, raw_id=raw_id, native_id_example=source_path or raw_id)
+        return RetainedValidationVerdict(
+            raw_id=raw_id,
+            revision_sha256=revision_sha256,
+            evidence_id=evidence_id,
+            mode=mode,
+            status=status,
+            sample_count=self.sample_count,
+            invalid_count=self.invalid_count,
+            error_count=self.error_count,
+            drift_count=self.drift_count,
+            first_diagnostic=diagnostic,
+            schema_resolution=resolution,
+            drift_observation=drift,
+            strict_refusal=status is ValidationStatus.FAILED,
+        )
+
+
+@dataclass(slots=True)
+class _PrefixSchemaReducer:
+    version: str
+    schema: Mapping[str, object] | None
+    reducer: _SampleValidationReducer | None
+    error: FileNotFoundError | ImportError | None = None
+
+
+class PrefixValidationState:
+    """One-pass retained-schema validation for proven Codex JSONL prefixes.
+
+    The caller feeds the exact wire records of a supported JSONL grammar once,
+    then requests detached, source-bound verdict snapshots at raw revision
+    boundaries. This state preserves ordinary schema precedence: each prefix
+    resolves its own observation and selects the current schema or the first
+    historical schema accepting that prefix.
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: Provider,
+        source_path: str,
+        mode: ValidationMode,
+        registry: SchemaRegistry | None = None,
+        scratch_directory: Path | None = None,
+    ) -> None:
+        self.provider = canonical_provider(provider)
+        self.source_path = source_path
+        self.mode = ValidationMode.from_string(mode)
+        self.registry = registry or SchemaRegistry()
+        self._scratch_context = scratch_connection_context(
+            prefix="polylogue-prefix-validation-",
+            filename="validation.sqlite",
+            directory=scratch_directory,
+        )
+        self.connection = self._scratch_context.__enter__()
+        self._header: JSONDocument | None = None
+        self._base_observation: SchemaObservation | None = None
+        self._base_resolution: SchemaResolution | None = None
+        self._base_version: str | None = None
+        self._base_element: str | None = None
+        self._base_error: FileNotFoundError | ImportError | None = None
+        self._reducers: list[_PrefixSchemaReducer] = []
+        self._header_witness: tuple[str, ...] = ()
+        self._message_witness: tuple[str, ...] = ()
+        self._message_fingerprint: str | None = None
+        self._message_profile: tuple[str, ...] | None = None
+        self._record_count = 0
+        self._closed = False
+
+    def __enter__(self) -> PrefixValidationState:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self._close(exc_type, exc, traceback)
+
+    def close(self) -> None:
+        self._close(None, None, None)
+
+    def _close(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._scratch_context.__exit__(exc_type, exc, traceback)
+
+    def observe(self, record: JSONDocument) -> None:
+        """Add one grammar-proved header/message record exactly once."""
+        if self._closed:
+            raise RuntimeError("prefix validation state is closed")
+        self._record_count += 1
+        if self.mode is ValidationMode.OFF:
+            return
+        if self._record_count == 1:
+            self._header = record
+            return
+        if self._record_count == 2:
+            self._initialize(record)
+            return
+        self._prove_message_shape(record)
+        self._observe_validators(record)
+
+    def _initialize(self, first_message: JSONDocument) -> None:
+        from polylogue.schemas.observation_runtime import _record_profile_tokens
+        from polylogue.schemas.runtime_registry import _structure_witnesses
+        from polylogue.schemas.shape_fingerprint import fingerprint_parts
+
+        if self._header is None:
+            raise ValueError("prefix validation has no leading header")
+        observations, _cluster = self.registry.observe_payload(
+            str(self.provider),
+            cast(JSONValue, [self._header, first_message]),
+            source_path=self.source_path,
+        )
+        if len(observations) != 1:
+            raise ValueError("Codex checkpoint prefix has no unique schema observation")
+        self._base_observation = observations[0]
+        witnesses = _structure_witnesses([self._header, first_message])
+        if len(witnesses) != 2:
+            raise ValueError("Codex checkpoint prefix schema witnesses are not record-local")
+        self._header_witness, self._message_witness = witnesses
+        self._message_profile = _record_profile_tokens([first_message], record_type_key="type")
+        digest = hashlib.sha256()
+        for part in fingerprint_parts(first_message, depth=1):
+            digest.update(part.encode("utf-8"))
+        self._message_fingerprint = digest.hexdigest()
+
+        self._base_resolution = self.registry.resolve_observation(
+            str(self.provider), (self._base_observation,), source_path=self.source_path
+        )
+        try:
+            if self._base_resolution is None:
+                package = _load_package(self.registry, self.provider, version="default")
+                self._base_version = package.version
+                self._base_element = package.default_element_kind
+            else:
+                self._base_version = self._base_resolution.package_version
+                self._base_element = self._base_resolution.element_kind
+            base_schema = _load_schema(
+                self.registry,
+                self.provider,
+                package_version=self._base_version,
+                element_kind=self._base_element,
+            )
+            self._reducers.append(self._new_reducer(self._base_version, base_schema))
+        except (FileNotFoundError, ImportError) as exc:
+            self._base_error = exc
+            return
+
+        historical = _historical_schemas(
+            self.registry,
+            self.provider,
+            element_kind=self._base_element,
+        )
+        while True:
+            try:
+                version, schema = next(historical)
+            except StopIteration:
+                break
+            except (FileNotFoundError, ImportError) as exc:
+                self._reducers.append(_PrefixSchemaReducer("", None, None, error=exc))
+                break
+            self._reducers.append(self._new_reducer(version, schema))
+        self._observe_validators(self._header)
+        self._observe_validators(first_message)
+
+    def _new_reducer(self, version: str, schema: Mapping[str, object]) -> _PrefixSchemaReducer:
+        reducer = _SampleValidationReducer(
+            schema,
+            self.provider,
+            self._base_resolution,
+            self.connection,
+            source_path=self.source_path,
+        )
+        return _PrefixSchemaReducer(version, schema, reducer)
+
+    def _observe_validators(self, record: JSONDocument) -> None:
+        for candidate in self._reducers:
+            if candidate.reducer is None or candidate.schema is None:
+                continue
+            if any(_validation_samples(record, candidate.schema, self.provider)):
+                candidate.reducer.observe(record)
+
+    def _prove_message_shape(self, record: JSONDocument) -> None:
+        from polylogue.schemas.observation_runtime import _record_profile_tokens
+        from polylogue.schemas.runtime_registry import _structure_witnesses
+        from polylogue.schemas.shape_fingerprint import fingerprint_parts
+
+        digest = hashlib.sha256()
+        for part in fingerprint_parts(record, depth=1):
+            digest.update(part.encode("utf-8"))
+        if digest.hexdigest() != self._message_fingerprint:
+            raise ValueError("Codex checkpoint messages are not shape-uniform")
+        if _record_profile_tokens([record], record_type_key="type") != self._message_profile:
+            raise ValueError("Codex checkpoint message profile changed")
+        if _structure_witnesses([record])[0] != self._message_witness:
+            raise ValueError("Codex checkpoint message structure witness changed")
+
+    def _prefix_observation(self) -> SchemaObservation:
+        from dataclasses import replace as dataclass_replace
+
+        assert self._base_observation is not None
+        if self._record_count <= 64:
+            witnesses = (self._header_witness, *((self._message_witness,) * (self._record_count - 1)))
+        else:
+            buckets: dict[str, list[JSONDocument]] = {
+                "type:response_item": [{"ordinal": index} for index in range(1, 9)],
+                "type:session_meta": [{"ordinal": 0}],
+            }
+            selected = take_bucketed_samples(buckets, 64)
+            witnesses = tuple(
+                self._header_witness if cast(int, index["ordinal"]) == 0 else self._message_witness
+                for index in selected
+            )
+        return dataclass_replace(
+            self._base_observation,
+            source_witnesses=witnesses if self._base_observation.source_witnesses else (),
+        )
+
+    def verdict(self, *, raw_id: str, revision_sha256: str, evidence_id: str) -> RetainedValidationVerdict:
+        if self._closed:
+            raise RuntimeError("prefix validation state is closed")
+        if self.mode is ValidationMode.OFF:
+            return _verdict(raw_id, revision_sha256, evidence_id, self.mode, ValidationStatus.SKIPPED)
+        if self._record_count < 2 or self._base_observation is None:
+            raise ValueError("prefix validation requires a header and one message")
+        if self._base_error is not None:
+            return _verdict(
+                raw_id,
+                revision_sha256,
+                evidence_id,
+                self.mode,
+                ValidationStatus.SKIPPED,
+                schema_resolution=self._base_resolution,
+            )
+        resolved = self.registry.resolve_observation(
+            str(self.provider), (self._prefix_observation(),), source_path=self.source_path
+        )
+        if self._base_resolution is None:
+            if resolved is not None:
+                raise ValueError("Codex prefix schema selection changed after its first message")
+        elif resolved is None or (
+            resolved.package_version != self._base_version or resolved.element_kind != self._base_element
+        ):
+            raise ValueError("Codex prefix base schema selection is not stable")
+
+        candidates_by_version = {candidate.version: candidate for candidate in self._reducers}
+        candidates_by_schema = {
+            id(candidate.schema): candidate for candidate in self._reducers if candidate.schema is not None
+        }
+
+        def historical_schemas() -> Iterator[tuple[str, JSONDocument]]:
+            for candidate in self._reducers[1:]:
+                if candidate.error is not None:
+                    raise candidate.error
+                if candidate.schema is not None:
+                    yield candidate.version, cast(JSONDocument, candidate.schema)
+
+        def schema_accepts(schema: JSONDocument) -> bool:
+            candidate = candidates_by_schema.get(id(schema))
+            if candidate is None or candidate.reducer is None:
+                raise ValueError("prefix validation candidate has no sample reducer")
+            return candidate.reducer.accepts
+
+        assert self._base_version is not None and self._reducers[0].schema is not None
+        try:
+            selected_version, _selected_schema = _choose_retained_schema(
+                self._base_version,
+                cast(JSONDocument, self._reducers[0].schema),
+                historical_schemas(),
+                schema_accepts=schema_accepts,
+            )
+        except (FileNotFoundError, ImportError):
+            return _verdict(
+                raw_id,
+                revision_sha256,
+                evidence_id,
+                self.mode,
+                ValidationStatus.SKIPPED,
+                schema_resolution=self._base_resolution,
+            )
+        selected = candidates_by_version[selected_version]
+        selected_resolution = resolved
+        if selected.version != self._base_version and selected_resolution is not None:
+            selected_resolution = replace(
+                selected_resolution,
+                package_version=selected.version,
+                element_kind=self._base_element or selected_resolution.element_kind,
+            )
+        assert selected.reducer is not None
+        return selected.reducer.verdict(
+            raw_id=raw_id,
+            revision_sha256=revision_sha256,
+            evidence_id=evidence_id,
+            mode=self.mode,
+            resolution=selected_resolution,
+            source_path=self.source_path,
+        )
 
 
 _DRIFT_STRENGTH: dict[DriftClassification, int] = {
@@ -179,67 +578,22 @@ def validate_retained_document(
             )
 
         assert selected_schema is not None
-        sample_count = 0
-        invalid_count = 0
-        error_count = 0
-        drift_count = 0
-        first_diagnostic: str | None = None
-        strongest: SchemaDriftObservation | None = None
-        for sample in _validation_samples(payload, selected_schema, canonical):
-            check_compute_cancelled()
-            sample_count += 1
-            validator = _bounded_validator(selected_schema, spill.connection)
-            normalized = _normalized(sample, selected_schema, selected_schema, spill.connection)
-            sample_errors = 0
-            for error in validator.iter_errors(normalized):
-                check_compute_cancelled()
-                sample_errors += 1
-                error_count += 1
-                if first_diagnostic is None:
-                    first_diagnostic = _diagnostic(error)
-            valid = sample_errors == 0
-            if not valid:
-                invalid_count += 1
-
-            drift_count += _collect_drift_paths(
-                sample,
-                selected_schema,
-                spill.connection,
-                sample_count,
-            )
-            sample_drift = _reduce_sample_drift(
-                sample,
-                selected_schema,
-                canonical,
-                resolved,
-                spill.connection,
-                sample_count,
-                raw_id=raw_id,
-                native_id_example=source_path or raw_id,
-                is_valid=valid,
-            )
-            strongest = _stronger_drift(strongest, sample_drift)
-
-        status = ValidationStatus.FAILED if mode is ValidationMode.STRICT and invalid_count else ValidationStatus.PASSED
-        diagnostic = (
-            f"Schema validation failed: {first_diagnostic}"
-            if status is ValidationStatus.FAILED and first_diagnostic is not None
-            else first_diagnostic
+        reducer = _SampleValidationReducer(
+            selected_schema,
+            canonical,
+            resolved,
+            spill.connection,
+            source_path=source_path,
         )
-        return RetainedValidationVerdict(
+        for sample in _validation_samples(payload, selected_schema, canonical):
+            reducer.observe(sample)
+        return reducer.verdict(
             raw_id=raw_id,
             revision_sha256=revision_sha256,
             evidence_id=evidence_id,
             mode=mode,
-            status=status,
-            sample_count=sample_count,
-            invalid_count=invalid_count,
-            error_count=error_count,
-            drift_count=drift_count,
-            first_diagnostic=diagnostic,
-            schema_resolution=resolved,
-            drift_observation=strongest,
-            strict_refusal=status is ValidationStatus.FAILED,
+            resolution=resolved,
+            source_path=source_path,
         )
 
 

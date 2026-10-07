@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import gc
+import hashlib
 import json
 import tracemalloc
 from pathlib import Path
@@ -11,10 +12,10 @@ from typing import Any
 
 import pytest
 
-from polylogue.core.enums import ValidationMode, ValidationStatus
+from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.schemas import observation_spill
 from polylogue.schemas.packages import SchemaResolution
-from polylogue.schemas.retained_validation import _bounded_validator, _normalized
+from polylogue.schemas.retained_validation import PrefixValidationState, _bounded_validator, _normalized
 from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.validator import SchemaValidator, _normalize_empty_arrays, validate_retained_document
 from polylogue.storage.sqlite.connection_profile import scratch_connection_context
@@ -204,6 +205,177 @@ def test_retained_historical_fallback_replays_every_jsonl_record(tmp_path: Path)
     assert verdict.sample_count == 2
     assert verdict.schema_resolution is not None
     assert verdict.schema_resolution.package_version == "v1"
+
+
+def test_prefix_validation_state_matches_each_current_and_historical_resolution(tmp_path: Path) -> None:
+    registry = SchemaRegistry(storage_root=tmp_path / "codex-schemas")
+
+    def codex_schema(accepted_text: list[str]) -> dict[str, object]:
+        return {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "required": ["type", "payload"],
+            "properties": {
+                "type": {"enum": ["session_meta", "response_item"]},
+                "payload": {
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {"text": {"enum": accepted_text}},
+                                "required": ["text"],
+                            },
+                        }
+                    },
+                },
+            },
+            "allOf": [
+                {
+                    "if": {"properties": {"type": {"const": "response_item"}}},
+                    "then": {"properties": {"payload": {"required": ["content"]}}},
+                }
+            ],
+        }
+
+    registry.write_schema_version("codex", "v1", codex_schema(["old", "new"]), element_kind="session_record_stream")
+    registry.write_schema_version("codex", "v2", codex_schema(["old"]), element_kind="session_record_stream")
+    registry.write_schema_version("codex", "v3", codex_schema(["current"]), element_kind="session_record_stream")
+    records: list[dict[str, object]] = [
+        {"type": "session_meta", "payload": {"id": "prefix-state", "timestamp": "2026-01-01T00:00:00Z"}}
+    ]
+    for index, text in enumerate(("old", "old", "new", "bad")):
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": f"m{index}",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            }
+        )
+
+    path = tmp_path / "prefix-state.jsonl"
+    with PrefixValidationState(
+        provider=Provider.CODEX,
+        source_path=str(path),
+        mode=ValidationMode.STRICT,
+        registry=registry,
+        scratch_directory=tmp_path,
+    ) as state:
+        for record_index, record in enumerate(records, start=1):
+            state.observe(record)
+            if record_index < 2:
+                continue
+            prefix_bytes = "".join(json.dumps(item) + "\n" for item in records[:record_index]).encode()
+            path.write_bytes(prefix_bytes)
+            raw_id = f"raw-prefix-{record_index}"
+            digest = hashlib.sha256(prefix_bytes).hexdigest()
+            streamed = state.verdict(raw_id=raw_id, revision_sha256=digest, evidence_id=raw_id)
+            ordinary = validate_retained_document(
+                Provider.CODEX,
+                path,
+                mode=ValidationMode.STRICT,
+                raw_id=raw_id,
+                revision_sha256=digest,
+                evidence_id=raw_id,
+                source_path=str(path),
+                jsonl=True,
+                registry=registry,
+            )
+            assert streamed == ordinary
+            if record_index == 2:
+                assert streamed.schema_resolution is not None
+                assert streamed.schema_resolution.package_version == "v2"
+            if record_index == 4:
+                assert streamed.schema_resolution is not None
+                assert streamed.schema_resolution.package_version == "v1"
+            if record_index == 5:
+                assert (streamed.schema_resolution.package_version, streamed.invalid_count) == ("v3", 4)
+                assert streamed.status is ValidationStatus.FAILED
+
+
+def test_prefix_validation_state_preserves_sampler_witness_order_at_64_records(tmp_path: Path) -> None:
+    from polylogue.schemas.generation.dynamic_keys import (
+        legacy_structure_schema_digest,
+        observed_structure_schema,
+        structure_schema_digest,
+    )
+
+    registry = SchemaRegistry(storage_root=tmp_path / "witness-schemas")
+    schema: dict[str, object] = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["type", "payload"],
+        "properties": {"type": {"type": "string"}, "payload": {"type": "object"}},
+    }
+    registry.write_schema_version("codex", "v1", schema, element_kind="session_record_stream")
+
+    def row_witnesses(row: object) -> set[str]:
+        observed = observed_structure_schema(row)
+        canonical = structure_schema_digest(observed)
+        legacy = legacy_structure_schema_digest(observed)
+        return {canonical, legacy}
+
+    header: dict[str, object] = {"type": "session_meta", "payload": {"id": "witness-session"}}
+    first_message: dict[str, object] = {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "id": "m0",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "same"}],
+        },
+    }
+    catalog = registry.load_package_catalog("codex")
+    assert catalog is not None
+    catalog.packages[0].elements[0].exact_structure_ids = sorted(row_witnesses(header) | row_witnesses(first_message))
+    registry.save_package_catalog(catalog)
+
+    records: list[dict[str, object]] = [header]
+    for index in range(64):
+        row = dict(first_message)
+        row["payload"] = dict(first_message["payload"])
+        payload = row["payload"]
+        assert isinstance(payload, dict)
+        payload["id"] = f"m{index}"
+        records.append(row)
+
+    path = tmp_path / "witness-prefix.jsonl"
+    with PrefixValidationState(
+        provider=Provider.CODEX,
+        source_path=str(path),
+        mode=ValidationMode.ADVISORY,
+        registry=registry,
+        scratch_directory=tmp_path,
+    ) as state:
+        for record_index, record in enumerate(records, start=1):
+            state.observe(record)
+            if record_index not in {64, 65}:
+                continue
+            prefix_bytes = "".join(json.dumps(item) + "\n" for item in records[:record_index]).encode()
+            path.write_bytes(prefix_bytes)
+            raw_id = f"witness-raw-{record_index}"
+            digest = hashlib.sha256(prefix_bytes).hexdigest()
+            streamed = state.verdict(raw_id=raw_id, revision_sha256=digest, evidence_id=raw_id)
+            ordinary = validate_retained_document(
+                Provider.CODEX,
+                path,
+                mode=ValidationMode.ADVISORY,
+                raw_id=raw_id,
+                revision_sha256=digest,
+                evidence_id=raw_id,
+                source_path=str(path),
+                jsonl=True,
+                registry=registry,
+            )
+            assert streamed == ordinary
+            assert streamed.schema_resolution is not None
+            expected_first = header if record_index == 64 else first_message
+            assert streamed.schema_resolution.exact_structure_id in row_witnesses(expected_first)
 
 
 def test_retained_drift_reduction_is_order_independent(tmp_path: Path) -> None:

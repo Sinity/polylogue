@@ -13,7 +13,7 @@ import json
 import tempfile
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import BinaryIO, Protocol, overload
@@ -22,10 +22,11 @@ from polylogue.archive.artifact_taxonomy import ArtifactStreamClassification
 from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.core.compute import DaemonBackpressureError, DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, ValidationMode
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.pipeline.ids import session_content_hash
+from polylogue.schemas.retained_validation import PrefixValidationState, RetainedValidationVerdict
 from polylogue.sources.dispatch import admit_parsed_sessions_for_publication
 from polylogue.sources.parsers import codex
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
@@ -202,7 +203,10 @@ def _read_head_and_prove(
     source_read: _CodexCheckpointRead,
     raw_ids: Sequence[str],
     head_blob: BinaryIO,
-) -> tuple[BinaryIO, list[int], list[str], str, int]:
+    *,
+    validation_mode: ValidationMode,
+    validation_directory: Path,
+) -> tuple[BinaryIO, list[int], list[str], str, int, dict[str, RetainedValidationVerdict]]:
     if len(raw_ids) < 4 or len(set(raw_ids)) != len(raw_ids):
         raise ValueError("checkpoint cohort needs three probes and an interior revision")
     descriptors = [source_read.raw_revision_descriptor(raw_id) for raw_id in raw_ids]
@@ -248,36 +252,52 @@ def _read_head_and_prove(
     head_blob.seek(0)
     line_end = 0
     prefix_record_counts: list[int] = []
+    prefix_verdicts: dict[str, RetainedValidationVerdict] = {}
     next_prefix = 0
     header_id: str | None = None
     line_number = 0
-    for line_number, line in enumerate(head_blob, start=1):
-        check_compute_cancelled()
-        line_end += len(line)
-        try:
-            record = json.loads(line)
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("Codex checkpoint stream is not complete JSONL") from exc
-        if line_number == 1:
-            header_id = _plain_text_header(record)
-            if header_id is None:
-                raise ValueError("Codex checkpoint stream has no unique leading session_meta")
-        else:
-            if _plain_text_message(record) is None:
+    with PrefixValidationState(
+        provider=Provider.CODEX,
+        source_path=first[2],
+        mode=validation_mode,
+        scratch_directory=validation_directory,
+    ) as validation:
+        for line_number, line in enumerate(head_blob, start=1):
+            check_compute_cancelled()
+            line_end += len(line)
+            try:
+                record = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("Codex checkpoint stream is not complete JSONL") from exc
+            if line_number == 1:
+                header_id = _plain_text_header(record)
+                if header_id is None:
+                    raise ValueError("Codex checkpoint stream has no unique leading session_meta")
+            elif _plain_text_message(record) is None:
                 raise ValueError("Codex record requires ordinary retained preparation")
-        if next_prefix < len(sizes):
-            if line_end == sizes[next_prefix]:
-                prefix_record_counts.append(line_number)
-                next_prefix += 1
-            elif line_end > sizes[next_prefix]:
-                raise ValueError("a retained revision does not end on a complete record boundary")
+            if not isinstance(record, dict):
+                raise ValueError("Codex checkpoint record is not a JSON object")
+            validation.observe(record)
+            if next_prefix < len(sizes):
+                if line_end == sizes[next_prefix]:
+                    prefix_record_counts.append(line_number)
+                    if 2 <= next_prefix < len(raw_ids) - 1:
+                        raw_id = raw_ids[next_prefix]
+                        prefix_verdicts[raw_id] = validation.verdict(
+                            raw_id=raw_id,
+                            revision_sha256=hashes[next_prefix],
+                            evidence_id=raw_id,
+                        )
+                    next_prefix += 1
+                elif line_end > sizes[next_prefix]:
+                    raise ValueError("a retained revision does not end on a complete record boundary")
     if next_prefix != len(sizes) or line_end != sizes[-1]:
         raise ValueError("head Codex JSONL stream ended inside a record")
     if header_id is None or line_number == 0:
         raise ValueError("head Codex JSONL stream has no session header")
     if not prefix_record_counts or prefix_record_counts[0] != 1 or prefix_record_counts[-1] != line_number:
         raise ValueError("checkpoint prefixes must include the header and the complete head")
-    return head_blob, prefix_record_counts, hashes, header_id, line_number - 1
+    return head_blob, prefix_record_counts, hashes, header_id, line_number - 1, prefix_verdicts
 
 
 def _prefix_accounting(message_count: int) -> ParseAccounting:
@@ -324,6 +344,7 @@ def prepare_codex_prefix_checkpoints(
     *,
     head_artifact: PreparedJsonl,
     artifact_directory: Path,
+    validation_mode: ValidationMode,
     publication_publisher: ArchiveBlobPublisher | None,
     publication_source_read: BlobPublicationSourceRead | None,
     prepare_sessions: Callable[[str, Iterable[ParsedSession]], Iterable[ParsedSession]],
@@ -340,8 +361,12 @@ def prepare_codex_prefix_checkpoints(
         # The result object owns this spool from the moment it is opened, even
         # when source verification fails before `_read_head_and_prove` returns.
         head_blob = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115
-        head_blob, prefix_record_counts, hashes, header_id, head_message_count = _read_head_and_prove(
-            source_read, raw_ids, head_blob
+        head_blob, prefix_record_counts, hashes, header_id, head_message_count, prefix_verdicts = _read_head_and_prove(
+            source_read,
+            raw_ids,
+            head_blob,
+            validation_mode=validation_mode,
+            validation_directory=artifact_directory,
         )
         parser_head = head_artifact.parser_stage_artifact
         if parser_head is None:
@@ -419,23 +444,22 @@ def prepare_codex_prefix_checkpoints(
                         session.content_hash = session_content_hash(session)
                         yield session
 
-                yield (
-                    raw_ids[index],
-                    PreparedJsonl.from_sessions(
-                        prepared_sessions(finalized),
-                        blob_hash=hashes[index],
-                        artifact_directory=artifact_directory,
-                        publication_publisher=publication_publisher,
-                        publication_source_read=publication_source_read,
-                        classification=options.classification,
-                        enrichment_digest=options.enrichment_digest,
-                        enrichment_index_path=options.enrichment_index_path,
-                        parsed_prefix_size=options.parsed_prefix_size,
-                        resolved_provider=Provider.CODEX,
-                        captured_profile_key=options.captured_profile_key,
-                        preparation_dependency=options.preparation_dependency,
-                    ),
+                prepared = PreparedJsonl.from_sessions(
+                    prepared_sessions(finalized),
+                    blob_hash=hashes[index],
+                    artifact_directory=artifact_directory,
+                    publication_publisher=publication_publisher,
+                    publication_source_read=publication_source_read,
+                    classification=options.classification,
+                    enrichment_digest=options.enrichment_digest,
+                    enrichment_index_path=options.enrichment_index_path,
+                    parsed_prefix_size=options.parsed_prefix_size,
+                    resolved_provider=Provider.CODEX,
+                    captured_profile_key=options.captured_profile_key,
+                    preparation_dependency=options.preparation_dependency,
                 )
+                prepared = replace(prepared, validation_verdict=prefix_verdicts[raw_ids[index]])
+                yield raw_ids[index], prepared
         finally:
             head_blob.close()
 
