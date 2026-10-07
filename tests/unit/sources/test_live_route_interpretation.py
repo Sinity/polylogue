@@ -6,6 +6,7 @@ session and inspects the stored archive rows.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from collections.abc import Sequence
@@ -26,6 +27,7 @@ from polylogue.storage.blob_store import BlobStore
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.raw_owner_routes import (
     converge_pending_raws_with_owner,
+    ingest_files_with_owners,
     inspect_raw_observations,
     run_ingest_files,
 )
@@ -254,6 +256,10 @@ def _claude_project(root: Path) -> tuple[Path, Path, Path]:
 
 
 def _claude_ingest(archive_root: Path, project: Path, paths: list[Path]) -> None:
+    asyncio.run(_claude_ingest_async(archive_root, project, paths))
+
+
+async def _claude_ingest_async(archive_root: Path, project: Path, paths: list[Path]) -> None:
 
     archive_root.mkdir(parents=True, exist_ok=True)
     bootstrap_archive_root(archive_root)
@@ -268,7 +274,7 @@ def _claude_ingest(archive_root: Path, project: Path, paths: list[Path]) -> None
         cursor=CursorStore(archive_root / "index.db"),
         parser_fingerprint=_PARSER_FINGERPRINT,
     )
-    metrics = run_ingest_files(processor, paths, emit_event=False)
+    metrics = await ingest_files_with_owners(processor, paths, emit_event=False)
     assert metrics.failed_file_count == 0
 
 
@@ -348,10 +354,10 @@ async def test_live_claude_tool_sidecar_replays_its_owner_from_retained_bytes(
     archive_root = tmp_path / "archive"
     if initial_sidecar is not None:
         _write_claude_tool_result_sidecar(sidecar, initial_sidecar)
-        _claude_ingest(archive_root, project, [transcript, sidecar])
+        await _claude_ingest_async(archive_root, project, [transcript, sidecar])
         assert _tool_result_texts(archive_root)[0].startswith(f"{initial_sidecar} synthetic")
     else:
-        _claude_ingest(archive_root, project, [transcript])
+        await _claude_ingest_async(archive_root, project, [transcript])
         assert "short synthetic preview" in _tool_result_texts(archive_root)[0]
 
     before = _session_rows(archive_root)
