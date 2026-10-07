@@ -2917,13 +2917,13 @@ def run_read_context_image(
 ) -> None:
     """Compile and emit a bounded context image over the matched selection.
 
-    Context-image reads use the declared daemon operation. Other multi-view
-    compositions continue through ``compile_context`` with resolved seed refs.
+    Every composition is the declared ``read.context-image`` operation: the
+    resolved sessions (or, for the context-image lens, its selection filters)
+    seed it and the requested views name what it compiles.
     """
     from polylogue.archive.context_models import (
         DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
         DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
-        ContextSpec,
     )
 
     redact = not no_redact
@@ -2947,84 +2947,62 @@ def run_read_context_image(
     )
     uses_context_image_defaults = "context-image" in views
 
-    if views == ("context-image",):
-        from datetime import datetime, timezone
-
-        from polylogue.archive.context_models import ContextImage
-        from polylogue.cli.operation_kernel import OperationKernelError, OperationRequest
-        from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
-        from polylogue.cli.read_views.context import record_context_image_ledger
-
-        observed_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        try:
-            result, _ = dispatch_read(
-                env.config,
-                OperationRequest(
-                    "read.context-image",
-                    {
-                        "seed_session_ids": session_ids,
-                        "project_path": project_path if not session_ids else None,
-                        "project_repo": project_repo if not session_ids else None,
-                        "since": since if not session_ids else None,
-                        "until": until if not session_ids else None,
-                        "origin": context_origin if not session_ids else None,
-                        "query": context_query if not session_ids else None,
-                        "observed_at_ms": observed_at_ms,
-                        "max_sessions": limit,
-                        "max_tokens": max_tokens,
-                        "include_messages": True,
-                        "include_assertions": include_assertions,
-                        "redact_paths": redact,
-                    },
-                ),
-                daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
-            )
-        except OperationKernelError as exc:
-            from polylogue.cli.render.outcome import exit_for_read_failure
-
-            exit_for_read_failure(exc)
-        image_payload = cast(dict[str, object], result["payload"])
-        image = ContextImage.model_validate(image_payload)
-        record_context_image_ledger(env.config, image_payload, observed_at_ms=observed_at_ms)
-    elif session_ids:
-        poly = env.polylogue
-        spec = ContextSpec(
-            purpose="continue",
-            seed_refs=tuple(f"session:{session_id}" for session_id in session_ids),
-            read_views=compile_views,
-            max_tokens=max_tokens,
-            max_messages_per_session=(
-                DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION if uses_context_image_defaults else None
-            ),
-            max_chars_per_message=(
-                DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE if uses_context_image_defaults else None
-            ),
-            include_assertions=include_assertions,
-            redaction_policy="raw-opt-in" if not redact else "default",
-        )
-        image = run_coroutine_sync(poly.compile_context(spec))
-    elif "context-image" in views:
-        poly = env.polylogue
-        image = run_coroutine_sync(
-            poly.context_image_payload(
-                project_path=project_path,
-                project_repo=project_repo,
-                since=since,
-                until=until,
-                origin=context_origin,
-                query=context_query,
-                max_sessions=limit,
-                max_tokens=max_tokens,
-                include_messages="messages" in compile_views,
-                include_assertions=include_assertions,
-                redact_paths=redact,
-            )
-        )
-    else:
+    if not session_ids and "context-image" not in views:
         raise click.UsageError(
             "read with --max-tokens, --include-assertions, or multiple --view values "
             "requires a seed (use --id, --latest, id:prefix, or a query)."
         )
+
+    from datetime import datetime, timezone
+
+    from polylogue.archive.context_models import ContextImage
+    from polylogue.cli.operation_kernel import OperationKernelError, OperationRequest
+    from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
+    from polylogue.cli.read_views.context import record_context_image_ledger
+
+    # A pure context-image read is the hand-off lens; any other composition
+    # continues the resolved sessions with the requested views unbounded per
+    # message unless the context-image lens is among them.
+    lens_only = views == ("context-image",)
+    observed_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    try:
+        result, _ = dispatch_read(
+            env.config,
+            OperationRequest(
+                "read.context-image",
+                {
+                    "seed_session_ids": session_ids,
+                    "project_path": project_path if not session_ids else None,
+                    "project_repo": project_repo if not session_ids else None,
+                    "since": since if not session_ids else None,
+                    "until": until if not session_ids else None,
+                    "origin": context_origin if not session_ids else None,
+                    "query": context_query if not session_ids else None,
+                    "observed_at_ms": observed_at_ms,
+                    "max_sessions": limit,
+                    "max_tokens": max_tokens,
+                    "max_messages_per_session": (
+                        DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION if uses_context_image_defaults else None
+                    ),
+                    "max_chars_per_message": (
+                        DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE if uses_context_image_defaults else None
+                    ),
+                    "read_views": list(compile_views),
+                    "purpose": "handoff" if lens_only or not session_ids else "continue",
+                    "include_assertions": include_assertions,
+                    "redact_paths": redact,
+                },
+            ),
+            daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+            selection_epoch=request.selection_epoch,
+        )
+    except OperationKernelError as exc:
+        from polylogue.cli.render.outcome import exit_for_read_failure
+
+        exit_for_read_failure(exc)
+    image_payload = cast(dict[str, object], result["payload"])
+    image = ContextImage.model_validate(image_payload)
+    record_context_image_ledger(env.config, image_payload, observed_at_ms=observed_at_ms)
 
     if projection_spec is not None:
         image = image.model_copy(update={"projection_spec": projection_spec})

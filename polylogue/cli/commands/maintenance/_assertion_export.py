@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
-import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import click
 
-from polylogue.api.archive import open_readonly_connection
 from polylogue.core.enums import AssertionKind
 from polylogue.paths import archive_root
-
-if TYPE_CHECKING:
-    from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
 
 # AssertionKind is imported directly from polylogue.core.enums (not
 # polylogue.storage.sqlite.archive_tiers.user_write, which re-exports the
@@ -55,17 +48,25 @@ def assertion_export_command(
     """Export the durable assertion substrate from user.db."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.archive_tiers.user_write import assertion_envelope_to_payload
 
     root = archive_root()
     user_db_path = root / ARCHIVE_TIER_SPECS[ArchiveTier.USER].filename
-    rows = _read_assertion_export_rows(
-        user_db_path,
-        kinds=kinds or None,
-        statuses=statuses or None,
-        limit=limit,
-    )
-    payload_rows = [assertion_envelope_to_payload(row) for row in rows]
+    from polylogue.cli.operation_kernel import OperationKernelError, configured_read_operation
+    from polylogue.config import load_polylogue_config
+
+    try:
+        result = configured_read_operation(
+            load_polylogue_config(),
+            "user.assertions.export",
+            {"kinds": list(kinds) or None, "statuses": list(statuses) or None, "limit": limit},
+        ).value
+    except OperationKernelError as exc:
+        from polylogue.cli.render.outcome import exit_for_read_failure
+
+        exit_for_read_failure(exc)
+    if not isinstance(result, dict) or not isinstance(result.get("items"), list):
+        raise click.ClickException("user.assertions.export returned an invalid result")
+    payload_rows = result["items"]
 
     if output_format == "json":
         content = (
@@ -93,24 +94,3 @@ def assertion_export_command(
         return
 
     click.echo(content, nl=False)
-
-
-def _read_assertion_export_rows(
-    user_db_path: Path,
-    *,
-    kinds: tuple[str, ...] | None,
-    statuses: tuple[str, ...] | None,
-    limit: int | None,
-) -> list[ArchiveAssertionEnvelope]:
-    from polylogue.storage.sqlite.archive_tiers.user_write import list_assertions_for_export
-
-    if not user_db_path.exists():
-        return []
-    with contextlib.closing(open_readonly_connection(user_db_path, validate_schema=False)) as conn:
-        conn.row_factory = sqlite3.Row
-        return list_assertions_for_export(
-            conn,
-            kinds=kinds,
-            statuses=statuses,
-            limit=limit,
-        )

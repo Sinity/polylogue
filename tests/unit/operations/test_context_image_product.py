@@ -109,6 +109,68 @@ def test_pinned_image_matches_facade_compilation(tmp_path: Path) -> None:
     assert selected.omitted == direct_selected.omitted
 
 
+def test_composed_views_compile_on_the_pinned_reader_as_the_facade_does(tmp_path: Path) -> None:
+    """The CLI's multi-view read is the declared operation, so it must compile every view.
+
+    Anti-vacuity: restore the pinned source's ``ValueError`` for the temporal or
+    chronicle view (or drop ``read_views`` from the payload) and the operation
+    either fails or compiles only messages, so the segment kinds differ from
+    the facade's ``compile_context`` over the same archive.
+    """
+    from polylogue.archive.context_models import ContextSpec
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    (
+        SessionBuilder(root / "index.db", "context-image-composed")
+        .provider("codex")
+        .title("Composed image")
+        .add_message("one", role="user", text="Composed archive evidence")
+        .add_message("two", role="assistant", text="A composed reply")
+        .save()
+    )
+    views = ["temporal", "chronicle", "messages"]
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        session_id = archive.list_summaries(limit=1)[0].session_id
+        result = execute_read_operation(
+            "read.context-image",
+            {
+                "seed_session_ids": [session_id],
+                "max_sessions": 1,
+                "read_views": views,
+                "purpose": "continue",
+                "max_messages_per_session": None,
+                "max_chars_per_message": None,
+                "include_assertions": False,
+                "observed_at_ms": 1_700_000_000_000,
+            },
+            archive=archive,
+            serving_identity="test",
+        )
+    validate_operation_result("read.context-image", result)
+    payload = cast(dict[str, Any], result["payload"])
+    facade = Polylogue(archive_root=root, db_path=root / "index.db")
+    try:
+        direct = run_coroutine_sync(
+            facade.compile_context(
+                ContextSpec(
+                    purpose="continue",
+                    seed_refs=(f"session:{session_id}",),
+                    read_views=tuple(views),
+                    include_assertions=False,
+                )
+            )
+        )
+    finally:
+        run_coroutine_sync(facade.close())
+    assert payload["spec"]["read_views"] == views
+    assert payload["omitted"] == []
+    assert [segment["payload_kind"] for segment in payload["segments"]] == [
+        segment.payload_kind for segment in direct.segments
+    ]
+    assert [segment["markdown"] for segment in payload["segments"]] == [segment.markdown for segment in direct.segments]
+
+
 def test_context_image_operation_preserves_seed_order_and_projection(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     root.mkdir()

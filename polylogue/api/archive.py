@@ -30,9 +30,8 @@ from polylogue.archive.context_models import (
 )
 from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
 from polylogue.archive.message.models import Message
-from polylogue.archive.message.roles import MessageRoleFilter, Role
+from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.archive.message.types import MessageType, validate_message_type_filter
-from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
 from polylogue.archive.query.spec import (
     DEFAULT_SESSION_LIST_LIMIT,
     normalize_action_sequence,
@@ -88,17 +87,9 @@ from polylogue.storage.sqlite.connection_profile import read_frame as read_frame
 from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
 from polylogue.surfaces.chronicle import (
     ChronicleProjectionPayload,
-    ChronicleSessionPayload,
-    build_chronicle_projection_payload,
-    build_chronicle_session_payload,
 )
 from polylogue.surfaces.temporal_evidence import (
-    TemporalEvidenceEvent,
     TemporalEvidenceWindow,
-    action_row_to_temporal_event,
-    build_temporal_evidence_window,
-    message_row_to_temporal_event,
-    summary_to_temporal_event,
 )
 
 if TYPE_CHECKING:
@@ -398,81 +389,32 @@ def _archive_action_sequence(values: Sequence[str]) -> tuple[str, ...]:
     return normalize_action_sequence("action_sequence", ",".join(values))
 
 
-def _archive_context_session_predicate(session_id: str) -> QueryFieldPredicate:
-    """Build a bound exact-session predicate without reparsing public DSL text."""
-
-    return QueryFieldPredicate(field="session.id", values=(session_id,), op="=").with_field_ref(
-        QueryFieldRef(scope="session", name="id", source_name="session.id")
-    )
-
-
 def _archive_context_temporal_window(config: Config, summary: SessionSummary) -> TemporalEvidenceWindow:
-    """Build a bounded temporal context window for one selected session."""
+    """Build the temporal context excerpt for one selected session."""
+    from polylogue.operations.context_image_product import CONTEXT_TEMPORAL_MESSAGE_EVENTS, context_temporal_window
 
-    session_id = str(summary.id)
-    message_limit = 8
-    action_limit = 4
-    events: list[TemporalEvidenceEvent] = []
-    if session_event := summary_to_temporal_event(summary):
-        events.append(session_event)
-    caveats: list[str] = []
     with archive_read_context(
         _active_archive_root(config),
         operation="archive.context.temporal_window",
-        arguments={"session_id": session_id},
-        page_size=message_limit,
+        arguments={"session_id": str(summary.id)},
+        page_size=CONTEXT_TEMPORAL_MESSAGE_EVENTS,
         projection="temporal-window",
         stable_order="time,message_id",
     ) as archive:
-        message_rows = archive.query_messages(
-            _archive_context_session_predicate(session_id),
-            limit=message_limit,
-            sort="time",
-            sort_direction="asc",
-        )
-        action_rows = archive.query_session_actions([session_id], limit=action_limit, sort_direction="asc")
-    events.extend(event for row in message_rows if (event := message_row_to_temporal_event(row)) is not None)
-    events.extend(event for row in action_rows if (event := action_row_to_temporal_event(row)) is not None)
-    if len(message_rows) >= message_limit and (summary.message_count or 0) > message_limit:
-        caveats.append("message_events_capped")
-    if len(action_rows) >= action_limit:
-        caveats.append("action_events_capped")
-    return build_temporal_evidence_window(events, caveats=caveats)
+        return context_temporal_window(archive, summary)
 
 
-async def _archive_context_chronicle_payload(
-    config: Config,
-    summary: SessionSummary,
-    *,
-    edge_limit: int = 8,
-) -> ChronicleProjectionPayload:
-    """Build a bounded chronicle projection for one selected session."""
+async def _archive_context_chronicle_payload(config: Config, summary: SessionSummary) -> ChronicleProjectionPayload:
+    """Build the chronicle context excerpt for one selected session."""
+    from polylogue.operations.context_image_product import context_chronicle_payload
 
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-
-    archive_root = _active_archive_root(config)
-    backend = SQLiteBackend(db_path=archive_root / "index.db")
-    session_payloads: list[ChronicleSessionPayload] = []
-    try:
-        first_messages, last_messages, total = await backend.get_message_edge_windows(
-            str(summary.id),
-            message_role=(Role.USER, Role.ASSISTANT),
-            message_type="message",
-            material_origin=(MaterialOrigin.HUMAN_AUTHORED, MaterialOrigin.ASSISTANT_AUTHORED),
-            edge_limit=edge_limit * 5,
-        )
-        session_payloads.append(
-            build_chronicle_session_payload(
-                summary,
-                first_messages=first_messages,
-                last_messages=last_messages,
-                total_matching_messages=total,
-                edge_limit=edge_limit,
-            )
-        )
-    finally:
-        await backend.close()
-    return build_chronicle_projection_payload(session_payloads, edge_limit=edge_limit)
+    with archive_read_context(
+        _active_archive_root(config),
+        operation="archive.context.chronicle",
+        arguments={"session_id": str(summary.id)},
+        projection="chronicle",
+    ) as archive:
+        return context_chronicle_payload(archive, summary)
 
 
 def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) -> dict[str, object]:

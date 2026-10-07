@@ -227,3 +227,11 @@ Each process snapshot row classifies its executable and first Python module
 from one complete shell parse. Malformed quoting retains whitespace executable
 classification and refuses module inference; classification is local to that
 observation.
+
+The CLI's auxiliary archive reads also execute against the resident pinned
+reader: identity-reset target resolution, assertion export, and excision
+planning are declared operations; tutorial counts and summary aggregates use
+`query.aggregate`, and archive-coverage summaries use `insights.list`.
+Composed context images carry their selected read views through
+`read.context-image`, so the daemon compiles messages, temporal evidence, and
+chronicle excerpts on the same selected archive view.

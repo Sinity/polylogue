@@ -11,8 +11,6 @@ from typing import TYPE_CHECKING
 
 import click
 
-from polylogue.api.archive import attach_readonly_database, open_readonly_connection
-
 if TYPE_CHECKING:
     from polylogue.surfaces.payloads import MutationStatus
 
@@ -140,65 +138,28 @@ def _embeddings_db_present() -> bool:
     return (_archive_root() / _EMBEDDINGS_ARCHIVE_DATABASE[1]).exists()
 
 
-def _resolve_archive_session_ids(tokens: list[str]) -> list[str]:
-    """Resolve exact or prefix archive session tokens.
-
-    If the archive tier is absent, exact tokens are still valid tombstone
-    targets because suppressions live in the user tier and survive re-ingest.
-    """
-
-    unique_tokens = list(dict.fromkeys(tokens))
-    archive_db = _index_db_path()
-    if not archive_db.exists():
-        return unique_tokens
-
-    conn = open_readonly_connection(archive_db, validate_schema=False)
-    try:
-        resolved: list[str] = []
-        for token in unique_tokens:
-            exact = conn.execute("SELECT session_id FROM sessions WHERE session_id = ?", (token,)).fetchone()
-            if exact is not None:
-                resolved.append(str(exact[0]))
-                continue
-            rows = conn.execute(
-                """
-                SELECT session_id
-                FROM sessions
-                WHERE session_id LIKE ?
-                ORDER BY session_id
-                LIMIT 2
-                """,
-                (f"{token}%",),
-            ).fetchall()
-            if not rows:
-                # No match: the archive tier exists but this token does not
-                # name a real session (typo/nonexistent ref, #jnj.5). Drop it
-                # rather than passing the raw token through as a valid
-                # target -- a typo must resolve to zero targets, not
-                # silently tombstone a bogus id.
-                continue
-            if len(rows) > 1:
-                raise click.ClickException(f"session id prefix {token!r} is ambiguous")
-            resolved.append(str(rows[0][0]))
-        return list(dict.fromkeys(resolved))
-    finally:
-        conn.close()
-
-
-def _identity_reset_targets(*, conv_id: str | None, source_path: Path | None) -> tuple[list[str], str]:
+def _identity_reset_targets(env: AppEnv, *, conv_id: str | None, source_path: Path | None) -> tuple[list[str], str]:
     """Resolve the exact archive session ids targeted by an identity reset.
 
     Resolution happens once, up front, so the dry-run preview and the real
     mutation act on the identical id set (mirrors the ``delete`` verb's
-    preview/mutate consistency fix, #1873). A ref that matches nothing
-    (typo/nonexistent) resolves to an empty list -- see
-    ``_resolve_archive_session_ids`` -- rather than being treated as a
-    literal target.
+    preview/mutate consistency fix, #1873). The resident target operation
+    returns no match for a typo instead of treating it as a literal target.
     """
-    if conv_id:
-        return _resolve_archive_session_ids([conv_id]), f"session {conv_id!r}"
-    assert source_path is not None
-    return _archive_session_ids_from_source(source_path), f"source {source_path}"
+    from polylogue.cli.operation_kernel import OperationKernelError, configured_read_operation
+
+    payload: dict[str, object] = {"session": conv_id} if conv_id else {"source_path": str(source_path)}
+    try:
+        result = configured_read_operation(env.config, "session.identity-reset.targets", payload).value
+    except OperationKernelError as exc:
+        from polylogue.cli.render.outcome import exit_for_read_failure
+
+        exit_for_read_failure(exc)
+    if not isinstance(result, dict) or not isinstance(result.get("session_ids"), list):
+        raise click.ClickException("identity reset target operation returned an invalid result")
+    ids = [str(value) for value in result["session_ids"]]
+    label = f"session {conv_id!r}" if conv_id else f"source {source_path}"
+    return ids, label
 
 
 def _emit_identity_reset_result(
@@ -224,33 +185,6 @@ def _emit_identity_reset_result(
         )
         return
     env.ui.console.print(plain_message)
-
-
-def _archive_session_ids_from_source(source_path: Path) -> list[str]:
-    index_db = _index_db_path()
-    source_db = _source_db_path()
-    if not index_db.exists() or not source_db.exists():
-        return []
-    from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
-
-    exact_prefix, child_prefix = escaped_sql_path_prefix_patterns(source_path)
-    conn = open_readonly_connection(index_db, validate_schema=False)
-    try:
-        attach_readonly_database(conn, source_db, alias="source")
-        rows = conn.execute(
-            """
-            SELECT s.session_id
-            FROM sessions s
-            JOIN source.raw_sessions r ON r.raw_id = s.raw_id
-            WHERE REPLACE(r.source_path, char(92), '/') = ?
-               OR REPLACE(r.source_path, char(92), '/') LIKE ? ESCAPE '\\'
-            ORDER BY s.session_id
-            """,
-            (exact_prefix, child_prefix),
-        ).fetchall()
-        return [str(row[0]) for row in rows]
-    finally:
-        conn.close()
 
 
 @click.command("reset")
@@ -338,7 +272,7 @@ def reset_command(
     # up front so the dry-run preview and the real mutation act on the
     # identical id set (#jnj.5).
     if conv_id or source_path:
-        session_ids, label = _identity_reset_targets(conv_id=conv_id, source_path=source_path)
+        session_ids, label = _identity_reset_targets(env, conv_id=conv_id, source_path=source_path)
         reason = "reset --session" if conv_id else f"reset --source {source_path}"
         count = len(session_ids)
 

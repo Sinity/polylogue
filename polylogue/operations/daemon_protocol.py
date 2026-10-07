@@ -507,6 +507,42 @@ class ContextImageReadRequest(_OperationPayload):
     include_messages: bool = True
     include_assertions: bool = True
     redact_paths: bool = True
+    #: Compiled read views for a composed image (``messages``, ``temporal``,
+    #: ``chronicle``). ``None`` keeps the context-image lens, whose only view
+    #: is the message transcript gated by ``include_messages``. A view the
+    #: compiler does not support is reported as an ``unsupported`` omission.
+    read_views: list[str] | None = None
+    purpose: Literal["handoff", "continue"] = "handoff"
+
+
+class IdentityResetTargetsRequest(_OperationPayload):
+    """Resolve the sessions an identity reset would tombstone.
+
+    Exactly one selector: ``session`` (an exact id or a unique id prefix) or
+    ``source_path`` (every session acquired from that path or below it).
+    """
+
+    session: str | None = Field(default=None, min_length=1)
+    source_path: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def exactly_one_selector(self) -> IdentityResetTargetsRequest:
+        if (self.session is None) == (self.source_path is None):
+            raise ValueError("identity reset targets need exactly one of session or source_path")
+        return self
+
+
+class ExcisionPlanRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    cascade_lineage: bool = False
+
+
+class AssertionExportRequest(_OperationPayload):
+    """Every assertion row by default: an export includes marks, overlays and deleted rows."""
+
+    kinds: list[str] | None = None
+    statuses: list[str] | None = None
+    limit: int | None = Field(default=None, ge=0)
 
 
 class ContinuationRouteRequest(_OperationPayload):
@@ -1316,6 +1352,25 @@ class UserOverlayGetResult(_OperationResult):
 
 class UserSettingGetResult(UserOverlayGetResult):
     outcome: dict[str, object]
+
+
+class AssertionExportResult(UserOverlayListResult):
+    outcome: dict[str, object]
+
+
+class IdentityResetTargetsResult(_OperationResult):
+    session_ids: list[str]
+    outcome: dict[str, object]
+
+
+class ExcisionPlanResult(_OperationResult):
+    found: bool
+    #: Set when the session is a prefix-sharing lineage parent and the request
+    #: did not cascade: the dependents that excising it alone would orphan.
+    lineage_dependent_session_ids: list[str]
+    refused: bool
+    detail: str | None = None
+    plan: dict[str, object] | None = None
 
 
 class UserSettingListResult(UserOverlayListResult):
@@ -2193,6 +2248,33 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="user.settings.list.result/v1",
         request_model=UserOverlayListRequest,
         result_model=UserSettingListResult,
+    ),
+    DaemonOperationSpec(
+        "user.assertions.export",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.assertions.export.request/v1",
+        result_contract="user.assertions.export.result/v1",
+        request_model=AssertionExportRequest,
+        result_model=AssertionExportResult,
+    ),
+    DaemonOperationSpec(
+        "session.identity-reset.targets",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="session.identity-reset.targets.request/v1",
+        result_contract="session.identity-reset.targets.result/v1",
+        request_model=IdentityResetTargetsRequest,
+        result_model=IdentityResetTargetsResult,
+    ),
+    DaemonOperationSpec(
+        "session.excision.plan",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="session.excision.plan.request/v1",
+        result_contract="session.excision.plan.result/v1",
+        request_model=ExcisionPlanRequest,
+        result_model=ExcisionPlanResult,
     ),
     DaemonOperationSpec(
         "user.marks.list",

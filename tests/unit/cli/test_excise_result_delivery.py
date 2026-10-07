@@ -251,14 +251,17 @@ def test_command_delivers_domain_or_truthful_delivery_error_without_repeating_mu
 ) -> None:
     from polylogue.cli import operation_kernel
     from polylogue.cli.commands import excise
-    from polylogue.security import excision
 
     body = b'{"cascaded_session_ids":["child"],"complete":true}'
     document = _document(body)
     config = object()
     env = cast("AppEnv", SimpleNamespace(config=config))
     submitted: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(excision, "plan_session_excision", lambda *_args, **_kwargs: SimpleNamespace(found=True))
+    monkeypatch.setattr(
+        operation_kernel,
+        "configured_read_operation",
+        lambda *_args, **_kwargs: SimpleNamespace(value={"found": True, "refused": False, "plan": {"found": True}}),
+    )
 
     def submit(_env: AppEnv, operation: str, payload: dict[str, object]) -> dict[str, object]:
         submitted.append((operation, payload))

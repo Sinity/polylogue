@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -64,6 +65,17 @@ def _tutorial_archive(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, sessio
             archive_root=root,
         )
     return root
+
+
+def _resident_search_count(monkeypatch: pytest.MonkeyPatch, count: int) -> None:
+    from polylogue.cli import operation_kernel
+
+    def read(_config: object, operation: str, payload: dict[str, object]) -> Any:
+        assert operation == "query.aggregate"
+        assert payload == {"mode": "count", "params": {}}
+        return SimpleNamespace(value={"count": count})
+
+    monkeypatch.setattr(operation_kernel, "configured_read_operation", read)
 
 
 def test_stage_count() -> None:
@@ -159,6 +171,7 @@ def test_stage_first_search_empty_archive(monkeypatch: pytest.MonkeyPatch, tmp_p
 
     _set_xdg(monkeypatch, tmp_path)
     _tutorial_archive(monkeypatch, tmp_path, sessions=0)
+    _resident_search_count(monkeypatch, 0)
     satisfied, message = _stage_first_search()
     assert satisfied is False
     assert "empty" in message.lower()
@@ -169,6 +182,7 @@ def test_stage_first_search_reads_archive_file_set(monkeypatch: pytest.MonkeyPat
 
     _set_xdg(monkeypatch, tmp_path)
     _tutorial_archive(monkeypatch, tmp_path, sessions=1)
+    _resident_search_count(monkeypatch, 1)
     satisfied, message = _stage_first_search()
     assert satisfied is True
     assert "1" in message
@@ -184,6 +198,7 @@ def test_stage_first_search_ignores_retired_single_file_db(monkeypatch: pytest.M
     retired.executemany("INSERT INTO sessions VALUES (?)", [(n,) for n in range(5)])
     retired.commit()
     retired.close()
+    _resident_search_count(monkeypatch, 1)
 
     satisfied, message = _stage_first_search()
 

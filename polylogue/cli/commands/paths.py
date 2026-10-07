@@ -238,6 +238,9 @@ def _tier_version_status(tier_paths: dict[str, Path]) -> dict[str, dict[str, obj
 
 
 def _read_user_version(path: Path) -> int | None:
+    # Direct-capable by contract: this diagnostic examines only the version
+    # header of explicitly named tier files, so it remains useful when the
+    # daemon is absent; it never reads session data or changes archive state.
     try:
         with contextlib.closing(open_readonly_connection(path, validate_schema=False)) as conn:
             row = conn.execute("PRAGMA user_version").fetchone()

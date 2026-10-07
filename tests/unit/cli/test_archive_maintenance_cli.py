@@ -521,14 +521,17 @@ def test_backup_plan_cli_renders_plain_summary(
 def test_assertion_export_cli_emits_all_assertions_as_jsonl(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _seed_assertion_export_rows(cli_workspace["archive_root"])
+    root = cli_workspace["archive_root"]
+    _seed_assertion_export_rows(root)
 
-    result = cli_runner.invoke(
-        cli,
-        ["--plain", "ops", "maintenance", "assertion-export"],
-        catch_exceptions=False,
-    )
+    with cli_daemon_archive(root, monkeypatch):
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "assertion-export"],
+            catch_exceptions=False,
+        )
 
     assert result.exit_code == 0, result.output
     rows = [json.loads(line) for line in result.stdout.splitlines()]
@@ -542,28 +545,30 @@ def test_assertion_export_cli_emits_all_assertions_as_jsonl(
 def test_assertion_export_cli_filters_and_writes_json_file(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _seed_assertion_export_rows(cli_workspace["archive_root"])
     out_path = cli_workspace["archive_root"] / "exports" / "assertions.json"
 
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "assertion-export",
-            "--format",
-            "json",
-            "--kind",
-            "note",
-            "--status",
-            "deleted",
-            "--out",
-            str(out_path),
-        ],
-        catch_exceptions=False,
-    )
+    with cli_daemon_archive(cli_workspace["archive_root"], monkeypatch):
+        result = cli_runner.invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "assertion-export",
+                "--format",
+                "json",
+                "--kind",
+                "note",
+                "--status",
+                "deleted",
+                "--out",
+                str(out_path),
+            ],
+            catch_exceptions=False,
+        )
 
     assert result.exit_code == 0, result.output
     assert result.stdout == f"Exported 1 assertions to {out_path}\n"

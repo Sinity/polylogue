@@ -286,6 +286,14 @@ def execute_read_operation(
         )
     elif name == "session.reference":
         result = _session_reference_payload(payload, archive=archive)
+    elif name in {
+        "user.assertions.export",
+        "session.identity-reset.targets",
+        "session.excision.plan",
+    }:
+        from polylogue.operations.cli_aux_reads import execute_cli_aux_read
+
+        result = execute_cli_aux_read(name, payload, archive=archive)
     elif name == "query.units":
         params = _params(payload)
         result = _query_units_payload(params, archive=archive, serving_identity=serving_identity)

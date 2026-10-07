@@ -13,13 +13,10 @@ from __future__ import annotations
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
 
 import click
 
 from polylogue.cli.shared.types import AppEnv
-from polylogue.core.sqlite_introspection import table_exists as _table_exists
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,39 +71,25 @@ def _stage_start_daemon() -> tuple[bool, str]:
 
 def _stage_first_search() -> tuple[bool, str]:
     """Report whether the archive has any sessions to search."""
-    from polylogue.paths import archive_root, db_path
+    from polylogue.config import load_polylogue_config
+    from polylogue.operations.archive_root import operation_archive_root
 
-    db = _active_archive_db(db_path(), archive_root())
-    if db is None:
+    config = load_polylogue_config()
+    root = operation_archive_root(config)
+    if not (root / "index.db").exists():
         return False, "No archive yet — ingest must run before search."
     try:
-        from polylogue.api.archive import open_readonly_connection
+        from polylogue.cli.operation_kernel import configured_read_operation
 
-        conn = open_readonly_connection(db, timeout=0.5)
-        try:
-            count = _count_searchable_sessions(conn)
-        finally:
-            conn.close()
+        result = configured_read_operation(config, "query.aggregate", {"mode": "count", "params": {}}).value
+        count = result.get("count") if isinstance(result, dict) else None
+        if not isinstance(count, int):
+            raise ValueError("query.aggregate did not return a session count")
     except Exception:
         return False, "Archive present but could not be queried."
     if count > 0:
         return True, f"Archive has {count:,} sessions."
     return False, "Archive present but empty — wait for first ingest to finish."
-
-
-def _active_archive_db(_db_anchor: Path, root: Path) -> Path | None:
-    """Return the archive DB file that contains searchable sessions."""
-    archive_db = root / "index.db"
-    if archive_db.exists():
-        return archive_db
-    return None
-
-
-def _count_searchable_sessions(conn: Any) -> int:
-    if _table_exists(conn, "sessions"):
-        count_row = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
-        return int(count_row[0]) if count_row else 0
-    return 0
 
 
 STAGES: tuple[TutorialStage, ...] = (
