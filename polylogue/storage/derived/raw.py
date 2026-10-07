@@ -377,6 +377,9 @@ class RawObservationInspection:
 
     domain = RAW_OBSERVATION_DOMAIN
     prerequisites: tuple[str, ...] = ()
+    # Inspection-only adapters intentionally have no schema-validation
+    # policy. A deriving adapter overrides this with its effective mode.
+    inspection_validation_mode: ValidationMode | None = None
 
     def __init__(self, archive_root: Path, *, index_db_path: Path | None = None) -> None:
         self.archive_root = archive_root
@@ -528,7 +531,7 @@ class RawObservationInspection:
         parser_fingerprint = raw_authority_parser_fingerprint()
         if census is not None and census["parser_fingerprint"] != parser_fingerprint:
             return "stale"
-        validation_mode = getattr(self, "_validation_mode", None)
+        validation_mode = self.inspection_validation_mode
         if validation_mode is not None and raw["validation_mode"] != validation_mode.value:
             return "stale"
         if self._decode_refusal(conn, key) is not None:
@@ -865,6 +868,10 @@ class RawObservationDerivation(RawObservationInspection):
     # pass while :meth:`publication_advanced` reports committed progress.
     # Every advance is one that cannot repeat for the same state, so the
     # continuation is bounded by progress rather than a phase count.
+
+    @property
+    def inspection_validation_mode(self) -> ValidationMode:
+        return self._validation_mode
 
     def __init__(
         self,
@@ -2666,6 +2673,35 @@ class RawObservationDerivation(RawObservationInspection):
                     if publication_failure is not None:
                         publication_failure(failure)
                     return False
+                drift_observations = [
+                    artifact.validation_verdict.drift_observation
+                    for retained in replacement.prepared_inputs.values()
+                    if (artifact := retained.prepared_artifact) is not None
+                    and artifact.validation_verdict is not None
+                    and artifact.validation_verdict.drift_observation is not None
+                ]
+                if drift_observations:
+                    # Drift telemetry is best effort and follows the durable
+                    # replay receipt. In particular, a committed STRICT
+                    # refusal still records its validation signal without
+                    # making ops.db part of the ingest outcome.
+                    try:
+                        from polylogue.schemas.drift_sentinel_sampling import (
+                            record_schema_drift_observations_to_ops_sync,
+                        )
+
+                        record_schema_drift_observations_to_ops_sync(
+                            Path(frame.source_revision),
+                            drift_observations,
+                            archive_root=self.archive_root,
+                        )
+                    except Exception:
+                        from polylogue.logging import get_logger
+
+                        get_logger(__name__).debug(
+                            "schema drift sampling failed after retained replay",
+                            exc_info=True,
+                        )
                 replay_receipt.stage_timings_s["provider_parse"] = (
                     replay_receipt.stage_timings_s.get("provider_parse", 0.0) + replacement.provider_parse_seconds
                 )

@@ -1,8 +1,9 @@
 """Best-effort ops.db bridge for the format-drift sentinel (polylogue-da1).
 
-Retained preparation currently produces no
-:class:`~polylogue.schemas.drift_sentinel.SchemaDriftObservation` values. A
-producer that does have such observations can persist them here. Storage is ``ops.db`` -- a
+Retained preparation attaches
+:class:`~polylogue.schemas.drift_sentinel.SchemaDriftObservation` values to
+validation verdicts, and the admitted replay writer persists them here after
+the durable receipt. Storage is ``ops.db`` -- a
 sibling database file next to the index.db the caller already has open --
 using the same best-effort contract as
 :func:`polylogue.storage.fts.drift_sampling.sample_fts_drift_to_ops_sync`:
