@@ -1706,15 +1706,20 @@ class RawObservationDerivation(RawObservationInspection):
             head_classification = head.stream_classification()
             if not isinstance(head_classification, ArtifactStreamClassification):
                 continue
+            checkpoint_options_by_raw: dict[str, CodexCheckpointArtifactOptions] = {}
 
             def checkpoint_options(
                 raw_id: str,
                 record_count: int,
                 taxonomy: ArtifactStreamClassification = head_classification,
+                options_by_raw: dict[str, CodexCheckpointArtifactOptions] = checkpoint_options_by_raw,
             ) -> CodexCheckpointArtifactOptions:
+                existing = options_by_raw.get(raw_id)
+                if existing is not None:
+                    return existing
                 descriptor, profile, fallback_timestamp, _native_id, _zip, _staged_blob = captures[raw_id]
                 _provider, _blob_hash, source_path, _kind, raw_size = descriptor
-                return CodexCheckpointArtifactOptions(
+                options = CodexCheckpointArtifactOptions(
                     source_path=source_path,
                     fallback_timestamp=fallback_timestamp,
                     classification=dataclasses.replace(taxonomy, record_count=record_count),
@@ -1722,6 +1727,8 @@ class RawObservationDerivation(RawObservationInspection):
                     captured_profile_key=profile,
                     artifact_directory=Path(tempfile.mkdtemp(prefix="codex-interior-", dir=scratch)),
                 )
+                options_by_raw[raw_id] = options
+                return options
 
             with prepare_codex_prefix_checkpoints(
                 captured_read,
@@ -1774,10 +1781,7 @@ class RawObservationDerivation(RawObservationInspection):
 
                 from polylogue.core.timestamp_authority import normalize_session_timestamps
                 from polylogue.sources.prepared_jsonl import _finalize_prepared_cohort
-                from polylogue.sources.revision_backfill import (
-                    enrichment_dependency_digest,
-                    iter_enriched_sessions_from_retained_read,
-                )
+                from polylogue.sources.revision_backfill import iter_enriched_sessions_from_retained_read
                 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
                 for raw_id in raw_ids:
@@ -1812,26 +1816,6 @@ class RawObservationDerivation(RawObservationInspection):
                                 ),
                             )
 
-                        def dependency(
-                            *,
-                            retained_path: str = source_path,
-                            retained_zip: object = zip_coordinate,
-                            retained_provider_ids: Callable[[], Iterator[str]] = partial(provider_session_ids, neutral),
-                        ) -> tuple[str, str]:
-                            return (
-                                enrichment_dependency_digest(
-                                    provider=Provider.CODEX,
-                                    source_path=retained_path,
-                                    captured_zip_coordinate=retained_zip,
-                                    provider_session_ids=retained_provider_ids(),
-                                    index_conn=fresh.observer("index"),
-                                    source_conn=fresh.observer("source"),
-                                    blob_root=blob_store.root,
-                                    parser_sidecars=False,
-                                ),
-                                str(fresh.index_path),
-                            )
-
                         bound = _finalize_prepared_cohort(
                             neutral,
                             finalize,
@@ -1840,7 +1824,7 @@ class RawObservationDerivation(RawObservationInspection):
                                 self.archive_root / "source.db", blob_store.root
                             ),
                             publication_source_read=fresh_read,
-                            preparation_dependency=dependency,
+                            preparation_dependency=None,
                             preserve_parser_stage=False,
                         )
                         bound = dataclasses.replace(bound, validation_verdict=neutral.validation_verdict)
