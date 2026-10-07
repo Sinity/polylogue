@@ -32,9 +32,11 @@ polylogue find "pytest" then read --view messages
 polylogue find "pytest" then analyze --facets
 
 # Source-only / CI-cloud verification without a daemon
-polylogue demo tour --out-dir polylogue-demo-tour --force
-polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json
-polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
+# (demo seeding writes only a scratch root, never the configured archive)
+polylogue demo tour --root ./polylogue-demo-tour/archive --out-dir polylogue-demo-tour --force
+polylogue demo receipts --root ./polylogue-receipts-demo/archive --seed --format json
+polylogue demo seed --root ./polylogue-demo-archive --force --with-overlays --format json
+polylogue demo verify --root ./polylogue-demo-archive --require-overlays --format json
 polylogue demo script --shell bash
 
 # Repository behavior checks

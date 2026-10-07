@@ -178,28 +178,6 @@ def scoped_offline_archive_writer(archive_root: Path, *, owner_id: str) -> Itera
         os.close(fd)
 
 
-@contextmanager
-def hold_daemon_start_exclusion(archive_root: Path) -> Iterator[None]:
-    """Hold a shared pidfile lock so a daemon cannot start mid-writer command."""
-    root = archive_root.expanduser().resolve()
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(root / "daemon.pid", os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0), 0o600)
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            pid = resident_daemon_pid(root)
-            writer = f"polylogued PID {pid}" if pid is not None else "resident daemon"
-            raise ArchiveWriterOwnershipError(
-                f"{writer} owns {root}; submit the operation to that daemon",
-                archive_root=root,
-                resident_writer=writer,
-            ) from exc
-        yield
-    finally:
-        os.close(fd)
-
-
 def offline_writer_block_reason(config: Config) -> str | None:
     """Return the concrete writer that makes a strictly offline operation unsafe."""
     from polylogue.core.write_lease import coordinator_write_lease_active
@@ -308,6 +286,5 @@ __all__ = [
     "resident_daemon_pid",
     "running_daemon_pid",
     "scoped_offline_archive_writer",
-    "hold_daemon_start_exclusion",
     "writable_tier_opens_are_checked",
 ]

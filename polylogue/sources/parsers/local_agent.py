@@ -12,9 +12,11 @@ from polylogue.archive.message.artifacts import classify_block_message_type, cla
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, BranchType, Provider
+from polylogue.core.hashing import hash_text
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.core.provider_identity import profile_root_for_artifact as _profile_root_for_artifact
 from polylogue.core.timestamps import format_timestamp
+from polylogue.sources import value_bounds
 from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.live.gemini_tool_output_sidecars import (
     is_masked_tool_output,
@@ -344,6 +346,8 @@ def apply_gemini_tool_output_sidecars(session: ParsedSession, join_result: Sidec
         return session
 
     replacements = {match.tool_use_id: match for match in join_result.matched if match.was_truncated}
+    attached_hashes: dict[str, str] = {}
+    attachment_debt: dict[str, SidecarDebt] = {}
     messages = session.messages
     if replacements:
         updated_messages: list[ParsedMessage] = []
@@ -353,36 +357,55 @@ def apply_gemini_tool_output_sidecars(session: ParsedSession, join_result: Sidec
             ):
                 updated_messages.append(message)
                 continue
-            updated_messages.append(
-                message.model_copy(
-                    update={
-                        "blocks": [
-                            block.model_copy(update={"text": replacements[block.tool_id].full_text})
-                            if block.type is BlockType.TOOL_RESULT and block.tool_id in replacements
-                            else block
-                            for block in message.blocks
-                        ]
-                    }
-                )
-            )
+            blocks = []
+            for block in message.blocks:
+                match = replacements.get(block.tool_id) if block.type is BlockType.TOOL_RESULT else None
+                if match is None:
+                    blocks.append(block)
+                    continue
+                try:
+                    text = value_bounds.require_storable_string(match.read_text(), kind="gemini tool sidecar")
+                except OSError as exc:
+                    attachment_debt[match.filename] = SidecarDebt(
+                        filename=match.filename,
+                        byte_size=match.byte_size,
+                        reason=f"read_error:{type(exc).__name__}",
+                        file_mtime_ms=match.file_mtime_ms,
+                    )
+                    blocks.append(block)
+                except value_bounds.ValueBoundRefusedError:
+                    attachment_debt[match.filename] = SidecarDebt(
+                        filename=match.filename,
+                        byte_size=match.byte_size,
+                        reason=value_bounds.VALUE_BOUND_REFUSED,
+                        file_mtime_ms=match.file_mtime_ms,
+                    )
+                    blocks.append(block)
+                else:
+                    attached_hashes[match.filename] = hash_text(text)
+                    blocks.append(block.model_copy(update={"text": text}))
+            updated_messages.append(message.model_copy(update={"blocks": blocks}))
         messages = updated_messages
 
     events = list(session.session_events)
     for match in join_result.matched:
-        events.append(gemini_sidecar_event(match))
+        if debt := attachment_debt.get(match.filename):
+            events.append(gemini_sidecar_event(debt))
+        else:
+            events.append(gemini_sidecar_event(match, content_hash=attached_hashes.get(match.filename)))
     for debt in join_result.debt:
         events.append(gemini_sidecar_event(debt))
     return session.model_copy(update={"messages": messages, "session_events": events})
 
 
-def gemini_sidecar_event(outcome: SidecarMatch | SidecarDebt) -> ParsedSessionEvent:
+def gemini_sidecar_event(outcome: SidecarMatch | SidecarDebt, *, content_hash: str | None = None) -> ParsedSessionEvent:
     if isinstance(outcome, SidecarMatch):
         payload = {
             "acquisition_status": "matched",
             "tool_use_id": outcome.tool_use_id,
             "filename": outcome.filename,
             "byte_size": outcome.byte_size,
-            "content_hash": outcome.content_hash,
+            "content_hash": content_hash or outcome.content_hash,
             "content_replaced": outcome.was_truncated,
         }
     else:

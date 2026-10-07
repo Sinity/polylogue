@@ -24,7 +24,7 @@ By default, the archive stays on your machine.
 Run the tour in a throwaway archive:
 
 ```bash
-uvx --python 3.14t polylogue demo tour
+uvx --python 3.14t polylogue demo tour --root ./polylogue-demo-tour/archive
 ```
 
 The command is complete when the terminal prints `Polylogue demo tour:
@@ -41,7 +41,7 @@ From a source checkout:
 ```bash
 git clone https://github.com/Sinity/polylogue.git
 cd polylogue
-uv run polylogue demo tour
+uv run polylogue demo tour --root ./polylogue-demo-tour/archive
 ```
 
 ## Search, analyze, audit, remember

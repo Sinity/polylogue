@@ -36,7 +36,7 @@ def _seed_demo_archive(root: Path) -> None:
     """Seed the synthetic corpus before the daemon starts serving CLI reads."""
     from polylogue.demo import seed_demo_archive
 
-    asyncio.run(seed_demo_archive(root, force=True, with_overlays=True, explicit_root=True))
+    asyncio.run(seed_demo_archive(root, force=True, with_overlays=True))
 
 
 def _parse_json_output(output: str) -> Any:

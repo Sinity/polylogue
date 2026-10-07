@@ -97,8 +97,8 @@ def _is_single_path_component(name: str) -> bool:
 def join_gemini_tool_output_sidecars(payload: JSONDocument, scope: RetainedSidecarScope) -> SidecarJoinResult:
     """Join ``scope``'s ``tool-outputs/session-<id>/*`` files to the tool calls that produced them.
 
-    Read-only. Returns matches carrying the sidecar's full text, ready for the
-    parser to attach to the owning ``tool_result`` block, and typed debt for
+    Read-only. Returns matches carrying a deferred reader for the sidecar's
+    full text, ready for the parser to attach to the owning ``tool_result`` block, and typed debt for
     files no tool call in this session's transcript claims. A pointer the
     transcript cites with no retained file is the explicit
     ``expected_sidecar_not_retained`` outcome -- the directory is
