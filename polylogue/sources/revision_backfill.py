@@ -1196,7 +1196,7 @@ def prepare_retained_non_json_artifact(
                     ArtifactStreamClassification(classification, False, 1),
                 )
             verdict = None
-            if envelope is not None and classification is not None and classification.schema_eligible:
+            if envelope is not None and classification.schema_eligible:
                 marker_path = Path(directory) / f"validation-marker-{uuid.uuid4().hex}.json"
                 try:
                     marker_path.write_text(json.dumps(envelope.payload, ensure_ascii=False), encoding="utf-8")
