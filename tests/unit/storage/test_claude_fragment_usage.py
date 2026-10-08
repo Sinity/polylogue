@@ -266,3 +266,65 @@ def test_one_claude_request_cannot_claim_multiple_models(tmp_path: Path) -> None
             raise AssertionError("conflicting request models must be refused")
     finally:
         conn.close()
+
+
+def test_unkeyed_claude_usage_events_remain_per_message(tmp_path: Path) -> None:
+    """Without request IDs, each message usage event remains its own fact."""
+    session_id = "claude-fragment-unkeyed-usage"
+    usage = {"input_tokens": 7, "output_tokens": 11}
+
+    def assistant(record_uuid: str, parent_uuid: str) -> dict[str, object]:
+        return {
+            "type": "assistant",
+            "uuid": record_uuid,
+            "parentUuid": parent_uuid,
+            "sessionId": session_id,
+            "timestamp": "2026-01-01T00:00:00.000Z",
+            "message": {
+                "id": "same-response-id",
+                "role": "assistant",
+                "model": "claude-opus-4",
+                "content": [{"type": "text", "text": "one fragment"}],
+                "usage": dict(usage),
+            },
+        }
+
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "user-1",
+                "sessionId": session_id,
+                "message": {"role": "user", "content": "Continue."},
+            },
+            assistant("fragment-1", "user-1"),
+            assistant("fragment-2", "fragment-1"),
+        ],
+        session_id,
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        stored_session_id = write_fixture_index_session(
+            conn,
+            parsed,
+            content_hash=str(session_content_hash(parsed)),
+            prepared_rows=prepare_session_rows(parsed),
+        )
+        reconcile_session_usage_rollup(conn, stored_session_id)
+
+        rows = list(
+            conn.execute(
+                "SELECT request_id FROM session_provider_usage_events "
+                "WHERE session_id = ? AND provider_event_type = 'message_usage' ORDER BY position",
+                (stored_session_id,),
+            )
+        )
+        assert [row[0] for row in rows] == [None, None]
+        rollup = conn.execute(
+            "SELECT input_tokens, output_tokens FROM session_model_usage "
+            "WHERE session_id = ? AND model_name = 'claude-opus-4'",
+            (stored_session_id,),
+        ).fetchone()
+        assert tuple(rollup) == (14, 22)
+    finally:
+        conn.close()
