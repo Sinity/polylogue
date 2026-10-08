@@ -12,6 +12,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -386,3 +387,44 @@ def test_frontier_fallback_exception_records_failed_debt_except_cancellation(
         assert cursor.list_convergence_debt(stage="raw_frontier_inspection", retry_due_only=True) == []
         daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
         assert executions == 1
+
+
+@pytest.mark.parametrize("inspection_raises", [False, True])
+def test_frontier_fallback_refuses_unpersisted_retry_debt(
+    archive: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bounded_compute_adapter: BoundedComputeAdapter,
+    inspection_raises: bool,
+) -> None:
+    """Both fallback outcomes must surface a refused canonical debt write."""
+    from types import SimpleNamespace
+
+    from polylogue import logging as plog
+    from polylogue.core.sqlite_locking import is_transient_sqlite_lock
+    from polylogue.operations import raw_frontier_inspection
+    from polylogue.sources.live import cursor as cursor_module
+    from polylogue.sources.live.sqlite_locking import best_effort_cursor_write
+
+    original_write = best_effort_cursor_write
+    inspection_failure = OSError("neutral inspection unavailable")
+
+    def refuse_debt(label: str, write: Any) -> bool:
+        if label == "archive ops convergence debt sync":
+            return False
+        return original_write(label, write)
+
+    def inspect(*_args: object, **_kwargs: object) -> object:
+        if inspection_raises:
+            raise inspection_failure
+        return SimpleNamespace(healthy=False)
+
+    monkeypatch.setattr(cursor_module, "best_effort_cursor_write", refuse_debt)
+    monkeypatch.setattr(raw_frontier_inspection, "frontier_coverage_for_archive", lambda _root: {})
+    monkeypatch.setattr(raw_frontier_inspection, "inspect_prepared_raw_authority_frontier", inspect)
+    with plog.capture() as records, pytest.raises(sqlite3.OperationalError) as raised:
+        daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert is_transient_sqlite_lock(raised.value)
+    if inspection_raises:
+        assert raised.value.__context__ is inspection_failure
+    assert not [r for r in records if r["event"] == "daemon.raw_frontier_inspection.pass.completed"]
+    assert _rows(archive) == []

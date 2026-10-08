@@ -369,6 +369,8 @@ coverage fallback never runs another census in that debt pass. A blocked
 fallback records deferred frontier debt through the stage writer bridge, so
 later attempts use the canonical debt retry schedule and backoff. An inspection
 exception records failed debt and propagates its original error; cancellation
-creates no failure debt. Completed
+creates no failure debt. A lock-exhausted debt sync raises a typed retryable
+SQLite failure; the pass cannot report a persisted handoff when no row landed.
+Completed
 current healthy coverage avoids another census; cancellation and
 inspection refusals retain their ordinary typed outcomes.
