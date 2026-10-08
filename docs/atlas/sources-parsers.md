@@ -56,7 +56,17 @@ before current enrichment and publication are prepared. If that bind becomes
 stale during enrichment, a new Source witness repeats the comparison and
 reuses detached parser artifacts only when the eligible raws and their parser
 operands still match exactly; changed inputs are reparsed. The neutral
-artifacts contain no enrichment state (`storage/derived/raw.py`;
+retained enrichment also resolves any remaining persisted-output tool-result
+envelopes from matching `PostToolUse` rows in `raw_hook_events`. Those rows are
+selected by Claude origin, parent-or-session native ID, and tool-use ID through
+the same `PreparedSessionSourceRead` fence, then applied before content hashing.
+Recovery records the hook event identity and whether its payload is complete;
+it does not replace a result when the hook payload adds no text.
+The session's enrichment binding includes its matching PostToolUse rows, so a
+later hook publication makes the existing raw output stale for the normal Raw
+materialization owner to replay, including after restart or in a fresh Index.
+
+Detached artifacts contain no enrichment state (`storage/derived/raw.py`;
 `sources/sidecar_evidence.py`).
 
 ## Source observation and SQLite reads

@@ -599,14 +599,6 @@
       "count": 2
     },
     {
-      "file": "polylogue/sources/live/hook_tool_response.py",
-      "digest": "9ed4db00c6ca6fc8fb93ce408c457615f4badac9"
-    },
-    {
-      "file": "polylogue/sources/live/hook_tool_response.py",
-      "digest": "a7b83dca8221443a76d724228c62f508d6db99a5"
-    },
-    {
       "file": "polylogue/sources/live/sqlite_locking.py",
       "digest": "3e145f80dcd15603caefaf2918e03f80f34b4247"
     },

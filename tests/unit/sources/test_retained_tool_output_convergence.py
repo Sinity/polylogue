@@ -23,6 +23,7 @@ Synthetic fixtures only: invented tool output, invented paths.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import shutil
@@ -35,14 +36,16 @@ import pytest
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
 from polylogue.core.enums import BlockType
+from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.hooks import append_hook_event
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.revision_backfill import parse_retained_raw_sessions
+from polylogue.sources.revision_backfill import parse_retained_raw_sessions, prepare_retained_jsonl_artifact
 from polylogue.sources.source_layout import export_drop_layout
 from tests.infra.archive_templates import run_off_event_loop
-from tests.infra.raw_owner_routes import ingest_files_with_owners
+from tests.infra.raw_owner_routes import ingest_files_with_owners, live_owner_set
 from tests.infra.retained_jsonl import prepared_source_fixture
 
 _SESSION_ID = "5c3d1e40-0000-4000-8000-00000000aaaa"
@@ -99,6 +102,21 @@ def _tool_exchange(prefix: str, session_id: str, tool_use_id: str, result_text: 
 def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+
+def _write_tool_response_hook(
+    archive_root: Path, *, session_native_id: str, tool_use_id: str, text: str, event_id: str
+) -> None:
+    event_digest = hashlib.sha256(event_id.encode("utf-8")).hexdigest()[:32]
+    append_hook_event(
+        event_type="PostToolUse",
+        session_id=session_native_id,
+        provider="claude-code",
+        timestamp="2026-07-20T10:01:00Z",
+        payload={"tool_use_id": tool_use_id, "tool_name": "Bash", "tool_response": {"result": text}},
+        root=archive_root / "hooks",
+        event_id=event_digest,
+    )
 
 
 def _claude_tree(root: Path, *, orphan: bool = True) -> dict[str, Path]:
@@ -323,6 +341,112 @@ async def test_claude_full_tool_text_survives_the_loss_of_its_source_tree(
     assert matched == {"toolu_parent"}, "ownership must not drift onto the subagent's call"
     debt = {(event["filename"], event["reason"]) for event in events if event["acquisition_status"] == "debt"}
     assert debt == {("orphan999.txt", "no_owning_tool_result_block")}
+
+
+@pytest.mark.asyncio
+async def test_retained_preparation_recovers_hook_result_before_publication(
+    workspace_env: dict[str, Path],
+) -> None:
+    """The prepared Source window supplies missing tool output before hashing."""
+    root = workspace_env["data_root"] / "projects"
+    root.mkdir(parents=True)
+    tree = _claude_tree(root, orphan=False)
+    archive, _cursor, processor = _processor(
+        workspace_env, (WatchSource(name="claude-code", root=root, layout=export_drop_layout((".jsonl",))),)
+    )
+    try:
+        await ingest_files_with_owners(processor, [tree["parent"]], emit_event=False)
+        raw_id = _raw_id_for(workspace_env["archive_root"], tree["parent"])
+    finally:
+        await archive.close()
+
+    def write_hooks() -> None:
+        _write_tool_response_hook(
+            workspace_env["archive_root"],
+            session_native_id=_SESSION_ID,
+            tool_use_id="toolu_parent",
+            text="zz_hook_recovery_probe " + "r" * 1000,
+            event_id="matching",
+        )
+        _write_tool_response_hook(
+            workspace_env["archive_root"],
+            session_native_id=_SESSION_ID,
+            tool_use_id="toolu_other",
+            text="zz_wrong_tool_must_not_leak " + "x" * 1000,
+            event_id="wrong-tool",
+        )
+        _write_tool_response_hook(
+            workspace_env["archive_root"],
+            session_native_id="other-synthetic-session",
+            tool_use_id="toolu_parent",
+            text="zz_wrong_session_must_not_leak " + "y" * 1000,
+            event_id="wrong-session",
+        )
+
+    run_off_event_loop(write_hooks)
+    from tests.infra.hook_carriers import materialize_hook_carriers
+
+    run_off_event_loop(lambda: materialize_hook_carriers(workspace_env["archive_root"]))
+    shutil.rmtree(root)
+    assert not root.exists()
+
+    def prepare() -> tuple[list[str], list[dict[str, object]], str, str]:
+        directory = workspace_env["data_root"] / "prepared-hook-replay"
+        directory.mkdir(parents=True, exist_ok=True)
+        with prepared_source_fixture(workspace_env["archive_root"]) as reader:
+            artifact = prepare_retained_jsonl_artifact(reader, raw_id, directory=directory)
+            try:
+                sessions = list(artifact.iter_sessions())
+                assert len(sessions) == 1
+                session = sessions[0]
+                return (
+                    _tool_result_texts(session),
+                    _sidecar_events(session, "hook_tool_response_recovery"),
+                    str(session.content_hash),
+                    str(session_content_hash(session)),
+                )
+            finally:
+                artifact.discard()
+
+    texts, events, prepared_hash, recomputed_hash = run_off_event_loop(prepare)
+    [text] = texts
+    assert "zz_hook_recovery_probe" in text
+    assert "zz_wrong_tool_must_not_leak" not in text
+    assert "zz_wrong_session_must_not_leak" not in text
+    [event] = events
+    assert event["acquisition_status"] == "matched"
+    assert event["tool_use_id"] == "toolu_parent"
+    assert event["hook_event_id"]
+    assert event["recovery_complete"] is True
+    assert prepared_hash == recomputed_hash
+
+    # A later Source-only hook publication makes the existing Raw owner see
+    # this session as stale through its enrichment binding. This exercises the
+    # ordinary owner-wake route that runs after carrier publication and needs
+    # no Index reverse lookup or process-local callback memory.
+    async def replay_late_hook_evidence() -> None:
+        from polylogue.operations.raw_observation_derivation import raw_observation_inspection_frame
+        from polylogue.storage.derived.raw import RawObservationInspection
+
+        inspection = RawObservationInspection(workspace_env["archive_root"])
+        frame = raw_observation_inspection_frame(workspace_env["archive_root"])
+        candidates, _cursor = inspection.required_page(frame, cursor=None, limit=128)
+        assert raw_id in candidates
+        states = inspection.inspect(frame, (raw_id,))
+        assert states[raw_id] == "stale", states
+        async with live_owner_set(workspace_env["archive_root"]) as owners:
+            report = await owners.raw_owner.ingest_retained_raw_ids((raw_id,))
+            report.require_complete()
+
+    run_off_event_loop(lambda: asyncio.run(replay_late_hook_evidence()))
+    with sqlite3.connect(f"file:{workspace_env['archive_root'] / 'index.db'}?mode=ro", uri=True) as conn:
+        rows = conn.execute(
+            """SELECT b.text FROM sessions s
+            JOIN messages m ON m.session_id=s.session_id
+            JOIN blocks b ON b.message_id=m.message_id
+            WHERE b.block_type='tool_result'"""
+        ).fetchall()
+        assert any("zz_hook_recovery_probe" in str(row[0]) for row in rows), rows
 
 
 @pytest.mark.asyncio

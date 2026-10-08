@@ -8330,6 +8330,104 @@ class PreparedSessionSourceRead:
             evidence_reader=self,
         )
 
+    def hook_tool_responses(
+        self,
+        *,
+        origin: str,
+        session_native_ids: Iterable[str],
+        tool_use_ids: Iterable[str],
+    ) -> Mapping[str, object]:
+        """Read matching hook payloads inside this prepared Source fence.
+
+        Candidate rows are selected by provider-native session and tool-call
+        identity. Original rows are hydrated a page at a time into the sealed
+        Source view; decoding then streams from that view in bounded batches.
+        """
+        from polylogue.sources.live.hook_tool_response import hook_tool_responses_from_rows
+
+        natives = tuple(dict.fromkeys(value for value in session_native_ids if value))
+        tools = tuple(dict.fromkeys(value for value in tool_use_ids if value))
+        if not natives or not tools:
+            return {}
+        native_marks = ", ".join("?" for _ in natives)
+        result: dict[str, object] = {}
+        for start in range(0, len(tools), 128):
+            batch = tools[start : start + 128]
+            tool_marks = ", ".join("?" for _ in batch)
+            predicate = (
+                f"origin=? AND session_native_id IN ({native_marks}) AND event_type='PostToolUse' "
+                "AND json_valid(payload_json) "
+                "AND json_extract(payload_json, '$.payload.tool_use_id') IN (" + tool_marks + ")"
+            )
+            base_parameters = (origin, *natives, *batch)
+            after_observed: int | None = None
+            after_event: str | None = None
+            while True:
+                check_compute_cancelled()
+                with self._seal.original_rows(
+                    "source",
+                    f"SELECT rowid, observed_at_ms, hook_event_id FROM raw_hook_events WHERE {predicate} "
+                    "AND (? IS NULL OR observed_at_ms>? OR (observed_at_ms=? AND hook_event_id>?)) "
+                    "ORDER BY observed_at_ms, hook_event_id LIMIT 256",
+                    (*base_parameters, after_observed, after_observed, after_observed, after_event),
+                ) as rows:
+                    page = tuple(rows.fetchall())
+                if not page:
+                    break
+                for _rowid, _observed, event_id in page:
+                    check_compute_cancelled()
+                    self._load_matches(
+                        "raw_hook_events",
+                        "SELECT rowid FROM raw_hook_events WHERE hook_event_id=?",
+                        (event_id,),
+                    )
+                _rowid, after_observed, after_event = page[-1]
+
+            with self._seal.source_rows(
+                f"SELECT hook_event_id, payload_json FROM raw_hook_events WHERE {predicate} "
+                "ORDER BY observed_at_ms, hook_event_id",
+                base_parameters,
+            ) as rows:
+                while event_page := rows.fetchmany(256):
+                    check_compute_cancelled()
+                    result.update(hook_tool_responses_from_rows(event_page, tool_use_ids=batch))
+        return result
+
+    def hook_tool_response_evidence_digest(
+        self,
+        *,
+        origin: str,
+        session_native_ids: Iterable[str],
+    ) -> str | None:
+        """Digest every matching PostToolUse row within the prepared Source fence."""
+        from polylogue.sources.live.hook_tool_response import hook_tool_response_evidence_digest
+
+        natives = tuple(dict.fromkeys(value for value in session_native_ids if value))
+        if not natives:
+            return None
+        native_marks = ", ".join("?" for _ in natives)
+        predicate = f"origin=? AND session_native_id IN ({native_marks}) AND event_type='PostToolUse'"
+        parameters = (origin, *natives)
+        after_rowid = 0
+        while True:
+            check_compute_cancelled()
+            with self._seal.original_rows(
+                "source",
+                f"SELECT rowid FROM raw_hook_events WHERE {predicate} AND rowid>? ORDER BY rowid LIMIT 256",
+                (*parameters, after_rowid),
+            ) as rows:
+                page = tuple(int(row[0]) for row in rows.fetchall())
+            if not page:
+                break
+            for rowid in page:
+                self._load_matches("raw_hook_events", "SELECT rowid FROM raw_hook_events WHERE rowid=?", (rowid,))
+            after_rowid = page[-1]
+        with self._seal.source_rows(
+            f"SELECT hook_event_id, payload_json FROM raw_hook_events WHERE {predicate} ORDER BY hook_event_id",
+            parameters,
+        ) as rows:
+            return hook_tool_response_evidence_digest(rows)
+
     def _load_matches(self, table: str, sql: str, parameters: tuple[object, ...]) -> None:
 
         with self._seal.original_rows("source", sql, parameters) as rows:

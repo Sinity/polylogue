@@ -3702,7 +3702,16 @@ def session_enrichment_evidence_key_from_reader(
         source_path=source_path,
         captured_zip_coordinate=None,
     )
-    return enrichment_evidence_key(provider, data, native_id)
+    key = enrichment_evidence_key(provider, data, native_id)
+    if provider is Provider.CLAUDE_CODE:
+        hook_key = evidence_reader.hook_tool_response_evidence_digest(
+            origin=origin_from_provider(provider).value,
+            session_native_ids=tuple(dict.fromkeys((native_id, native_id.split(":", 1)[0]))),
+        )
+        if hook_key is not None:
+            encoded = json.dumps((provider.value, key, "hook_tool_responses", hook_key), separators=(",", ":"))
+            key = hashlib.sha256(encoded.encode("utf-8", "surrogatepass")).hexdigest()
+    return key
 
 
 def _append_session_native_id(
@@ -4821,10 +4830,47 @@ def iter_enriched_sessions_from_retained_read(
     if provider is Provider.UNKNOWN and sessions:
         provider = sessions[0].source_name
     spec = get_assembly_spec(provider)
+
+    def recover_hook_results(session: ParsedSession) -> ParsedSession:
+        if provider is not Provider.CLAUDE_CODE:
+            return session
+        from polylogue.sources.live.hook_tool_response import (
+            recover_persisted_tool_results,
+            unresolved_persisted_truncations,
+        )
+
+        truncations = unresolved_persisted_truncations(session)
+        native_id = str(session.provider_session_id or "")
+        if not native_id:
+            return session
+        session_native_ids = tuple(dict.fromkeys((native_id, native_id.split(":", 1)[0])))
+        origin = origin_from_provider(provider).value
+        recovered = session
+        if truncations:
+            responses = evidence_reader.hook_tool_responses(
+                origin=origin,
+                # Claude journals subagent calls under the parent native id.
+                session_native_ids=session_native_ids,
+                tool_use_ids=(item.tool_use_id for item in truncations),
+            )
+            recovered = recover_persisted_tool_results(session, responses=responses)
+        hook_key = evidence_reader.hook_tool_response_evidence_digest(
+            origin=origin, session_native_ids=session_native_ids
+        )
+        if hook_key is None:
+            return recovered
+        encoded = json.dumps(
+            (provider.value, recovered.enrichment_evidence_key, "hook_tool_responses", hook_key),
+            separators=(",", ":"),
+        )
+        combined_key = hashlib.sha256(encoded.encode("utf-8", "surrogatepass")).hexdigest()
+        return recovered.model_copy(update={"enrichment_evidence_key": combined_key})
+
     if spec is None:
         for session in sessions:
             check_compute_cancelled()
-            yield normalize_session(session) if normalize_session is not None else session
+            prepared = normalize_session(session) if normalize_session is not None else session
+            yield recover_hook_results(prepared)
         return
     sidecar_data = _retained_enrichment_sidecar_data(
         provider=provider,
@@ -4869,9 +4915,10 @@ def iter_enriched_sessions_from_retained_read(
                         sidecar_data,
                         message_sink_factory=output_store.new_sink,
                     )
-                    yield stamp_enrichment_evidence(provider, sidecar_data, enriched)
+                    yield recover_hook_results(stamp_enrichment_evidence(provider, sidecar_data, enriched))
             else:
-                yield stamp_enrichment_evidence(provider, sidecar_data, spec.enrich_session(session, sidecar_data))
+                enriched = spec.enrich_session(session, sidecar_data)
+                yield recover_hook_results(stamp_enrichment_evidence(provider, sidecar_data, enriched))
     finally:
         primary = sys.exception()
         try:
@@ -4886,6 +4933,16 @@ class RetainedEnrichmentRead(Protocol):
     """Provider metadata read through the current preparation's actual owner."""
 
     def retained_state_titles(self, thread_ids: Iterable[str], source_path: str | None) -> Mapping[str, str] | None: ...
+
+    def hook_tool_responses(
+        self,
+        *,
+        origin: str,
+        session_native_ids: Iterable[str],
+        tool_use_ids: Iterable[str],
+    ) -> Mapping[str, Any]: ...
+
+    def hook_tool_response_evidence_digest(self, *, origin: str, session_native_ids: Iterable[str]) -> str | None: ...
 
     def retained_assembly_evidence(
         self,
@@ -4918,6 +4975,35 @@ class ConnectionRetainedEnrichmentRead:
 
         with closing(iter_thread_title_candidates(self._index, thread_ids=thread_ids, source_path=source_path)) as rows:
             return RetainedTitleIndex(rows)
+
+    def hook_tool_responses(
+        self,
+        *,
+        origin: str,
+        session_native_ids: Iterable[str],
+        tool_use_ids: Iterable[str],
+    ) -> Mapping[str, Any]:
+        if self._source is None:
+            return {}
+        from polylogue.sources.live.hook_tool_response import read_hook_tool_responses
+
+        return read_hook_tool_responses(
+            self._source,
+            origin=origin,
+            session_native_ids=tuple(session_native_ids),
+            tool_use_ids=tuple(tool_use_ids),
+        )
+
+    def hook_tool_response_evidence_digest(self, *, origin: str, session_native_ids: Iterable[str]) -> str | None:
+        if self._source is None:
+            return None
+        from polylogue.sources.live.hook_tool_response import read_hook_tool_response_evidence_digest
+
+        return read_hook_tool_response_evidence_digest(
+            self._source,
+            origin=origin,
+            session_native_ids=tuple(session_native_ids),
+        )
 
     def retained_assembly_evidence(
         self,
