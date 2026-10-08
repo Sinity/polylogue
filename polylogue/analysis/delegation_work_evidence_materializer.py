@@ -21,7 +21,7 @@ from polylogue.core.stage_admission import admit_stage_write
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.archive_tiers.archive_query_reads import DelegationPageKey
-from polylogue.storage.sqlite.managed_connection import sqlite_connection
+from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
 
 DELEGATION_WORK_EVIDENCE_GRAPH_ID = "delegation:archive"
 
@@ -141,7 +141,7 @@ def materialize_delegation_work_evidence_archive(archive_root: Path) -> int:
         # is a write, so it is the only part that enters the daemon writer.
         admit_stage_write(
             "convergence.stage.delegation_work_evidence.publish",
-            lambda: _replace_graph(resolve_active_index_path(archive_root), snapshot, scratch_path),
+            lambda: _replace_graph(archive_root, snapshot, scratch_path),
         )
     return count
 
@@ -274,30 +274,40 @@ def _published_node_rows(scratch: sqlite3.Connection) -> sqlite3.Cursor:
     return scratch.execute(f"SELECT {_NODE_SELECT_COLUMNS} FROM nodes ORDER BY node_ref")
 
 
-def _replace_graph(index_db: Path, snapshot: ObjectRef, scratch_path: Path) -> None:
+def _replace_graph(archive_root: Path, snapshot: ObjectRef, scratch_path: Path) -> None:
     # Keep this synchronous: convergence stages own a synchronous SQLite lease.
     graph_id = DELEGATION_WORK_EVIDENCE_GRAPH_ID
-    with (
-        closing(sqlite3.connect(scratch_path)) as scratch,
-        sqlite_connection(index_db) as conn,
-    ):
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("DELETE FROM work_evidence_graphs WHERE graph_id = ?", (graph_id,))
-        conn.execute(
-            "INSERT INTO work_evidence_graphs(graph_id, corpus_snapshot_ref) VALUES (?, ?)",
-            (graph_id, snapshot.format()),
+    index_db = resolve_active_index_path(archive_root)
+    with closing(sqlite3.connect(scratch_path)) as scratch:
+        conn = open_isolated_write_connection(
+            index_db,
+            purpose="convergence.stage.delegation_work_evidence.publish",
+            archive_root=archive_root,
         )
-        conn.executemany(
-            f"INSERT INTO work_evidence_nodes(graph_id, {', '.join(_NODE_COLUMNS)}) "
-            f"VALUES (?, {', '.join('?' for _ in _NODE_COLUMNS)})",
-            _prefixed(graph_id, _published_node_rows(scratch)),
-        )
-        conn.executemany(
-            f"INSERT INTO work_evidence_edges(graph_id, {', '.join(_EDGE_COLUMNS)}) "
-            f"VALUES (?, {', '.join('?' for _ in _EDGE_COLUMNS)})",
-            _prefixed(graph_id, scratch.execute(f"SELECT {', '.join(_EDGE_COLUMNS)} FROM edges ORDER BY edge_ref")),
-        )
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM work_evidence_graphs WHERE graph_id = ?", (graph_id,))
+            conn.execute(
+                "INSERT INTO work_evidence_graphs(graph_id, corpus_snapshot_ref) VALUES (?, ?)",
+                (graph_id, snapshot.format()),
+            )
+            conn.executemany(
+                f"INSERT INTO work_evidence_nodes(graph_id, {', '.join(_NODE_COLUMNS)}) "
+                f"VALUES (?, {', '.join('?' for _ in _NODE_COLUMNS)})",
+                _prefixed(graph_id, _published_node_rows(scratch)),
+            )
+            conn.executemany(
+                f"INSERT INTO work_evidence_edges(graph_id, {', '.join(_EDGE_COLUMNS)}) "
+                f"VALUES (?, {', '.join('?' for _ in _EDGE_COLUMNS)})",
+                _prefixed(graph_id, scratch.execute(f"SELECT {', '.join(_EDGE_COLUMNS)} FROM edges ORDER BY edge_ref")),
+            )
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
 
 def _prefixed(graph_id: str, rows: sqlite3.Cursor) -> Iterator[tuple[object, ...]]:

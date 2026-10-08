@@ -246,9 +246,9 @@ def test_claude_projection_uses_provider_references_not_child_topology() -> None
 def test_claude_workflow_stage_reads_without_daemon_writer_lease(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """The stage's freshness check and projection read outside writer admission.
 
-    Anti-vacuity: opening ``source.db`` or ``index.db`` writable in
-    ``_prepare_inputs`` raises ``UnleasedWriteError`` under the armed guard,
-    which is how the stage's debt never converged after a cold build.
+    Anti-vacuity: ``_prepare_inputs`` uses the declared read-only factory for
+    both tiers, while publication succeeds only inside the stage's admitted
+    writer lease.
     """
     import sqlite3
     from collections.abc import Callable

@@ -48,8 +48,11 @@ from polylogue.operations.mutation_transaction import (
     register_recovery_route,
 )
 from polylogue.security.lifecycle import LifecycleMode
-from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
-from polylogue.storage.sqlite.managed_connection import sqlite_connection
+from polylogue.storage.sqlite.connection_profile import (
+    open_connection,
+    open_isolated_write_connection,
+    open_readonly_connection,
+)
 from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 
 if TYPE_CHECKING:
@@ -376,7 +379,12 @@ class SessionLifecycleRequestActuator(ConvergentReplay):
         from polylogue.security.lifecycle import submit_lifecycle_request_with_outcome
 
         user_db = args.archive_root / "user.db"
-        with sqlite_connection(user_db) as connection:
+        connection = open_isolated_write_connection(
+            user_db,
+            purpose="operation.mutate-session-lifecycle-request",
+            archive_root=args.archive_root,
+        )
+        try:
             submission = submit_lifecycle_request_with_outcome(
                 connection,
                 target_ref=make_target_ref("session", args.session_id),
@@ -385,6 +393,12 @@ class SessionLifecycleRequestActuator(ConvergentReplay):
                 actor=args.actor,
                 now_ms=args.now_ms,
             )
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
         return MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,
@@ -489,7 +503,11 @@ class IdentityResetActuator(ConvergentReplay):
 
         user_db = args.archive_root / "user.db"
         initialize_archive_database(user_db, ArchiveTier.USER)
-        conn = sqlite3.connect(user_db)
+        conn = open_isolated_write_connection(
+            user_db,
+            purpose="operation.mutate-identity-reset",
+            archive_root=args.archive_root,
+        )
         try:
             conn.execute("BEGIN IMMEDIATE")
             try:
