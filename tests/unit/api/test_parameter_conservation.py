@@ -139,6 +139,8 @@ def _sentinel_for(field_name: str, annotation: object) -> object:
         return "month-origin-model"
     if field_name == "tier":
         return "merged"
+    if field_name == "time_basis":
+        return "created"
     if field_name == "sort":
         return "source"
     if field_name == "insights":

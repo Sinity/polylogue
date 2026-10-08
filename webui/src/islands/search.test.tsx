@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
 import { PolylogueClient, type SearchPage, type SessionSearchHitPayload } from '../api/generated';
+import type { SessionMessageRow, SessionMessageWindow } from '../contracts/session-read';
+import { SessionReadIsland } from './session-read';
 import { SearchIsland } from './search';
 
 const hit: SessionSearchHitPayload = {
@@ -40,8 +42,60 @@ function page(
 }
 
 describe('SearchIsland', () => {
+  it.each(['message:2', 'message%3Aliteral'])(
+    'resolves the generated browser fragment for exact message ID %s',
+    async (messageId) => {
+      Element.prototype.scrollIntoView = vi.fn();
+      const priorHash = window.location.hash;
+      const linkedHit: SessionSearchHitPayload = { ...hit, match: { ...hit.match, message_id: messageId } };
+      const searchLoader = vi.fn(async () => page([linkedHit], null));
+      try {
+        render(<SearchIsland query="continuation" initialCursor="next-page" loadPage={searchLoader} />);
+        fireEvent.click(screen.getByRole('button', { name: 'Load more results' }));
+        const href = await screen.findByRole('link', { name: 'Continuation contract wiring' }).then((link) =>
+          link.getAttribute('href'),
+        );
+        expect(href).not.toBeNull();
+
+        const browserHash = new URL(href!, window.location.href).hash;
+        expect(browserHash).toBe(`#msg-${encodeURIComponent(messageId)}`);
+        window.location.hash = browserHash;
+
+        const message = {
+          id: messageId,
+          role: 'assistant',
+          material_origin: 'assistant_authored',
+          text: 'The exact linked message.',
+          timestamp: null,
+          has_tool_use: false,
+          has_thinking: false,
+          has_paste_evidence: false,
+          semantic_entries: [],
+          semantic_card_suppressed: false,
+        } satisfies SessionMessageRow;
+        const readLoader = vi.fn(async (_sessionId: string, _window: SessionMessageWindow) => ({
+          messages: [message],
+          total: 5000,
+          offset: 1590,
+        }));
+
+        render(<SessionReadIsland sessionId="codex-session:session/2" initialNextOffset={30} loadPage={readLoader} />);
+        await screen.findByText('The exact linked message.');
+
+        expect(readLoader).toHaveBeenCalledTimes(1);
+        expect(readLoader).toHaveBeenCalledWith('codex-session:session/2', { around: messageId });
+        await vi.waitFor(() => expect(Element.prototype.scrollIntoView).toHaveBeenCalled());
+      } finally {
+        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${priorHash}`);
+      }
+    },
+  );
+
   it('uses the generated search iterator with the server-provided initial cursor', async () => {
     const generatedPage = page([hit], null);
+    const bootstrap = vi.spyOn(PolylogueClient.prototype, 'bootstrapWebCredential').mockResolvedValue({
+      credential: { expires_at: '2099-01-01T00:00:00.000Z', scopes: ['read'] },
+    });
     const search = vi.spyOn(PolylogueClient.prototype, 'search').mockReturnValue(
       (async function* () {
         yield generatedPage;
@@ -61,6 +115,7 @@ describe('SearchIsland', () => {
     expect(screen.getByText('Exact coverage: 12 matching results.')).toHaveAttribute('data-coverage-kind', 'exact');
     expect(screen.getByRole('status')).toHaveTextContent('Loaded 1 additional result.');
     search.mockRestore();
+    bootstrap.mockRestore();
   });
 
   it('keeps qualified coverage and falls back from a missing title to the session ID', async () => {

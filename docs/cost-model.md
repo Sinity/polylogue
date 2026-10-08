@@ -397,7 +397,10 @@ rather than fabricating a synthetic zero.
 
 The `cycle_anchor_day` is restricted to `[1, 28]` to avoid month-end
 length edge cases (29/30/31). All cycle math runs in UTC, so DST
-transitions are a no-op.
+transitions are a no-op. Each cycle ends at the next month's anchor, so
+its duration follows the calendar (28-31 days). Plans do not accept a
+fixed `billing_cycle_days` setting alongside that monthly schedule.
+Without an anchor, no cycle is inferred.
 
 ## Cycle Outlook
 
@@ -419,6 +422,18 @@ current billing cycle:
   `incomplete_days` lists the missing ISO dates.
 * `confidence` combines plan confidence with `coverage_ratio` to
   discourage projecting from sparse data.
+
+The API reads usage by session creation time through the requested `now`
+instant, inclusively,
+and bounds timestamps before folding them into UTC days. The cycle end
+is exclusive. Later archive records do not change an earlier as-of
+result. `SessionCostInsightQuery.time_basis` defaults to `source` (the
+canonical sort time) for ordinary cost queries; outlook selects `created`
+so later session updates cannot exclude earlier attributed usage. Both
+bases apply SQL filtering before pagination. Direct engine callers
+supplying daily usage must first bound
+the current day at the exact as-of instant; day totals cannot recover
+that distinction. Future days and the cycle-end day are excluded.
 
 The projection is monotone non-decreasing in `used`: a heavier cycle
 never produces a lower projection. The contract suite asserts this for
