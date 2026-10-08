@@ -4285,9 +4285,20 @@ def compile_expression(expression: str) -> SessionQuerySpec:
         )
 
     acc = _SpecAccumulator()
+    scalar_alternatives: list[QueryPredicate] = []
     for tok in tokens:
+        if (
+            isinstance(tok, _FieldToken)
+            and tok.field in {"id", "session", "title"}
+            and not tok.negated
+            and len(_split_alternation(tok.raw_value)) > 1
+        ):
+            scalar_alternatives.append(_bind_predicate_context(_field_token_to_predicate(tok), unit="session"))
+            continue
         acc.apply_token(tok)
     spec = acc.to_spec()
+    if scalar_alternatives:
+        spec = replace(spec, boolean_predicate=QueryBoolPredicate("and", tuple(scalar_alternatives)))
     if with_units:
         spec = replace(
             spec, with_units=with_units, with_unit_fields=with_unit_fields, with_unit_windows=with_unit_windows

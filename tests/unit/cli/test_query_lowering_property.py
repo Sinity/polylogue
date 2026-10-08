@@ -136,8 +136,9 @@ def test_the_reference_evaluator_separates_the_corpus() -> None:
 
 @pytest.mark.parametrize("field", ["id", "session", "title", "origin"])
 @pytest.mark.parametrize("negated", [False, True])
+@pytest.mark.parametrize("source_prefix", ["", "sessions where "])
 def test_compact_field_alternatives_select_the_same_rows_as_explicit_or(
-    seeded_query_archive: Path, field: str, negated: bool
+    seeded_query_archive: Path, field: str, negated: bool, source_prefix: str
 ) -> None:
     if field in {"id", "session"}:
         values = ("claude-code-session:ext-alpha", "claude-code-session:ext-bravo")
@@ -152,8 +153,8 @@ def test_compact_field_alternatives_select_the_same_rows_as_explicit_or(
         expected = _expected(lambda _origin, _title: True) - expected
     prefix = "NOT " if negated else ""
     expressions = (
-        f"sessions where {prefix}{field}:({'|'.join(values)})",
-        f"sessions where {prefix}({field}:{values[0]} OR {field}:{values[1]})",
+        f"{source_prefix}{prefix}{field}:({'|'.join(values)})",
+        f"{source_prefix}{prefix}({field}:{values[0]} OR {field}:{values[1]})",
     )
     with ArchiveStore.open_existing(seeded_query_archive) as archive:
         for expression in expressions:
