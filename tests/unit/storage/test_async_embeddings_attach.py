@@ -556,3 +556,26 @@ def test_last_async_grant_retains_backend_and_original_cleanup_task(
         assert attempts == [attempts[0]]
 
     asyncio.run(exercise())
+
+
+def test_supported_async_reader_enforces_authority_and_settles_worker(workspace_env: dict[str, Path]) -> None:
+    """The required dependency serves reads and physically retires their owner."""
+    from polylogue.storage.sqlite import async_sqlite
+
+    async def exercise() -> None:
+        backend = async_sqlite.SQLiteBackend(workspace_env["archive_root"] / "index.db")
+        conn = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
+        try:
+            async with conn.execute("SELECT 1") as cursor:
+                row = await cursor.fetchone()
+                assert row is not None and tuple(row) == (1,)
+            with pytest.raises(sqlite3.DatabaseError) as caught:
+                await conn.execute("PRAGMA query_only=OFF")
+            assert caught.value.sqlite_errorcode == sqlite3.SQLITE_AUTH
+        finally:
+            await backend.close()
+        assert conn._connection is None
+        assert not conn._thread.is_alive()
+        assert id(conn) not in async_sqlite._BACKEND_CONNECTIONS
+
+    asyncio.run(exercise())

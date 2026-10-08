@@ -43,13 +43,24 @@
       # sinnix both already resolve -- IS the free-threaded build now, not a
       # separately named alias of it.
       python = pkgs.python314FreeThreading;
-      pythonPackages = python.pkgs;
+      # Async read authority and physical worker settlement require 0.22.1.
+      # Override the shared package set so every packaged consumer agrees.
+      pythonPackages = python.pkgs.overrideScope (
+        _final: prev: {
+          aiosqlite = import ./nix/aiosqlite.nix {
+            inherit pkgs;
+            pythonPackages = prev;
+          };
+        }
+      );
       fakeIndexedDB = pkgs.runCommand "polylogue-fake-indexeddb-6.2.5" { } ''
         mkdir -p "$out"
-        ${pkgs.gnutar}/bin/tar -xzf ${pkgs.fetchurl {
-          url = "https://registry.npmjs.org/fake-indexeddb/-/fake-indexeddb-6.2.5.tgz";
-          hash = "sha512-CGnyrvbhPlWYMngksqrSSUT1BAVP49dZocrHuK0SvtR0D5TMs5wP0o3j7jexDJW01KSadjBp1M/71o/KR3nD1w==";
-        }} -C "$out"
+        ${pkgs.gnutar}/bin/tar -xzf ${
+          pkgs.fetchurl {
+            url = "https://registry.npmjs.org/fake-indexeddb/-/fake-indexeddb-6.2.5.tgz";
+            hash = "sha512-CGnyrvbhPlWYMngksqrSSUT1BAVP49dZocrHuK0SvtR0D5TMs5wP0o3j7jexDJW01KSadjBp1M/71o/KR3nD1w==";
+          }
+        } -C "$out"
       '';
 
       # Polylogue uses the MCPServer API introduced by MCP 2.x.  nixpkgs'

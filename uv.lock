@@ -1476,7 +1476,7 @@ audit = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiosqlite", specifier = ">=0.19.0" },
+    { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "atheris", marker = "extra == 'fuzz'", specifier = ">=3.1.0" },
     { name = "click", specifier = ">=8.5.0,<9.0" },
     { name = "cryptography", specifier = ">=50.0.1" },
