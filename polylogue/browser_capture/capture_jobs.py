@@ -1904,7 +1904,9 @@ class CaptureJobRegistry:
                 try:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
-                    return False
+                    # A live reader proves custody: keep its bytes and revisit
+                    # on a later sweep, without blocking unrelated entries.
+                    return True
                 if os.stat(directory / name).st_ino == os.fstat(handle.fileno()).st_ino:
                     os.unlink(directory / name)
         except FileNotFoundError:

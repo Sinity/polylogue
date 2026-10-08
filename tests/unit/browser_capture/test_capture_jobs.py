@@ -3603,3 +3603,30 @@ def test_premarker_retirement_is_hidden_from_http_discovery_and_cannot_renew_lea
             connection.execute("SELECT COUNT(*) FROM capture_job_native_assets WHERE job_id=?", (job_id,)).fetchone()[0]
             == 8
         )
+
+
+def test_artifact_frontier_advances_past_sixty_four_live_reader_holds(tmp_path: Path) -> None:
+    import fcntl
+    from contextlib import ExitStack
+
+    registry = CaptureJobRegistry(tmp_path, "neutral-reader-holds")
+    registry.gc(incremental_artifacts=True)
+    directory = capture_job_store_root(tmp_path) / "artifacts"
+    directory.mkdir(exist_ok=True)
+    for index in range(65):
+        (directory / (f"{index:064x}.native")).write_bytes(b"neutral held custody")
+    with os.scandir(directory) as entries:
+        names = [entry.name for entry in entries]
+    with ExitStack() as readers:
+        for name in names[:64]:
+            handle = readers.enter_context((directory / name).open("rb"))
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+        registry._collect_checkpoint_artifacts((), incremental=True, quantum=64)
+        assert len(list(directory.iterdir())) == 65
+        registry._collect_checkpoint_artifacts((), incremental=True, quantum=64)
+        assert not (directory / names[64]).exists()
+        assert all((directory / name).read_bytes() == b"neutral held custody" for name in names[:64])
+    registry._collect_checkpoint_artifacts((), incremental=True, quantum=64)
+    registry._collect_checkpoint_artifacts((), incremental=True, quantum=64)
+    assert list(directory.iterdir()) == []
+    registry.close_maintenance()
