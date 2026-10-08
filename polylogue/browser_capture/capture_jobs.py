@@ -1650,6 +1650,68 @@ class CaptureJobRegistry:
         with tempfile.TemporaryFile(mode="w+t", encoding="ascii") as artifact_names:
             return self._gc_retire(current, limit, incremental_artifacts, deleted, artifact_names)
 
+    def _gc_candidates(
+        self, connection: sqlite3.Connection, current: datetime, remaining: Callable[[], int]
+    ) -> Iterator[sqlite3.Row]:
+        """Page each eligibility index in its own order, past rejected guards."""
+        current_utc = current.astimezone(UTC)
+        # Every lease producer emits canonical JSON with expires_at first and
+        # _stamp UTC timestamps. Fractions have six digits when present. Whole
+        # current-second stamps sort after fractions, so select them separately.
+        prefix = '{"expires_at":"'
+        fractional_upper = prefix + current_utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ") + '"' + chr(0x10FFFF)
+        whole_prefix = prefix + current_utc.strftime("%Y-%m-%dT%H:%M:%SZ") + '"'
+        branches: tuple[tuple[str, tuple[object, ...], str, str], ...] = (
+            ("lease_json IS NULL", (), "updated_at, rowid", "updated_at, rowid"),
+            (
+                "lease_json IS NOT NULL AND lease_json<=?",
+                (fractional_upper,),
+                "lease_json, updated_at, rowid",
+                "lease_json, updated_at, rowid",
+            ),
+            (
+                "lease_json IS NOT NULL AND lease_json>=? AND lease_json<=?",
+                (whole_prefix, whole_prefix + chr(0x10FFFF)),
+                "lease_json, updated_at, rowid",
+                "lease_json, updated_at, rowid",
+            ),
+        )
+        for predicate, parameters, order, key_columns in branches:
+            after: tuple[object, ...] | None = None
+            while remaining() > 0:
+                key_filter = (
+                    "" if after is None else " AND (" + key_columns + ") > (" + ",".join("?" for _ in after) + ")"
+                )
+                cursor = connection.execute(
+                    "SELECT "
+                    + _JOB_COLUMNS
+                    + " FROM capture_jobs WHERE "
+                    + _GC_PREDICATE
+                    + " AND "
+                    + predicate
+                    + key_filter
+                    + " AND NOT EXISTS (SELECT 1 FROM capture_job_native_acquisitions n "
+                    "WHERE n.job_id=capture_jobs.job_id AND n.final_receipt_json IS NULL AND n.state!='cancelled')"
+                    + " ORDER BY "
+                    + order
+                    + " LIMIT ?",
+                    (*parameters, *(after or ()), remaining()),
+                )
+                try:
+                    rows = cursor.fetchall()
+                finally:
+                    cursor.close()
+                if not rows:
+                    break
+                for row in rows:
+                    after = ((row["lease_json"],) if row["lease_json"] is not None else ()) + (
+                        row["updated_at"],
+                        row["job_rowid"],
+                    )
+                    yield row
+                    if remaining() <= 0:
+                        return
+
     def _gc_retire(
         self,
         current: datetime,
@@ -1660,27 +1722,7 @@ class CaptureJobRegistry:
     ) -> dict[str, object]:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            # Every lease producer uses canonical_json and _stamp(_now()), so
-            # expires_at is the first key and its value is UTC with a Z suffix.
-            # A next-second ceiling also admits a whole-second stamp before a
-            # fractional current instant. Python below checks the exact expiry.
-            lease_ceiling = _stamp(current.astimezone(UTC).replace(microsecond=0) + timedelta(seconds=1))
-            rows = connection.execute(
-                "SELECT " + _JOB_COLUMNS + " FROM capture_jobs WHERE " + _GC_PREDICATE + " AND lease_json IS NULL "
-                "AND NOT EXISTS (SELECT 1 FROM capture_job_native_acquisitions n WHERE n.job_id=capture_jobs.job_id "
-                "AND n.final_receipt_json IS NULL AND n.state!='cancelled') "
-                "UNION ALL SELECT "
-                + _JOB_COLUMNS
-                + " FROM capture_jobs WHERE "
-                + _GC_PREDICATE
-                + " AND lease_json IS NOT NULL AND lease_json<? "
-                "AND NOT EXISTS (SELECT 1 FROM capture_job_native_acquisitions n WHERE n.job_id=capture_jobs.job_id "
-                "AND n.final_receipt_json IS NULL AND n.state!='cancelled') ORDER BY updated_at",
-                ('{"expires_at":"' + lease_ceiling + '"',),
-            )
-            for row in rows:
-                if len(deleted) >= limit:
-                    break
+            for row in self._gc_candidates(connection, current, lambda: limit - len(deleted)):
                 retention = json.loads(row["retention_json"])
                 retry = json.loads(row["retry_json"])
                 lease = self._lease(row)
@@ -1709,21 +1751,22 @@ class CaptureJobRegistry:
                         continue
                 if row["checkpoint_sequence"] is None or not row["receipt_json"]:
                     continue
-                for digest_row in connection.execute(
-                    "SELECT checkpoint_digest AS digest FROM capture_job_receipts WHERE job_id=? "
-                    "UNION SELECT checkpoint_artifact_ref FROM capture_jobs WHERE job_id=?",
-                    (row["job_id"], row["job_id"]),
-                ):
-                    if digest_row[0]:
-                        artifact_names.write(str(digest_row[0]).removeprefix("sha256:") + ".checkpoint\n")
-                for digest_row in connection.execute(
-                    "SELECT sha256 FROM capture_job_native_members WHERE job_id=? "
-                    "UNION SELECT sha256 FROM capture_job_native_assets WHERE job_id=? "
-                    "UNION SELECT sha256 FROM capture_job_native_artifacts WHERE job_id=?",
-                    (row["job_id"], row["job_id"], row["job_id"]),
-                ):
-                    if digest_row[0]:
-                        artifact_names.write(str(digest_row[0]) + ".native\n")
+                if not incremental_artifacts:
+                    for digest_row in connection.execute(
+                        "SELECT checkpoint_digest AS digest FROM capture_job_receipts WHERE job_id=? "
+                        "UNION SELECT checkpoint_artifact_ref FROM capture_jobs WHERE job_id=?",
+                        (row["job_id"], row["job_id"]),
+                    ):
+                        if digest_row[0]:
+                            artifact_names.write(str(digest_row[0]).removeprefix("sha256:") + ".checkpoint\n")
+                    for digest_row in connection.execute(
+                        "SELECT sha256 FROM capture_job_native_members WHERE job_id=? "
+                        "UNION SELECT sha256 FROM capture_job_native_assets WHERE job_id=? "
+                        "UNION SELECT sha256 FROM capture_job_native_artifacts WHERE job_id=?",
+                        (row["job_id"], row["job_id"], row["job_id"]),
+                    ):
+                        if digest_row[0]:
+                            artifact_names.write(str(digest_row[0]) + ".native\n")
                 connection.execute("DELETE FROM capture_job_events WHERE job_id=?", (row["job_id"],))
                 connection.execute("DELETE FROM capture_job_receipts WHERE job_id=?", (row["job_id"],))
                 connection.execute("DELETE FROM capture_job_update_receipts WHERE job_id=?", (row["job_id"],))

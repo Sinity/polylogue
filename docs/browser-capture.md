@@ -28,14 +28,16 @@ next event. One lazy page document then serves the events and their timelines;
 open spill connections do not scale with the selected event count.
 
 Ordinary create and first-page discovery select retirement candidates through
-receiver-local eligibility and lease indexes. They collect each retired job's
-exact artifact references after its deletion commits and advance one entry of
-a process-owned orphan-directory sweep. Repeated requests finish the sweep;
+receiver-local eligibility and lease indexes in limited batches, without sorting
+the full expired cohort. They advance one entry of a process-owned orphan-directory
+sweep after retirement commits; ordinary requests leave retired artifact membership
+in that physical directory rather than synchronously draining every reference.
+Explicit registry GC may stream the retired job's exact artifact references. Repeated requests finish the sweep;
 restart begins a new sweep. Replacing the registry or artifact directory closes
 the prior frontier. Explicit registry GC retains a complete streamed sweep.
 Artifact root checks and active-reader locks still precede removal. The indexes
 add only receiver registry metadata, without changing archive tiers or capture
-wire fields. Retired artifact membership stays on temporary scratch until the
+wire fields. Explicit GC's retired artifact membership stays on temporary scratch until the
 registry transaction commits.
 
 The

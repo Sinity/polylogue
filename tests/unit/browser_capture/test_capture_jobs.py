@@ -3238,7 +3238,9 @@ def test_ordinary_gc_skips_held_population_and_advances_orphan_frontier(
     assert registry.gc(incremental_artifacts=True)["count"] == 0
     # This is an operation bound, not an elapsed-time assertion. The previous
     # SELECT-all/sort visits every row and each artifact root query scans jobs.
-    assert steps < 500, steps
+    # Three independent indexed candidate queries have fixed VM overhead;
+    # this bound still rejects a scan of the 10,000-row retained population.
+    assert steps < 750, steps
     assert len(list(directory.iterdir())) == 7
     for _ in range(8):
         assert CaptureJobRegistry(tmp_path, "same-owner").gc(incremental_artifacts=True)["count"] == 0
@@ -3287,3 +3289,115 @@ def test_orphan_frontier_restarts_after_artifact_directory_identity_changes(tmp_
     CaptureJobRegistry(tmp_path, "new-request").gc(incremental_artifacts=True)
     assert not new.exists()
     assert len(list(previous.iterdir())) == 1
+
+
+@pytest.mark.parametrize("population", [100, 10_000])
+def test_gc_limits_expired_cohort_work_in_lease_index_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, population: int
+) -> None:
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+    registry = CaptureJobRegistry(tmp_path, "neutral-expired")
+    with registry._connection() as connection:
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(capture_jobs)")]
+        template = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job["job_id"],)).fetchone()
+        assert template is not None
+        connection.execute("BEGIN IMMEDIATE")
+        for index in range(population):
+            values = dict(zip(columns, template, strict=True))
+            values.update(
+                job_id=f"expired-{index:05d}",
+                intent_key=f"expired-intent-{index}",
+                retention_json=canonical_json({"state": "eligible", "timeline_authoritative": False}),
+                retry_json=canonical_json({"state": "completed"}),
+                checkpoint_sequence=1,
+                receipt_json="{}",
+                lease_json=canonical_json({"expires_at": "2049-01-01T00:00:00Z", "lease_id": f"{index:05d}"}),
+            )
+            connection.execute(
+                "INSERT INTO capture_jobs (" + ",".join(columns) + ") VALUES (" + ",".join("?" for _ in columns) + ")",
+                tuple(values[column] for column in columns),
+            )
+    steps = 0
+    original_connect = CaptureJobRegistry._connect
+
+    def progress() -> int:
+        nonlocal steps
+        steps += 1
+        return 0
+
+    def connect(self: CaptureJobRegistry) -> sqlite3.Connection:
+        connection = original_connect(self)
+        connection.set_progress_handler(progress, 1)
+        return connection
+
+    monkeypatch.setattr(CaptureJobRegistry, "_connect", connect)
+    result = registry.gc(now=datetime(2050, 1, 1, tzinfo=UTC), limit=3, incremental_artifacts=True)
+    assert result["deleted"] == [f"expired-{index:05d}" for index in range(3)]
+    assert steps < 2000, steps
+
+
+def test_ordinary_retirement_defers_large_artifact_membership_to_restart_frontier(tmp_path: Path) -> None:
+    with receiver(tmp_path) as (host, port):
+        job_id = _retired_job(host, port)
+    directory = capture_job_store_root(tmp_path) / "artifacts"
+    with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
+        for index in range(64):
+            digest = f"{index:064x}"
+            (directory / (digest + ".checkpoint")).write_bytes(b"neutral retained fixture")
+            connection.execute(
+                "INSERT INTO capture_job_receipts VALUES (?, ?, ?, ?, ?)",
+                (job_id, f"retained-{index}", index + 10, "sha256:" + digest, "{}"),
+            )
+    before = len(list(directory.iterdir()))
+    registry = CaptureJobRegistry(tmp_path, "neutral-retirement")
+    result = registry.gc(now=datetime(2050, 1, 1, tzinfo=UTC), incremental_artifacts=True)
+    assert result["deleted"] == [job_id]
+    assert len(list(directory.iterdir())) == before - 1
+    # A receiver restart loses only disposable traversal position. Original
+    # physical custody plus live root checks still complete orphan retirement.
+    with capture_jobs_module._ARTIFACT_SWEEP_LOCK:
+        previous = capture_jobs_module._ARTIFACT_SWEEPS.pop(str(capture_job_database_path(tmp_path)), None)
+        if previous is not None:
+            previous[1].close()
+    for _ in range(before + 1):
+        CaptureJobRegistry(tmp_path, "restarted-owner").gc(incremental_artifacts=True)
+    assert list(directory.iterdir()) == []
+
+
+def test_gc_exact_fractional_and_whole_second_ranges_page_past_rejected_guard(tmp_path: Path) -> None:
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+    registry = CaptureJobRegistry(tmp_path, "neutral-expiry-boundary")
+    stamps = {
+        "invalid": "0000",
+        "whole": "2050-01-01T00:00:00Z",
+        "fraction": "2050-01-01T00:00:00.100000Z",
+        "equal": "2050-01-01T00:00:00.200000Z",
+        "future": "2050-01-01T00:00:00.900000Z",
+    }
+    with registry._connection() as connection:
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(capture_jobs)")]
+        template = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job["job_id"],)).fetchone()
+        assert template is not None
+        connection.execute("BEGIN IMMEDIATE")
+        for name, stamp in stamps.items():
+            values = dict(zip(columns, template, strict=True))
+            values.update(
+                job_id=name,
+                intent_key="expiry-" + name,
+                retention_json=canonical_json({"state": "eligible", "timeline_authoritative": False}),
+                retry_json=canonical_json({"state": "completed"}),
+                checkpoint_sequence=1,
+                receipt_json="{}",
+                lease_json=canonical_json({"expires_at": stamp}),
+            )
+            connection.execute(
+                "INSERT INTO capture_jobs (" + ",".join(columns) + ") VALUES (" + ",".join("?" for _ in columns) + ")",
+                tuple(values[column] for column in columns),
+            )
+    current = datetime(2050, 1, 1, microsecond=200_000, tzinfo=UTC)
+    deleted = [registry.gc(now=current, limit=1, incremental_artifacts=True)["deleted"] for _ in range(3)]
+    assert deleted == [["fraction"], ["equal"], ["whole"]]
+    assert registry.gc(now=current, limit=1, incremental_artifacts=True)["deleted"] == []
+    assert {"future", "invalid"}.issubset(_stored_job_ids(tmp_path))
