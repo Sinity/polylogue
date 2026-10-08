@@ -215,3 +215,17 @@ def test_release_smoke_matrices_can_install_the_wheel_they_smoke() -> None:
         "installed-smoke-hooks must keep exercising the polylogue-hooks wheel's own floor"
     )
     assert not [version for version in hooks_versions if version < hooks_floor]
+
+
+def test_async_sqlite_floor_matches_read_and_worker_settlement_contract() -> None:
+    """An install cannot choose the earlier incompatible Connection owner."""
+    from packaging.requirements import Requirement
+
+    requirements = [Requirement(value) for value in _project_metadata()["dependencies"]]
+    requirement = next(value for value in requirements if value.name == "aiosqlite")
+    assert "0.21.0" not in requirement.specifier
+    assert "0.22.0" not in requirement.specifier
+    assert "0.22.1" in requirement.specifier
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text())
+    package = next(row for row in lock["package"] if row["name"] == "aiosqlite")
+    assert package["version"] in requirement.specifier

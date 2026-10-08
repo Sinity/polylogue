@@ -121,8 +121,12 @@ worker, task, context and admission alive through physical settlement; an
 explicit request reaches that same custody owner. Successful acquisition binds
 the returned custody to the loop task, whose failed cleanup likewise keeps
 that task alive until settlement. The async backend retains its original cleanup
-Task and attempt Future through last-grant retirement. Later backend or
-coordinator settlement requests wake the same custody retry and shield that
+Task and attempt Future through last-grant retirement. The runtime requires
+aiosqlite 0.22.1 or newer: read connections use its `set_authorizer`, and
+physical settlement owns its separate worker thread and `stop()` sentinel.
+The Python dependency floor and shared Nix package-set pin enforce that same
+contract; older connection/thread implementations are not supported. Later backend
+or coordinator settlement requests wake the same custody retry and shield that
 attempt; they never start a parallel close or join the owner's application Task.
 
 An ArchiveStore retains custody while any write transaction or temporary User
