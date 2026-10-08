@@ -548,14 +548,7 @@ def test_canonical_reset_index_replays_only_when_parse_is_newer_than_validation_
         (),
         path=".claude/projects/-synthetic-reset/session.jsonl",
         provider=Provider.CLAUDE_CODE,
-        payload=(
-            b'{"parentUuid":null,"type":"user","sessionId":"strict-replay",'
-            b'"message":{"role":"user","content":"kept"},"uuid":"user-1",'
-            b'"timestamp":"2025-01-01T00:00:00Z"}\n'
-            b'{"parentUuid":"user-1","type":"assistant","sessionId":"strict-replay",'
-            b'"message":{"role":"assistant","content":[{"type":"text","text":"reply"}]},'
-            b'"uuid":"assistant-1","timestamp":"2025-01-01T00:00:01Z"}\n'
-        ),
+        payload=(Path(__file__).parents[2] / "fixtures" / "claude-code" / "strict-reset-validation.jsonl").read_bytes(),
     )
     assert _derive(tmp_path, validation_mode=ValidationMode.STRICT).failed == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
