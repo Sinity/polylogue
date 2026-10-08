@@ -680,7 +680,7 @@ class ColdBuildGeneration:
             candidate = cls(
                 archive_root=Path(archive_root),
                 generation=generation,
-                reason="interrupted promotion",
+                reason="interrupted_promotion",
                 operation_id=baseline.operation_id,
                 _store=store,
                 source_baseline=baseline,

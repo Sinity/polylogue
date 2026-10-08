@@ -1342,3 +1342,26 @@ def test_discarded_generation_carries_deleted_source_into_retry(tmp_path: Path) 
             retry.promote()
     finally:
         retry.discard()
+
+
+@pytest.mark.parametrize("reason", ["explicit_cold_build", "empty_active_index_generation", "interrupted_promotion"])
+def test_generation_lifecycle_preserves_stable_reason_in_production_events(tmp_path: Path, reason: str) -> None:
+    """Generation lifecycle emits its declared startup/recovery reason without a drop."""
+    from polylogue import logging as plog
+
+    observed = ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", tmp_path / "absent-source"),))
+    previous_level = plog.set_level("info")
+    try:
+        with plog.capture() as records:
+            generation = ColdBuildGeneration.begin(tmp_path, reason=reason, observed=observed)
+            assert generation.discard() is True
+        lifecycle_names = {"daemon.cold_build.generation_created", "daemon.cold_build.generation_discarded"}
+        lifecycle = [record for record in records if record["event"] in lifecycle_names]
+        assert {record["event"] for record in lifecycle} == lifecycle_names
+        assert all(record["reason"] == reason for record in lifecycle)
+        assert not any(
+            record["event"] == "log.field_rejected" and record.get("source_event") in lifecycle_names
+            for record in records
+        )
+    finally:
+        plog.set_level(previous_level)

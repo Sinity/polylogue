@@ -3350,7 +3350,7 @@ async def _run_daemon_services_under_active_writer_lease(
                             partial(ColdBuildGeneration.observe_source_baseline, sources),
                             ColdBuildGeneration.begin,
                             archive_root_path,
-                            reason="explicit cold build" if cold_build_index else "empty active index generation",
+                            reason="explicit_cold_build" if cold_build_index else "empty_active_index_generation",
                         )
                         register_cold_build_generation(cold_build)
                         from polylogue.daemon.catchup_status import set_cold_build_progress_provider
