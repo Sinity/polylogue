@@ -667,6 +667,15 @@ def _observe_root(
             raise
         except (OSError, zipfile.BadZipFile, KeyError, RuntimeError) as exc:
             raise SourceSnapshotError(f"archive member inventory failed: {root}") from exc
+    logical_members: set[str] = set()
+    if binding.source.layout_name is not None:
+        from polylogue.sources.origin_specs import database_capability_for_provider
+        from polylogue.sources.source_layout import source_layout_for
+
+        provider = source_layout_for(binding.source.layout_name).provider
+        capability = database_capability_for_provider(provider) if provider is not None else None
+        if capability is not None:
+            logical_members = {member.filename for member in capability.members if member.disposition != "out-of-scope"}
     for coordinate, path, member_info, _parent_anchor, _semantic_parent in _walk_files(
         root,
         anchor,
@@ -675,6 +684,10 @@ def _observe_root(
         layout_name=binding.source.layout_name,
         exclude_coordinates=binding.source.exclude_coordinates,
     ):
+        if path.name in logical_members:
+            # A database created after declaration discovery must never
+            # enter the ordinary byte inventory as a physical page image.
+            raise SourceMutationError(f"source database requires a logical declaration: {path}")
         content_sha256, captured_size, identity = _snapshot_regular_file(
             path,
             member_info,
@@ -684,20 +697,19 @@ def _observe_root(
         yield CutItem(binding.source.source_id, coordinate, identity, content_sha256, captured_size)
 
 
-def iter_observe_source_members(declaration: SourceDeclaration) -> Iterator[CutItem]:
-    """Stream one declared source inventory without retaining its members.
+def bind_source_observation(declaration: SourceDeclaration) -> SourceCutBinding:
+    """Capture the root identity shared by observation and member addressing."""
+    return SourceCutBinding(declaration, _root_identity(declaration.root), _default_policy(declaration.role))
 
-    This uses the same descriptor-bound observation law as source cuts. The
-    caller must exhaust the iterator to receive the final root identity check.
+
+def iter_observe_source_members(binding: SourceCutBinding) -> Iterator[CutItem]:
+    """Stream a captured source inventory without retaining its members.
+
+    Callers derive member paths from this binding's root kind. Exhaust the
+    iterator to receive the final root identity check.
     """
     try:
-        yield from _iter_observe(
-            SourceCutBinding(
-                declaration,
-                _root_identity(declaration.root),
-                _default_policy(declaration.role),
-            )
-        )
+        yield from _iter_observe(binding)
     except sqlite3.DatabaseError as exc:
         raise SourceSnapshotError(f"source database unreadable: {exc}") from exc
 
@@ -710,7 +722,7 @@ def observe_source_members(declaration: SourceDeclaration) -> tuple[CutItem, ...
     are observed at their declared logical granularity rather than being
     reduced to one root row or a filesystem byte count.
     """
-    return tuple(iter_observe_source_members(declaration))
+    return tuple(iter_observe_source_members(bind_source_observation(declaration)))
 
 
 def _try_reflink(descriptor: int, destination: Path) -> bool:
@@ -1503,6 +1515,7 @@ __all__ = [
     "SourceSnapshotStrategy",
     "SourceSnapshotResult",
     "execute_source_cut",
+    "bind_source_observation",
     "iter_observe_source_members",
     "load_source_cut",
     "preflight_source_cut",

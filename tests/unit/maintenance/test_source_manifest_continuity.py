@@ -523,3 +523,128 @@ def test_same_byte_replacement_is_a_new_frontier_identity(tmp_path: Path) -> Non
     assert first.members[0].content_sha256 == second.members[0].content_sha256
     assert first.members[0].identity != second.members[0].identity
     assert first.frontier_sha256 != second.frontier_sha256
+
+
+@pytest.mark.parametrize("initial_directory", [False, True])
+def test_frontier_refuses_root_kind_replacement_after_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, initial_directory: bool
+) -> None:
+    """A replacement between root capture and observation cannot misaddress rows."""
+    from polylogue.sources import source_snapshot
+
+    root = tmp_path / "root"
+    if initial_directory:
+        root.mkdir()
+        (root / "member.json").write_bytes(b"{}")
+    else:
+        root.write_bytes(b"{}")
+    original = source_snapshot.bind_source_observation
+
+    def replace_after_binding(declaration: SourceDeclaration) -> source_snapshot.SourceCutBinding:
+        binding = original(declaration)
+        root.rename(tmp_path / "retired")
+        if initial_directory:
+            root.write_bytes(b"{}")
+        else:
+            root.mkdir()
+            (root / "member.json").write_bytes(b"{}")
+        return binding
+
+    monkeypatch.setattr(source_snapshot, "bind_source_observation", replace_after_binding)
+    with build_source_frontier([SourceDeclaration("root", SourceRole.DIRECTORY, root, True)]) as frontier:
+        assert frontier.root_states["root"] is FrontierState.UNAVAILABLE
+        assert not frontier.complete
+        assert frontier.item_count == 0
+    monkeypatch.setattr(source_snapshot, "bind_source_observation", original)
+    with build_source_frontier([SourceDeclaration("root", SourceRole.DIRECTORY, root, True)]) as frontier:
+        assert frontier.complete
+        assert frontier.item_count == 1
+        assert list(frontier.members)[0].coordinate == ("root" if initial_directory else "member.json")
+
+
+def test_configured_frontier_refuses_sqlite_arrival_then_retries_logically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A member arriving after layout discovery cannot become a page-image row."""
+    import sqlite3
+
+    from polylogue import paths
+    from polylogue.sources import source_walk
+    from polylogue.sources.sqlite_snapshot import sqlite_member_revision
+
+    home = tmp_path / "home"
+    codex = home / ".codex"
+    codex.mkdir(parents=True)
+    (codex / "history.jsonl").write_bytes(b"{}\n")
+    archive = tmp_path / "archive"
+    database = codex / "state_5.sqlite"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive))
+    monkeypatch.setattr(paths, "archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.sources.hooks.hook_spool_sources", lambda: ())
+    original = source_walk.layout_source_candidates
+
+    def discover_then_create(name: str, root: Path, **kwargs: object):
+        yield from original(name, root, **kwargs)
+        if name == "codex-state" and not database.exists():
+            with sqlite3.connect(database) as connection:
+                connection.execute("CREATE TABLE threads(id TEXT)")
+                connection.execute("CREATE TABLE thread_spawn_edges(parent TEXT, child TEXT)")
+                connection.execute("INSERT INTO threads VALUES ('synthetic-thread')")
+
+    monkeypatch.setattr(source_walk, "layout_source_candidates", discover_then_create)
+    with continuity.configured_source_frontier(archive) as frontier:
+        assert frontier.root_states["configured:codex-state"] is FrontierState.UNAVAILABLE
+        assert not frontier.complete
+        assert frontier.item_count == 0
+    with continuity.configured_source_frontier(archive) as frontier:
+        assert frontier.complete
+        databases = [row for row in frontier.members if row.logical_sha256 is not None]
+        assert len(databases) == 1
+        assert databases[0].source_id == "configured:codex-state:sqlite:state_5.sqlite"
+        assert databases[0].logical_sha256 == sqlite_member_revision(database)
+        assert frontier.item_count == 2
+
+
+@pytest.mark.parametrize("initial_directory", [False, True])
+def test_frontier_addresses_replaced_root_from_the_captured_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, initial_directory: bool
+) -> None:
+    """A separate pre-observation kind probe addresses the replacement incorrectly."""
+    from polylogue.sources import source_snapshot
+
+    root = tmp_path / "root"
+    if initial_directory:
+        root.mkdir()
+        (root / "member.json").write_bytes(b"{}")
+    else:
+        root.write_bytes(b"{}")
+    original = source_snapshot._root_identity
+    replaced = False
+
+    def capture_replacement(path: Path) -> source_snapshot.SourceRootIdentity:
+        nonlocal replaced
+        if path == root and not replaced:
+            replaced = True
+            root.rename(tmp_path / "retired")
+            if initial_directory:
+                root.write_bytes(b"{}")
+            else:
+                root.mkdir()
+                (root / "member.json").write_bytes(b"{}")
+        return original(path)
+
+    monkeypatch.setattr(source_snapshot, "_root_identity", capture_replacement)
+    with build_source_frontier([SourceDeclaration("root", SourceRole.DIRECTORY, root, True)]) as frontier:
+        assert frontier.complete
+        assert frontier.item_count == 1
+        member = list(frontier.members)[0]
+        assert member.coordinate == ("root" if initial_directory else "member.json")
+        import sqlite3
+
+        expected_path = root if initial_directory else root / "member.json"
+        with sqlite3.connect(":memory:") as connection:
+            frontier.copy_members_to(connection)
+            assert connection.execute("SELECT source_path FROM _polylogue_source_frontier_path").fetchall() == [
+                (str(expected_path),)
+            ]

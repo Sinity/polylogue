@@ -62,7 +62,10 @@ artifacts contain no enrichment state (`storage/derived/raw.py`;
 ## Source observation and SQLite reads
 
 `source_snapshot.py` publishes a declared root's complete member inventory or
-an unavailable result. Byte members and candidate copies read an anchored,
+an unavailable result. Frontier member paths use the same captured root identity
+and kind as the observer. A declared database arriving after member discovery
+refuses the parent byte inventory; a fresh declaration pass observes it as one
+logical export. Byte members and candidate copies read an anchored,
 no-follow descriptor matching the enumerated inode; captured append prefixes
 keep that descriptor's size, hash and identity together. A spool handoff binds
 the new active generation at its creation and observes that exact generation

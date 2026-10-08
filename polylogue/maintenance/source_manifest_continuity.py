@@ -416,7 +416,11 @@ def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFr
         raise SourceContinuityError("source frontier contains duplicate source IDs")
     if len({Path(row.root).resolve(strict=False) for row in rows}) != len(rows):
         raise SourceContinuityError("source frontier contains duplicate roots")
-    from polylogue.sources.source_snapshot import SourceSnapshotError, iter_observe_source_members
+    from polylogue.sources.source_snapshot import (
+        SourceSnapshotError,
+        bind_source_observation,
+        iter_observe_source_members,
+    )
 
     store = _FrontierMemberStore()
     members = _FrontierMembers(store)
@@ -426,9 +430,10 @@ def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFr
         for declaration in rows:
             before_count = store.count
             try:
-                root_is_directory = declaration.root.is_dir()
+                binding = bind_source_observation(declaration)
+                root_is_directory = binding.root_identity.kind == "directory"
                 disappeared: Path | None = None
-                for item in iter_observe_source_members(declaration):
+                for item in iter_observe_source_members(binding):
                     identity: tuple[int, ...]
                     if declaration.role is SourceRole.ARCHIVE_MEMBER:
                         device, inode, _ctime, offset = item.identity.split(":")
