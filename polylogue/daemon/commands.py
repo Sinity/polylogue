@@ -46,14 +46,24 @@ class DaemonCommandGroup(click.Group):
                 formatter.write_dl(rows)
 
 
-def _version_message(_ctx: click.Context) -> str:
+def _show_version(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
+    if not value or ctx.resilient_parsing:
+        return
     from polylogue.version import POLYLOGUE_VERSION
 
-    return f"polylogued, version {POLYLOGUE_VERSION}"
+    click.echo(f"polylogued, version {POLYLOGUE_VERSION}")
+    ctx.exit()
 
 
 @click.group(cls=DaemonCommandGroup, help="Run long-lived Polylogue local services.")
-@click.custom_version_option(_version_message)
+@click.option(
+    "--version",
+    is_flag=True,
+    is_eager=True,
+    expose_value=False,
+    callback=_show_version,
+    help="Show the version and exit.",
+)
 def main() -> None:
     from polylogue.runtime import require_free_threaded_runtime
 
