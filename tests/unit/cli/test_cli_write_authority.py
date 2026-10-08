@@ -140,14 +140,12 @@ def test_offline_archive_leaves_global_lease_guards_unarmed(
     command-scoped lease was not added, since CLI writes may run in asyncio
     tasks and worker threads.
     """
-    from polylogue.storage.sqlite.write_guard import archive_write_guard_installed
     from polylogue.storage.sqlite.write_lease import write_lease_enforced
 
     _archive_root(monkeypatch, tmp_path)
 
     with cli_archive_writer_ownership():
         assert write_lease_enforced() is False
-        assert archive_write_guard_installed() is False
 
 
 def test_unresolved_configured_root_refuses_all_cli_writes(
@@ -177,7 +175,6 @@ def test_resident_archive_writer_uses_the_same_root_ownership_boundary(
 ) -> None:
     """Residency does not install a second global SQLite wrapper."""
     from polylogue.maintenance.offline_guard import writable_tier_opens_are_checked
-    from polylogue.storage.sqlite.write_guard import archive_write_guard_installed
     from polylogue.storage.sqlite.write_lease import write_lease_enforced
 
     root = _archive_root(monkeypatch, tmp_path)
@@ -186,9 +183,7 @@ def test_resident_archive_writer_uses_the_same_root_ownership_boundary(
     with cli_archive_writer_ownership():
         assert writable_tier_opens_are_checked() is True
         assert write_lease_enforced() is False
-        assert archive_write_guard_installed() is False
     assert write_lease_enforced() is False
-    assert archive_write_guard_installed() is False
     assert writable_tier_opens_are_checked() is False
 
 
@@ -512,3 +507,17 @@ def test_cli_rejects_an_inherited_lease_without_actual_thread_authority(
         assert not (root / "index.db").exists()
         assert not archive_custody_available(root)
     assert archive_custody_available(root)
+
+
+def test_offline_residency_classifies_only_writable_tier_paths(tmp_path: Path) -> None:
+    from polylogue.maintenance.offline_guard import guarded_archive_tier_path
+
+    for tier in ("source", "index", "embeddings", "user", "audit", "ops"):
+        path = tmp_path / "candidate" / f"{tier}.db"
+        assert guarded_archive_tier_path(path) == path
+        assert guarded_archive_tier_path(f"{path.as_uri()}?mode=rw", uri=True) == path
+        assert guarded_archive_tier_path(f"{path.as_uri()}?mode=ro", uri=True) is None
+        assert guarded_archive_tier_path(f"{path.as_uri()}?immutable=1", uri=True) is None
+    assert guarded_archive_tier_path(tmp_path / "spill.db") is None
+    assert guarded_archive_tier_path(":memory:") is None
+    assert guarded_archive_tier_path("/proc/self/fd/7") is None

@@ -23,7 +23,7 @@ import pytest
 
 from polylogue import logging as plog
 from polylogue.archive.write_gateway import ArchiveWriteGateway
-from polylogue.core.write_lease import arm_write_lease_enforcement, install_archive_write_guard
+from polylogue.core.write_lease import arm_write_lease_enforcement
 from polylogue.daemon import write_coordinator as write_coordinator_module
 from polylogue.daemon.write_coordinator import (
     _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR,
@@ -70,7 +70,7 @@ async def test_cold_build_lifecycle_writable_opens_stay_under_one_coordinator(
     coordinator = DaemonWriteCoordinator(archive_root=root)
     generation: ColdBuildGeneration | None = None
     try:
-        with arm_write_lease_enforcement(process_wide=True), install_archive_write_guard():
+        with arm_write_lease_enforcement(process_wide=True):
             assert (
                 await coordinator.run_sync(
                     "daemon.cold_build.probe",

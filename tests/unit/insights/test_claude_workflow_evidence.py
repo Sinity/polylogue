@@ -250,14 +250,13 @@ def test_claude_workflow_stage_reads_without_daemon_writer_lease(tmp_path) -> No
     both tiers, while publication succeeds only inside the stage's admitted
     writer lease.
     """
-    import sqlite3
     from collections.abc import Callable
 
     import pytest
 
     from polylogue.core.stage_admission import stage_write_admission
     from polylogue.operations.claude_workflow_convergence import make_claude_workflow_stage
-    from polylogue.storage.sqlite.write_guard import install_archive_write_guard
+    from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
     from polylogue.storage.sqlite.write_lease import (
         UnleasedWriteError,
         arm_write_lease_enforcement,
@@ -273,9 +272,9 @@ def test_claude_workflow_stage_reads_without_daemon_writer_lease(tmp_path) -> No
         with write_lease(actor, archive_root=tmp_path):
             return work()
 
-    with install_archive_write_guard(), arm_write_lease_enforcement():
+    with arm_write_lease_enforcement():
         with pytest.raises(UnleasedWriteError):
-            sqlite3.connect(tmp_path / "source.db")
+            open_isolated_write_connection(tmp_path / "source.db", purpose="test.unadmitted", archive_root=tmp_path)
         with stage_write_admission(admit):
             assert stage.check(subject) is False
             assert stage.execute(subject) is True

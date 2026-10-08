@@ -2492,11 +2492,16 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
             # This fixture writes derived output out from under the daemon and
             # retains the matching transaction-owned demand obligation. The
             # periodic owner must discover that obligation without a file hint.
-            from polylogue.storage.sqlite.write_lease import declared_unguarded_write
+            from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+            from polylogue.storage.sqlite.write_lease import write_lease
 
             with (
-                declared_unguarded_write("test fixture clears derived rows to force reconvergence"),
-                contextlib.closing(sqlite3.connect(archive_root / "index.db")) as conn,
+                write_lease("test.fixture.profile-demand", archive_root=archive_root),
+                contextlib.closing(
+                    open_isolated_write_connection(
+                        archive_root / "index.db", purpose="test.fixture.profile-demand", archive_root=archive_root
+                    )
+                ) as conn,
             ):
                 assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
                 for table in ("session_latency_profiles", "session_profiles"):

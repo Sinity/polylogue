@@ -441,7 +441,6 @@ class TestResetCommandDeletion:
         ``-wal`` survives beside the recreated file.
         """
         from polylogue.operations.mutation_replay import apply_staged_archive_resets
-        from polylogue.storage.sqlite.write_guard import declared_unguarded_write
 
         with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
             from polylogue.paths import data_home
@@ -470,15 +469,13 @@ class TestResetCommandDeletion:
         assert status == "running"
         self._end_attempt_owner(archive_root, operation_id)
         # Ordinary recovery runs after tiers open: it must leave the plan pending.
-        with declared_unguarded_write("test: startup recovery outside the tier seam"):
-            recover_on_admitted_owner(archive_root)
+        recover_on_admitted_owner(archive_root)
         # It may mark the dead attempt interrupted, but the plan stays nonterminal.
         [(_operation_id, status)] = self._reset_runs(archive_root)
         assert status in {"running", "interrupted"}
         assert all((archive_root / name).exists() for name in deleted_tiers)
 
-        with declared_unguarded_write("test: daemon startup seam"):
-            assert apply_staged_archive_resets(archive_root) == (operation_id,)
+        assert apply_staged_archive_resets(archive_root) == (operation_id,)
 
         [(_operation_id, status)] = self._reset_runs(archive_root)
         assert status not in {"running", "interrupted"}
@@ -488,8 +485,7 @@ class TestResetCommandDeletion:
         for name in ("source.db", "user.db", "audit.db", "embeddings.db"):
             assert (archive_root / name).exists(), name
         assert assets_dir.exists() is ("--assets" not in flags and "--all" not in flags)
-        with declared_unguarded_write("test: re-bootstrap after the staged reset"):
-            initialize_active_archive_root(archive_root)
+        initialize_active_archive_root(archive_root)
         assert (archive_root / "index.db").exists()
         assert (archive_root / "ops.db").exists()
 

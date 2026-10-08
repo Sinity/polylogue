@@ -120,17 +120,15 @@ def test_serve_stdio_runs_cached_server() -> None:
     server.run.assert_called_once_with(transport="stdio")
 
 
-def test_serve_stdio_does_not_arm_the_write_guard_when_read_only() -> None:
+def test_serve_stdio_does_not_arm_write_enforcement_when_read_only() -> None:
     """Read-only MCP is not a writer; arming would overclaim the boundary."""
     server = MagicMock()
     with (
         patch("polylogue.mcp.server._get_server", return_value=server),
         patch("polylogue.core.write_lease.arm_write_lease_enforcement") as arm,
-        patch("polylogue.core.write_lease.install_archive_write_guard") as guard,
     ):
         server_module.serve_stdio(services="services")
     arm.assert_not_called()
-    guard.assert_not_called()
     server.run.assert_called_once_with(transport="stdio")
 
 
@@ -153,9 +151,7 @@ def test_serve_stdio_does_not_arm_a_hand_maintained_capability_list(capabilities
     with (
         patch("polylogue.mcp.server._get_server", return_value=server),
         patch("polylogue.core.write_lease.arm_write_lease_enforcement") as arm,
-        patch("polylogue.core.write_lease.install_archive_write_guard") as guard,
     ):
         server_module.serve_stdio(services="services", capabilities=capabilities)
     arm.assert_not_called()
-    guard.assert_not_called()
     server.run.assert_called_once_with(transport="stdio")

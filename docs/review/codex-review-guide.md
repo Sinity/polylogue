@@ -47,9 +47,8 @@ P1 (merge blocker):
 - input silently dropped, truncated, or duplicated while the run reports
   success or complete enumeration;
 - a writable open or mutation of a live archive that bypasses the daemon
-  writer route without a declared authority (`declared_unguarded_write` in
-  `storage/sqlite/write_guard.py` covers bootstrap, offline exclusive rebuild,
-  migration, and fixture setup);
+  writer route without archive-bound custody or the exact owned offline
+  destination authority;
 - operator archives, transcripts, private exports, local databases, or
   receipts committed in any diff, including a docs-only or test-only one;
 - a build, promotion, or convergence loop that can never finish (livelock,

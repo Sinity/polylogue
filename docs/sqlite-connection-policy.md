@@ -55,32 +55,24 @@ readers continue to require `query_only=ON`.
 
 ## The writable-open boundary
 
-`write_lease.py` makes every declared write-mode factory take the lease.
-`write_guard.py` makes that boundary *total*: while the daemon holds its
-process-lifetime writer ownership it also installs a guard over
-`sqlite3.connect`, so a writable open whose file name is one of the six tiers
-asserts the lease before the connection exists. Archive writers use root-bound
-factories or specialized destination owners; raw opens also exist for scratch,
-external and authenticated detached databases. The guard remains a separate
-process-wide interception boundary.
+Archive writers admit their configured root before native construction through
+`connection_profile.py` or their specialized destination owner. Bootstrap,
+durable trains, embedding candidates and descriptor-bound generation checkpoints
+retain their native opening policy and perform the same root admission.
+Authenticated detached population requires its exact owned destination and root
+lease before copying. The daemon arms lease enforcement; it does not replace
+`sqlite3.connect` process-wide.
+
+The existing layering gate rejects locally resolved writable tier opens that
+precede root admission. This is a regression check over declared paths; dynamic
+paths remain the owning factory's runtime responsibility. Read-only, scratch and
+external databases keep their own destination contracts.
 
 The CLI uses one per-open residency and archive-ownership check whether a daemon
-was present at entry or arrives later. It refuses configured-archive writes and
-admits separately owned scratch archives; it does not install the daemon's
-write-lease interceptor.
-
-Read-only opens (`mode=ro`, `immutable=1`), in-memory databases and non-archive
-files -- spill databases, provider caches, the Sinex database, export
-destinations -- are untouched. Tier membership is decided by file name, not by
-directory, so a generation build or a staging copy named `index.db` is also a
-guarded open; the guard therefore asserts only that *a* lease is held and
-leaves archive-root binding to the factories, which know which archive they
-were asked for.
-
-`declared_unguarded_write(reason)` is the single named bypass, for the
-authorities that own an archive without a daemon: first-time bootstrap,
-offline exclusive rebuild, migration behind its own backup, and test fixtures.
-It is thread-local, so one bootstrap never unlocks a concurrent writer.
+was present at entry or arrives later. Its process-wide residency interceptor
+refuses configured-archive writes and admits separately owned scratch archives.
+Its filename/URI classifier belongs to `maintenance/offline_guard.py`; it does
+not grant a write lease.
 
 ## Checkpoint ownership
 
@@ -216,7 +208,7 @@ Every other direct open is one of these roles, not a profiled archive reader:
 | Private scratch, spool or spill database owned by one pass | `pipeline/ids.py`, `operations/{daemon_ingest,ingest_inputs}.py`, `sources/{prepared_jsonl,prepared_message_sink,tool_outcomes,assembly_claude_code}.py`, `sources/parsers/claude/stream_scratch.py`, `sources/live/tool_result_sidecars.py`, `storage/sqlite/archive_tiers/{write,revision_governance}.py`, `storage/sqlite/session_shard.py`, `sources/revision_backfill.py`, `archive/session_revision_membership.py` | not an archive tier; its lifetime is the owning pass |
 | In-memory database | schema identity, disposition, inventory and manifest builders; durable change train; migration runner | no file |
 | External or provider database | `sinex/service.py`, `sources/{assembly_codex,sqlite_export,sqlite_snapshot}.py`, `schemas/source_cache.py`, `schemas/source_inference.py`, `browser_capture/capture_jobs.py` | not an archive tier; opened under that source's own contract |
-| Tier writer under a held lease | `storage/{blob_integrity,blob_publication,raw_reconciler}.py` (index exclusion lock), `analysis/claude_workflow_materializer.py`, `sources/live/hook_paste_enrichment.py`, `operations/{route_observation,mutation_actuators}.py`, `storage/sqlite/archive_tiers/{archive,user_write,bootstrap}.py`, `storage/sqlite/durable_change_train.py` | a writer, guarded by the lease and `write_guard.py` |
+| Tier writer under a held lease | `storage/{blob_integrity,blob_publication,raw_reconciler}.py` (index exclusion lock), `analysis/claude_workflow_materializer.py`, `sources/live/hook_paste_enrichment.py`, `operations/{route_observation,mutation_actuators}.py`, `storage/sqlite/archive_tiers/{archive,user_write,bootstrap}.py`, `storage/sqlite/durable_change_train.py` | root-bound admission before native construction |
 | Sealed or anchored copy | `storage/embeddings/generations.py` (unpublished generation, loads sqlite-vec), `storage/sqlite/audit_leaf.py`, `storage/index_generation.py` (descriptor-bound exclusive checkpoint) | the file is proven immutable or exclusively owned before the open |
 | Demo, scenario and schema-generation tooling | `demo/`, `scenarios/corpus.py`, `schemas/generation/`, `operations/canonical_archive_ingest.py` (one-shot ownership probe) | development tooling or a probe outside the archive read path |
 | Archive reader not yet migrated | `sources/live/{batch,watcher,batch_observability}.py`, `storage/raw_retention.py` | live-intake and retention readers; migrate with those modules' next owner change |
