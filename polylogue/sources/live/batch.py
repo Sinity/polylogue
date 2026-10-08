@@ -1009,7 +1009,7 @@ class LiveBatchProcessor:
                         defer_convergence=defer_convergence,
                         open_attempt=attempt,
                     )
-                except asyncio.CancelledError:
+                except (asyncio.CancelledError, DaemonOperationCancelled):
                     # Cancellation is shutdown: no further ops write is admitted
                     # here (it could hold the writer past the shutdown deadline).
                     # The row stays ``running`` and the next start records it as
@@ -1534,6 +1534,8 @@ class LiveBatchProcessor:
                     )
                     break
                 except Exception as exc:
+                    if isinstance(exc, DaemonOperationCancelled):
+                        raise
                     if isinstance(exc, UnleasedWriteError):
                         # A missing writer is a configuration refusal, not a
                         # property of these files: never count them failed.

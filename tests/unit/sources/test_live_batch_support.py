@@ -1295,7 +1295,8 @@ def test_unreadable_state_database_stays_retryable_instead_of_excluded(tmp_path:
     assert result.succeeded == []
     assert metrics.failed_file_count == 0
     assert metrics.deferred_file_count == 1
-    assert metrics.retry_paths == [str(state)]
+    assert metrics.deferred_paths == (str(state),)
+    assert metrics.failed_paths == [str(state)]
     record = cursor.get_record(state)
     assert record is None or (record.excluded is False and record.failure_count == 0)
 
@@ -1350,7 +1351,7 @@ def test_repeated_sqlite_read_faults_defer_without_quarantining_unchanged_input(
     assert record.next_retry_at is not None
     assert reads == 6
     assert all(item.failed_file_count == 0 and item.deferred_file_count == 1 for item in metrics)
-    assert all(item.retry_paths == [str(state)] for item in metrics)
+    assert all(item.deferred_paths == (str(state),) and item.failed_paths == [str(state)] for item in metrics)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
 
