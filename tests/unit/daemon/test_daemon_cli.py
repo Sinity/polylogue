@@ -800,6 +800,16 @@ class TestBrowserCaptureReceiverTokenAutoMint:
 
         assert captured.get("auth_token") is None
 
+    def test_receiver_preserves_explicit_machine_policy_separately(self) -> None:
+        captured = self._run_with_captured_make_server_kwargs(
+            browser_capture_auth_token="neutral-pairing-token",
+            api_auth_token="neutral-machine-token",
+            api_allow_no_auth=True,
+        )
+        assert captured["auth_token"] == "neutral-pairing-token"
+        assert captured["api_auth_token"] == "neutral-machine-token"
+        assert captured["api_allow_no_auth"] is True
+
     def test_explicit_token_wins_over_auto_mint(self) -> None:
         captured = self._run_with_captured_make_server_kwargs(browser_capture_auth_token="operator-set-token")
 

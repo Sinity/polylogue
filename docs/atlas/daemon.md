@@ -374,3 +374,10 @@ SQLite failure; the pass cannot report a persisted handoff when no row landed.
 Completed
 current healthy coverage avoids another census; cancellation and
 inspection refusals retain their ordinary typed outcomes.
+
+Resolved runtime Config projections and source clones retain the explicit API
+authentication token and allow-no-auth policy without reading ambient settings.
+CLI, Python API, MCP and web sign-in clients consume those typed fields. Browser
+receiver composition forwards the same API policy separately from its receiver
+pairing credential. Both credential-bearing config representations omit the API
+token; read and mutation payloads never carry it as a result field.

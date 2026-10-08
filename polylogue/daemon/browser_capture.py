@@ -86,7 +86,17 @@ def serve_command(host: str, port: int, auth_token: str | None, allow_no_auth: b
     ``browser-capture token show``). Pass ``--allow-no-auth`` to opt out.
     """
     resolved_token = resolve_receiver_auth_token(auth_token, allow_no_auth=allow_no_auth)
-    server = make_server(host, port, auth_token=resolved_token)
+    from polylogue.config import resolve_runtime_config
+
+    config = resolve_runtime_config().as_config()
+    server = make_server(
+        host,
+        port,
+        auth_token=resolved_token,
+        archive_root=config.archive_root,
+        api_auth_token=config.api_auth_token,
+        api_allow_no_auth=config.api_allow_no_auth,
+    )
     click.echo(f"Listening on http://{host}:{port}")
     click.echo(f"Writing captures to {server.config.spool_path}")
     if resolved_token is None:

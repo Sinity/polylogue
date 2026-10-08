@@ -66,8 +66,8 @@ def _api_token(env: AppEnv) -> str | None:
 
     config = load_effective_config(env)
     return resolve_api_auth_token(
-        getattr(config, "api_auth_token", None),
-        allow_no_auth=getattr(config, "api_allow_no_auth", False),
+        config.api_auth_token,
+        allow_no_auth=config.api_allow_no_auth,
     )
 
 
