@@ -18,7 +18,7 @@ from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import replace
 from itertools import islice
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Literal, TypeVar, cast
 
 from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
 from polylogue.archive.query.filter_kwargs import (
@@ -157,6 +157,27 @@ def _archive_summaries(
 
     query_text = _plan_text_query(plan)
     if query_text is not None:
+        if post_filter_fetch and sort == "random":
+            random_kept_hits: list[ArchiveSessionSummary] = []
+            random_kept_count = 0
+            with closing(
+                archive.iter_search_summaries(
+                    query_text,
+                    limit=None,
+                    offset=0,
+                    sort="random",
+                    reverse=reverse,
+                    **filter_kwargs,
+                )
+            ) as random_candidates:
+                while random_batch := list(islice(random_candidates, limit)):
+                    rows = _summaries_from_hits(archive, random_batch)
+                    kept_rows = keep(rows) if keep is not None else rows
+                    random_kept_count += len(kept_rows)
+                    random_kept_hits.extend(deliver(kept_rows))
+                    if wanted is not None and random_kept_count >= wanted:
+                        break
+            return random_kept_hits
         if not post_filter_fetch:
             return deliver(
                 _kept(
@@ -207,6 +228,26 @@ def _archive_summaries(
                 ),
             )
         )
+    if sort == "random":
+        random_summaries: list[ArchiveSessionSummary] = []
+        random_summary_count = 0
+        with closing(
+            archive.iter_summaries(
+                limit=None,
+                offset=0,
+                sort="random",
+                reverse=reverse,
+                sample=False,
+                **filter_kwargs,
+            )
+        ) as random_summary_candidates:
+            while summary_random_batch := list(islice(random_summary_candidates, limit)):
+                kept_summary_random_batch = keep(summary_random_batch) if keep is not None else summary_random_batch
+                random_summary_count += len(kept_summary_random_batch)
+                random_summaries.extend(deliver(kept_summary_random_batch))
+                if wanted is not None and random_summary_count >= wanted:
+                    break
+        return random_summaries
     summaries: list[ArchiveSessionSummary] = []
     summary_count = 0
     fetch_offset = 0
@@ -883,6 +924,16 @@ def _ordered_scoped_hits(
             archive.check_operation_read()
             if full:
                 values = session_order_values(plan, archive_envelope_to_session(archive.read_session(hit.session_id)))
+            elif plan.sort in _COMPOSED_COUNT_SORTS:
+                summary = archive_summary_to_domain(archive.read_summary(hit.session_id))
+                values = summary_order_values(
+                    plan,
+                    summary,
+                    metrics=archive.read_session_sort_metrics(
+                        hit.session_id,
+                        sort=cast(Literal["messages", "words", "longest", "tokens"], plan.sort),
+                    ),
+                )
             else:
                 values = summary_order_values(plan, archive_summary_to_domain(archive.read_summary(hit.session_id)))
             yield hit.session_id, *values, hit.rank

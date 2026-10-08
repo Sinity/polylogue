@@ -325,6 +325,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
     PreparedSessionRows,
     PreparedSessionWrite,
+    _composed_transcript_plan,
     locate_composed_message,
     read_archive_session_envelope,
     read_archive_session_page,
@@ -3138,6 +3139,80 @@ class ArchiveStore:
     def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
         """Read a session envelope from index.db."""
         return read_archive_session_envelope(self._conn, session_id, blob_store=self._read_blob_store)
+
+    def read_session_sort_metrics(
+        self, session_id: str, *, sort: Literal["messages", "words", "longest", "tokens"]
+    ) -> tuple[int, int, int, bool, int]:
+        """Aggregate composed numeric sort metrics without hydrating messages.
+
+        The transcript plan is the same lineage segment plan used by session
+        reads. Token columns are streamed for token ordering; block text is
+        streamed only for word ordering and counted without materializing a
+        list of words. Inherited prefixes are included in either case.
+        """
+        plan = _composed_transcript_plan(self._conn, session_id)
+        if sort == "messages":
+            return plan.total_message_count, 0, 0, False, 0
+        words = 0
+        longest = 0
+        measured_tokens = False
+        tokens = 0
+        for segment in plan.segments:
+            bound = ""
+            params: tuple[object, ...] = (segment.session_id,)
+            if segment.upto_position is not None and segment.upto_variant_index is not None:
+                bound = " AND (m.position, m.variant_index) <= (?, ?)"
+                params = (*params, segment.upto_position, segment.upto_variant_index)
+            with closing(self._conn.cursor()) as cursor:
+                cursor.execute(
+                    "SELECT m.position AS message_position, m.variant_index AS message_variant, "
+                    + ("b.text AS block_text, " if sort in {"words", "longest"} else "")
+                    + "m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_write_tokens "
+                    + "FROM messages m "
+                    + (
+                        "LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id "
+                        if sort in {"words", "longest"}
+                        else ""
+                    )
+                    + f"WHERE m.session_id = ?{bound} "
+                    + (
+                        "ORDER BY m.position, m.variant_index, b.position"
+                        if sort in {"words", "longest"}
+                        else "ORDER BY m.position, m.variant_index"
+                    ),
+                    params,
+                )
+                current_message: tuple[int, int] | None = None
+                message_words = 0
+                while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+                    for row in rows:
+                        message_key = (int(row["message_position"]), int(row["message_variant"]))
+                        if message_key != current_message:
+                            if current_message is not None:
+                                words += message_words
+                                longest = max(longest, message_words)
+                            current_message = message_key
+                            message_words = 0
+                            values = tuple(
+                                row[name]
+                                for name in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+                            )
+                            measured_tokens = measured_tokens or any(value is not None for value in values)
+                            tokens += sum(int(value or 0) for value in values)
+                        if sort in {"words", "longest"}:
+                            block_text = row["block_text"]
+                            if block_text:
+                                in_word = False
+                                for character in str(block_text):
+                                    if character.isspace():
+                                        in_word = False
+                                    elif not in_word:
+                                        message_words += 1
+                                        in_word = True
+                if current_message is not None:
+                    words += message_words
+                    longest = max(longest, message_words)
+        return plan.total_message_count, words, longest, measured_tokens, tokens
 
     def read_compact_lineage(
         self,

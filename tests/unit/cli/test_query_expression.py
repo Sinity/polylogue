@@ -6449,6 +6449,7 @@ class TestDaemonSessionIdFilter:
         self._seed(index_db, [("alpha", "alpha body")])
 
         payload = execute_session_list_query({"query": ["id:nonexistentnope"]}, 50, 0)
+        assert isinstance(payload, dict)
         # A missing id is a typed-empty page, not a 500 propagated from resolve.
         assert payload["items"] == []
         assert payload["total"] == 0
@@ -6461,6 +6462,7 @@ class TestDaemonSessionIdFilter:
         self._seed(index_db, [("alpha", "alpha body")])
 
         payload = execute_session_list_query({"query": ["session:nonexistentnope"]}, 50, 0)
+        assert isinstance(payload, dict)
         assert payload["items"] == []
         assert payload["total"] == 0
         assert payload["limit"] == 50

@@ -541,7 +541,12 @@ def test_sql_comparison_keys_match_current_python_owner_on_held_rows(
             for sort in ("date", "messages", "words", "longest", "tokens"):
                 for reverse in (False, True):
                     plan = SessionQueryPlan(sort=sort, reverse=reverse)
-                    expected = plan._sort_sessions(sessions) if full else plan._sort_summaries(summaries)
+                    # Numeric order keys are transcript metrics, including for
+                    # summary results. Their independent oracle is the full
+                    # composed session, not the date-only summary comparator.
+                    numeric = sort in {"messages", "tokens", "words", "longest"}
+                    use_full = full or numeric
+                    expected = plan._sort_sessions(sessions) if use_full else plan._sort_summaries(summaries)
                     with frame.archive.scoped_search_population(selected_ids):
                         hits = [
                             frame.archive.semantic_summaries([(ids[(sid, "m0")][1], 0.0)], limit=1)[0]
@@ -553,7 +558,7 @@ def test_sql_comparison_keys_match_current_python_owner_on_held_rows(
                                 (str(row.id), *session_order_values(plan, row), ordinal)
                                 for ordinal, row in enumerate(sessions, start=1)
                             )
-                            if full
+                            if use_full
                             else (
                                 (str(row.id), *summary_order_values(plan, row), ordinal)
                                 for ordinal, row in enumerate(summaries, start=1)

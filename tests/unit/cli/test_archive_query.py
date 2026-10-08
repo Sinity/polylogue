@@ -969,7 +969,7 @@ class TestCursorRoundtrip:
 def test_validate_cursor_request_identity_rejects_query_change() -> None:
     from polylogue.surfaces.payloads import SearchCursor
 
-    cursor = SearchCursor(v=1, r=1, c="a", lane="dialogue", query_hash="query-a")
+    cursor = SearchCursor(v=1, r=1, c="a", lane="dialogue", query_hash="query-a", ordered=False)
 
     with pytest.raises(click.UsageError, match="different ranked-search request"):
         _validate_cursor_request_identity(cursor, "query-b")
@@ -978,7 +978,7 @@ def test_validate_cursor_request_identity_rejects_query_change() -> None:
 def test_validate_cursor_request_identity_accepts_matching_query() -> None:
     from polylogue.surfaces.payloads import SearchCursor
 
-    cursor = SearchCursor(v=1, r=1, c="a", lane="dialogue", query_hash="query-a")
+    cursor = SearchCursor(v=1, r=1, c="a", lane="dialogue", query_hash="query-a", ordered=False)
 
     _validate_cursor_request_identity(cursor, "query-a")
 
