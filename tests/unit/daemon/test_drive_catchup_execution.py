@@ -959,3 +959,28 @@ async def test_drive_terminal_no_session_evidence_blocks_even_without_parse_erro
         witness.close()
     await parser.repository.close()
     assert await coordinator.shutdown(timeout=30)
+
+
+async def test_drive_interrupted_acquisition_listing_keeps_the_configured_denominator_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.operations.drive_readiness import DriveCatchupState
+
+    parser, source, coordinator = await make_parser(tmp_path, monkeypatch)
+
+    class Interrupted(DriveClient):
+        def iter_json_files(self, folder_id: str) -> Iterable[DriveFile]:
+            yield from super().iter_json_files(folder_id)
+            raise OSError("synthetic later-page refusal")
+
+    monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: Interrupted())
+    result = await parser.ingest_sources(sources=[source])
+    report = _read_drive_report(parser, source, result.acquire_result.drive_witnesses)
+    assert result.acquire_result.errors == 1
+    assert report.state is DriveCatchupState.UNKNOWN
+    assert report.enumerated_count is report.acquired_count is report.materialization_pending is None
+    assert "drive_listing_failed" in report.gaps
+    for witness in result.acquire_result.drive_witnesses.values():
+        witness.close()
+    await parser.repository.close()
+    assert await coordinator.shutdown(timeout=30)

@@ -231,10 +231,10 @@ def inspect_drive_readiness(
         state = (
             DriveCatchupState.BLOCKED if any(failure.permanent for failure in failures) else DriveCatchupState.RETRYABLE
         )
-    elif "drive_listing_failed" in gaps:
-        state = DriveCatchupState.RETRYABLE
     elif unknown:
         state = DriveCatchupState.UNKNOWN
+    elif "drive_listing_failed" in gaps:
+        state = DriveCatchupState.RETRYABLE
     elif changed or pending:
         state = DriveCatchupState.PENDING
         if changed:
