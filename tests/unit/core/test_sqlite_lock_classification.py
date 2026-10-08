@@ -9,12 +9,18 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Never, cast
 
 import pytest
 
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon.cursor_lag_baseline import _database_is_locked
 from polylogue.daemon.http import _is_sqlite_busy_error
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
 
 _Predicate = Callable[[sqlite3.OperationalError], bool]
 
@@ -187,7 +193,7 @@ def test_protocol_name_is_transient_and_corruption_code_takes_precedence(predica
     ],
 )
 def test_canonical_search_read_classifies_index_failure_and_preserves_unknown_sql(
-    tmp_path,
+    tmp_path: Path,
     message: str,
     code: int,
     reason: str | None,
@@ -199,13 +205,14 @@ def test_canonical_search_read_classifies_index_failure_and_preserves_unknown_sq
     original = _operational_error(message, errorcode=code, errorname=None)
 
     class FailedReader:
-        def search_summaries(self, *args, **kwargs):
+        def search_summaries(self, *args: object, **kwargs: object) -> Never:
             raise original
 
     plan = SessionQuerySpec.from_params({"query": "needle", "limit": 10}).to_plan()
     with pytest.raises(SearchIndexUnavailableError if reason else sqlite3.OperationalError) as raised:
-        archive_search_hits(plan, archive_root=tmp_path, config=None, archive=FailedReader())
+        archive_search_hits(plan, archive_root=tmp_path, config=None, archive=cast("ArchiveStore", FailedReader()))
     if reason:
+        assert isinstance(raised.value, SearchIndexUnavailableError)
         assert raised.value.reason == reason
         assert raised.value.__cause__ is original
     else:
