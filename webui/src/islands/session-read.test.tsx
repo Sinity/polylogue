@@ -109,6 +109,20 @@ describe('SessionReadIsland', () => {
     expect(loadPage).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses a malformed browser fragment before making an exact message request', async () => {
+    const priorHash = window.location.hash;
+    window.location.hash = '#msg-message%ZZ';
+    const loadPage = vi.fn();
+    try {
+      render(<SessionReadIsland sessionId="s1" initialNextOffset={30} loadPage={loadPage} />);
+
+      await screen.findByText('The linked message URL is malformed.');
+      expect(loadPage).not.toHaveBeenCalled();
+    } finally {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${priorHash}`);
+    }
+  });
+
   it('keeps load-more paging from the window the deep link landed on', async () => {
     Element.prototype.scrollIntoView = vi.fn();
     const deepMessage: SessionMessageRow = { ...toolMessage, id: 'message:1600', text: 'Jumped-to message.' };
