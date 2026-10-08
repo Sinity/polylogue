@@ -1307,12 +1307,21 @@ class DaemonOperationRuntime:
                         # ``failed`` carrying a DaemonOperationCancelled error.
                         envelope = self._pending_envelope(exchange, outcome="cancelled")
                     except Exception as exc:
-                        outcome = "indeterminate" if exchange.acceptance_started else "failed"
+                        retryable_admission = (
+                            isinstance(exc, DaemonBackpressureError) and not exchange.acceptance_started
+                        )
+                        outcome = (
+                            "indeterminate"
+                            if exchange.acceptance_started
+                            else "rejected"
+                            if retryable_admission
+                            else "failed"
+                        )
                         envelope = self._pending_envelope(exchange, outcome=outcome, record=record)
                         envelope["error"] = {
                             "code": str(getattr(exc, "code", type(exc).__name__)),
                             "detail": str(exc),
-                            "retryable": False,
+                            "retryable": retryable_admission,
                             "data": getattr(exc, "data", {}),
                         }
                     if exchange.acceptance_started and exchange.binding is not None:

@@ -381,3 +381,10 @@ CLI, Python API, MCP and web sign-in clients consume those typed fields. Browser
 receiver composition forwards the same API policy separately from its receiver
 pairing credential. Both credential-bearing config representations omit the API
 token; read and mutation payloads never carry it as a result field.
+
+Staged compute phases preserve a scheduler admission refusal before durable
+acceptance as `rejected` / `compute_backpressure` with `retryable=true`, just
+like initial compute submission. A backup can encounter this transient refusal
+while another operation owns compute capacity; it has created no package at
+that boundary. Exceptions after durable acceptance retain the existing
+indeterminate result custody rather than authorizing a fresh retry.

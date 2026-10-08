@@ -2880,3 +2880,86 @@ def test_temporal_selected_reference_skips_unavailable_vector_admission(
     else:
         admit.assert_called_once()
         assert "semantic_snapshot" in envelope["readiness"]["degraded_components"], envelope
+
+
+def test_staged_backup_compute_refusal_is_retryable_and_recovers(tmp_path: Path) -> None:
+    """The real staged phase must preserve its scheduler's transient refusal."""
+    entered = threading.Event()
+    release = threading.Event()
+
+    def occupy_input_capacity() -> None:
+        entered.set()
+        assert release.wait(timeout=30)
+
+    packages = tmp_path / "packages"
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        blocker = stack.execution_kernel.submit(
+            occupy_input_capacity, admission_class="control", estimated_bytes=0, exclusive_bytes=True
+        )
+        try:
+            assert entered.wait(timeout=5)
+            refused = stack.client.operation(
+                "maintenance.backup",
+                {"output_dir": str(packages), "verify": True, "profile": "full_evidence"},
+                archive_root=str(stack.archive_root),
+            )
+            assert refused is not None
+            assert refused["outcome"] == "rejected", refused
+            assert refused["error"]["code"] == "compute_backpressure"
+            assert refused["error"]["retryable"] is True
+            assert refused["result"] is None
+            assert not packages.exists()
+        finally:
+            release.set()
+            blocker.future.result(timeout=10)
+        completed = stack.client.operation(
+            "maintenance.backup",
+            {"output_dir": str(packages), "verify": True, "profile": "full_evidence"},
+            archive_root=str(stack.archive_root),
+        )
+        assert completed is not None and completed["outcome"] == "completed", completed
+        assert completed["result"]["result"]["verified"] is True
+
+
+def test_accepted_restore_backpressure_retains_indeterminate_terminal_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Admission failure after acceptance cannot authorize a fresh request replay."""
+    from polylogue.core.compute import DaemonBackpressureError
+    from polylogue.operations import archive_backup
+
+    attempts = 0
+
+    def saturated_restore(**_kwargs: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        raise DaemonBackpressureError("synthetic post-acceptance compute refusal")
+
+    monkeypatch.setattr(archive_backup, "restore_verified_backup", saturated_restore)
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        request_id = "accepted-restore-backpressure"
+        payload: dict[str, object] = {"backup_dir": str(tmp_path / "backup"), "destination": str(tmp_path / "restored")}
+        terminal = stack.client.operation(
+            "maintenance.restore_verified_backup",
+            payload,
+            archive_root=str(stack.archive_root),
+            request_id=request_id,
+        )
+        assert terminal is not None and terminal["outcome"] == "indeterminate", terminal
+        assert terminal["error"]["code"] == "compute_backpressure"
+        assert terminal["error"]["retryable"] is False
+        replay = stack.client.operation(
+            "maintenance.restore_verified_backup",
+            payload,
+            archive_root=str(stack.archive_root),
+            request_id=request_id,
+        )
+        assert replay is not None and replay["outcome"] == "indeterminate", replay
+        assert replay["error"] == terminal["error"]
+        assert replay["schema_versions"] == terminal["schema_versions"]
+        status = stack.client.operation(
+            "operation.status", {"request_id": request_id}, archive_root=str(stack.archive_root)
+        )
+        assert status is not None and status["result"]["outcome"] == "indeterminate", status
+        assert status["result"]["error"]["retryable"] is False
+        assert attempts == 1
