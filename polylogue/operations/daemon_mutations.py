@@ -1395,7 +1395,7 @@ async def execute_raw_authority_blocker_resolve_operation(
         raise ConfirmationRequiredError(f"{request.operation} requires explicit confirmation")
     runtime = context.runtime
     assert runtime is not None
-    await runtime.recover_interrupted_operations()
+    await runtime.recover_interrupted_operations(resolver_actor_ref=context.principal.actor_ref)
     started = monotonic()
     audit = runtime.audit_for_request(request, context)
 

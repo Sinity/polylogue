@@ -442,7 +442,7 @@ async def facade_record_work_event(
     runtime = context.runtime
     if runtime is None:
         raise PermissionError("daemon_required")
-    await runtime.recover_interrupted_operations()
+    await runtime.recover_interrupted_operations(resolver_actor_ref=context.principal.actor_ref)
     started = monotonic()
     payload = request.payload
 

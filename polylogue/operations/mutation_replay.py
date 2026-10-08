@@ -41,7 +41,13 @@ def recoverable_actuators() -> Mapping[str, RecoverableActuator]:
     return registered_recovery_routes()
 
 
-def recover_interrupted_operations(archive_root: Path, *, input_demand: Callable[[int], None]) -> None:
+# Automated recovery has no human request principal. Keep its event identity stable.
+RECOVERY_SERVICE_ACTOR_REF = "daemon:recovery"
+
+
+def recover_interrupted_operations(
+    archive_root: Path, *, resolver_actor_ref: str, input_demand: Callable[[int], None]
+) -> None:
     """Resolve dead operations at the daemon's single-writer startup seam.
 
     This is deliberately not executor composition.  Request handlers construct
@@ -89,7 +95,9 @@ def recover_interrupted_operations(archive_root: Path, *, input_demand: Callable
     if not orphans:
         return
     recoverable_actuators()
-    deferred = resolve_interrupted_operations(audit, archive_root, orphans, input_demand=input_demand)
+    deferred = resolve_interrupted_operations(
+        audit, archive_root, orphans, resolver_actor_ref=resolver_actor_ref, input_demand=input_demand
+    )
     if any(
         operation.operation == "mutate-session-excision" and operation.operation_id in deferred for operation in orphans
     ):
@@ -215,7 +223,9 @@ def apply_staged_archive_resets(archive_root: Path) -> tuple[str, ...]:
     if not staged:
         return ()
     with archive_tiers_closed(archive_root):
-        deferred = set(resolve_interrupted_operations(audit, archive_root, staged))
+        deferred = set(
+            resolve_interrupted_operations(audit, archive_root, staged, resolver_actor_ref=RECOVERY_SERVICE_ACTOR_REF)
+        )
     return tuple(operation.operation_id for operation in staged if operation.operation_id not in deferred)
 
 

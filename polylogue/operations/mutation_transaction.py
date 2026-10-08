@@ -1030,6 +1030,7 @@ class OperationExecutor:
 
         if self._audit is not None:
             self._resolve_dead_operations(
+                resolver_actor_ref=authorization.actor,
                 prepared_excision_only=True,
                 input_demand=getattr(args, "input_demand", None),
             )
@@ -1162,7 +1163,7 @@ class OperationExecutor:
         if self._audit is not None:
             # Land interrupted work before re-preparing, so the freshness
             # check below compares against the state that work leaves.
-            self._resolve_dead_operations()
+            self._resolve_dead_operations(resolver_actor_ref=authorization.actor)
         fresh_plan = self._typed_plan_from_actuator(
             binding,
             binding.actuator.prepare(args),
@@ -1281,7 +1282,7 @@ class OperationExecutor:
             live_identity = ArchiveIdentity.resolve(self._archive_root).authority_identity_digest
             if live_identity != preview.plan.archive_identity_digest:
                 raise PlanStaleError("archive identity changed after the insight manifest was accepted")
-        self._resolve_dead_operations()
+        self._resolve_dead_operations(resolver_actor_ref=authorization.actor)
         self._refuse_unresolved_overlap(preview.plan)
         operation_id = self._audit.consume_authorization_and_start(preview, authorization)
         return StartedBoundMutation(plan=preview.plan, authorization=authorization, operation_id=operation_id)
@@ -1289,6 +1290,7 @@ class OperationExecutor:
     def _resolve_dead_operations(
         self,
         *,
+        resolver_actor_ref: str,
         prepared_excision_only: bool = False,
         input_demand: Callable[[int], None] | None = None,
     ) -> None:
@@ -1333,6 +1335,7 @@ class OperationExecutor:
             self._audit,
             self._audit.path.parent,
             dead,
+            resolver_actor_ref=resolver_actor_ref,
             input_demand=input_demand,
         )
         if deferred:
@@ -1672,6 +1675,7 @@ def resolve_interrupted_operations(
     archive_root: Path,
     operations: tuple[RecoveryOperation, ...],
     *,
+    resolver_actor_ref: str,
     input_demand: Callable[[int], None] | None = None,
 ) -> tuple[str, ...]:
     """Resolve and terminalize each dead operation; return the ids left pending.
@@ -1683,6 +1687,8 @@ def resolve_interrupted_operations(
     neither recorded nor returned as pending.
     """
 
+    if not resolver_actor_ref:
+        raise ValueError("recovery resolver actor_ref must not be empty")
     deferred: list[str] = []
     for operation in operations:
         # Fresh handles per operation: one resolution (a filesystem reset)
@@ -1702,7 +1708,7 @@ def resolve_interrupted_operations(
         def finalize_recovery(
             operation: RecoveryOperation = operation, resolution: RecoveryResolution = resolution
         ) -> None:
-            audit.record_recovery_resolution(operation.operation_id, resolution)
+            audit.record_recovery_resolution(operation.operation_id, resolution, resolver_actor_ref=resolver_actor_ref)
 
         admit_stage_write("operation.recovery.finalize", finalize_recovery)
     return tuple(deferred)

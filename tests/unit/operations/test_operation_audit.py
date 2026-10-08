@@ -1148,18 +1148,21 @@ def _register_fixture(monkeypatch: pytest.MonkeyPatch, actuator: _Actuator) -> N
     monkeypatch.setitem(mutation_transaction._RECOVERY_ROUTES, actuator.operation, actuator)
 
 
-def _retry(audit: AuditRepository, actuator: _Actuator, token: str) -> MutationReceipt:
+def _retry(
+    audit: AuditRepository, actuator: _Actuator, token: str, *, actor_ref: str = "actor:test"
+) -> MutationReceipt:
+    principal = replace(_principal(), actor_ref=actor_ref)
     retry = OperationExecutor(audit=audit, token_factory=lambda: token)
     binding = _binding(actuator)
     preview = retry.prepare_bound(
         binding,
         object(),
-        _principal(),
+        principal,
         archive_instance_id="archive:recovery",
         archive_identity_digest="identity:recovery",
         parameter_digest="params:recovery",
     )
-    authorization = retry.authorize_bound(binding, preview, _principal())
+    authorization = retry.authorize_bound(binding, preview, principal)
     return retry.execute_bound(binding, preview, authorization, object())
 
 
@@ -1191,12 +1194,17 @@ def test_dead_overlapping_attempt_is_replayed_before_the_new_apply(
     _register_fixture(monkeypatch, actuator)
     audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
 
-    receipt = _retry(audit, actuator, "retry-boundary-token")
+    receipt = _retry(audit, actuator, "retry-boundary-token", actor_ref="actor:resolver")
 
     assert receipt.status == "applied"
     assert (actuator.recoveries, actuator.calls) == (1, 2)
     assert _run_state(tmp_path, operation_id) == ("completed", "recovered_complete", ("applied",))
     assert audit.list_events(operation_id)[-1]["event_type"] == "recovery_resolved"
+    assert audit.list_events(operation_id)[-1]["actor_ref"] == "actor:resolver"
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT actor_ref FROM operation_runs WHERE operation_id=?", (operation_id,)
+        ).fetchone() == ("actor:test",)
 
 
 def test_failed_replay_terminalizes_without_blocking_the_targets(
@@ -1260,6 +1268,7 @@ def test_startup_replays_an_interrupted_operation_to_completion(
     assert (actuator.recoveries, actuator.calls) == (1, 1)
     assert _run_state(tmp_path, operation_id) == ("completed", "recovered_complete", ("applied",))
     assert [event["event_type"] for event in audit.list_events(operation_id)].count("recovery_resolved") == 1
+    assert audit.list_events(operation_id)[-1]["actor_ref"] == "daemon:recovery"
 
 
 def test_recovery_resolution_replays_after_source_prepare_crash_at_daemon_startup(
@@ -1283,12 +1292,13 @@ def test_recovery_resolution_replays_after_source_prepare_crash_at_daemon_startu
 
     monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_resolution)
     with pytest.raises(RuntimeError, match="recovery resolution prepare"):
-        recover_on_admitted_owner(tmp_path)
+        _retry(audit, actuator, "crash-resolver-token", actor_ref="actor:crash-resolver")
     monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
 
     recover_on_admitted_owner(tmp_path)
 
     assert _run_state(tmp_path, operation_id) == ("completed", "recovered_complete", ("applied",))
+    assert audit.list_events(operation_id)[-1]["actor_ref"] == "actor:crash-resolver"
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone() == (None,)
 
@@ -3143,7 +3153,7 @@ def test_recovery_discovery_does_not_bind_the_pre_begin_lease(tmp_path: Path) ->
         audit = AuditRepository.for_archive_root(tmp_path)
         executor = OperationExecutor(audit=audit, archive_root=tmp_path)
         assert current_write_lease() is None
-        executor._resolve_dead_operations(prepared_excision_only=True)
+        executor._resolve_dead_operations(resolver_actor_ref=_principal().actor_ref, prepared_excision_only=True)
         assert current_write_lease() is None
 
     asyncio.run(run_archive_fixture_prepare(discover))
@@ -3162,7 +3172,7 @@ def test_recovery_discovery_borrows_the_actual_coordinated_audit_view(
 
         def bind_result(conn: sqlite3.Connection, mutation: AuditMutation, result: object) -> None:
             assert audit._coordinated_connection is conn
-            executor._resolve_dead_operations(prepared_excision_only=True)
+            executor._resolve_dead_operations(resolver_actor_ref=_principal().actor_ref, prepared_excision_only=True)
             with audit.recovery_discovery_read(), audit._connection() as discovered:
                 assert discovered is conn
             observed.append(mutation.kind)

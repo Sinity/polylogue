@@ -1655,13 +1655,14 @@ class DaemonOperationRuntime:
                     return OperationControlResult(state, snapshot)
                 self._condition.wait(timeout=remaining)
 
-    async def recover_interrupted_operations(self) -> None:
+    async def recover_interrupted_operations(self, *, resolver_actor_ref: str) -> None:
         """Recover through this runtime's original creator and short writer admissions."""
         from polylogue.operations.mutation_replay import recover_interrupted_operations
 
         def recover() -> None:
             recover_interrupted_operations(
                 self.archive_root,
+                resolver_actor_ref=resolver_actor_ref,
                 input_demand=self.prepared_compute_adapter().amend_current_input_demand,
             )
 

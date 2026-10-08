@@ -5420,7 +5420,7 @@ async def _recover_startup_with_compute(
     """Use the eventual daemon creator for original preparation and short publication."""
     from polylogue.core.stage_admission import stage_write_admission
     from polylogue.core.write_lease import adopt_write_lease
-    from polylogue.operations.mutation_replay import recover_interrupted_operations
+    from polylogue.operations.mutation_replay import RECOVERY_SERVICE_ACTOR_REF, recover_interrupted_operations
     from polylogue.storage.sqlite.connection_profile import retained_native_settlement_owners_on_current_thread
 
     def admit_write(actor: str, work: Callable[[], Any]) -> Any:
@@ -5430,7 +5430,11 @@ async def _recover_startup_with_compute(
     def recover() -> None:
         kernel.require_current_creator()
         with stage_write_admission(admit_write):
-            recover_interrupted_operations(archive_root, input_demand=kernel.amend_current_input_demand)
+            recover_interrupted_operations(
+                archive_root,
+                resolver_actor_ref=RECOVERY_SERVICE_ACTOR_REF,
+                input_demand=kernel.amend_current_input_demand,
+            )
 
     await bridge.coordinator.run_prepared_sync(
         "daemon.operation_recovery.startup",

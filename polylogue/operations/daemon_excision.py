@@ -46,7 +46,7 @@ async def execute_session_excision_operation(
     request = validate_session_excision_request(request, context)
     runtime = context.runtime
     assert runtime is not None
-    await runtime.recover_interrupted_operations()
+    await runtime.recover_interrupted_operations(resolver_actor_ref=context.principal.actor_ref)
     started_at = monotonic()
     audit = runtime.audit_for_request(request, context)
 

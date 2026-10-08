@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from polylogue.operations.mutation_replay import recover_interrupted_operations
+from polylogue.operations.mutation_replay import RECOVERY_SERVICE_ACTOR_REF, recover_interrupted_operations
 from tests.infra.archive_templates import run_off_event_loop
 
 
@@ -26,6 +26,7 @@ def recover_on_admitted_owner(archive_root: Path) -> None:
                 "fixture.operation-recovery",
                 recover_interrupted_operations,
                 archive_root,
+                resolver_actor_ref=RECOVERY_SERVICE_ACTOR_REF,
                 input_demand=owner._compute_adapter.amend_current_input_demand,
             )
 

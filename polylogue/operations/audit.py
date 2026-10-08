@@ -1652,9 +1652,13 @@ class AuditRepository:
                 "now_ms": int(time.time() * 1000),
             }
         if kind == "record_recovery_resolution":
+            resolver_actor_ref = kwargs["resolver_actor_ref"]
+            if not isinstance(resolver_actor_ref, str) or not resolver_actor_ref:
+                raise ValueError("recovery resolver actor_ref must not be empty")
             resolution = cast(RecoveryResolution, args[1])
             return {
                 "operation_id": cast(str, args[0]),
+                "resolver_actor_ref": resolver_actor_ref,
                 "outcome": resolution.outcome,
                 "detail": resolution.detail,
                 "receipt": None if resolution.receipt is None else _receipt_payload(resolution.receipt),
@@ -1798,6 +1802,7 @@ class AuditRepository:
                         detail=cast(str, payload["detail"]),
                         receipt=None if raw_receipt is None else _receipt_from_payload(raw_receipt),
                     ),
+                    resolver_actor_ref=cast(str, payload["resolver_actor_ref"]),
                 )
             raise AuditContinuityUnknownMutationError(mutation.kind)
         finally:
@@ -3028,24 +3033,29 @@ class AuditRepository:
         return plan_from_stored_payload(json.loads(str(row[0])))
 
     @_continuity_mutation("record_recovery_resolution")
-    def record_recovery_resolution(self, operation_id: str, resolution: RecoveryResolution) -> None:
+    def record_recovery_resolution(
+        self, operation_id: str, resolution: RecoveryResolution, *, resolver_actor_ref: str
+    ) -> None:
         """Terminalize one dead operation with the outcome its actuator decided.
 
         ``complete`` records the replay receipt's per-target outcome and
         completes the run; ``absent``, ``not-replayable`` and ``replay-failed``
         fail it. Every outcome is terminal, so no later request overlapping
-        these targets meets it again.
+        these targets meets it again. The event names the resolver; the run
+        retains its original mutation actor.
         """
 
+        if not resolver_actor_ref:
+            raise ValueError("recovery resolver actor_ref must not be empty")
         now_ms = cast(int, self._command_value("now_ms", int(time.time() * 1000)))
         with self._connection() as conn:
             self._begin(conn)
             run = conn.execute(
-                "SELECT actor_ref, status, plan_hash FROM operation_runs WHERE operation_id = ?", (operation_id,)
+                "SELECT status, plan_hash FROM operation_runs WHERE operation_id = ?", (operation_id,)
             ).fetchone()
             if run is None:
                 raise ValueError(f"unknown operation {operation_id!r}")
-            status = str(run[1])
+            status = str(run[0])
             if status not in {"running", "interrupted"}:
                 return
             live_owner = conn.execute(
@@ -3056,7 +3066,7 @@ class AuditRepository:
             if owner_liveness & {"live", "unknown"}:
                 return
             receipt = resolution.receipt
-            if receipt is not None and receipt.plan_hash != str(run[2]):
+            if receipt is not None and receipt.plan_hash != str(run[1]):
                 raise ValueError("recovery receipt does not match the interrupted plan")
             if resolution.outcome == "complete":
                 assert receipt is not None
@@ -3121,7 +3131,7 @@ class AuditRepository:
                 event_type="recovery_resolved",
                 from_state=status,
                 to_state=run_state,
-                actor_ref=str(run[0]),
+                actor_ref=resolver_actor_ref,
                 occurred_at_ms=now_ms,
                 detail={
                     "outcome": resolution.outcome,

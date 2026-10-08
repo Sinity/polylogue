@@ -29,7 +29,11 @@ import pytest
 from polylogue.core.enums import AssertionKind
 from polylogue.operations import mutation_actuators as actuators
 from polylogue.operations.bindings import runtime_operation_binding
-from polylogue.operations.mutation_replay import recover_interrupted_operations, recoverable_actuators
+from polylogue.operations.mutation_replay import (
+    RECOVERY_SERVICE_ACTOR_REF,
+    recover_interrupted_operations,
+    recoverable_actuators,
+)
 from polylogue.operations.mutation_transaction import (
     MutationPrincipal,
     OperationExecutor,
@@ -982,6 +986,7 @@ def _prepared_blocker_crash_and_restart(root: Path, crash: Crash) -> str:
                 "fixture.blocker.restart",
                 recover_interrupted_operations,
                 root,
+                resolver_actor_ref=RECOVERY_SERVICE_ACTOR_REF,
                 input_demand=restarted._compute_adapter.amend_current_input_demand,
             )
         return operation_id
