@@ -10,6 +10,12 @@ SQL mutation must be inventoried in ``docs/plans/layering.yaml`` and declare
 its owned tier(s) in its module docstring.  A module spanning two tiers is
 allowed only when the same manifest names a reviewed twin-write contract.
 
+The package pass also rejects direct SQLite opens when their locally resolved
+path names one of the six archive tiers and the owning function has no explicit
+archive admission. Read-only URI exemptions require ``uri=True``. This bounded
+check does not prove call dominance or infer dynamic path values; reviewed
+owner censuses remain responsible for those sinks.
+
 Usage:
   devtools gate layering
   devtools gate layering --json
@@ -67,6 +73,9 @@ _WRITER_SURFACE_CONTRACTS = {
     "user": ("durable", "atomic"),
     "ops": ("disposable", "restartable"),
 }
+_SQLITE_TIER_DATABASES = frozenset(
+    {"source.db", "index.db", "embeddings.db", "user.db", "audit.db", "ops.db"}
+)
 
 
 @dataclass(frozen=True)
@@ -305,11 +314,221 @@ class PackagePass:
     durable_write: durable_write.CensusObservation | None = None
     derived_sweep: derived_sweep.CensusObservation | None = None
     sqlite_degradation: Counter[DegradationAnchor] | None = None
+    sqlite_archive_open_violations: list[dict[str, object]] = field(default_factory=list)
 
 
 def _python_files(root: Path, *, ordered: bool = True) -> list[Path]:
     files = list(root.rglob("*.py"))
     return sorted(files) if ordered else files
+
+
+def _sqlite_archive_open_violations(tree: ast.Module, *, relative: str) -> list[dict[str, object]]:
+    """Find raw SQLite opens whose local path resolves to an archive tier.
+
+    This is a positive path check inside the package parse pass. It does not
+    infer arbitrary runtime values: literal tier filenames, simple path
+    expressions, and local aliases are the entire analysis boundary.
+    """
+
+    imported: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported[alias.asname or alias.name.split(".")[0]] = (
+                    alias.name if alias.asname else alias.name.split(".")[0]
+                )
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            for alias in node.names:
+                imported[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    imported_names = imported
+
+    def canonical_name(node: ast.expr, names: dict[str, str]) -> str | None:
+        if isinstance(node, ast.Name):
+            return names.get(node.id, node.id)
+        if isinstance(node, ast.Attribute):
+            base = canonical_name(node.value, names)
+            return f"{base}.{node.attr}" if base else None
+        return None
+
+    def scope_nodes(scope: ast.AST) -> list[ast.AST]:
+        result: list[ast.AST] = []
+
+        def walk(node: ast.AST, *, root: bool = False) -> None:
+            if not root and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                return
+            result.append(node)
+            for child in ast.iter_child_nodes(node):
+                walk(child)
+
+        walk(scope, root=True)
+        return sorted(result, key=lambda item: (getattr(item, "lineno", 0), getattr(item, "col_offset", 0)))
+
+    def expression_text(node: ast.expr, values: dict[str, str]) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return values.get(node.id)
+        if isinstance(node, ast.JoinedStr):
+            parts: list[str] = []
+            for item in node.values:
+                if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                    parts.append(item.value)
+                elif isinstance(item, ast.FormattedValue):
+                    value = expression_text(item.value, values)
+                    if value is None:
+                        parts.append("<dynamic>")
+                    else:
+                        parts.append(value)
+            return "".join(parts)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Add)):
+            left = expression_text(node.left, values)
+            right = expression_text(node.right, values)
+            if left is None or right is None:
+                return None
+            return f"{left}/{right}" if isinstance(node.op, ast.Div) else left + right
+        if isinstance(node, ast.Call):
+            name = canonical_name(node.func, imported_names)
+            if name in {"Path", "pathlib.Path", "PurePath", "pathlib.PurePath"} and node.args:
+                return expression_text(node.args[0], values)
+            if name in {"os.path.join", "posixpath.join"} and node.args:
+                parts = [expression_text(item, values) for item in node.args]
+                return None if any(item is None for item in parts) else "/".join(str(item) for item in parts)
+        return None
+
+    def tier_name(node: ast.expr, values: dict[str, str]) -> str | None:
+        if any(isinstance(item, ast.Name) and item.id in scratch_names for item in ast.walk(node)):
+            return None
+        text = expression_text(node, values)
+        if text is None:
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+                right = expression_text(node.right, values)
+                return right if right in _SQLITE_TIER_DATABASES else None
+            if isinstance(node, ast.Call) and node.args:
+                name = canonical_name(node.func, imported_names)
+                if name in {"Path", "pathlib.Path", "PurePath", "pathlib.PurePath"}:
+                    return tier_name(node.args[0], values)
+                if name in {"os.path.join", "posixpath.join"}:
+                    return tier_name(node.args[-1], values)
+            return None
+        if text in {":memory:", "file::memory:"}:
+            return text
+        match = re.search(r"(?:^|[/\\])([^/\\?]+\.db)(?:\?|$)", text)
+        if match and match.group(1) in _SQLITE_TIER_DATABASES:
+            return match.group(1)
+        return None
+
+    def readonly(call: ast.Call, argument: ast.expr, values: dict[str, str]) -> bool:
+        uri_enabled = any(
+            keyword.arg == "uri"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value is True
+            for keyword in call.keywords
+        )
+        if not uri_enabled:
+            return False
+        text = expression_text(argument, values) or ""
+        return (
+            re.search(r"(?:[?&])mode=ro(?:&|$)", text)
+            or re.search(r"(?:[?&])immutable=1(?:&|$)", text)
+            or text in {":memory:", "file::memory:"}
+        )
+
+    sinks = {
+        "sqlite3.connect",
+        "polylogue.storage.sqlite.managed_connection.sqlite_connection",
+        "polylogue.storage.io_phase_metrics.connect_measured",
+    }
+
+    def is_sink(name: str | None) -> bool:
+        return name in sinks
+
+    def is_population_admission(name: str | None) -> bool:
+        return name == "polylogue.storage.sqlite.population_admission.require_population_admission"
+
+    def is_write_lease(name: str | None) -> bool:
+        return name in {
+            "polylogue.storage.sqlite.write_lease.require_write_lease",
+            "polylogue.core.write_lease.require_write_lease",
+        }
+
+    def is_scratch_directory_factory(name: str | None) -> bool:
+        return name in {"tempfile.TemporaryDirectory", "tempfile.mkdtemp"}
+    violations: list[dict[str, object]] = []
+    scopes: list[ast.AST] = [tree]
+    scopes.extend(node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)))
+    scopes.extend(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef))
+    scopes.extend(node for node in ast.walk(tree) if isinstance(node, ast.Lambda))
+    for scope in scopes:
+        names = dict(imported)
+        paths: dict[str, str] = {}
+        values: dict[str, str] = {}
+        scratch_names: set[str] = set()
+        guarded = False
+        for node in scope_nodes(scope):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    names[alias.asname or alias.name.split(".")[0]] = (
+                        alias.name if alias.asname else alias.name.split(".")[0]
+                    )
+            elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                for alias in node.names:
+                    names[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+            elif isinstance(node, ast.Assign | ast.AnnAssign):
+                value = node.value
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if value is None:
+                    continue
+                path = tier_name(value, values)
+                text = expression_text(value, values)
+                canonical = canonical_name(value, names)
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        paths.pop(target.id, None)
+                        values.pop(target.id, None)
+                        names.pop(target.id, None)
+                        scratch_names.discard(target.id)
+                        if path is not None:
+                            paths[target.id] = path
+                        if text is not None:
+                            values[target.id] = text
+                        if canonical is not None:
+                            names[target.id] = canonical
+                        if isinstance(value, ast.Call) and is_scratch_directory_factory(
+                            canonical_name(value.func, names)
+                        ):
+                            scratch_names.add(target.id)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if not isinstance(item.optional_vars, ast.Name) or not isinstance(item.context_expr, ast.Call):
+                        continue
+                    if is_scratch_directory_factory(canonical_name(item.context_expr.func, names)):
+                        scratch_names.add(item.optional_vars.id)
+            elif isinstance(node, ast.Call):
+                name = canonical_name(node.func, names)
+                guarded = guarded or is_population_admission(name) or (
+                    is_write_lease(name) and any(keyword.arg == "archive_root" for keyword in node.keywords)
+                )
+                if not is_sink(name):
+                    continue
+                argument = node.args[0] if node.args else next(
+                    (keyword.value for keyword in node.keywords if keyword.arg == "database"), None
+                )
+                if argument is None:
+                    continue
+                tier = paths.get(argument.id) if isinstance(argument, ast.Name) else tier_name(argument, values)
+                if tier not in _SQLITE_TIER_DATABASES or readonly(node, argument, values) or guarded:
+                    continue
+                violations.append(
+                    {
+                        "file": relative,
+                        "line": getattr(node, "lineno", 0),
+                        "rule": "sqlite_archive_open_without_factory",
+                        "detail": f"direct SQLite open resolves to {tier} without an earlier archive admission",
+                    }
+                )
+    # Function and class scopes can share a call through the module walk only
+    # for definitions; each executable call belongs to one actual owner scope.
+    return violations
 
 
 def _package_pass(
@@ -420,6 +639,8 @@ def _package_pass(
             derived.observe(tree, relative=relative)
         if path in sqlite_wanted:
             module_anchors[path] = module_degradation_anchors(source, tree, file_rel=relative)
+        if relative.startswith("polylogue/"):
+            result.sqlite_archive_open_violations.extend(_sqlite_archive_open_violations(tree, relative=relative))
         ast_cache.release(path)
 
     for target in import_roots:
@@ -1712,6 +1933,7 @@ def main(argv: list[str] | None = None) -> int:
         writer_modules=writer_modules,
         manifest=manifest,
     )
+    violations.extend(package_pass.sqlite_archive_open_violations)
     for target in import_roots:
         inspected_count += 1
         imports, unreadable = package_pass.imports_by_root[target]
