@@ -1063,8 +1063,9 @@ def test_unique_later_native_snapshot_supersedes_unordered_history_as_a_set() ->
         ("2026-10-02T00:00:00Z", frozenset({"message-0"})),
         ("2026-10-01T00:00:00Z", frozenset({"message-0", "message-1", "message-2"})),
         (None, frozenset({"message-0", "message-1", "message-2"})),
+        ("malformed", frozenset({"message-0", "message-1", "message-2"})),
     ],
-    ids=("loses-provider-identity", "provider-time-ties", "missing-provider-time"),
+    ids=("loses-provider-identity", "provider-time-ties", "missing-provider-time", "malformed-provider-time"),
 )
 def test_native_winner_requires_strict_time_and_every_provider_identity(
     latest_timestamp: str | None,
@@ -1093,6 +1094,29 @@ def test_native_winner_requires_strict_time_and_every_provider_identity(
 
     assert "raw-latest" not in result.accepted_raw_ids
     assert result.superseded_raw_ids == ()
+
+
+@pytest.mark.parametrize("older_timestamp", [None, "malformed"])
+def test_native_winner_requires_each_older_timestamp(older_timestamp: str | None) -> None:
+    older = _browser_revision("old", "older", older_timestamp, "native")
+    winner = _browser_revision("winner", "newer", "2026-10-02T00:00:00Z", "native")
+    result = classify_membership_revisions([older, winner], existing_accepted_raw_id="old")
+    assert result.superseded_raw_ids == ()
+    assert "winner" not in result.accepted_raw_ids
+
+
+def test_native_winner_cannot_lose_a_provider_attachment_identity() -> None:
+    older = dataclasses.replace(
+        _browser_revision("old", "older", "2026-10-01T00:00:00Z", "native"),
+        provider_attachment_ids=frozenset({"attachment-old"}),
+    )
+    winner = dataclasses.replace(
+        _browser_revision("winner", "newer", "2026-10-02T00:00:00Z", "native"),
+        provider_attachment_ids=frozenset({"attachment-new"}),
+    )
+    result = classify_membership_revisions([older, winner], existing_accepted_raw_id="old")
+    assert result.superseded_raw_ids == ()
+    assert "winner" not in result.accepted_raw_ids
 
 
 def test_native_membership_winner_requires_one_unique_latest_snapshot() -> None:

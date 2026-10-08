@@ -1289,6 +1289,26 @@ def test_native_winner_persists_independent_supersession_without_prefix_claim(tm
         ).fetchone()
         assert message_count is not None and int(message_count[0]) == 3
 
+    # New read handles prove that publication survives restart and that the
+    # terminal memberships certify actual applications pointing at the winner.
+    from polylogue.storage.raw_authority import (
+        build_raw_replay_plans,
+        raw_replay_application_receipt,
+        validate_raw_replay_application_receipt,
+    )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as restarted:
+        assert (
+            restarted._conn.execute(
+                "SELECT accepted_raw_id FROM raw_revision_heads WHERE logical_source_key='codex-session:session'"
+            ).fetchone()[0]
+            == raw_ids["winner"]
+        )
+    (plan,) = build_raw_replay_plans(tmp_path, (tuple(raw_ids.values()),))
+    receipt = raw_replay_application_receipt(tmp_path, plan)
+    valid, problems = validate_raw_replay_application_receipt(plan, receipt)
+    assert valid, problems
+
 
 def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: Path) -> None:
     """polylogue-52l2: a raw discovered for a logical identity that already
