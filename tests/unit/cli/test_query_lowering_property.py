@@ -196,3 +196,26 @@ def test_scalar_alternative_lowering_retains_unsupported_field_refusal(source_pr
     with pytest.raises(ExpressionCompileError) as caught:
         compile_expression(f"{source_prefix}action_text:(alpha|beta)")
     assert caught.value.field == "action_text"
+
+
+@pytest.mark.parametrize("field", ["id", "session", "title"])
+@pytest.mark.parametrize("source_prefix", ["", "sessions where "])
+@pytest.mark.parametrize("negated", [False, True])
+def test_quoted_scalar_literals_preserve_pipes_and_whitespace(
+    workspace_env: dict[str, Path], field: str, source_prefix: str, negated: bool
+) -> None:
+    import json
+
+    root = workspace_env["archive_root"]
+    ids: list[str] = []
+    for native, title in (("opaque|pipe ", " alpha|beta "), ("alpha", "alpha"), ("beta", "beta")):
+        builder = SessionBuilder(root / "index.db", native).provider("codex").title(title)
+        builder.add_message(text="synthetic literal evidence").save()
+        ids.append(builder.native_session_id())
+    value = " alpha|beta " if field == "title" else ids[0]
+    expression = f"{source_prefix}{'NOT ' if negated else ''}{field}:{json.dumps(value)}"
+    kwargs = plan_filter_kwargs(compile_expression(expression).to_plan())
+    expected = set(ids[1:]) if negated else {ids[0]}
+    with ArchiveStore.open_existing(root) as archive:
+        assert {row.session_id for row in archive.list_summaries(limit=100, **kwargs)} == expected
+        assert archive.count_sessions(**kwargs) == len(expected)
