@@ -187,7 +187,13 @@ async def ingest_sources(
     backend = service._require_backend()
     source_names = [source.name for source in sources]
     # Raw rows scope by their configured-source filesystem path, not origin.
-    source_paths = [str(source.path) for source in sources if source.path is not None]
+    from polylogue.sources.drive.witness import drive_source_prefix
+
+    source_paths = [
+        drive_source_prefix(source.name) if source.is_drive else str(source.path)
+        for source in sources
+        if source.is_drive or source.path is not None
+    ]
 
     # Stage 1: Acquire
     t0 = time.perf_counter()

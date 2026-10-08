@@ -151,6 +151,11 @@ def produce_direct_status(
         component_from_raw_materialization_readiness=component_from_raw_materialization_readiness,
         component_from_raw_frontier_integrity=component_from_raw_frontier_integrity,
     )
+    from polylogue.operations.drive_readiness import configured_source_readiness_from_archive
+
+    configured_component = configured_source_readiness_from_archive(archive, config)
+    components["configured_sources"] = configured_component
+    components["attachments"] = _attachment_component(index_conn, source_conn).to_dict()
     derived_refusals = _derived_tier_refusals(tiers)
     for refusal in derived_refusals:
         component = refusal["component"]
@@ -177,6 +182,12 @@ def produce_direct_status(
     embedding_component = components.get("embeddings", {})
     attachment_component = components.get("attachments", {})
     derived_domains = [
+        DerivedDomainReadiness(
+            domain="configured_sources",
+            ready=configured_component["state"] == "ready",
+            summary=str(configured_component["summary"]),
+            determinate=configured_component["state"] != "unknown",
+        ),
         DerivedDomainReadiness(
             domain="attachments",
             ready=attachment_component.get("state") == "ready",
@@ -738,7 +749,7 @@ def _components(
     summary = session_summary_component_from_connection(index_conn).to_dict()
     components[str(summary["component"])] = summary
     components["embeddings"] = component_from_embedding_payload(embedding_status).to_dict()
-    components["attachments"] = _attachment_component(index_conn).to_dict()
+
     has_user = _attached_connection(index_conn, "user_tier") is not None
     has_assertions = has_user and _table_exists(index_conn, "assertions", schema="user_tier")
     if has_assertions:
@@ -783,32 +794,33 @@ def _components(
     return components
 
 
-def _attachment_component(index_conn: sqlite3.Connection) -> ComponentReadiness:
-    """Expose owed contested identity from the same index view as ordinary status."""
-    from polylogue.core.evidence import Measured, Unavailable
+def _attachment_component(index_conn: sqlite3.Connection, source_conn: sqlite3.Connection | None) -> ComponentReadiness:
+    from polylogue.operations.attachment_convergence import inspect_attachment_readiness
     from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
-    from polylogue.storage.sqlite.queries.attachment_records import unresolved_attachment_identity_count
-    from polylogue.storage.tier_access import capture_sqlite_read
 
-    evidence = capture_sqlite_read(lambda: unresolved_attachment_identity_count(index_conn))
-    if isinstance(evidence, Unavailable):
+    try:
+        counts = inspect_attachment_readiness(index_conn, source_conn)
+    except (sqlite3.Error, OSError):
         return ComponentReadiness(
             component="attachments",
             scope="owed_drive_references",
             state=CapabilityReadinessState.UNKNOWN,
-            summary="attachment identity unavailable",
-            counts={},
-            caveats=("attachment_identity_unavailable",),
+            summary="attachment authority unavailable",
+            caveats=("attachment_authority_unavailable",),
         )
-    assert isinstance(evidence, Measured)
-    count = evidence.value
+    pending = counts["allowed_unfetched"]
+    blocked = counts["unresolved_identity"] + counts["unattributed"]
     return ComponentReadiness(
         component="attachments",
         scope="owed_drive_references",
-        state=CapabilityReadinessState.DEGRADED if count else CapabilityReadinessState.READY,
-        summary="contested attachment identity" if count else "no contested attachment identity",
-        counts={"unresolved_identity": count},
-        caveats=("contested_identity",) if count else (),
+        state=CapabilityReadinessState.DEGRADED if pending or blocked else CapabilityReadinessState.READY,
+        summary="Drive attachment obligations pending"
+        if pending
+        else "Drive attachment identity or supplier blocked"
+        if blocked
+        else "Drive attachment obligations discharged",
+        counts=counts,
+        caveats=tuple(name for name in ("unresolved_identity", "unattributed", "allowed_unfetched") if counts[name]),
     )
 
 
@@ -1104,7 +1116,15 @@ def _component_readiness_ok(components: Mapping[str, Mapping[str, object]], raw_
     lifecycle_state = raw_failures.get("raw_failure_lifecycle_state")
     if lifecycle_state is not None and lifecycle_state != "healthy":
         return False
-    required_missing = {"archive_sessions", "raw_materialization", "search", "transforms", "assertions", "attachments"}
+    required_missing = {
+        "archive_sessions",
+        "raw_materialization",
+        "search",
+        "transforms",
+        "assertions",
+        "attachments",
+        "configured_sources",
+    }
     required_known = {"raw_frontier_integrity"}
     if any(name not in components for name in required_known):
         return False

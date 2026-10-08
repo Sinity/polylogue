@@ -26,6 +26,7 @@ from polylogue.config import Source
 from polylogue.core.json import JSONValue
 from polylogue.sources import DriveFile, download_drive_files
 from polylogue.sources.drive import drive_cache_file_path, iter_drive_raw_data
+from polylogue.sources.drive.witness import drive_cache_directory, drive_source_coordinate
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
@@ -49,6 +50,9 @@ class _DriveSessionClient:
 
     def download_to_path(self, file_id: str, dest: Path) -> DriveFile:
         raise NotImplementedError("not used by the live raw-acquisition path")
+
+    def get_metadata(self, file_id: str, *, refresh: bool = False) -> DriveFile:
+        return next(file for file in self.iter_json_files("") if file.file_id == file_id)
 
     def download_bytes(self, file_id: str) -> bytes:
         self.download_bytes_calls.append(file_id)
@@ -74,6 +78,7 @@ def test_download_drive_files_contract(tmp_path: Path) -> None:
     def download(file_id: str, dest: Path) -> None:
         if file_id == "bad":
             raise PermissionError("denied")
+        dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(b'{"id":"good"}')
 
     client.download_to_path.side_effect = download
@@ -81,7 +86,7 @@ def test_download_drive_files_contract(tmp_path: Path) -> None:
     result = download_drive_files(client, "folder-1", tmp_path)
 
     assert result.total_files == 2
-    assert [path.name for path in result.downloaded_files] == ["session.json"]
+    assert result.downloaded_files == [drive_cache_file_path(drive_cache_directory(tmp_path, "folder-1"), "good")]
     assert result.downloaded_files[0].read_bytes() == b'{"id":"good"}'
     assert result.failed_files == [{"file_id": "bad", "name": "broken.jsonl", "error": "denied"}]
 
@@ -92,7 +97,7 @@ def test_iter_drive_raw_data_replaces_torn_cache_even_when_revision_is_unchanged
         files=[DriveFile("file-1", "session.json", "application/json", "2025-01-01T00:00:00Z", 64)],
         payload_bytes={"file-1": json.dumps(payload).encode()},
     )
-    cache = drive_cache_file_path(tmp_path, "session.json")
+    cache = drive_cache_file_path(drive_cache_directory(tmp_path, "folder:Google AI Studio"), "file-1")
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_bytes(b"{")
 
@@ -100,7 +105,9 @@ def test_iter_drive_raw_data_replaces_torn_cache_even_when_revision_is_unchanged
         iter_drive_raw_data(
             source=Source(name="gemini", folder="Google AI Studio", path=tmp_path),
             client=client,
-            known_mtimes={str(cache): "2025-01-01T00:00:00Z"},
+            known_mtimes={
+                drive_source_coordinate("gemini", "folder:Google AI Studio", "file-1"): "2025-01-01T00:00:00Z"
+            },
             blob_store=BlobStore(tmp_path / "blob"),
         )
     )
@@ -135,7 +142,7 @@ def test_iter_drive_raw_data_replaces_a_cache_rewritten_with_attachment_bytes(tm
         files=[DriveFile("file-1", "session.json", "application/json", "2025-01-01T00:00:00Z", 64)],
         payload_bytes={"file-1": json.dumps(payload).encode()},
     )
-    cache = drive_cache_file_path(tmp_path, "session.json")
+    cache = drive_cache_file_path(drive_cache_directory(tmp_path, "folder:Google AI Studio"), "file-1")
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_bytes(json.dumps(rewritten).encode())
 
@@ -145,7 +152,9 @@ def test_iter_drive_raw_data_replaces_a_cache_rewritten_with_attachment_bytes(tm
             client=client,
             # An unchanged revision takes the cursor fast path; a rewritten
             # cache must not satisfy it.
-            known_mtimes={str(cache): "2025-01-01T00:00:00Z"},
+            known_mtimes={
+                drive_source_coordinate("gemini", "folder:Google AI Studio", "file-1"): "2025-01-01T00:00:00Z"
+            },
             blob_store=BlobStore(tmp_path / "blob"),
         )
     )

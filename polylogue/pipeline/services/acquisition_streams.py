@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from polylogue.config import Source
     from polylogue.pipeline.services.ingest_execution import IngestExecution
     from polylogue.sources.drive.types import DriveConfigLike, DriveUILike
+    from polylogue.sources.drive.witness import DriveListingWitness
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.repository import SessionRepository
 
@@ -129,6 +130,7 @@ async def iter_drive_raw_stream(
     observation_callback: ObservationCallback | None = None,
     progress_callback: Callable[[int, str | None], None] | None = None,
     execution: IngestExecution | None = None,
+    drive_witness: DriveListingWitness | None = None,
 ) -> AsyncIterator[RawSessionData]:
     """Stream Drive payloads as raw records without touching the local cache."""
     from polylogue.sources.drive import iter_drive_raw_data
@@ -144,6 +146,7 @@ async def iter_drive_raw_stream(
     iterator = iter(
         iter_drive_raw_data(
             source=source,
+            witness=drive_witness,
             ui=ui,
             cursor_state=cursor_state,
             drive_config=drive_config,
@@ -190,6 +193,7 @@ async def iter_raw_record_stream(
     observation_callback: ObservationCallback | None = None,
     progress_callback: Callable[[int, str | None], None] | None = None,
     execution: IngestExecution | None = None,
+    drive_witness: DriveListingWitness | None = None,
     input_repository: SessionRepository | None = None,
     before_input_complete: Callable[[], Awaitable[None]] | None = None,
     input_observation_callback: Callable[[str, str, tuple[int, int, int, int, int], str | None], None] | None = None,
@@ -223,6 +227,7 @@ async def iter_raw_record_stream(
     if source.is_drive:
         raw_stream = iter_drive_raw_stream(
             source,
+            drive_witness=drive_witness,
             blob_store=blob_store,
             known_mtimes=known_mtimes,
             ui=ui,

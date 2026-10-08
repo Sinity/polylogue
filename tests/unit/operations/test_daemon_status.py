@@ -412,7 +412,11 @@ def test_direct_status_certifies_a_healthy_archive_without_the_exact_probe(tmp_p
     # frontier is reported as uninspected rather than healthy.
     bootstrap_ready_archive_root(tmp_path)
     with open_operation_read(tmp_path) as pinned:
-        payload = produce_direct_status(archive=pinned.archive, now_ms=1_700_000_000_000)
+        from polylogue.config import Config
+
+        payload = produce_direct_status(
+            archive=pinned.archive, now_ms=1_700_000_000_000, config=Config(tmp_path, tmp_path / "render", sources=[])
+        )
 
     components = cast(dict[str, dict[str, object]], payload["component_readiness"])
     assert components["transforms"]["state"] != "unknown"
@@ -449,3 +453,59 @@ def test_pinned_workload_counts_partial_batch_raw_files_and_sessions(tmp_path: P
         "materialized": 3,
         "files_per_second": 0.0,
     }
+
+
+def test_executing_status_requires_configured_drive_witness_even_with_embeddings_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.config import Config, Source
+    from polylogue.operations.daemon_reads import DaemonReadDependencies, execute_read_operation
+    from polylogue.operations.drive_readiness import drive_readiness_observation, reset_drive_readiness_observation
+    from polylogue.sources.drive.witness import DriveListingWitness
+
+    bootstrap_ready_archive_root(tmp_path)
+    config = Config(
+        archive_root=tmp_path, render_root=tmp_path / "render", sources=[Source("aistudio", folder="folder")]
+    )
+    from types import SimpleNamespace
+
+    from polylogue.config import PolylogueConfig
+
+    settings = PolylogueConfig(_data={"archive_root": str(tmp_path), "embedding_enabled": False})
+    monkeypatch.setattr(
+        "polylogue.config.resolve_runtime_config", lambda **kwargs: SimpleNamespace(sources=config.sources)
+    )
+    reset_drive_readiness_observation(tmp_path)
+
+    def status() -> dict[str, Any]:
+        with open_operation_read(tmp_path) as pinned:
+            return execute_read_operation(
+                "status",
+                {},
+                archive=pinned.archive,
+                serving_identity="daemon",
+                dependencies=DaemonReadDependencies(status_now_ms=1_700_000_000_000, status_config=settings),
+                read_view=pinned.read_view,
+            )
+
+    missing = status()
+    assert missing["component_readiness"]["configured_sources"]["state"] == "unknown"
+    assert missing["claim_guard"]["converged"]["value"] is not True
+    assert missing["component_readiness"]["configured_sources"]["counts"]["enumerated"] is None
+
+    class EmptyFolder:
+        def iter_json_files(self, folder: str) -> tuple[()]:
+            return ()
+
+    witness = DriveListingWitness("aistudio", "folder")
+    witness.enumerate(EmptyFolder(), "resolved-folder")  # type: ignore[arg-type]
+    witness.reobserve(EmptyFolder())  # type: ignore[arg-type]
+    drive_readiness_observation(tmp_path).witnesses["aistudio"] = witness
+    complete = status()
+    component = complete["component_readiness"]["configured_sources"]
+    assert component["state"] == "ready"
+    assert component["counts"] == {"enumerated": 0, "acquired": 0, "materialization_pending": 0}
+    reset_drive_readiness_observation(tmp_path)
+    restarted = status()
+    assert restarted["component_readiness"]["configured_sources"]["state"] == "unknown"
+    assert restarted["claim_guard"]["converged"]["value"] is not True

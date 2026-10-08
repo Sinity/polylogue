@@ -18,6 +18,7 @@ from polylogue.pipeline.stage_models import AcquireResult
 from polylogue.security.excision_policy import ExcisionPolicySnapshot, build_excision_policy_snapshot
 from polylogue.sources.cursor import _record_cursor_failure
 from polylogue.sources.drive.types import DriveUILike
+from polylogue.sources.drive.witness import DriveListingWitness
 from polylogue.sources.source_acquisition import iter_source_acquisition_records
 from polylogue.sources.source_snapshot import (
     SourceCutPolicy,
@@ -86,8 +87,9 @@ class AcquisitionService:
         prepared_observation: ArtifactObservationRecord | None = None,
         preparation_error: Exception | None = None,
         failures: list[CursorFailurePayload] | None = None,
-    ) -> None:
-        await persist_raw_record(
+        on_failure: Callable[[Exception], None] | None = None,
+    ) -> str | None:
+        return await persist_raw_record(
             self.repository,
             record,
             result=result,
@@ -95,6 +97,7 @@ class AcquisitionService:
             prepared_observation=prepared_observation,
             preparation_error=preparation_error,
             failures=failures,
+            on_failure=on_failure,
         )
 
     async def _persist_source_cursors(
@@ -167,6 +170,7 @@ class AcquisitionService:
         observation_callback: Callable[[JSONDocument], None] | None = None,
         persist_cursors: bool = True,
         blob_store: BlobStore | None = None,
+        drive_witnesses: dict[str, DriveListingWitness] | None = None,
     ) -> ScanResult:
         """Visit source raw payloads incrementally without forcing list materialization.
 
@@ -192,6 +196,10 @@ class AcquisitionService:
         for source in sources:
             logger.debug("Scanning source", source=source.name)
             cursor_state: CursorStatePayload = {}
+            witness = None
+            if source.is_drive and drive_witnesses is not None:
+                witness = DriveListingWitness(source.name, source.folder or "")
+                drive_witnesses[source.name] = witness
             observations: dict[str, tuple[str, tuple[int, int, int, int, int], str | None]] = {}
 
             def observe_input(
@@ -206,6 +214,7 @@ class AcquisitionService:
             try:
                 async for record in iter_raw_record_stream(
                     source,
+                    drive_witness=witness,
                     blob_root=self.backend.db_path.parent / "blob",
                     blob_store=blob_store,
                     known_mtimes=known_mtimes,
@@ -237,10 +246,15 @@ class AcquisitionService:
                     exc_info=True,
                 )
                 result.counts["errors"] += 1
+                if witness is not None:
+                    witness.enumeration_error = type(exc).__name__
                 prior_errors = cursor_state.get("error_count", 0)
                 cursor_state["error_count"] = int(prior_errors) + 1
                 cursor_state["latest_error"] = str(exc)
 
+            if witness is not None:
+                # Download/blob failures are not raised by the per-file stream.
+                result.counts["errors"] += witness.acquisition_failure_count
             if on_source_complete is not None:
                 # The callback may record per-path persistence failures into
                 # this source's cursor state before its cursors are saved.
@@ -355,14 +369,36 @@ class AcquisitionService:
                 )
                 async with self.backend.bulk_connection():
                     for pending_record, observation, preparation_error in records:
-                        await self._persist_record(
+                        from polylogue.sources.drive.witness import drive_source_prefix
+
+                        witness = next(
+                            (
+                                value
+                                for name, value in result.drive_witnesses.items()
+                                if pending_record.source_path.startswith(drive_source_prefix(name))
+                            ),
+                            None,
+                        )
+
+                        def failed(
+                            exc: Exception,
+                            witness: DriveListingWitness | None = witness,
+                            coordinate: str = pending_record.source_path,
+                        ) -> None:
+                            if witness is not None:
+                                witness.record_failure(coordinate, "persist", exc)
+
+                        raw_id = await self._persist_record(
                             pending_record,
                             result=result,
                             policy_snapshot=current_policy,
                             prepared_observation=observation,
                             preparation_error=preparation_error,
                             failures=persist_failures,
+                            on_failure=failed,
                         )
+                        if witness is not None and raw_id is not None:
+                            witness.bind_raw(pending_record.source_path, raw_id)
 
             if self.execution is None:
                 await persist()
@@ -406,6 +442,7 @@ class AcquisitionService:
                 before_input_complete=_flush_pending,
                 observation_callback=_observe,
                 blob_store=blob_publisher,
+                drive_witnesses=result.drive_witnesses,
             )
             await _flush_pending()
         finally:

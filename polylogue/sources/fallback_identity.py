@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from urllib.parse import unquote
 
 _SOURCE_HASH_SUFFIX = re.compile(r"-(?:[0-9a-f]{16,64})$", re.IGNORECASE)
 
@@ -17,6 +18,8 @@ def fallback_session_id(source_path: str | None, raw_id: str) -> str:
     """
     if not source_path:
         return raw_id
+    if source_path.startswith("drive:"):
+        return unquote(source_path.rsplit("/", 1)[-1].removesuffix(".json"))
     normalized = source_path.replace("\\", "/")
     entry_path = normalized.rsplit(":", 1)[-1]
     stem = Path(entry_path).stem

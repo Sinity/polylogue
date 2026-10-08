@@ -1062,7 +1062,7 @@ def test_contested_only_identity_is_not_complete_and_never_re_executes(tmp_path:
     component = _ordinary_attachment_status(tmp_path)
     assert component["state"] == "degraded"
     assert component["scope"] == "owed_drive_references"
-    assert component["counts"] == {"unresolved_identity": 1}
+    assert cast(dict[str, int], component["counts"])["unresolved_identity"] == 1
 
     source = sqlite3.connect(tmp_path / "source.db")
     result = _converge(index, source, archive_root=tmp_path, download_into=_into(lambda _id: b""))
@@ -1092,7 +1092,7 @@ def test_mixed_set_fetches_resolvable_work_once_and_stays_incomplete(tmp_path: P
     assert client.constructed == 1
     component = _ordinary_attachment_status(tmp_path)
     assert component["state"] == "degraded"
-    assert component["counts"] == {"unresolved_identity": 1}
+    assert cast(dict[str, int], component["counts"])["unresolved_identity"] == 1
 
     source = sqlite3.connect(tmp_path / "source.db")
     result = _converge(index, source, archive_root=tmp_path, download_into=_into(lambda _id: b""))
@@ -1146,7 +1146,7 @@ def test_ordinary_attachment_status_distinguishes_zero_from_unavailable(
     if disposition == "unavailable":
         from polylogue.operations.daemon_status import _attachment_component
 
-        component = cast(dict[str, object], _attachment_component(index).to_dict())
+        component = cast(dict[str, object], _attachment_component(index, None).to_dict())
         index.close()
         from polylogue.core.errors import SchemaVersionMismatchError
 
@@ -1155,5 +1155,15 @@ def test_ordinary_attachment_status_distinguishes_zero_from_unavailable(
     else:
         index.close()
         component = _ordinary_attachment_status(tmp_path)
-    assert component["state"] == ("unknown" if disposition == "unavailable" else "ready")
-    assert component["counts"] == ({} if disposition == "unavailable" else {"unresolved_identity": 0})
+    assert component["state"] == (
+        "unknown" if disposition == "unavailable" else "degraded" if disposition == "resolved" else "ready"
+    )
+    assert (
+        component["counts"] == {}
+        if disposition == "unavailable"
+        else cast(dict[str, int], component["counts"])["unresolved_identity"] == 0
+    )
+    if disposition == "resolved":
+        assert cast(dict[str, int], component["counts"])["allowed_unfetched"] == 1
+    if disposition == "terminal":
+        assert cast(dict[str, int], component["counts"])["terminal_unavailable"] == 1

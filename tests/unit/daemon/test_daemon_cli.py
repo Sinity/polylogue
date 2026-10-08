@@ -37,6 +37,7 @@ from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwne
 from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.logging import capture
+from polylogue.operations.drive_readiness import DriveCatchupReport, DriveCatchupState
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.revision_backfill import RetainedReplayOutcome
@@ -963,7 +964,7 @@ def test_drive_source_catchup_skips_when_no_drive_sources(
             )
         )
 
-    assert changed == 0
+    assert changed.state.value == "complete"
     build_services.assert_not_called()
 
 
@@ -1018,10 +1019,11 @@ def test_drive_source_catchup_ingests_configured_drive_source(
             stage: str,
             parse_records: bool,
             max_pass_seconds: float | None = None,
+            skip_acquire: bool = False,
         ) -> SimpleNamespace:
             events.append(("ingest", sources, stage, parse_records, max_pass_seconds))
             return SimpleNamespace(
-                acquire_result=SimpleNamespace(raw_ids=["raw-1"], errors=0),
+                acquire_result=SimpleNamespace(raw_ids=["raw-1"], errors=0, drive_witnesses={}),
                 parse_result=SimpleNamespace(
                     processed_ids={"session-b", "session-a"},
                     counts={"sessions": 0},
@@ -1053,7 +1055,8 @@ def test_drive_source_catchup_ingests_configured_drive_source(
             )
         )
 
-    assert changed == 2
+    assert changed.changed_count == 2
+    assert changed.state.value == "unknown"
     build_services.assert_called_once_with(config=config, db_path=config.db_path)
     assert ("ingest", [drive_source], "all", True, daemon_cli._DRIVE_CATCHUP_MAX_PASS_SECONDS) in events
     assert ("canonical", ("session-a", "session-b")) in events
@@ -1088,7 +1091,7 @@ def test_drive_source_catchup_keeps_session_derivation_failures_nonfatal(
 
         async def ingest_sources(self, **_kwargs: object) -> SimpleNamespace:
             return SimpleNamespace(
-                acquire_result=SimpleNamespace(raw_ids=["raw-1"], errors=0),
+                acquire_result=SimpleNamespace(raw_ids=["raw-1"], errors=0, drive_witnesses={}),
                 parse_result=SimpleNamespace(
                     processed_ids={"raw-link-only-session"},
                     counts={"sessions": 0},
@@ -1112,14 +1115,15 @@ def test_drive_source_catchup_keeps_session_derivation_failures_nonfatal(
             )
         )
 
-    assert changed == 1
+    assert changed.changed_count == 1
+    assert changed.state.value == "unknown"
     failures = [r for r in records if r["event"] == "daemon.drive_catchup.session_profile_failed"]
     assert len(failures) == 1
     assert failures[0]["outcome"] == "degraded"
     assert failures[0]["error_type"] == "RuntimeError"
     # The pass itself still completed, and says so separately.
     assert [r["event"] for r in records if str(r["event"]).startswith("daemon.drive_catchup.pass.")][-1] == (
-        "daemon.drive_catchup.pass.ok"
+        "daemon.drive_catchup.pass.degraded"
     )
 
 
@@ -1139,7 +1143,7 @@ def test_drive_source_catchup_safe_wrapper_logs_failure(bounded_compute_adapter:
             )
         )
 
-    assert changed == 0
+    assert changed.state.value == "retryable"
     failures = [r for r in records if r["event"] == "daemon.drive_catchup.failed"]
     assert len(failures) == 1
     assert failures[0]["outcome"] == "error"
@@ -2135,7 +2139,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
     async def fake_reconcile_blob_publications() -> None:
         events.append("blob-publications")
 
-    async def fake_drive_catchup(callback: object, *, raw_owner: object, compute_owner: object) -> int:
+    async def fake_drive_catchup(callback: object, *, raw_owner: object, compute_owner: object) -> DriveCatchupReport:
         from polylogue.storage.sqlite.write_lease import current_write_lease
 
         assert current_write_lease() is None
@@ -2144,7 +2148,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         assert compute_owner is api_server.execution_kernel
         events.append("drive-once")
         drive_called.set()
-        return 0
+        return DriveCatchupReport(DriveCatchupState.COMPLETE)
 
     async def fake_configure_fts_automerge() -> None:
         events.append("automerge")
@@ -3088,10 +3092,10 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     def noop_sync(*_args: object) -> None:
         return None
 
-    async def no_drive_changes(_callback: object, *, raw_owner: object, compute_owner: object) -> int:
+    async def no_drive_changes(_callback: object, *, raw_owner: object, compute_owner: object) -> DriveCatchupReport:
         assert raw_owner is api_server.operation_runtime.raw_observation_owner
         assert compute_owner is api_server.execution_kernel
-        return 0
+        return DriveCatchupReport(DriveCatchupState.COMPLETE)
 
     async def wait_forever(*_args: object, **_kwargs: object) -> None:
         await asyncio.Event().wait()

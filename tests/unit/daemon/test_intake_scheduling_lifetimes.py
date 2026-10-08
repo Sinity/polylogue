@@ -19,6 +19,7 @@ from polylogue.core.source_halts import clear_all_source_halts, set_source_halt
 from polylogue.daemon.catchup_status import _halted_sources
 from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
+from polylogue.operations.drive_readiness import DriveCatchupReport, DriveCatchupState
 from polylogue.operations.intake_adapters import (
     DaemonIntakeContext,
     DaemonIntakeService,
@@ -36,11 +37,11 @@ async def test_composed_remote_poll_waits_an_hour_after_completion(
 ) -> None:
     calls = 0
 
-    def poll() -> int:
+    def poll() -> DriveCatchupReport:
         nonlocal calls
         calls += 1
         frozen_clock.advance(30)  # The interval starts after this work finishes.
-        return changed
+        return DriveCatchupReport(DriveCatchupState.COMPLETE, changed_count=changed)
 
     pairs = build_intake_adapters(DaemonIntakeContext(tmp_path, cast(Any, None), ()), remote_callback=poll)
     dispatcher = FairIntakeDispatcher(
@@ -65,12 +66,12 @@ async def test_failed_remote_poll_retries_before_the_normal_poll_deadline(
 ) -> None:
     calls = 0
 
-    def poll() -> int:
+    def poll() -> DriveCatchupReport:
         nonlocal calls
         calls += 1
         if calls == 1:
             raise BlockingIOError(errno.EAGAIN, "synthetic temporary unavailability")
-        return 0
+        return DriveCatchupReport(DriveCatchupState.COMPLETE)
 
     pairs = build_intake_adapters(DaemonIntakeContext(tmp_path, cast(Any, None), ()), remote_callback=poll)
     dispatcher = FairIntakeDispatcher(
@@ -232,3 +233,60 @@ def test_process_halts_remain_visible_without_persisting_and_operator_halts_surv
         clear_all_source_halts()
     assert [status.source_name for status in _halted_sources(tmp_path / "ops.db")] == ["operator-paused"]
     assert HaltRegistry(tmp_path).is_halted(unit_id(UnitKind.SOURCE, "operator-paused"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [DriveCatchupState.PENDING, DriveCatchupState.BLOCKED, DriveCatchupState.UNKNOWN])
+async def test_remote_readiness_gap_is_not_a_failed_attempt_or_hourly_completion(
+    tmp_path: Path, frozen_clock: FrozenClock, state: DriveCatchupState
+) -> None:
+    from polylogue.daemon.intake import AdmissionOutcome
+    from polylogue.operations.intake_adapters import DriveIntakeAdapter
+
+    calls = 0
+
+    def callback() -> DriveCatchupReport:
+        nonlocal calls
+        calls += 1
+        return DriveCatchupReport(state, materialization_pending=1 if state is DriveCatchupState.PENDING else None)
+
+    adapter = DriveIntakeAdapter(callback)
+    item = (await adapter.discover(limit=1))[0]
+    result = await adapter.admit(item)
+    assert result.outcome is AdmissionOutcome.DEFERRED
+    await adapter.acknowledge(item)
+    if state is DriveCatchupState.PENDING:
+        assert await adapter.discover(limit=1)
+    else:
+        assert not await adapter.discover(limit=1)
+        frozen_clock.advance(60)
+        assert await adapter.discover(limit=1)
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_local_cold_settlement_completes_while_drive_readiness_stays_pending() -> None:
+    import contextlib
+
+    from polylogue.operations.intake_adapters import CallbackIntakeAdapter, ColdBuildSettlement, DriveIntakeAdapter
+
+    settled = asyncio.Event()
+    remote = DriveIntakeAdapter(lambda: DriveCatchupReport(DriveCatchupState.PENDING, materialization_pending=1))
+    local = CallbackIntakeAdapter("configured_local", lambda: 0, persistent=False)
+    dispatcher = FairIntakeDispatcher(
+        (IntakeClassSpec("configured_local", local), IntakeClassSpec("configured_remote", remote))
+    )
+
+    def settle() -> ColdBuildSettlement:
+        settled.set()
+        return ColdBuildSettlement("complete")
+
+    service = DaemonIntakeService(dispatcher, on_backlog_drained=settle, idle_delay_s=0.05)
+    task = asyncio.create_task(service.run())
+    try:
+        await asyncio.wait_for(settled.wait(), 5)
+        assert remote.discovery_pending
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task

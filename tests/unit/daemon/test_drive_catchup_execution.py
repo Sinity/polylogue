@@ -48,6 +48,9 @@ class DriveClient:
     def iter_json_files(self, folder_id: str) -> Iterable[DriveFile]:
         yield DriveFile("document", "neutral.json", "application/json", self.modified_time, 100)
 
+    def get_metadata(self, file_id: str, *, refresh: bool = False) -> DriveFile:
+        return next(file for file in self.iter_json_files("") if file.file_id == file_id)
+
     def download_bytes(self, file_id: str) -> bytes:
         self.before_download()
         chunks: list[dict[str, object]] = [
@@ -431,13 +434,16 @@ async def test_drive_phased_matches_ordinary_document_growth(
             ).fetchall()
         assert len(raw) == 2
         assert [(row[1], row[2], row[3]) for row in memberships] == [
-            ("aistudio-drive:neutral", "superseded_prefix", "byte_proven"),
-            ("aistudio-drive:neutral", "applied", "byte_proven"),
+            ("aistudio-drive:document", "superseded_prefix", "byte_proven"),
+            ("aistudio-drive:document", "applied", "byte_proven"),
         ], (phased, memberships)
         assert [row[2] for row in sessions] == [memberships[1][0]]
         snapshots.append((raw, memberships, sessions, messages, attachments, fts))
         assert source.path is not None
-        (source.path / "neutral.json").unlink()
+        from polylogue.sources.drive import drive_cache_file_path
+        from polylogue.sources.drive.witness import drive_cache_directory
+
+        drive_cache_file_path(drive_cache_directory(source.path, "fixture"), "document").unlink()
     assert snapshots[0] == snapshots[1]
 
 
@@ -576,7 +582,7 @@ async def test_drive_growth_binds_a_raw_owned_by_many_source_generations(
                 assert sorted(
                     decided.execute(
                         "SELECT decision, revision_authority FROM raw_session_memberships WHERE logical_source_key=?",
-                        ("aistudio-drive:neutral",),
+                        ("aistudio-drive:document",),
                     ).fetchall()
                 ) == [("ambiguous", "quarantined"), ("ambiguous", "quarantined")]
         else:
@@ -763,3 +769,137 @@ async def test_prepared_publication_cancellation_reaches_and_settles_the_referen
                 await task
         assert await coordinator.shutdown(timeout=30.0)
         assert adapter.close(join_timeout_s=30.0) == ()
+
+
+def _read_drive_report(parser: ParsingService, source: Source, witnesses: Any, **kwargs: Any) -> Any:
+    from polylogue.operations.drive_readiness import inspect_drive_readiness
+
+    with sqlite3.connect(parser.archive_root / "source.db") as raw, sqlite3.connect(parser.config.db_path) as index:
+        return inspect_drive_readiness([source], raw, index, witnesses, **kwargs)
+
+
+@pytest.mark.parametrize("failure", [None, "download", "persist", "revision_race"])
+async def test_drive_report_binds_full_listing_to_actual_retained_materialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    from polylogue.operations.drive_readiness import DriveCatchupState
+
+    parser, source, coordinator = await make_parser(tmp_path, monkeypatch)
+    client = DriveClient()
+    if failure == "download":
+
+        def fail(_file_id: str) -> bytes:
+            raise OSError("synthetic transport failure")
+
+        monkeypatch.setattr(client, "download_bytes", fail)
+    elif failure == "persist":
+
+        async def fail(*args: Any, **kwargs: Any) -> None:
+            raise sqlite3.OperationalError("synthetic persistence failure")
+
+        monkeypatch.setattr(SessionRepository, "admit_raw", fail)
+    elif failure == "revision_race":
+        client.before_download = lambda: setattr(client, "modified_time", "2026-01-02T00:00:00Z")
+    monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: client)
+    result = await parser.ingest_sources(sources=[source])
+    report = _read_drive_report(parser, source, result.acquire_result.drive_witnesses)
+    expected = (
+        DriveCatchupState.COMPLETE
+        if failure is None
+        else DriveCatchupState.PENDING
+        if failure == "revision_race"
+        else DriveCatchupState.RETRYABLE
+    )
+    assert report.state is expected
+    assert report.enumerated_count == 1
+    assert report.acquired_count == (1 if failure is None else 0)
+    assert result.acquire_result.errors == (1 if failure in {"download", "persist"} else 0)
+    if failure in {"download", "persist"}:
+        assert len(report.failures) == 1
+    if failure == "revision_race":
+        assert not result.acquire_result.raw_ids
+        assert "drive_listing_changed" in report.gaps
+    for witness in result.acquire_result.drive_witnesses.values():
+        witness.close()
+    await parser.repository.close()
+    assert await coordinator.shutdown(timeout=30)
+
+
+async def test_drive_same_names_and_rename_keep_native_identity_and_custody(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.operations.drive_readiness import DriveCatchupState
+
+    parser, source, coordinator = await make_parser(tmp_path, monkeypatch)
+
+    class TwoFiles(DriveClient):
+        renamed = False
+        downloaded: list[str] = []
+
+        def iter_json_files(self, folder_id: str) -> Iterable[DriveFile]:
+            for file_id in ("native-one", "native-two"):
+                yield DriveFile(
+                    file_id,
+                    "renamed.json" if self.renamed else "same.json",
+                    "application/json",
+                    self.modified_time,
+                    100,
+                )
+
+        def download_bytes(self, file_id: str) -> bytes:
+            self.downloaded.append(file_id)
+            return super().download_bytes(file_id)
+
+    client = TwoFiles()
+    monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: client)
+    first = await parser.ingest_sources(sources=[source])
+    assert first.acquire_result.acquired == 2
+    assert len(first.parse_result.processed_ids) == 2
+    assert _read_drive_report(parser, source, first.acquire_result.drive_witnesses).state is DriveCatchupState.COMPLETE
+    client.renamed = True
+    second = await parser.ingest_sources(sources=[source])
+    assert not second.acquire_result.raw_ids
+    assert client.downloaded == ["native-one", "native-two"]
+    assert _read_drive_report(parser, source, second.acquire_result.drive_witnesses).state is DriveCatchupState.COMPLETE
+    for result in (first, second):
+        for witness in result.acquire_result.drive_witnesses.values():
+            witness.close()
+    await parser.repository.close()
+    assert await coordinator.shutdown(timeout=30)
+
+
+async def test_drive_acquired_backlog_is_pending_and_restart_requires_new_listing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.operations.drive_readiness import DriveCatchupState
+
+    parser, source, coordinator = await make_parser(tmp_path, monkeypatch)
+    monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: DriveClient())
+    acquired = await parser.ingest_sources(sources=[source], parse_records=False)
+    witnesses = acquired.acquire_result.drive_witnesses
+    report = _read_drive_report(parser, source, witnesses)
+    assert report.state is DriveCatchupState.PENDING
+    assert report.materialization_pending == 1
+    no_owner = _read_drive_report(parser, source, witnesses, raw_owner_available=False)
+    assert no_owner.state is DriveCatchupState.UNKNOWN
+    assert no_owner.enumerated_count is no_owner.acquired_count is no_owner.materialization_pending is None
+    resumed = await parser.ingest_sources(sources=[source], skip_acquire=True)
+    assert resumed.parse_result.processed_ids
+    assert _read_drive_report(parser, source, witnesses).state is DriveCatchupState.COMPLETE
+    missing = _read_drive_report(parser, source, {})
+    assert missing.state is DriveCatchupState.UNKNOWN
+    assert missing.enumerated_count is missing.acquired_count is missing.materialization_pending is None
+    restarted = await parser.ingest_sources(sources=[source])
+    assert (
+        _read_drive_report(parser, source, restarted.acquire_result.drive_witnesses).state is DriveCatchupState.COMPLETE
+    )
+    # A stale bound raw is not completion after its declared acquisition row changes.
+    witness = witnesses[source.name]
+    path, revision, raw_id, _acquired_revision, _error, _permanent = next(witness.members())
+    witness.record_acquired_revision(path, "2025-01-01T00:00:00Z")
+    assert _read_drive_report(parser, source, witnesses).state is DriveCatchupState.UNKNOWN
+    for result in (acquired, restarted):
+        for witness in result.acquire_result.drive_witnesses.values():
+            witness.close()
+    await parser.repository.close()
+    assert await coordinator.shutdown(timeout=30)

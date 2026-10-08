@@ -441,6 +441,10 @@ def _minimal_component_readiness(payload: Mapping[str, object]) -> dict[str, obj
             "unknown",
             "minimal snapshot",
         ),
+        "configured_sources": _minimal_component(
+            "configured_sources", "configured_sources", "unknown", "minimal snapshot"
+        ),
+        "attachments": _minimal_component("attachments", "owed_drive_references", "unknown", "minimal snapshot"),
         "daemon_ingest": _minimal_component("daemon_ingest", "daemon", "unknown", "minimal snapshot"),
         "embeddings": _minimal_component("embeddings", "semantic", "unknown", "minimal snapshot"),
         "search": _minimal_component(

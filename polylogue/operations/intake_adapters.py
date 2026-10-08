@@ -40,6 +40,7 @@ from polylogue.logging import ERROR, WARNING, emit
 from polylogue.maintenance.candidate_capacity import ArchiveCapacityError, InsufficientCapacityError
 from polylogue.maintenance.receipt_fs import MaintenanceReceiptPathError
 from polylogue.operations.cold_build_coverage import ColdBuildCoverageError, promote_cold_build_covering_active_index
+from polylogue.operations.drive_readiness import DriveCatchupReport, DriveCatchupState
 from polylogue.sources.live.batch import CursorAuthorityBlockedError
 from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
@@ -1374,6 +1375,59 @@ class CallbackIntakeAdapter(IntakeAdapter):
             self._next_poll_at = time.monotonic() + self._poll_interval_s
 
 
+class DriveIntakeAdapter(CallbackIntakeAdapter):
+    """A listing checkpoint yields fairly; only completion starts hourly polling."""
+
+    def __init__(self, callback: Callable[[], Awaitable[DriveCatchupReport] | DriveCatchupReport]) -> None:
+        super().__init__("configured_remote", lambda: 0, poll_interval_s=3600.0)
+        self._drive_callback = callback
+        self._drive_state = DriveCatchupState.UNKNOWN
+
+    @property
+    def discovery_pending(self) -> bool:
+        return self._drive_state is DriveCatchupState.PENDING
+
+    async def admit(self, item: IntakeItem) -> AdmissionResult:
+        try:
+            report = self._drive_callback()
+            if isinstance(report, Awaitable):
+                report = await report
+            self._drive_state = report.state
+            if report.state is DriveCatchupState.RETRYABLE:
+                return AdmissionResult(
+                    AdmissionOutcome.RETRYABLE,
+                    reason="drive_retryable:" + ",".join(report.gaps),
+                    actual_cost=self.estimated_cost,
+                )
+            if report.state is DriveCatchupState.COMPLETE:
+                return AdmissionResult(
+                    AdmissionOutcome.ADMITTED if report.changed_count else AdmissionOutcome.DUPLICATE,
+                    actual_cost=self.estimated_cost,
+                )
+            return AdmissionResult(
+                AdmissionOutcome.DEFERRED, reason="drive_" + report.state.value, actual_cost=self.estimated_cost
+            )
+        except Exception as exc:
+            self._drive_state = DriveCatchupState.RETRYABLE
+            return AdmissionResult(
+                AdmissionOutcome.RETRYABLE,
+                reason=f"{type(exc).__name__}: configured_remote: {exc}",
+                transient=is_transient_admission_error(exc),
+            )
+
+    async def acknowledge(self, item: IntakeItem) -> None:
+        # Pending is a cooperative continuation, not a failed attempt or a
+        # settled poll. Blocked/unknown reobserve evidence on a short cadence.
+        delay = (
+            3600.0
+            if self._drive_state is DriveCatchupState.COMPLETE
+            else 60.0
+            if self._drive_state in {DriveCatchupState.BLOCKED, DriveCatchupState.UNKNOWN}
+            else 0.0
+        )
+        self._next_poll_at = time.monotonic() + delay
+
+
 class RawMaterializationIntakeAdapter(IntakeAdapter):
     """Bounded raw-id discovery delegated to the canonical derivation route."""
 
@@ -1805,14 +1859,30 @@ class DaemonIntakeService:
             retry_delays = tuple(
                 delay for spec in schedulable if (delay := getattr(spec.adapter, "retry_due_in_s", None)) is not None
             )
-            if result.progressed:
+            # Cold promotion settles the local baseline. Remote completeness
+            # has its own configured-source witness and public claim gate.
+            settlement_result = IntakePass(
+                tuple(report for report in result.classes if report.name != "configured_remote"),
+                tuple(name for name in result.skipped_halted if name != "configured_remote"),
+            )
+            settlement_specs = tuple(spec for spec in schedulable if spec.name != "configured_remote")
+            settlement_discovery_pending = any(
+                bool(getattr(spec.adapter, "discovery_pending", False)) for spec in settlement_specs
+            )
+            settlement_retry_pending = any(
+                getattr(spec.adapter, "retry_due_in_s", None) is not None for spec in settlement_specs
+            )
+            if result.progressed and self._on_pass_complete is not None:
+                outcome = self._on_pass_complete(result)
+                if isinstance(outcome, Awaitable):
+                    await outcome
+            if settlement_result.progressed:
                 self._progress_since_blocked = True
-                if self._on_pass_complete is not None:
-                    outcome = self._on_pass_complete(result)
-                    if isinstance(outcome, Awaitable):
-                        await outcome
             elif (
-                result.quiescent and not discovery_pending and not retry_delays and self._on_backlog_drained is not None
+                settlement_result.quiescent
+                and not settlement_discovery_pending
+                and not settlement_retry_pending
+                and self._on_backlog_drained is not None
             ):
                 pending = self._has_pending_backlog() if self._has_pending_backlog is not None else False
                 if isinstance(pending, Awaitable):
@@ -1874,7 +1944,7 @@ class DaemonIntakeService:
 def build_intake_adapters(
     context: DaemonIntakeContext,
     *,
-    remote_callback: Callable[[], Awaitable[int] | int] | None = None,
+    remote_callback: Callable[[], Awaitable[DriveCatchupReport] | DriveCatchupReport] | None = None,
     raw_callback: Callable[..., Awaitable[AdmissionResult | int] | AdmissionResult | int] | None = None,
     raw_discover: Callable[[int], Awaitable[Sequence[tuple[str, int]]] | Sequence[tuple[str, int]]] | None = None,
     raw_suspended: Callable[[], bool] | None = None,
@@ -1906,9 +1976,7 @@ def build_intake_adapters(
     if hook_carriers:
         result.append(("hook_carrier", MultiplexIntakeAdapter(hook_carriers, halts=source_halts)))
     if remote_callback is not None:
-        result.append(
-            ("configured_remote", CallbackIntakeAdapter("configured_remote", remote_callback, poll_interval_s=3600.0))
-        )
+        result.append(("configured_remote", DriveIntakeAdapter(remote_callback)))
     if raw_callback is not None:
         if raw_discover is None:
             result.append(("raw_materialization", CallbackIntakeAdapter("raw_materialization", raw_callback)))

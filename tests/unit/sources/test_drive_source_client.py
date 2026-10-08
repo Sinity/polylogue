@@ -231,7 +231,7 @@ def test_iter_json_files_filters_supported_entries(
     files = list(client.iter_json_files(folder_id))
 
     assert [f.file_id for f in files] == expected_ids
-    assert list(client._meta_cache) == expected_ids
+    assert not client._meta_cache
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +483,7 @@ def test_get_metadata_and_iteration_cache_contract(monkeypatch: pytest.MonkeyPat
     assert first.name == "file-1"
     assert second is first
     assert [f.file_id for f in files] == ["f1", "f2", "f3"]
-    assert list(client._meta_cache) == ["file-1", "f1", "f2", "f3"]
+    assert list(client._meta_cache) == ["file-1"]
 
 
 def test_get_metadata_builds_file_with_fallback_id() -> None:

@@ -82,6 +82,7 @@ from polylogue.logging import (
     shutdown_events,
     span,
 )
+from polylogue.operations.drive_readiness import DriveCatchupReport, DriveCatchupState
 from polylogue.operations.embedding_lifecycle import (
     ensure_embedding_lifecycle_startup as _ensure_embedding_lifecycle_startup_sync,
 )
@@ -644,7 +645,7 @@ async def _run_drive_source_catchup_once(
     *,
     raw_owner: RawObservationConvergenceOwner | None,
     compute_owner: BoundedComputeAdapter,
-) -> int:
+) -> DriveCatchupReport:
     """Acquire and parse configured Drive sources once.
 
     The live watcher only observes filesystem roots. Google Drive sources are
@@ -666,8 +667,18 @@ async def _run_drive_source_catchup_once(
             reason="no_drive_sources_configured",
             loop="drive source catch-up",
         )
-        return 0
+        return DriveCatchupReport(
+            DriveCatchupState.COMPLETE, enumerated_count=0, acquired_count=0, materialization_pending=0
+        )
 
+    from polylogue.operations.drive_readiness import drive_readiness_observation, inspect_drive_readiness
+    from polylogue.sources.drive import _resolved_drive_client
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    observation = drive_readiness_observation(config.archive_root)
+    resume = observation.resume_materialization
+    if not resume:
+        observation.close()
     services = build_runtime_services(config=config, db_path=config.db_path)
     try:
         with span("daemon.drive_catchup.pass", loop="drive source catch-up") as pass_span:
@@ -685,7 +696,19 @@ async def _run_drive_source_catchup_once(
                 stage="all",
                 parse_records=raw_owner is not None,
                 max_pass_seconds=_DRIVE_CATCHUP_MAX_PASS_SECONDS,
+                skip_acquire=resume,
             )
+            if not resume:
+                observation.witnesses.update(result.acquire_result.drive_witnesses)
+            else:
+                # Recheck currency after a parse checkpoint without reacquiring
+                # unchanged bytes or throwing away the retained membership.
+                def reobserve() -> None:
+                    client = _resolved_drive_client(ui=None, client=None, drive_config=config.drive_config)
+                    for witness in observation.witnesses.values():
+                        witness.reobserve(client)
+
+                await execution.prepare(reobserve)
             session_ids = tuple(sorted(result.parse_result.processed_ids))
             if session_ids and session_profile_callback is not None:
                 try:
@@ -700,7 +723,6 @@ async def _run_drive_source_catchup_once(
                         error_type=type(exc).__name__,
                         error_detail=str(exc),
                     )
-            budget_exceeded = bool(result.parse_result.time_budget_exceeded)
             errors = int(result.acquire_result.errors)
             counts: dict[str, object] = {
                 "sources": len(sources),
@@ -710,13 +732,43 @@ async def _run_drive_source_catchup_once(
                 "errors": errors,
                 "budget_ms": round(_DRIVE_CATCHUP_MAX_PASS_SECONDS * 1000, 3),
             }
-            if budget_exceeded:
-                pass_span.degraded("time_budget_exceeded", **counts)
-            elif errors:
-                pass_span.degraded("acquire_errors", **counts)
-            else:
+
+            def inspect() -> DriveCatchupReport:
+                from polylogue.storage.archive_identity import resolve_active_index_path
+
+                with (
+                    contextlib.closing(open_readonly_connection(config.archive_root / "source.db")) as source_conn,
+                    contextlib.closing(
+                        open_readonly_connection(resolve_active_index_path(config.archive_root))
+                    ) as index_conn,
+                ):
+                    return inspect_drive_readiness(
+                        sources,
+                        source_conn,
+                        index_conn,
+                        observation.witnesses,
+                        changed_count=len(session_ids),
+                        raw_owner_available=raw_owner is not None,
+                    )
+
+            try:
+                report = await execution.prepare(inspect)
+            except (sqlite3.Error, OSError):
+                report = DriveCatchupReport(
+                    DriveCatchupState.UNKNOWN,
+                    changed_count=len(session_ids),
+                    gaps=("drive_archive_authority_unavailable",),
+                )
+            if report.state is DriveCatchupState.COMPLETE:
                 pass_span.ok(**counts)
-            return len(session_ids)
+            else:
+                pass_span.degraded("drive_" + report.state.value, **counts)
+            observation.resume_materialization = (
+                report.state is DriveCatchupState.PENDING
+                and "drive_listing_changed" not in report.gaps
+                and "drive_raw_not_retained" not in report.gaps
+            )
+            return report
     finally:
         await services.close()
 
@@ -726,7 +778,7 @@ async def _run_drive_source_catchup_safely(
     *,
     raw_owner: RawObservationConvergenceOwner | None,
     compute_owner: BoundedComputeAdapter,
-) -> int:
+) -> DriveCatchupReport:
     """Run Drive catch-up without letting remote-source failures kill daemon."""
     try:
         return await _run_drive_source_catchup_once(
@@ -743,7 +795,7 @@ async def _run_drive_source_catchup_safely(
             error_type=type(exc).__name__,
             error_detail=str(exc),
         )
-        return 0
+        return DriveCatchupReport(DriveCatchupState.RETRYABLE, gaps=(f"drive_catchup_failed:{type(exc).__name__}",))
 
 
 async def _periodic_heartbeat(*, sources: tuple[WatchSource, ...] = ()) -> None:
@@ -2137,6 +2189,9 @@ async def _run_daemon_services_under_active_writer_lease(
     global _daemon_lifecycle, _pidfile_path
     _process_start.started_at_wall()
     archive_root_path = Path(archive_root())
+    from polylogue.operations.drive_readiness import reset_drive_readiness_observation
+
+    reset_drive_readiness_observation(archive_root_path)
     # The ownership proof is descriptor-backed and therefore requires an
     # existing root. A daemon is also the production first-run entry point, so
     # create an otherwise absent configured root before identity/ownership
@@ -3128,7 +3183,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     ) -> Any:
                         return await write_coordinator.run_sync(actor, function, *args, **kwargs)
 
-                    async def run_remote_intake() -> int:
+                    async def run_remote_intake() -> DriveCatchupReport:
                         if session_profile_callback is None:
                             # Derived schema skew blocks profile publication,
                             # but source acquisition remains durable and safe.

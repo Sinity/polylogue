@@ -354,3 +354,9 @@ unfinished tail so a later completed observation can advance normally.
 Grok native tool results declare `not_reported` when outcome evidence is absent
 and `unsupported_construct` when a supplied outcome has an unsupported shape.
 Both reasons remain typed unknown outcomes through storage and readback.
+
+## Native Drive acquisition coordinates
+
+Configured Drive captures use `drive:<configured-source>:/<resolved-folder>/<native-file-id>.json`, with escaped components. The final JSON suffix declares the capture format; fallback session identity removes only that synthetic suffix and preserves the exact native file ID. Cache files are keyed by resolved folder and a digest of native file ID. Drive names are presentation metadata in the listing witness and cannot select cached bytes or durable source identity. Two same-named files remain distinct, and a rename preserves their source and session coordinates.
+
+The acquisition owner exhausts every listing page into its private ID-keyed relation before downloading. Fresh metadata before and after a download must match the listed revision; a race leaves the pass pending rather than labelling the returned bytes with an unproved revision. Download, cache, blob, and publication failures retain typed per-file evidence and contribute to acquisition errors. Completed Raw publication binds the exact returned Raw ID, including byte-identical duplicates, to that observed revision. Prepared Source manifests still describe already acquired physical bytes; they are not remote predownload adapters.

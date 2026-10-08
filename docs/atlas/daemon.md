@@ -252,3 +252,31 @@ vectors, vector metadata, message references or status rows exist returns an
 empty report before requiring active Index generation readiness. Populated
 paid state still requires the active source-snapshotted Index before deletion
 (`storage/embeddings/reconcile.py`; `daemon/embedding_backlog.py`).
+
+## Configured Drive completion
+
+Drive intake returns `DriveCatchupReport`: `complete`, `pending`, `retryable`,
+`blocked`, or `unknown`. Completion requires a full paged listing and a separate
+post-acquisition listing, exact native file/revision bindings to retained Raw,
+and current materialization in the executing Index snapshot. A private disk
+relation holds the full listing and per-file bindings. Its digest, denominator,
+selection rule, resolved folder, and observation times travel in the report.
+A measured empty folder has zero members. An absent or unfinished witness has
+nullable counts and named gaps. Restart reconstructs the relation from a new
+listing and retained Source; disposable cursor progress is never completion.
+
+A parse time slice checkpoints retained work. Pending materialization yields
+fairly and remains eligible without a failure attempt or an hourly poll.
+Only `complete` starts the ordinary hourly poll. Transport failures retry;
+blocked and unknown observations recheck evidence on a short cadence.
+Cold promotion settles its declared local baseline independently. The
+`configured_sources` status component and `claim_guard.converged` separately
+withhold full readiness until configured Drive obligations are measured complete,
+including when embeddings are disabled.
+
+Attachment status reads the supplied Source and Index snapshots and reports
+allowed unfetched references, contested identity, unretained suppliers, acquired
+objects, and terminal unavailable objects. Terminal provider refusals and
+excision remain visible through their typed acquisition events; the stored
+`unavailable` disposition does not distinguish their reasons. Stage scheduling
+uses executable transport work, so blocked identity cannot keep retrying.

@@ -9,6 +9,7 @@ from polylogue.core.enums import Provider, ValidationStatus
 from polylogue.pipeline.payload_types import AcquireDiagnostics
 
 if TYPE_CHECKING:
+    from polylogue.sources.drive.witness import DriveListingWitness
     from polylogue.sources.parsers.base import ParsedSession
 
 
@@ -25,6 +26,7 @@ class AcquireResult:
     errors: int = 0
     raw_ids: list[str] = field(default_factory=list)
     diagnostics: AcquireDiagnostics = field(default_factory=_empty_acquire_diagnostics)
+    drive_witnesses: dict[str, DriveListingWitness] = field(default_factory=dict)
 
     @property
     def counts(self) -> dict[str, int]:

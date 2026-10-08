@@ -169,6 +169,45 @@ def _candidate_rows(conn: sqlite3.Connection, source_conn: sqlite3.Connection, *
     return _CandidateWindow(rows=tuple(rows), unattributed=unattributed)
 
 
+def inspect_attachment_readiness(index: sqlite3.Connection, source: sqlite3.Connection | None) -> dict[str, int]:
+    """Measure owed references against the caller's exact Source and Index.
+
+    Transport terminal answers and excision refusals share the stored
+    ``unavailable`` disposition. Their per-pass typed events retain the reason;
+    this snapshot reports the measured terminal denominator without guessing it.
+    """
+    if source is None:
+        raise sqlite3.OperationalError("attachment supplier authority unavailable")
+    unresolved = unresolved_attachment_identity_count(index)
+    unattributed = allowed = 0
+    for raw_id, identity_blocked in index.execute(
+        f"SELECT r.supplying_raw_id, {contested_native_id_predicate()} {UNFETCHED_DRIVE_REFERENCE_SQL}"
+    ):
+        if identity_blocked:
+            continue
+        if raw_id is None or source.execute("SELECT 1 FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone() is None:
+            unattributed += 1
+        else:
+            allowed += 1
+    terminal = int(
+        index.execute(
+            "SELECT COUNT(*) FROM attachments a WHERE a.acquisition_status='unavailable' AND EXISTS (SELECT 1 FROM attachment_refs r WHERE r.attachment_id=a.attachment_id AND r.upload_origin='drive')"
+        ).fetchone()[0]
+    )
+    acquired = int(
+        index.execute(
+            "SELECT COUNT(*) FROM attachments a WHERE a.acquisition_status='acquired' AND EXISTS (SELECT 1 FROM attachment_refs r WHERE r.attachment_id=a.attachment_id AND r.upload_origin='drive')"
+        ).fetchone()[0]
+    )
+    return {
+        "allowed_unfetched": allowed,
+        "unresolved_identity": unresolved,
+        "unattributed": unattributed,
+        "terminal_unavailable": terminal,
+        "acquired": acquired,
+    }
+
+
 def _report_unattributed(unattributed: int) -> None:
     """Name owed references whose supplying acquisition is not retained."""
     if unattributed:
