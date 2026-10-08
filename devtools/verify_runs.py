@@ -66,13 +66,32 @@ CURRENT_EVENTS_DIR = VERIFY_CACHE / "current-pytest-events"
 PYTEST_CANONICAL_REPORT_NAME = "pytest-report.json"
 
 
+def _validate_history_write_path(path: Path, env: Mapping[str, str] | None = None) -> Path:
+    """Refuse retired destinations declared by the operator environment."""
+    environ = os.environ if env is None else env
+    absolute = Path(os.path.abspath(path.expanduser()))
+    retired = environ.get("POLYLOGUE_RETIRED_VERIFY_HISTORY_PATHS", "")
+    for value in retired.split(os.pathsep):
+        if not value:
+            continue
+        old = Path(value).expanduser()
+        if not old.is_absolute():
+            raise ValueError("POLYLOGUE_RETIRED_VERIFY_HISTORY_PATHS requires absolute paths")
+        if absolute == Path(os.path.abspath(old)):
+            raise ValueError(
+                "verification history destination is retired; set POLYLOGUE_VERIFY_HISTORY_PATH "
+                "to the current owner-declared destination or an unrelated custom path"
+            )
+    return path
+
+
 def verify_history_path(*, root: Path | None = None, env: Mapping[str, str] | None = None) -> Path:
     """Resolve shared verification history from explicit config or XDG state."""
     environ = os.environ if env is None else env
     configured = environ.get(VERIFY_HISTORY_PATH_ENV)
     if configured:
         path = Path(configured).expanduser()
-        return path if path.is_absolute() else (root or Path.cwd()) / path
+        return _validate_history_write_path(path if path.is_absolute() else (root or Path.cwd()) / path, environ)
     configured_state_home = environ.get("XDG_STATE_HOME")
     state_home = (
         Path(configured_state_home).expanduser()
@@ -901,7 +920,7 @@ def _append_jsonl_batch(entries: Iterable[Mapping[str, Any]], *, path: Path) -> 
 
 
 def _append_jsonl_batch_locked(entries: Iterable[Mapping[str, Any]], *, path: Path) -> None:
-    path = _absolute_path(path)
+    path = _validate_history_write_path(_absolute_path(path))
     _mkdir_pinned(path.parent)
     lock_fd = _open_retention_lock(path.parent, nonblocking=False)
     if lock_fd is None:

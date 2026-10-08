@@ -622,6 +622,8 @@
           pkgs.codeql
         ];
 
+        POLYLOGUE_RETIRED_VERIFY_HISTORY_PATHS = "/realm/activity/dev/polylogue/verify-history.jsonl:/realm/activity/development/polylogue/verify-history.jsonl:/realm/projects/polylogue/source/development/verify-history.jsonl";
+
         shellHook = ''
           export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
           # Permit bytecode in the checkout cache even when a parent shell
@@ -629,6 +631,8 @@
           unset PYTHONDONTWRITEBYTECODE
           export PYTHONPYCACHEPREFIX="$PWD/.cache/pycache"
           export POLYLOGUE_REPO_ROOT="$PWD"
+          : "''${POLYLOGUE_VERIFY_HISTORY_PATH:=/realm/project/polylogue/source/development/verify-history.jsonl}"
+          export POLYLOGUE_VERIFY_HISTORY_PATH
           mkdir -p .cache .local "$PYTHONPYCACHEPREFIX"
 
           if [ -L result ]; then
