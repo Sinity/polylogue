@@ -1441,6 +1441,61 @@ def test_pre_writer_sqlite_reads_defer_then_exclude_proven_unsupported_bytes(
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
 
 
+@pytest.mark.asyncio
+async def test_dispatcher_keeps_unreadable_source_owed_without_cursor_authority(tmp_path: Path) -> None:
+    """Acknowledging a no-cursor deferral must not advance past unread input."""
+    from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
+    from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
+    from tests.infra.raw_owner_routes import live_owner_set
+
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "codex"
+    state = root / "state_5.sqlite"
+    _write_codex_thread_state_db(state)
+    source = WatchSource(name="codex-state", root=root)
+    cursor = CursorStore(tmp_path / "index.db")
+    now = [0.0]
+    async with live_owner_set(tmp_path) as owners:
+        watcher = LiveWatcher(
+            cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+            (source,),
+            cursor=cursor,
+            **owners.watcher_kwargs(),
+        )
+        adapter = FileIntakeAdapter(
+            DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),
+            source,
+            clock=lambda: now[0],
+        )
+        dispatcher = FairIntakeDispatcher(
+            (IntakeClassSpec(name=source.name, adapter=adapter, page_size=1),), clock=lambda: now[0]
+        )
+        state.chmod(0)
+        try:
+            deferred = 0
+            for _ in range(14):
+                result = await dispatcher.run_once()
+                deferred += result.classes[0].deferred
+                assert result.classes[0].isolated == 0
+                assert result.classes[0].retried == 0
+                now[0] += 10.0
+            assert deferred >= 6
+            assert cursor.get_record(state) is None
+        finally:
+            state.chmod(0o600)
+        try:
+            admitted = 0
+            for _ in range(6):
+                result = await dispatcher.run_once()
+                admitted += result.admitted
+                now[0] += 10.0
+            assert admitted == 1
+            with sqlite3.connect(tmp_path / "source.db") as conn:
+                assert conn.execute("SELECT source_path FROM raw_sessions").fetchall() == [(str(state),)]
+        finally:
+            watcher.stop()
+
+
 @pytest.mark.parametrize("state_name", ["state_5.sqlite", "candidate.sqlite"])
 def test_sqlite_admission_cancellation_propagates_without_a_failure_cursor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state_name: str
