@@ -1012,7 +1012,7 @@ def test_hermes_state_db_profile_qualifies_identity_and_retains_raw_id(tmp_path:
     _write_hermes_state_db(second_path)
     # Retained material is the declared logical export of the member, not a
     # page image, and the marker is parsed against its own source path -- the
-    # pairing ``require_declared_export`` enforces (#5040/#5022). Anti-vacuity:
+    # pairing ``require_acquired_export`` enforces (#5040/#5022). Anti-vacuity:
     # hand ``parse_state_db_payload`` the export of ``second_path`` (or drop
     # ``source_path``) and the retained identity stops matching ``first``.
     retained_path = _declared_export_of(first_path, tmp_path / "blob-store")
@@ -1121,7 +1121,7 @@ def test_hermes_state_db_dispatch_marker_parses_multiple_sessions(tmp_path: Path
     A Hermes state.db marker names the *retained declared logical export* of
     its own source, never the live database: ``_hermes_sqlite_marker_payload``
     only builds one behind ``is_declared_logical_export`` (#5040/#5022), and
-    ``require_declared_export`` re-checks the same pairing at parse time so an
+    ``require_acquired_export`` re-checks the same pairing at parse time so an
     imported document cannot steer this parser at another database.
 
     Anti-vacuity: point ``state_db_path`` at any database that is not the

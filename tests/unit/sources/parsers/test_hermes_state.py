@@ -600,7 +600,7 @@ def test_state_db_marker_refuses_a_database_it_does_not_declare(tmp_path: Path) 
 
     The Hermes state.db marker is an ordinary JSON object recognised by shape,
     so any imported document can carry it and name a local path. Anti-vacuity:
-    removing the ``require_declared_export`` call from
+    removing the ``require_acquired_export`` call from
     ``parse_state_db_payload`` makes this call succeed and return the victim
     database's session -- the exact confused-deputy read -- so the ``ValueError``
     asserted here disappears and the test goes red.
@@ -616,7 +616,7 @@ def test_state_db_marker_refuses_a_database_it_does_not_declare(tmp_path: Path) 
         "state_db_path": str(victim),
     }
 
-    with pytest.raises(ValueError, match="declared logical export"):
+    with pytest.raises(ValueError, match="acquired logical export"):
         parse_state_db_payload(payload, "fallback", source_path=str(tmp_path / "innocent_export.json"))
 
 
@@ -631,7 +631,7 @@ def test_state_db_marker_without_a_source_path_is_refused(tmp_path: Path) -> Non
     _write_state_db(victim, tool_contents=[json.dumps({"output": "secret", "exit_code": 0})])
     payload: JSONDocument = {"polylogue_artifact": "hermes_state_db", "state_db_path": str(victim)}
 
-    with pytest.raises(ValueError, match="declared logical export"):
+    with pytest.raises(ValueError, match="acquired logical export"):
         parse_state_db_payload(payload, "fallback")
 
 

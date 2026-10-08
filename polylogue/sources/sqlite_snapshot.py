@@ -306,18 +306,19 @@ def is_undeclared_logical_export(blob_path: Path, source_path: Path | str) -> bo
     A database acquired under a noncanonical filename (``backup.db``) resolves
     to no :func:`database_member_for_filename` binding, so
     :func:`is_declared_logical_export` is false even though the retained bytes
-    are a real logical export. Such material is replayable: its own header
-    carries the scope it was written under.
+    are a real logical export. Such material is replayable only with the
+    unbound full-scope header used at acquisition; a declared member export
+    cannot be relabeled under a noncanonical source filename.
     """
     if declared_database_member(Path(source_path)) is not None:
         return False
     if not looks_like_logical_export_path(blob_path):
         return False
     try:
-        read_export_header(blob_path)
+        header = read_export_header(blob_path)
     except (OSError, UnicodeDecodeError, ValueError):
         return False
-    return True
+    return header.member is None and header.origin is None and header.kind is None and not header.missing
 
 
 def is_declared_logical_export(blob_path: Path, source_path: Path | str) -> bool:
