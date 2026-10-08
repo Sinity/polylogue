@@ -105,6 +105,10 @@ def _fields() -> dict[str, FieldKind]:
         # the ``ingest_attempts`` row key; joins an ingest page's events to its
         # ops-tier attempt row and ``daemon_stage_events``.
         "attempt_id",
+        # Invocation and retry-stable recipe identity for daemon.work.progress.
+        # These are opaque IDs, never source paths or transcript contents.
+        "unit_id",
+        "productive_id",
     )
 
     # -- subject identity ------------------------------------------------

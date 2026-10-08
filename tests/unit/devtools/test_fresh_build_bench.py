@@ -2602,3 +2602,45 @@ def test_explicit_corpus_seals_and_stages_hook_spool_tree(tmp_path: Path) -> Non
 
     assert (paths["archive"] / "hooks" / "carriers" / "codex" / "events.jsonl").read_text() == '{"event_id":"e1"}\n'
     assert (paths["archive"] / "hooks" / "pending" / "e2.json").exists()
+
+
+def test_production_progress_events_reach_benchmark_high_water(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    """Registry omissions cannot erase the producer identity before the monitor."""
+    from devtools.fresh_build_bench.run import WorkProgressTail, _useful_progress
+    from polylogue import logging as plog
+    from polylogue.core.work_progress import advance_work_progress, work_progress
+
+    events = tmp_path / "production-progress.jsonl"
+    tail = WorkProgressTail(events, state_root=tmp_path)
+    previous_level = plog.set_level("info")
+    try:
+        with plog.capture() as records:
+            with work_progress("source_preparation", productive_id="neutral-recipe") as unit:
+                advance_work_progress(messages=100, bytes=64)
+                frozen_clock.advance(11)
+                advance_work_progress(messages=1, bytes=1)
+            first_unit = unit.unit_id
+        assert not any(record["event"] == "log.field_rejected" for record in records)
+        progress = [record for record in records if record["event"] == "daemon.work.progress"]
+        assert progress and all(record["unit_id"] == first_unit for record in progress)
+        assert all(record["productive_id"] == "neutral-recipe" for record in progress)
+        events.write_text("".join(json.dumps(record) + "\n" for record in records))
+        first = Observation(0.0, work_progress=0)
+        advanced = Observation(1.0, work_progress=tail.poll())
+        assert _useful_progress(first, advanced)
+        assert advanced.work_progress == 1  # unchanged final emission is not work
+
+        with plog.capture() as retry_records:
+            with work_progress("source_preparation", productive_id="neutral-recipe") as retry:
+                advance_work_progress(messages=10, bytes=10)
+        assert retry.unit_id != first_unit
+        with events.open("a") as stream:
+            stream.writelines(json.dumps(record) + "\n" for record in retry_records)
+        retry_frame = Observation(2.0, work_progress=tail.poll())
+        assert not _useful_progress(advanced, retry_frame)
+    finally:
+        plog.set_level(previous_level)
+        tail.close()

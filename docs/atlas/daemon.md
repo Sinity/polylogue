@@ -314,3 +314,5 @@ recovery replays only those targets and reports the frozen named gap, even
 if a missing session has appeared since authorization. Correction recovery
 checks the exact kind, payload, note and normalized author before replay;
 an already committed matching effect preserves its creation and update times.
+
+Long source preparation emits `daemon.work.progress` through the structured field registry. `unit_id` identifies an invocation and `productive_id` identifies the retry-stable source recipe; both are registered opaque identifiers. The fresh-build observer counts only counter advances above that recipe’s high-water. Repeated or reset retry counters do not prove progress, while advancing preparation remains observable before durable publication.
