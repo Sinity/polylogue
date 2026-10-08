@@ -3409,6 +3409,7 @@ def _explain_clause(token: _LexToken) -> QueryExpressionExplainClause:
             field=token.field,
             value=token.raw_value,
             negated=token.negated,
+            quoted=token.quoted,
         )
     if isinstance(token, _CountToken):
         return QueryExpressionExplainClause(
@@ -3703,7 +3704,7 @@ def _split_alternation(raw: str) -> tuple[str, ...]:
 
 def _field_token_values(token: _FieldToken, *, field_name: str | None = None) -> tuple[str, ...]:
     """Keep quoted scalar operands exact instead of interpreting their pipes."""
-    if token.quoted and (field_name or token.field) in {"id", "session", "title"}:
+    if token.quoted and (field_name or token.field) in {"id", "session", "title", "repo"}:
         return (token.raw_value,)
     return _split_alternation(token.raw_value) if token.raw_value else ()
 

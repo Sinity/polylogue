@@ -1160,13 +1160,13 @@ def _archive_aggregate_facet_families(
 def _canonical_repo_facet_label(*, repo_name: object, root_path: object, origin_url: object) -> str | None:
     """Return a product-level repo facet label or ``None`` for path noise."""
 
-    repo = _clean_repo_label(repo_name)
+    repo = repo_name if isinstance(repo_name, str) and repo_name else None
     if repo and not _is_noisy_repo_label(repo):
         return repo
     url_label = _repo_label_from_url(origin_url)
     if url_label and not _is_noisy_repo_label(url_label):
         return url_label
-    root = _clean_repo_label(root_path)
+    root = root_path if isinstance(root_path, str) and root_path else None
     if root is None:
         return None
     basename = root.rstrip("/").rsplit("/", maxsplit=1)[-1]

@@ -106,7 +106,7 @@ from polylogue.archive.query.predicate import (
     QueryPredicate,
     QuerySequencePredicate,
 )
-from polylogue.archive.query.spec import split_csv
+from polylogue.archive.query.spec import split_csv, split_repo_names
 from polylogue.archive.revision_authority import (
     WORK_EVENT_RAW_ID_PREFIX,
     RawRevisionEnvelope,
@@ -4463,7 +4463,7 @@ class ArchiveStore:
             where.append("s.origin = ?")
             params.append(origin)
         scope, scope_params = _session_filter_clause(
-            "s", tags=split_csv(tag), repo_names=split_csv(repo), tags_relation=self._tags_relation, prefix=""
+            "s", tags=split_csv(tag), repo_names=split_repo_names(repo), tags_relation=self._tags_relation, prefix=""
         )
         if scope:
             where.append(scope)
@@ -4694,7 +4694,7 @@ class ArchiveStore:
             where.append(f"sp.{search_column} LIKE ?")
             params.append(f"%{query}%")
         scope, scope_params = _session_filter_clause(
-            "s", tags=split_csv(tag), repo_names=split_csv(repo), tags_relation=self._tags_relation, prefix=""
+            "s", tags=split_csv(tag), repo_names=split_repo_names(repo), tags_relation=self._tags_relation, prefix=""
         )
         if scope:
             where.append(scope)

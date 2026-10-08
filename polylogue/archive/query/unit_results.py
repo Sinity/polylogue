@@ -28,6 +28,7 @@ from polylogue.archive.query.spec import (
     optional_text,
     parse_query_date,
     split_csv,
+    split_repo_names,
 )
 from polylogue.archive.query.transaction import (
     QueryContinuation,
@@ -354,7 +355,7 @@ def query_unit_session_filters(**params: object) -> dict[str, object]:
     excluded_origins = split_csv(params.get("excluded_origins") or params.get("exclude_origin"))
     tags = tuple(tag.lower() for tag in split_csv(params.get("tags") or params.get("tag")))
     excluded_tags = tuple(tag.lower() for tag in split_csv(params.get("excluded_tags") or params.get("exclude_tag")))
-    repo_names = split_csv(params.get("repo_names") or params.get("repo"))
+    repo_names = split_repo_names(params.get("repo_names") or params.get("repo"))
     project_refs = split_csv(params.get("project_refs") or params.get("project"))
     has_types = split_csv(params.get("has_types") or params.get("has_type"))
     since_ms = params.get("since_ms")

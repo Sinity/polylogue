@@ -342,3 +342,5 @@ post-filtering streams distinct session identities; SQLite's FILE temporary
 storage owns sorting and deduplication instead of an archive-sized Python set.
 
 Canonical ranked search classifies missing or incomplete message FTS, SQLite contention, and unreadable storage as `SearchIndexUnavailableError` before surface rendering. Unrelated SQL failures propagate. HTTP consumes that typed refusal as an explicit degraded search envelope with unknown total, never an executed empty result.
+
+Quoted repository operands preserve their literal whitespace, pipes and commas. Public repository CSV filters preserve each comma-delimited segment exactly; typed collections retain each member. Facets preserve stored repository names and root path characters; remote URL labels retain URL cleanup. Query explain field clauses expose the same quoted flag used by execution.

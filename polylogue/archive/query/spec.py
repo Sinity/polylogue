@@ -145,6 +145,15 @@ def split_csv(value: object) -> tuple[str, ...]:
     return tuple(str(item).strip() for item in _iter_values(value) if str(item).strip())
 
 
+def split_repo_names(value: object) -> tuple[str, ...]:
+    """Split repository CSV operands while retaining literal name bytes."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return tuple(part for part in value.split(",") if part)
+    return tuple(str(item) for item in _iter_values(value) if str(item))
+
+
 def as_tuple(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -471,7 +480,7 @@ def build_query_spec_from_params(
         excluded_origins=_public_origin_values("exclude_origin", params.get("exclude_origin")),
         tags=split_csv(params.get("tag")),
         excluded_tags=split_csv(params.get("exclude_tag")),
-        repo_names=split_csv(params.get("repo")),
+        repo_names=split_repo_names(params.get("repo")),
         project_refs=split_csv(params.get("project")),
         has_types=split_csv(params.get("has_type")),
         title=optional_text(params.get("title")),

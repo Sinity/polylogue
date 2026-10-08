@@ -219,3 +219,84 @@ def test_quoted_scalar_literals_preserve_pipes_and_whitespace(
     with ArchiveStore.open_existing(root) as archive:
         assert {row.session_id for row in archive.list_summaries(limit=100, **kwargs)} == expected
         assert archive.count_sessions(**kwargs) == len(expected)
+
+
+@pytest.mark.parametrize("value", ["project ", " alpha|beta "])
+def test_literal_repository_operands_and_facets(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    import json
+
+    from polylogue.api.archive import _archive_aggregate_facet_families
+    from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.storage.sqlite.connection import open_connection
+
+    root = workspace_env["archive_root"]
+    ids = []
+    for native, label in (("literal", value), ("neighbor", value.strip().split("|")[0])):
+        builder = SessionBuilder(root / "index.db", native).provider("codex").git_repository_url(native)
+        builder.add_message(text="synthetic repository evidence").save()
+        ids.append(builder.native_session_id())
+        with open_connection(root / "index.db") as conn:
+            conn.execute("UPDATE repos SET repo_name=? WHERE origin_url=?", (label, native))
+            conn.commit()
+    with ArchiveStore.open_existing(root) as archive:
+        for spec in (
+            compile_expression(f"repo:{json.dumps(value)}"),
+            compile_expression(f"sessions where repo:{json.dumps(value)}"),
+            SessionQuerySpec.from_params({"repo": value}),
+        ):
+            kwargs = plan_filter_kwargs(spec.to_plan())
+            assert {row.session_id for row in archive.list_summaries(limit=100, **kwargs)} == {ids[0]}
+            assert archive.count_sessions(**kwargs) == 1
+    with open_connection(root / "index.db") as conn:
+        assert _archive_aggregate_facet_families(conn, session_ids=None)["repos"] == {
+            value: 1,
+            value.strip().split("|")[0]: 1,
+        }
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+    from tests.infra.daemon_operations import cli_daemon_archive
+
+    with cli_daemon_archive(root, monkeypatch):
+        result = CliRunner().invoke(cli, ["--plain", "--format", "json", "--repo", value, "find"])
+    assert result.exit_code == 0, result.output
+    assert ids[0] in result.output
+    assert ids[1] not in result.output
+
+
+def test_field_explain_preserves_public_quoted_flag() -> None:
+    import json
+
+    from click.testing import CliRunner
+
+    from polylogue.archive.query.expression import explain_expression
+    from polylogue.cli.click_app import cli
+
+    for expression, quoted in (('title:"alpha|beta"', True), ("title:alpha", False)):
+        payload = explain_expression(expression).clauses[0].to_payload()
+        assert payload.get("quoted", False) is quoted
+        result = CliRunner().invoke(cli, ["--plain", "--format", "json", "--explain", "find", expression])
+        assert result.exit_code == 0, result.output
+        decoded = json.loads(result.output)
+        assert decoded["ast"]["clauses"][0].get("quoted", False) is quoted
+        assert decoded["clauses"][0].get("quoted", False) is quoted
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [("project ,other", ("project ", "other")), (("project ", "literal,comma"), ("project ", "literal,comma"))],
+)
+def test_repository_csv_preserves_segments_and_typed_members(value: object, expected: tuple[str, ...]) -> None:
+    from polylogue.archive.query.spec import SessionQuerySpec, split_repo_names
+    from polylogue.archive.query.unit_results import query_unit_session_filters
+
+    assert split_repo_names(value) == expected
+    assert SessionQuerySpec.from_params({"repo": value}).repo_names == expected
+    assert query_unit_session_filters(repo=value)["repo_names"] == expected
+
+
+def test_explicit_repository_alternation_remains_or() -> None:
+    assert compile_expression("repo:(project|other)").repo_names == ("project", "other")
+    assert compile_expression('repo:"pipe|comma, "').repo_names == ("pipe|comma, ",)
