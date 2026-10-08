@@ -170,12 +170,13 @@ def test_unresolved_configured_root_refuses_all_cli_writes(
     assert not (scratch / "source.db").exists()
 
 
-def test_resident_archive_writer_arms_the_boundary(
+def test_resident_archive_writer_uses_the_same_root_ownership_boundary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     resident_daemon: Callable[[Path], int],
 ) -> None:
-    """A resident daemon arms both halves: the factories and ``sqlite3.connect``."""
+    """Residency does not install a second global SQLite wrapper."""
+    from polylogue.maintenance.offline_guard import writable_tier_opens_are_checked
     from polylogue.storage.sqlite.write_guard import archive_write_guard_installed
     from polylogue.storage.sqlite.write_lease import write_lease_enforced
 
@@ -183,10 +184,12 @@ def test_resident_archive_writer_arms_the_boundary(
     resident_daemon(root / "daemon.pid")
 
     with cli_archive_writer_ownership():
-        assert write_lease_enforced() is True
-        assert archive_write_guard_installed() is True
+        assert writable_tier_opens_are_checked() is True
+        assert write_lease_enforced() is False
+        assert archive_write_guard_installed() is False
     assert write_lease_enforced() is False
     assert archive_write_guard_installed() is False
+    assert writable_tier_opens_are_checked() is False
 
 
 def test_escaping_refusal_is_translated_through_click(
@@ -374,9 +377,12 @@ def test_an_unleased_scratch_open_is_refused(
     assert not (stray / "index.db").exists()
 
 
+@pytest.mark.parametrize("configured_has_daemon", [False, True])
 def test_scoped_offline_archive_owner_can_write_its_separate_scratch_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    resident_daemon: Callable[[Path], int],
+    configured_has_daemon: bool,
 ) -> None:
     """The one-shot demo owner is an explicit scratch authority without a write lease."""
     import sqlite3
@@ -384,6 +390,8 @@ def test_scoped_offline_archive_owner_can_write_its_separate_scratch_root(
     from polylogue.maintenance.offline_guard import scoped_offline_archive_writer
 
     configured = _archive_root(monkeypatch, tmp_path)
+    if configured_has_daemon:
+        resident_daemon(configured / "daemon.pid")
     scratch = tmp_path / "demo-scratch"
 
     with cli_archive_writer_ownership():

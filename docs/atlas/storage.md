@@ -103,6 +103,14 @@ and a task cannot acquire authority by inheriting another task's context.
 The lock file remains in place after release. Directory and lock identities
 are checked before and after acquisition; replacement is a visible refusal.
 
+Specialized tier owners admit the configured archive root before their native
+open: bootstrap, durable change trains, inactive tuple embedding writes and
+embedding checkpoints retain their existing creation or `mode=rw` policy.
+Inactive Index bootstrap names its owning root explicitly; the candidate's
+parent directory does not identify that authority. Graph publication, User
+lifecycle writes and the blob publication fence use the shared isolated writer
+factory. Demo augmentation borrows one cached writer for its complete sequence.
+
 Descriptor cleanup attempts every owned binding once and keeps the actual
 primary and cleanup errors. Closing the lock descriptor releases flock; it is
 never unlocked before a close that could fail without taking effect. Actual

@@ -485,10 +485,10 @@ async def test_apply_demo_post_ingest_augmentation_matches_direct_seed(
         ).fetchone()
     assert pre_row is None or not pre_row[0]
 
-    apply_demo_post_ingest_augmentation(archive_root)
+    await asyncio.to_thread(apply_demo_post_ingest_augmentation, archive_root)
     # Idempotent: a repeated call (e.g. a second ``--wait``) must not error or
     # change the outcome.
-    apply_demo_post_ingest_augmentation(archive_root)
+    await asyncio.to_thread(apply_demo_post_ingest_augmentation, archive_root)
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         cost_row = conn.execute(

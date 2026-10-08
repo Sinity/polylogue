@@ -65,6 +65,8 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     record_source_outage_events,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection import connection_context
+from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 from .constructs import evaluate_demo_constructs
@@ -1236,7 +1238,7 @@ def _write_demo_hermes_sources(source_root: Path) -> None:
     )
 
 
-def _materialize_session_insights(archive_root: Path, session_ids: list[str]) -> None:
+def _materialize_session_insights(conn: sqlite3.Connection, session_ids: list[str]) -> None:
     """Build the session-profile insight read models for *session_ids*.
 
     ``ingest_one_shot_archive`` writes the ``sessions``/``messages`` tree but does
@@ -1251,12 +1253,8 @@ def _materialize_session_insights(archive_root: Path, session_ids: list[str]) ->
 
     if not session_ids:
         return
-    conn = sqlite3.connect(archive_root / "index.db")
-    try:
-        conn.row_factory = sqlite3.Row
-        rebuild_session_insights_sync(conn, session_ids=session_ids)
-    finally:
-        conn.close()
+    conn.row_factory = sqlite3.Row
+    rebuild_session_insights_sync(conn, session_ids=session_ids)
 
 
 # Deterministic per-assistant-message Opus usage injected into the demo
@@ -1274,7 +1272,7 @@ _DEMO_USAGE = {
 }
 
 
-def _inject_demo_session_usage(archive_root: Path) -> None:
+def _inject_demo_session_usage(conn: sqlite3.Connection) -> None:
     """Set deterministic Opus token usage on the demo claude-code assistant turns.
 
     Cost is computed in the canonical ``session_model_usage`` projection from
@@ -1283,24 +1281,20 @@ def _inject_demo_session_usage(archive_root: Path) -> None:
     generator change, no test-snapshot ripple.
     """
 
-    conn = sqlite3.connect(archive_root / "index.db")
-    try:
-        conn.execute(
-            "UPDATE messages SET model_name = ?, input_tokens = ?, output_tokens = ?, "
-            "cache_read_tokens = ?, cache_write_tokens = ? "
-            "WHERE session_id = ? AND role = 'assistant'",
-            (
-                _DEMO_USAGE_MODEL,
-                _DEMO_USAGE["input_tokens"],
-                _DEMO_USAGE["output_tokens"],
-                _DEMO_USAGE["cache_read_tokens"],
-                _DEMO_USAGE["cache_write_tokens"],
-                DEMO_CLAUDE_CODE_SESSION_ID,
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    conn.execute(
+        "UPDATE messages SET model_name = ?, input_tokens = ?, output_tokens = ?, "
+        "cache_read_tokens = ?, cache_write_tokens = ? "
+        "WHERE session_id = ? AND role = 'assistant'",
+        (
+            _DEMO_USAGE_MODEL,
+            _DEMO_USAGE["input_tokens"],
+            _DEMO_USAGE["output_tokens"],
+            _DEMO_USAGE["cache_read_tokens"],
+            _DEMO_USAGE["cache_write_tokens"],
+            DEMO_CLAUDE_CODE_SESSION_ID,
+        ),
+    )
+    conn.commit()
 
 
 # Canonical repo identity for the demo claude-code session so the postmortem
@@ -1312,18 +1306,14 @@ def _inject_demo_session_usage(archive_root: Path) -> None:
 _DEMO_REPO_NAMES = '["polylogue"]'
 
 
-def _inject_demo_session_repos(archive_root: Path) -> None:
+def _inject_demo_session_repos(conn: sqlite3.Connection) -> None:
     """Set a canonical repo name on the demo claude-code session profile."""
 
-    conn = sqlite3.connect(archive_root / "index.db")
-    try:
-        conn.execute(
-            "UPDATE session_profiles SET repo_names_json = ? WHERE session_id = ?",
-            (_DEMO_REPO_NAMES, DEMO_CLAUDE_CODE_SESSION_ID),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    conn.execute(
+        "UPDATE session_profiles SET repo_names_json = ? WHERE session_id = ?",
+        (_DEMO_REPO_NAMES, DEMO_CLAUDE_CODE_SESSION_ID),
+    )
+    conn.commit()
 
 
 _DEMO_EMBEDDING_MODEL = "demo-synthetic-embedding"
@@ -1337,7 +1327,7 @@ def _demo_embedding_vector(text: str) -> list[float]:
     return [((digest[index % len(digest)] / 255.0) * 2.0) - 1.0 for index in range(EMBEDDING_DIMENSION)]
 
 
-def _seed_demo_embeddings(archive_root: Path) -> None:
+def _seed_demo_embeddings(archive_root: Path, index_conn: sqlite3.Connection) -> None:
     """Seed deterministic embeddings for one authored-prose demo session.
 
     This deliberately does not call an embedding provider. It proves the
@@ -1360,8 +1350,9 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
 
     embeddings_db = archive_root / "embeddings.db"
     initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
-    index_conn = sqlite3.connect(archive_root / "index.db")
-    embeddings_conn = sqlite3.connect(embeddings_db)
+    embeddings_conn = open_isolated_write_connection(
+        embeddings_db, purpose="demo synthetic embeddings", archive_root=archive_root
+    )
     try:
         loaded, error = try_load_sqlite_vec(embeddings_conn)
         if not loaded:
@@ -1473,7 +1464,6 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
         )
         embeddings_conn.commit()
     finally:
-        index_conn.close()
         embeddings_conn.close()
 
 
@@ -1495,52 +1485,15 @@ def demo_source_specs(source_root: Path) -> list[Source]:
     ]
 
 
-def _all_demo_session_ids(archive_root: Path) -> list[str]:
+def _all_demo_session_ids(conn: sqlite3.Connection) -> list[str]:
     """Return every session id currently present in the demo archive's index tier."""
 
-    conn = sqlite3.connect(archive_root / "index.db")
-    try:
-        rows = conn.execute("SELECT session_id FROM sessions").fetchall()
-    finally:
-        conn.close()
+    rows = conn.execute("SELECT session_id FROM sessions").fetchall()
+
     return sorted(str(row[0]) for row in rows)
 
 
-# A live daemon keeps materializing session_profiles in the background
-# (its own insights-convergence stage) concurrently with a one-shot CLI
-# augmentation call. If that stage recomputes session_profiles from a
-# pre-injection snapshot *after* this function's own
-# ``_materialize_session_insights`` call, the injected usage/cost is
-# silently overwritten with zeros even though the injection itself
-# succeeded. Bounded self-heal: re-run the whole idempotent sequence a few
-# times, a short beat apart, until the read-back proves the injected cost
-# survived (polylogue-z1c6 review follow-up). A no-daemon caller (the
-# direct seeder) always settles on the first attempt.
-_AUGMENTATION_SETTLE_ATTEMPTS = 4
-_AUGMENTATION_SETTLE_INTERVAL_S = 0.5
-
-
-def _demo_usage_has_settled(archive_root: Path) -> bool:
-    """Return whether the injected Claude Code usage survived materialization."""
-
-    conn = sqlite3.connect(archive_root / "index.db")
-    try:
-        row = conn.execute(
-            """
-            SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) AS total_cost_usd
-            FROM sessions AS s
-            LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
-            WHERE s.session_id = ?
-            GROUP BY s.session_id, s.reported_cost_usd
-            """,
-            (DEMO_CLAUDE_CODE_SESSION_ID,),
-        ).fetchone()
-    finally:
-        conn.close()
-    return row is not None and bool(row[0])
-
-
-def _restore_demo_capture_telemetry(archive_root: Path) -> None:
+def _restore_demo_capture_telemetry(archive_root: Path, conn: sqlite3.Connection) -> None:
     """Retain demo capture evidence rejected before the indexed write seam.
 
     Canonical intake records every material in source.db, but its membership
@@ -1548,64 +1501,62 @@ def _restore_demo_capture_telemetry(archive_root: Path) -> None:
     skip path has a chance to retain its gap and outage events.
     """
 
-    with sqlite3.connect(archive_root / "index.db") as conn:
-        conn.execute("ATTACH DATABASE ? AS source", (str(archive_root / "source.db"),))
-        session = conn.execute(
-            "SELECT raw_id, message_count FROM sessions WHERE session_id = ?",
+    session = conn.execute(
+        "SELECT raw_id, message_count FROM sessions WHERE session_id = ?",
+        (DEMO_CHATGPT_SESSION_ID,),
+    ).fetchone()
+    if session is None:
+        return
+    existing_raw_id, stored_message_count = str(session[0]), int(session[1])
+    captures = conn.execute(
+        """
+        SELECT r.raw_id, r.source_path, m.provider_session_id,
+               m.message_count, m.decision
+        FROM source_tier.raw_session_memberships AS m
+        JOIN source_tier.raw_sessions AS r ON r.raw_id = m.raw_id
+        WHERE m.logical_source_key = ?
+          AND r.source_path LIKE '%/browser-capture/%'
+        """,
+        (DEMO_CHATGPT_SESSION_ID,),
+    ).fetchall()
+    by_name = {Path(str(row[1])).name: row for row in captures}
+    fallback = by_name.get("chatgpt-dom-fallback.json")
+    if (
+        fallback is not None
+        and fallback[4] == "superseded_equivalent"
+        and int(fallback[3]) < stored_message_count
+        and not conn.execute(
+            "SELECT 1 FROM session_events WHERE session_id = ? AND event_type = 'capture_gap'",
             (DEMO_CHATGPT_SESSION_ID,),
         ).fetchone()
-        if session is None:
-            return
-        existing_raw_id, stored_message_count = str(session[0]), int(session[1])
-        captures = conn.execute(
-            """
-            SELECT r.raw_id, r.source_path, m.provider_session_id,
-                   m.message_count, m.decision
-            FROM source.raw_session_memberships AS m
-            JOIN source.raw_sessions AS r ON r.raw_id = m.raw_id
-            WHERE m.logical_source_key = ?
-              AND r.source_path LIKE '%/browser-capture/%'
-            """,
+    ):
+        record_capture_gap_event(
+            conn,
+            session_id=DEMO_CHATGPT_SESSION_ID,
+            existing_raw_id=existing_raw_id,
+            incoming_raw_id=str(fallback[0]),
+            stored_message_count=stored_message_count,
+            incoming_message_count=int(fallback[3]),
+        )
+    native = by_name.get("chatgpt-raw-provider.json")
+    if (
+        native is not None
+        and not conn.execute(
+            "SELECT 1 FROM session_events WHERE session_id = ? AND event_type = 'source_outage'",
             (DEMO_CHATGPT_SESSION_ID,),
-        ).fetchall()
-        by_name = {Path(str(row[1])).name: row for row in captures}
-        fallback = by_name.get("chatgpt-dom-fallback.json")
-        if (
-            fallback is not None
-            and fallback[4] == "superseded_equivalent"
-            and int(fallback[3]) < stored_message_count
-            and not conn.execute(
-                "SELECT 1 FROM session_events WHERE session_id = ? AND event_type = 'capture_gap'",
-                (DEMO_CHATGPT_SESSION_ID,),
-            ).fetchone()
-        ):
-            record_capture_gap_event(
+        ).fetchone()
+    ):
+        native_path = Path(str(native[1]))
+        if not native_path.is_absolute():
+            native_path = archive_root / native_path
+        payload = json.loads(native_path.read_text(encoding="utf-8"))
+        parsed = parse_browser_capture(payload, str(native[2]))
+        if parsed.provider_session_id == native[2]:
+            record_source_outage_events(
                 conn,
                 session_id=DEMO_CHATGPT_SESSION_ID,
-                existing_raw_id=existing_raw_id,
-                incoming_raw_id=str(fallback[0]),
-                stored_message_count=stored_message_count,
-                incoming_message_count=int(fallback[3]),
+                events=parsed.session_events,
             )
-        native = by_name.get("chatgpt-raw-provider.json")
-        if (
-            native is not None
-            and not conn.execute(
-                "SELECT 1 FROM session_events WHERE session_id = ? AND event_type = 'source_outage'",
-                (DEMO_CHATGPT_SESSION_ID,),
-            ).fetchone()
-        ):
-            native_path = Path(str(native[1]))
-            if not native_path.is_absolute():
-                native_path = archive_root / native_path
-            payload = json.loads(native_path.read_text(encoding="utf-8"))
-            parsed = parse_browser_capture(payload, str(native[2]))
-            if parsed.provider_session_id == native[2]:
-                record_source_outage_events(
-                    conn,
-                    session_id=DEMO_CHATGPT_SESSION_ID,
-                    events=parsed.session_events,
-                )
 
 
 def apply_demo_post_ingest_augmentation(archive_root: Path) -> None:
@@ -1623,21 +1574,19 @@ def apply_demo_post_ingest_augmentation(archive_root: Path) -> None:
     semantic contract as a directly seeded one (polylogue-z1c6). Every step is
     idempotent (``UPDATE`` / ``INSERT ... ON CONFLICT``), so calling this more
     than once against the same archive (a repeated ``--wait``, a demo reseed)
-    is safe. Self-heals against the live daemon's own insight-convergence
-    stage racing this call (see ``_AUGMENTATION_SETTLE_ATTEMPTS`` above).
+    is safe. One archive connection owner holds writer custody across the
+    complete augmentation, so insight convergence cannot overwrite its
+    intermediate state.
     """
 
-    for attempt in range(_AUGMENTATION_SETTLE_ATTEMPTS):
-        session_ids = _all_demo_session_ids(archive_root)
-        _restore_demo_capture_telemetry(archive_root)
-        _inject_demo_session_usage(archive_root)
-        _materialize_session_insights(archive_root, session_ids)
-        _inject_demo_session_repos(archive_root)
-        _seed_demo_embeddings(archive_root)
-        if _demo_usage_has_settled(archive_root):
-            return
-        if attempt < _AUGMENTATION_SETTLE_ATTEMPTS - 1:
-            time.sleep(_AUGMENTATION_SETTLE_INTERVAL_S)
+    with connection_context(archive_root / "index.db", archive_root=archive_root) as conn:
+        session_ids = _all_demo_session_ids(conn)
+        _restore_demo_capture_telemetry(archive_root, conn)
+        _inject_demo_session_usage(conn)
+        _materialize_session_insights(conn, session_ids)
+        _inject_demo_session_repos(conn)
+        _seed_demo_embeddings(archive_root, conn)
+        conn.commit()
 
 
 async def _seed_demo_archive_owned(

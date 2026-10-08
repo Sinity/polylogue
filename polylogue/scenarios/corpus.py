@@ -903,7 +903,9 @@ def seed_demo_user_overlays(
 
     user_db_path = archive_root / "user.db"
     initialize_archive_database(user_db_path, ArchiveTier.USER)
-    conn = sqlite3.connect(user_db_path)
+    from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+
+    conn = open_isolated_write_connection(user_db_path, purpose="demo User overlays", archive_root=archive_root)
     conn.row_factory = sqlite3.Row
     try:
         mark = upsert_mark(

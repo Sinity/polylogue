@@ -6,10 +6,9 @@ operation. This module enforces that for every writable archive-tier open the
 CLI process makes, decided on one fact: **is a resident ``polylogued`` running
 for the configured root at entry?**
 
-* A resident daemon at entry. Write-lease enforcement and the
-  connection-level guard are armed for the invocation, so an unleased
-  writable open raises before the connection exists, and the refusal is
-  re-raised naming the resident writer.
+* A resident daemon at entry. The same per-open ownership check refuses
+  configured-archive writes and names the resident writer. Separately owned
+  scratch archives remain eligible.
 * No resident daemon at entry. Every writable archive-tier open is
   intercepted (:func:`~polylogue.maintenance.offline_guard.refuse_writable_tier_opens`).
   An open inside the configured archive is refused with ``daemon_required``
@@ -32,15 +31,13 @@ while the CLI runs work from ``asyncio`` tasks and worker threads.
 The interception lives in :mod:`polylogue.maintenance.offline_guard` beside
 the residency probe because it needs storage's own definition of "a writable
 archive-tier open", and a fresh ``cli -> storage`` import edge is what the
-surface layering ratchet forbids. It is not a hook parameter on
-:func:`~polylogue.storage.sqlite.write_guard.install_archive_write_guard`
-either: that module is inside the derived-schema identity closure.
+surface layering ratchet forbids.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from pathlib import Path
 
 __all__ = [
@@ -207,33 +204,22 @@ def cli_archive_writer_ownership() -> Iterator[None]:
         return
 
     resident = resident_archive_writer(root)
-    if resident is None:
-        resolved_root = root.resolve()
+    resolved_root = root.resolve()
 
-        def refuse_unowned_write(path: Path) -> None:
-            if path.resolve().is_relative_to(resolved_root):
-                _refuse_configured_archive_write(path, resolved_root)
-            _require_scratch_archive_owner(path, configured_root=resolved_root)
+    def refuse_unowned_write(path: Path) -> None:
+        if path.resolve().is_relative_to(resolved_root):
+            _refuse_configured_archive_write(path, resolved_root)
+        _require_scratch_archive_owner(path, configured_root=resolved_root)
 
-        with refuse_writable_tier_opens(refuse_unowned_write):
-            yield
-        return
+    from polylogue.core.write_lease import UnleasedWriteError
 
-    owned_root, reason = resident
-    from polylogue.core.write_lease import (
-        UnleasedWriteError,
-        arm_write_lease_enforcement,
-        install_archive_write_guard,
-    )
-
-    with ExitStack() as stack:
-        stack.enter_context(arm_write_lease_enforcement(process_wide=True))
-        # Arming alone only covers the declared write-mode factories; the
-        # guard makes the boundary total at ``sqlite3.connect`` itself.
-        stack.enter_context(install_archive_write_guard())
+    with refuse_writable_tier_opens(refuse_unowned_write):
         try:
             yield
         except UnleasedWriteError as exc:
+            if resident is None:
+                raise
+            owned_root, reason = resident
             raise ArchiveWriterOwnershipError(
                 f"this CLI process may not write {owned_root}: {reason}. "
                 f"Route the mutation through the resident daemon ({exc})",

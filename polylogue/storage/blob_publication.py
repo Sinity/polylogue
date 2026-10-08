@@ -1302,7 +1302,11 @@ def abandon_blob_publication_receipts(
             if not resolved_index.exists():
                 raise RuntimeError("index tier is unavailable")
             assert_population_admitted(resolved_index)
-            index_conn = sqlite3.connect(resolved_index)
+            from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+
+            index_conn = open_isolated_write_connection(
+                resolved_index, purpose="blob publication liveness fence", archive_root=source_db_path.parent
+            )
             index_conn.execute("BEGIN IMMEDIATE")
             rows = source_conn.execute(
                 f"SELECT publication_id, blob_hash FROM blob_publication_reservations "

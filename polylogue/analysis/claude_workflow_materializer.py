@@ -195,7 +195,6 @@ def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
     # keeps its own admitted write.
     with closing(open_readonly_connection(source_db, timeout_class="background-read")) as source_conn:
         source_conn.row_factory = sqlite3.Row
-        source_conn.execute("PRAGMA foreign_keys = ON")
         raw_artifacts = _load_current_artifacts(source_conn)
         retained_revisions = _count_retained_revisions(source_conn)
 

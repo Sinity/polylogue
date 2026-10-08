@@ -59,10 +59,15 @@ readers continue to require `query_only=ON`.
 `write_guard.py` makes that boundary *total*: while the daemon holds its
 process-lifetime writer ownership it also installs a guard over
 `sqlite3.connect`, so a writable open whose file name is one of the six tiers
-asserts the lease before the connection exists. Roughly seventy production
-sites open `sqlite3.connect` directly; without the guard, a writer that reaches
-a tier that way contends through the busy timeout instead of being refused, and
-the factory census cannot see it.
+asserts the lease before the connection exists. Archive writers use root-bound
+factories or specialized destination owners; raw opens also exist for scratch,
+external and authenticated detached databases. The guard remains a separate
+process-wide interception boundary.
+
+The CLI uses one per-open residency and archive-ownership check whether a daemon
+was present at entry or arrives later. It refuses configured-archive writes and
+admits separately owned scratch archives; it does not install the daemon's
+write-lease interceptor.
 
 Read-only opens (`mode=ro`, `immutable=1`), in-memory databases and non-archive
 files -- spill databases, provider caches, the Sinex database, export
