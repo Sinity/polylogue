@@ -76,6 +76,7 @@ def resolve_session_id_in_index(
     prefix = token
     if ":" in token:
         source_token, native_id = token.split(":", 1)
+        origin: Origin | None
         try:
             origin = Origin(source_token)
         except ValueError:
