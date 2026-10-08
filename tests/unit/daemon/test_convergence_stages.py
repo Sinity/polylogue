@@ -458,3 +458,32 @@ def test_workflow_publication_keeps_configured_root_after_index_promotion(
             "SELECT status FROM daemon_stage_events WHERE event_id = 'claude_workflow:current'"
         ).fetchone() == ("clean",)
     assert not (generation / "ops.db").exists()
+
+
+@pytest.mark.parametrize(("binding", "outcome"), [(True, "ok"), (False, "degraded"), (None, "empty")])
+def test_fts_stage_production_event_preserves_boolean_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding: bool | None,
+    outcome: str,
+) -> None:
+    monkeypatch.setattr("polylogue.operations.fts_derivation.publish_fts_readiness_binding", lambda _root: binding)
+    stage = stages.make_fts_readiness_binding_stage(tmp_path / "index.db")
+    previous_level = plog.set_level("info")
+    try:
+        with plog.capture() as records:
+            result = stage.execute(tmp_path / "neutral-source")
+        terminal = [
+            record
+            for record in records
+            if record["event"] == f"daemon.stage.execute.{outcome}" and record.get("outcome") == outcome
+        ]
+        assert len(terminal) == 1
+        assert terminal[0]["bound"] is (binding is True)
+        assert result is (True if binding is None else binding)
+        assert not any(
+            record["event"] == "log.field_rejected" and record.get("source_event") == "daemon.stage.execute"
+            for record in records
+        )
+    finally:
+        plog.set_level(previous_level)

@@ -1365,3 +1365,29 @@ def test_generation_lifecycle_preserves_stable_reason_in_production_events(tmp_p
         )
     finally:
         plog.set_level(previous_level)
+
+
+def test_generation_promotion_event_preserves_actual_predecessor(
+    tmp_path: Path,
+    cold_build: ColdBuildGeneration,
+) -> None:
+    from polylogue import logging as plog
+
+    previous_level = plog.set_level("info")
+    try:
+        first = cold_build.promote()
+        observed = ColdBuildGeneration.observe_source_baseline((WatchSource("fixture", tmp_path / "absent-source"),))
+        second = ColdBuildGeneration.begin(tmp_path, reason="explicit_cold_build", observed=observed)
+        with plog.capture() as records:
+            promoted = second.promote()
+        events = [record for record in records if record["event"] == "daemon.cold_build.generation_promoted"]
+        assert len(events) == 1
+        assert promoted.predecessor_generation_id == first.generation_id
+        assert events[0]["predecessor"] == first.generation_id
+        assert not any(
+            record["event"] == "log.field_rejected"
+            and record.get("source_event") == "daemon.cold_build.generation_promoted"
+            for record in records
+        )
+    finally:
+        plog.set_level(previous_level)

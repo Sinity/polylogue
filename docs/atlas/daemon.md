@@ -327,3 +327,5 @@ settings replaces it with a fresh allowance; removed destinations are not
 cached. Invalid replacements refuse the dispatch
 without sending through stale settings. Injected adapters and fanout keep
 their existing behavior, and daemon restart starts a fresh in-memory allowance.
+
+Generation promotion logs retain the opaque predecessor generation ID in the registered nullable `predecessor` field. FTS readiness stage terminals retain the boolean publication measurement in the registered `bound` field, alongside their existing ok, degraded or empty outcomes.
