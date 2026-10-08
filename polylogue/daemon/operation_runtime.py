@@ -924,6 +924,7 @@ class DaemonOperationRuntime:
 
                 client_disconnect.add_listener(disconnect_control)
             return execute_operation(request, context).to_dict()
+        recovered_custody: tuple[OperationControlRead, MachineRequestBinding, dict[str, object]] | None = None
         if spec.accepted_reference:
             try:
                 control = observe_control_authority(self.archive_root)
@@ -1016,6 +1017,8 @@ class DaemonOperationRuntime:
                     reference=record,
                     result=durable,
                 ).to_dict()
+            if record is not None and record["artifact_kind"] != "insight-preview-pages":
+                recovered_custody = (control, binding, record)
         request_id = str(request.request_id)
         peer_closed = False
         with self._condition:
@@ -1125,6 +1128,12 @@ class DaemonOperationRuntime:
                     None if deadline is None else int((time() + max(0, deadline - monotonic())) * 1000),
                     started_at=started,
                 )
+                if recovered_custody is not None:
+                    # Acceptance belongs to the durable request, including a
+                    # resumed handler that has not observed its first snapshot.
+                    exchange.snapshot, exchange.binding, recovered_record = recovered_custody
+                    exchange.acceptance_started = True
+                    exchange.accepted_reference = AcceptedOperationReference.from_record(recovered_record).to_dict()
                 self._exchanges[request_id] = exchange
                 if read_control is not None:
                     exchange.cancellation.add_listener(read_control.cancel)
@@ -1215,6 +1224,12 @@ class DaemonOperationRuntime:
                         exchange.future = scheduled.future
                 except DaemonBackpressureError:
                     self._exchanges.pop(request_id)
+                    if recovered_custody is not None:
+                        envelope = self._pending_envelope(
+                            exchange, outcome="indeterminate", record=recovered_custody[2]
+                        )
+                        envelope["error"] = {"code": "compute_backpressure", "retryable": False}
+                        return envelope
                     return operation_envelope(
                         request,
                         context,
@@ -1307,12 +1322,21 @@ class DaemonOperationRuntime:
                         # ``failed`` carrying a DaemonOperationCancelled error.
                         envelope = self._pending_envelope(exchange, outcome="cancelled")
                     except Exception as exc:
-                        outcome = "indeterminate" if exchange.acceptance_started else "failed"
+                        retryable_admission = (
+                            isinstance(exc, DaemonBackpressureError) and not exchange.acceptance_started
+                        )
+                        outcome = (
+                            "indeterminate"
+                            if exchange.acceptance_started
+                            else "rejected"
+                            if retryable_admission
+                            else "failed"
+                        )
                         envelope = self._pending_envelope(exchange, outcome=outcome, record=record)
                         envelope["error"] = {
                             "code": str(getattr(exc, "code", type(exc).__name__)),
                             "detail": str(exc),
-                            "retryable": False,
+                            "retryable": retryable_admission,
                             "data": getattr(exc, "data", {}),
                         }
                     if exchange.acceptance_started and exchange.binding is not None:
