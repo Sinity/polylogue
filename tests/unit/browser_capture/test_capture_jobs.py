@@ -3483,3 +3483,123 @@ def test_receiver_maintenance_failure_is_visible_and_next_turn_retries(
     finally:
         server.server_close()
     assert str(capture_job_database_path(tmp_path)) not in capture_jobs_module._ARTIFACT_SWEEPS
+
+
+def test_artifact_frontier_retries_the_same_pending_page_after_real_sqlite_busy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = CaptureJobRegistry(tmp_path, "neutral-pending-page")
+    registry.gc(incremental_artifacts=True)
+    directory = capture_job_store_root(tmp_path) / "artifacts"
+    directory.mkdir(exist_ok=True)
+    for index in range(96):
+        (directory / (f"{index:064x}.native")).write_bytes(b"neutral unrooted bytes")
+    original_connect = CaptureJobRegistry._connect
+
+    def connect(self: CaptureJobRegistry) -> sqlite3.Connection:
+        connection = original_connect(self)
+        connection.execute("PRAGMA busy_timeout=0")
+        return connection
+
+    monkeypatch.setattr(CaptureJobRegistry, "_connect", connect)
+    held = sqlite3.connect(capture_job_database_path(tmp_path), isolation_level=None)
+    try:
+        held.execute("BEGIN IMMEDIATE")
+        with pytest.raises(sqlite3.OperationalError) as busy:
+            registry._collect_checkpoint_artifacts((), incremental=True, quantum=64)
+        assert busy.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+        frontier = capture_jobs_module._ARTIFACT_SWEEPS[str(capture_job_database_path(tmp_path))]
+        pending = tuple(frontier.pending)
+        assert len(pending) == 64 and len(list(directory.iterdir())) == 96
+        assert all((directory / name).read_bytes() == b"neutral unrooted bytes" for name in pending)
+        held.rollback()
+    finally:
+        held.close()
+    seen: list[str] = []
+    original_check = CaptureJobRegistry._collect_checkpoint_artifact
+
+    def check(self: CaptureJobRegistry, connection: sqlite3.Connection, directory: Path, name: str) -> bool:
+        seen.append(name)
+        return original_check(self, connection, directory, name)
+
+    monkeypatch.setattr(CaptureJobRegistry, "_collect_checkpoint_artifact", check)
+    registry._collect_checkpoint_artifacts((), incremental=True, quantum=64)
+    assert tuple(seen) == pending
+    assert len(list(directory.iterdir())) == 32 and not frontier.pending
+    registry.close_maintenance()
+    registry._collect_checkpoint_artifacts((), incremental=True, quantum=64)
+    assert list(directory.iterdir()) == []
+    registry.close_maintenance()
+
+
+def test_premarker_retirement_is_hidden_from_http_discovery_and_cannot_renew_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.browser_capture.server import BrowserCaptureHTTPServer
+
+    job_id = _seed_retired_native_children(tmp_path, 8)
+    monkeypatch.setattr(BrowserCaptureHTTPServer, "service_actions", lambda self: None)
+    monkeypatch.setattr(capture_jobs_module, "_now", lambda: datetime(2050, 1, 1, tzinfo=UTC))
+    with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(capture_jobs)")]
+        template = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
+        assert template is not None
+        original = dict(zip(columns, template, strict=True))
+        lease = json.loads(original["lease_json"])
+        expected: set[str] = set()
+        for index in range(26):
+            values = dict(original)
+            identity = f"inspectable-{index:02d}"
+            expected.add(identity)
+            values.update(
+                job_id=identity,
+                intent_key="inspectable-intent-" + str(index),
+                lease_json=canonical_json({**lease, "expires_at": "2099-01-01T00:00:00Z"}),
+            )
+            if index == 0:
+                values.update(
+                    lease_json=original["lease_json"],
+                    retention_json=canonical_json(
+                        {"state": "held", "hold_reason": "neutral", "timeline_authoritative": False}
+                    ),
+                )
+            if index == 1:
+                values["lease_json"] = original["lease_json"]
+            connection.execute(
+                "INSERT INTO capture_jobs (" + ",".join(columns) + ") VALUES (" + ",".join("?" for _ in columns) + ")",
+                tuple(values[column] for column in columns),
+            )
+        connection.execute(
+            "INSERT INTO capture_job_native_acquisitions VALUES (?, 'unfinished', '{}', '[]', 'acquiring', NULL, NULL, NULL)",
+            ("inspectable-01",),
+        )
+    with receiver(tmp_path) as (host, port):
+        scope: dict[str, object] = {"provider": "chatgpt", "scope": ACCOUNT_SCOPE}
+        status, first = request(host, port, "POST", "/v1/capture-jobs/discover", scope)
+        assert status == 200 and first["total"] == 26 and len(first["jobs"]) == 25 and first["has_more"] is True
+        status, second = request(host, port, "POST", "/v1/capture-jobs/discover", {**scope, "cursor": first["cursor"]})
+        assert status == 200 and second["total"] == 26 and len(second["jobs"]) == 1 and second["has_more"] is False
+        assert {row["job_id"] for row in first["jobs"] + second["jobs"]} == expected
+        status, refused = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job_id}/adopt",
+            {
+                **scope,
+                "request_id": "do-not-revive",
+                "session_id": "neutral-session",
+                "expected_revision": original["revision"],
+                "expected_lease_generation": lease["generation"],
+            },
+        )
+        assert status == 503 and refused["error"]["code"] == "capture_job_retirement_pending"
+    with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
+        row = connection.execute(
+            "SELECT revision, lease_json, retention_json FROM capture_jobs WHERE job_id=?", (job_id,)
+        ).fetchone()
+        assert row == (original["revision"], original["lease_json"], original["retention_json"])
+        assert (
+            connection.execute("SELECT COUNT(*) FROM capture_job_native_assets WHERE job_id=?", (job_id,)).fetchone()[0]
+            == 8
+        )

@@ -343,4 +343,10 @@ retires. Native assets and other leaves drain before acquisition/job parents,
 so their deletion cannot cascade an unbounded membership. Each page commits
 under the original receiver registry connection owner. Shutdown closes the
 disposable frontier; restart resumes the marker and existing physical roots.
-This receiver state is separate from the archive tiers and archive writer.
+The artifact frontier retains its bounded unchecked page across SQLite busy or
+other failed root checks; successful entry checks settle individually. Its
+physical identity binds both the registry and artifact directory. Discovery
+filters original retirement eligibility before total/page selection and adoption
+checks it before renewing a lease, so a premarker expired terminal job cannot
+revive through recovery. This receiver state is separate from the archive tiers
+and archive writer.

@@ -36,9 +36,18 @@ the job from discovery. An expired lease is cleared when marking; a later clock
 change cannot restore authority. Native assets and other leaves drain before
 plans, acquisitions and the job parent, so a parent deletion cannot cascade an
 unbounded membership. Each page commits independently and restart resumes from
-the durable marker and physical artifact roots.
+the durable marker and physical artifact roots. The artifact frontier retains a
+bounded pending page across registry-open, SQLite busy, query and I/O failures.
+Only a successful root and physical check settles an entry; unchecked names
+remain for the next lifecycle turn. Restart discards that disposable position
+and safely rescans the physical namespace.
 
-Create and discovery do no retirement deletion or artifact traversal. Creating
+Create and discovery do no retirement deletion or artifact traversal. Discovery
+excludes jobs already eligible for retirement before calculating its total and
+page cursor, even before the lifecycle marks them. Adoption checks that same
+eligibility inside its transaction and returns retryable 503 rather than
+renewing an expired terminal job. Held jobs, live leases and unfinished native
+custody remain inspectable. Creating
 the same intent while its old eligible or retiring job owns the unique key
 returns retryable HTTP 503 `capture_job_retirement_pending`; no new job is
 partially created. Cleanup continues without client requests. Existing extension

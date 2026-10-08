@@ -17,6 +17,7 @@ import secrets
 import sqlite3
 import tempfile
 import threading
+from collections import deque
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
@@ -274,7 +275,20 @@ class _ArtifactSweep(Protocol):
     def close(self) -> None: ...
 
 
-_ARTIFACT_SWEEPS: dict[str, tuple[tuple[int, int, int, int], _ArtifactSweep]] = {}
+@dataclass(slots=True)
+class _ArtifactFrontier:
+    physical: tuple[int, int, int, int]
+    entries: _ArtifactSweep
+    pending: deque[str] = field(default_factory=deque)
+    exhausted: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def close(self) -> None:
+        self.entries.close()
+        self.pending.clear()
+
+
+_ARTIFACT_SWEEPS: dict[str, _ArtifactFrontier] = {}
 _GC_PREDICATE = (
     "json_extract(retention_json, '$.state')='eligible' "
     "AND json_extract(retention_json, '$.timeline_authoritative')=0 "
@@ -1004,7 +1018,17 @@ class CaptureJobRegistry:
         with self._connection() as connection:
             connection.execute("BEGIN")
             parameters: list[object] = [provider, scope["key"]]
-            predicate = "provider=? AND scope_kind='account' AND scope_key=? AND COALESCE(json_extract(retention_json, '$.retiring'),0)=0"
+            fractional_upper, whole_prefix, whole_upper = self._lease_expiry_bounds(_now())
+            parameters.extend((fractional_upper, whole_prefix, whole_upper))
+            predicate = (
+                "provider=? AND scope_kind='account' AND scope_key=? "
+                "AND COALESCE(json_extract(retention_json, '$.retiring'),0)=0 "
+                "AND NOT ("
+                + _GC_PREDICATE
+                + " AND (lease_json IS NULL OR lease_json<=? OR (lease_json>=? AND lease_json<=?)) "
+                "AND NOT EXISTS (SELECT 1 FROM capture_job_native_acquisitions n "
+                "WHERE n.job_id=capture_jobs.job_id AND n.final_receipt_json IS NULL AND n.state!='cancelled'))"
+            )
             if intent_key:
                 predicate += " AND intent_key=?"
                 parameters.append(intent_key)
@@ -1407,6 +1431,8 @@ class CaptureJobRegistry:
             row = self._require_scoped(
                 connection, job_id, body.get("provider"), body.get("scope"), body.get("client_protocol")
             )
+            if self._retirement_eligible(connection, row, _now()):
+                raise CaptureJobError(503, "capture_job_retirement_pending")
             lease = json.loads(row["lease_json"]) if row["lease_json"] else None
             generation = lease["generation"] if lease else 0
             if not isinstance(generation, int):
@@ -1663,8 +1689,9 @@ class CaptureJobRegistry:
         """Release only this receiver store's disposable directory frontier."""
         with _ARTIFACT_SWEEP_LOCK:
             frontier = _ARTIFACT_SWEEPS.pop(str(capture_job_database_path(self.spool_path)), None)
-            if frontier is not None:
-                frontier[1].close()
+        if frontier is not None:
+            with frontier.lock:
+                frontier.close()
 
     def _retirement_eligible(self, connection: sqlite3.Connection, row: sqlite3.Row, current: datetime) -> bool:
         retention = json.loads(row["retention_json"])
@@ -1691,17 +1718,21 @@ class CaptureJobRegistry:
             return False
         return expiry.tzinfo is not None and expiry <= current
 
+    @staticmethod
+    def _lease_expiry_bounds(current: datetime) -> tuple[str, str, str]:
+        current_utc = current.astimezone(UTC)
+        prefix = '{"expires_at":"'
+        fractional_upper = prefix + current_utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ") + '"' + chr(0x10FFFF)
+        whole_prefix = prefix + current_utc.strftime("%Y-%m-%dT%H:%M:%SZ") + '"'
+        return fractional_upper, whole_prefix, whole_prefix + chr(0x10FFFF)
+
     def _gc_candidates(
         self, connection: sqlite3.Connection, current: datetime, remaining: Callable[[], int]
     ) -> Iterator[sqlite3.Row]:
         """Page each eligibility index in its own order, past rejected guards."""
-        current_utc = current.astimezone(UTC)
-        # Every lease producer emits canonical JSON with expires_at first and
-        # _stamp UTC timestamps. Fractions have six digits when present. Whole
-        # current-second stamps sort after fractions, so select them separately.
-        prefix = '{"expires_at":"'
-        fractional_upper = prefix + current_utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ") + '"' + chr(0x10FFFF)
-        whole_prefix = prefix + current_utc.strftime("%Y-%m-%dT%H:%M:%SZ") + '"'
+        # All producers use canonical expires_at-first UTC JSON; separate
+        # fractional and whole-second intervals preserve exact expiry semantics.
+        fractional_upper, whole_prefix, whole_upper = self._lease_expiry_bounds(current)
         branches: tuple[tuple[str, tuple[object, ...], str, str], ...] = (
             ("lease_json IS NULL", (), "updated_at, rowid", "updated_at, rowid"),
             (
@@ -1712,7 +1743,7 @@ class CaptureJobRegistry:
             ),
             (
                 "lease_json IS NOT NULL AND lease_json>=? AND lease_json<=?",
-                (whole_prefix, whole_prefix + chr(0x10FFFF)),
+                (whole_prefix, whole_upper),
                 "lease_json, updated_at, rowid",
                 "lease_json, updated_at, rowid",
             ),
@@ -1801,65 +1832,84 @@ class CaptureJobRegistry:
         directory = capture_job_store_root(self._spool_root()) / "artifacts"
         if not directory.is_dir():
             return
-        # Ordinary acquisition requests advance one orphan-directory entry, not
-        # one full sweep. The frontier survives per-request registry instances;
-        # restart begins a fresh sweep. Explicit gc drains its complete scan.
-        names: list[str] = []
-        if incremental:
-            identity = _database_identity(capture_job_database_path(self.spool_path))
-            if identity is None:
-                return
-            with _ARTIFACT_SWEEP_LOCK:
-                status = directory.stat()
-                physical = (identity[1], identity[2], status.st_dev, status.st_ino)
-                previous = _ARTIFACT_SWEEPS.get(identity[0])
-                if previous is not None and previous[0] != physical:
-                    previous[1].close()
-                    del _ARTIFACT_SWEEPS[identity[0]]
-                    previous = None
-                entries = previous[1] if previous is not None else os.scandir(directory)
-                _ARTIFACT_SWEEPS[identity[0]] = (physical, entries)
-                try:
-                    for _ in range(quantum):
-                        names.append(next(entries).name)
-                except StopIteration:
-                    entries.close()
-                    del _ARTIFACT_SWEEPS[identity[0]]
-        with ExitStack() as scan_owner, self._connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            scan = scan_owner.enter_context(os.scandir(directory)) if not incremental else ()
+        if not incremental:
             from itertools import chain
 
-            for name in chain(retired, names, (entry.name for entry in scan)):
-                if name.endswith(".native"):
-                    digest = name.removesuffix(".native")
-                    rooted = connection.execute(
-                        "SELECT 1 FROM capture_job_native_members WHERE sha256=? "
-                        "UNION ALL SELECT 1 FROM capture_job_native_assets WHERE sha256=? "
-                        "UNION ALL SELECT 1 FROM capture_job_native_artifacts WHERE sha256=? LIMIT 1",
-                        (digest, digest, digest),
-                    ).fetchone()
-                elif name.endswith(".checkpoint"):
-                    digest = "sha256:" + name.removesuffix(".checkpoint")
-                    rooted = connection.execute(
-                        "SELECT 1 FROM capture_jobs WHERE checkpoint_artifact_ref=? "
-                        "UNION ALL SELECT 1 FROM capture_job_receipts WHERE checkpoint_digest=? LIMIT 1",
-                        (digest, digest),
-                    ).fetchone()
-                else:
-                    continue
-                if rooted:
-                    continue
+            with self._connection() as connection, os.scandir(directory) as entries:
+                connection.execute("BEGIN IMMEDIATE")
+                for name in chain(retired, (entry.name for entry in entries)):
+                    self._collect_checkpoint_artifact(connection, directory, name)
+            return
+        identity = _database_identity(capture_job_database_path(self.spool_path))
+        if identity is None:
+            return
+        status = directory.stat()
+        physical = (identity[1], identity[2], status.st_dev, status.st_ino)
+        replaced: _ArtifactFrontier | None = None
+        with _ARTIFACT_SWEEP_LOCK:
+            frontier = _ARTIFACT_SWEEPS.get(identity[0])
+            if frontier is not None and frontier.physical != physical:
+                replaced = _ARTIFACT_SWEEPS.pop(identity[0])
+                frontier = None
+            if frontier is None:
+                frontier = _ArtifactFrontier(physical, os.scandir(directory))
+                _ARTIFACT_SWEEPS[identity[0]] = frontier
+        if replaced is not None:
+            with replaced.lock:
+                replaced.close()
+        with frontier.lock:
+            # A directory cursor is not a receipt. Keep its bounded pending
+            # names across BEGIN/query/IO failure and settle successful checks
+            # individually. Restart can safely rescan the physical namespace.
+            if not frontier.exhausted:
                 try:
-                    with open(directory / name, "rb") as handle:
-                        try:
-                            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        except BlockingIOError:
-                            continue
-                        if os.stat(directory / name).st_ino == os.fstat(handle.fileno()).st_ino:
-                            os.unlink(directory / name)
-                except FileNotFoundError:
-                    continue
+                    while len(frontier.pending) < quantum:
+                        frontier.pending.append(next(frontier.entries).name)
+                except StopIteration:
+                    frontier.exhausted = True
+            with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                for name in tuple(frontier.pending):
+                    if self._collect_checkpoint_artifact(connection, directory, name):
+                        frontier.pending.remove(name)
+            if frontier.exhausted and not frontier.pending:
+                with _ARTIFACT_SWEEP_LOCK:
+                    if _ARTIFACT_SWEEPS.get(identity[0]) is frontier:
+                        del _ARTIFACT_SWEEPS[identity[0]]
+                frontier.close()
+
+    def _collect_checkpoint_artifact(self, connection: sqlite3.Connection, directory: Path, name: str) -> bool:
+        """Return true only after this entry's root/physical check settles."""
+        if name.endswith(".native"):
+            digest = name.removesuffix(".native")
+            rooted = connection.execute(
+                "SELECT 1 FROM capture_job_native_members WHERE sha256=? "
+                "UNION ALL SELECT 1 FROM capture_job_native_assets WHERE sha256=? "
+                "UNION ALL SELECT 1 FROM capture_job_native_artifacts WHERE sha256=? LIMIT 1",
+                (digest, digest, digest),
+            ).fetchone()
+        elif name.endswith(".checkpoint"):
+            digest = "sha256:" + name.removesuffix(".checkpoint")
+            rooted = connection.execute(
+                "SELECT 1 FROM capture_jobs WHERE checkpoint_artifact_ref=? "
+                "UNION ALL SELECT 1 FROM capture_job_receipts WHERE checkpoint_digest=? LIMIT 1",
+                (digest, digest),
+            ).fetchone()
+        else:
+            return True
+        if rooted:
+            return True
+        try:
+            with open(directory / name, "rb") as handle:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return False
+                if os.stat(directory / name).st_ino == os.fstat(handle.fileno()).st_ino:
+                    os.unlink(directory / name)
+        except FileNotFoundError:
+            return True
+        return True
 
     def _native_artifact_path(self, sha256: object) -> Path:
         if not isinstance(sha256, str) or len(sha256) != 64:
