@@ -178,6 +178,9 @@ class _DriveClient:
     def iter_json_files(self, _folder_id: str) -> Any:
         yield self.file
 
+    def get_metadata(self, _file_id: str, *, refresh: bool = False) -> DriveFile:
+        return self.file
+
     def download_bytes(self, _file_id: str) -> bytes:
         self.downloads += 1
         return self.payload
@@ -186,7 +189,8 @@ class _DriveClient:
 def _cached_drive_source(root: Path, name: str, payload: bytes) -> tuple[Source, Path, _DriveClient]:
     root.mkdir(parents=True, exist_ok=True)
     source = Source(name="gemini", folder="AI Studio", path=root)
-    cache = drive.drive_cache_file_path(root, name)
+    cache = drive.drive_cache_file_path(drive.drive_cache_directory(root, "w9-folder"), "w9-file")
+    cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_bytes(payload)
     cache.with_name(cache.name + ".revision").write_text(_TIMESTAMP, encoding="utf-8")
     return source, cache, _DriveClient(name, payload)
@@ -205,7 +209,9 @@ def test_w9_drive_cache_accepts_null_jsonl(
             source=source,
             client=cast(Any, client),
             blob_store=BlobStore(tmp_path / "blob"),
-            known_mtimes={str(cache): _TIMESTAMP} if known_revision else None,
+            known_mtimes={drive.drive_source_coordinate(source.name, "w9-folder", "w9-file"): _TIMESTAMP}
+            if known_revision
+            else None,
         )
     )
     assert client.downloads == 0

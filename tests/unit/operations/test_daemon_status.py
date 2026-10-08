@@ -494,6 +494,9 @@ def test_executing_status_requires_configured_drive_witness_even_with_embeddings
     assert missing["component_readiness"]["configured_sources"]["counts"]["enumerated"] is None
 
     class EmptyFolder:
+        def resolve_folder_id(self, folder: str) -> str:
+            return "resolved-folder"
+
         def iter_json_files(self, folder: str) -> tuple[()]:
             return ()
 
@@ -501,11 +504,24 @@ def test_executing_status_requires_configured_drive_witness_even_with_embeddings
     witness.enumerate(EmptyFolder(), "resolved-folder")  # type: ignore[arg-type]
     witness.reobserve(EmptyFolder())  # type: ignore[arg-type]
     drive_readiness_observation(tmp_path).witnesses["aistudio"] = witness
+    from polylogue.daemon import status as resident_status
+
+    monkeypatch.setattr("polylogue.config.get_config", lambda: settings)
+    monkeypatch.setattr(resident_status, "_active_status_db_path", lambda: tmp_path / "index.db")
+    fingerprint = resident_status._configured_source_status_fingerprint()
+    resident = resident_status._configured_source_readiness_info()
+    resident_component = resident["configured_sources"]
+    assert isinstance(resident_component, dict)
+    assert resident_component["state"] == "ready"
     complete = status()
     component = complete["component_readiness"]["configured_sources"]
     assert component["state"] == "ready"
     assert component["counts"] == {"enumerated": 0, "acquired": 0, "materialization_pending": 0}
     reset_drive_readiness_observation(tmp_path)
+    assert resident_status._configured_source_status_fingerprint() != fingerprint
+    restarted_component = resident_status._configured_source_readiness_info()["configured_sources"]
+    assert isinstance(restarted_component, dict)
+    assert restarted_component["state"] == "unknown"
     restarted = status()
     assert restarted["component_readiness"]["configured_sources"]["state"] == "unknown"
     assert restarted["claim_guard"]["converged"]["value"] is not True

@@ -221,6 +221,11 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/sources/drive/witness.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/sources/live/cursor.py",
     "tiers": [
       "ops"

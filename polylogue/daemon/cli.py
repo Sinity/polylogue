@@ -671,9 +671,14 @@ async def _run_drive_source_catchup_once(
             DriveCatchupState.COMPLETE, enumerated_count=0, acquired_count=0, materialization_pending=0
         )
 
-    from polylogue.operations.drive_readiness import drive_readiness_observation, inspect_drive_readiness
-    from polylogue.sources.drive import _resolved_drive_client
+    from polylogue.core.evidence import Measured
+    from polylogue.operations.drive_readiness import (
+        drive_readiness_observation,
+        inspect_drive_readiness,
+        reobserve_drive_readiness,
+    )
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+    from polylogue.storage.tier_access import capture_sqlite_read
 
     observation = drive_readiness_observation(config.archive_root)
     resume = observation.resume_materialization
@@ -704,9 +709,7 @@ async def _run_drive_source_catchup_once(
                 # Recheck currency after a parse checkpoint without reacquiring
                 # unchanged bytes or throwing away the retained membership.
                 def reobserve() -> None:
-                    client = _resolved_drive_client(ui=None, client=None, drive_config=config.drive_config)
-                    for witness in observation.witnesses.values():
-                        witness.reobserve(client)
+                    reobserve_drive_readiness(observation, config.drive_config)
 
                 await execution.prepare(reobserve)
             session_ids = tuple(sorted(result.parse_result.processed_ids))
@@ -751,14 +754,16 @@ async def _run_drive_source_catchup_once(
                         raw_owner_available=raw_owner is not None,
                     )
 
-            try:
-                report = await execution.prepare(inspect)
-            except (sqlite3.Error, OSError):
-                report = DriveCatchupReport(
+            measured = await execution.prepare(lambda: capture_sqlite_read(inspect))
+            report = (
+                measured.value
+                if isinstance(measured, Measured)
+                else DriveCatchupReport(
                     DriveCatchupState.UNKNOWN,
                     changed_count=len(session_ids),
                     gaps=("drive_archive_authority_unavailable",),
                 )
+            )
             if report.state is DriveCatchupState.COMPLETE:
                 pass_span.ok(**counts)
             else:
@@ -780,11 +785,13 @@ async def _run_drive_source_catchup_safely(
     compute_owner: BoundedComputeAdapter,
 ) -> DriveCatchupReport:
     """Run Drive catch-up without letting remote-source failures kill daemon."""
+    from polylogue.core.compute import DaemonOperationCancelled
+
     try:
         return await _run_drive_source_catchup_once(
             session_profile_callback, raw_owner=raw_owner, compute_owner=compute_owner
         )
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, DaemonOperationCancelled):
         raise
     except Exception as exc:
         emit(
@@ -3816,6 +3823,8 @@ async def _run_daemon_services_under_active_writer_lease(
             # joins its workers. Every service and the writer have stopped, so
             # nothing new is admitted; a worker still running is named.
             surviving_compute = reset_compute_adapter(join_timeout_s=_COMPUTE_JOIN_TIMEOUT_S)
+            if not surviving_compute:
+                reset_drive_readiness_observation(archive_root_path)
             if surviving_compute:
                 emit(
                     "daemon.shutdown.compute_threads_orphaned",

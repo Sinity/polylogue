@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import threading
 from collections.abc import Mapping, Sequence
@@ -11,12 +12,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.archive.session_revision_membership import MembershipDecision
+from polylogue.core.evidence import Measured
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS
 from polylogue.sources.drive.source_support import _parse_modified_time
 from polylogue.sources.drive.witness import DriveListingWitness
+from polylogue.storage.tier_access import capture_sqlite_read
 
 if TYPE_CHECKING:
-    from polylogue.config import Source
+    from polylogue.config import Config, DriveConfig, PolylogueConfig, Source
 
 
 class DriveCatchupState(str, Enum):
@@ -91,6 +94,14 @@ def reset_drive_readiness_observation(root: Path) -> None:
             prior.close()
 
 
+def reobserve_drive_readiness(observation: DriveReadinessObservation, config: DriveConfig | None) -> None:
+    from polylogue.sources.drive import _resolved_drive_client
+
+    client = _resolved_drive_client(ui=None, client=None, drive_config=config)
+    for witness in observation.witnesses.values():
+        witness.reobserve(client)
+
+
 def inspect_drive_readiness(
     sources: Sequence[Source],
     source: sqlite3.Connection | None,
@@ -118,7 +129,7 @@ def inspect_drive_readiness(
     failures: list[DriveFileFailure] = []
     gaps: set[str] = set()
     enumerated = acquired = pending = 0
-    unknown = changed = False
+    unknown = changed = blocked = False
     for item in configured:
         witness = witnesses.get(item.name)
         if witness is None or witness.folder_ref != item.folder:
@@ -166,13 +177,13 @@ def inspect_drive_readiness(
                 gaps.add("drive_raw_not_retained")
                 continue
             acquired += 1
-            if row[1] is not None:
-                terminal = any(
-                    (kind, support) in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS
-                    for kind, support in source.execute(
-                        "SELECT artifact_kind,support_status FROM raw_artifacts WHERE raw_id=?", (raw_id,)
-                    )
+            terminal = any(
+                (kind, support) in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS
+                for kind, support in source.execute(
+                    "SELECT artifact_kind,support_status FROM raw_artifacts WHERE raw_id=?", (raw_id,)
                 )
+            )
+            if row[1] is not None or terminal:
                 failures.append(DriveFileFailure(coordinate, "drive_raw_parse_refused", terminal))
                 continue
             memberships = source.execute(
@@ -183,8 +194,11 @@ def inspect_drive_readiness(
             materialized = census is not None and census[0] == "complete"
             for key, decision in memberships:
                 member_count += 1
-                if decision in {MembershipDecision.AMBIGUOUS, MembershipDecision.DEFERRED}:
-                    failures.append(DriveFileFailure(coordinate, "drive_membership_" + str(decision), True))
+                if decision == MembershipDecision.AMBIGUOUS:
+                    blocked = True
+                    failures.append(DriveFileFailure(coordinate, "drive_membership_ambiguous"))
+                elif decision == MembershipDecision.DEFERRED:
+                    gaps.add("drive_membership_deferred")
                 if decision not in {
                     MembershipDecision.APPLIED,
                     MembershipDecision.SUPERSEDED_PREFIX,
@@ -211,7 +225,9 @@ def inspect_drive_readiness(
     if not raw_owner_available:
         unknown = True
         gaps.add("drive_raw_owner_unavailable")
-    if failures:
+    if blocked:
+        state = DriveCatchupState.BLOCKED
+    elif failures:
         state = (
             DriveCatchupState.BLOCKED if any(failure.permanent for failure in failures) else DriveCatchupState.RETRYABLE
         )
@@ -240,13 +256,13 @@ def inspect_drive_readiness(
 def configured_source_component(report: DriveCatchupReport) -> dict[str, object]:
     return {
         "component": "configured_sources",
-        "scope": "configured_source_completeness",
+        "scope": "configured_remote_source_completeness",
         "state": "ready"
         if report.state is DriveCatchupState.COMPLETE
         else "unknown"
         if report.state is DriveCatchupState.UNKNOWN
         else "degraded",
-        "summary": "configured sources complete"
+        "summary": "configured remote sources complete"
         if report.state is DriveCatchupState.COMPLETE
         else "Drive source completeness: " + report.state.value,
         "counts": {
@@ -277,6 +293,22 @@ def configured_status_sources(config: object | None) -> tuple[Source, ...] | Non
     return None
 
 
+def configured_source_observation_fingerprint(config: Config | PolylogueConfig) -> str:
+    """Bind a cached status reading to its executing scope and listing custody."""
+    root = Path(config.archive_root)
+    sources = configured_status_sources(config)
+    with _OBSERVATION_LOCK:
+        observation = _OBSERVATIONS.get(root.absolute())
+        witnesses = {} if observation is None else observation.witnesses.copy()
+    identity = (
+        str(root.absolute()),
+        None if sources is None else tuple((source.name, source.folder) for source in sources if source.is_drive),
+        DriveListingWitness.selection_rule,
+        tuple(sorted((name, id(witness), witness.generation) for name, witness in witnesses.items())),
+    )
+    return hashlib.sha256(repr(identity).encode()).hexdigest()
+
+
 def configured_source_readiness_from_archive(archive: object, config: object | None) -> dict[str, object]:
     """The single composer shared by resident and executing status snapshots."""
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -287,13 +319,17 @@ def configured_source_readiness_from_archive(archive: object, config: object | N
     if sources is None:
         report = DriveCatchupReport(DriveCatchupState.UNKNOWN, gaps=("drive_configuration_unobserved",))
     else:
-        try:
-            report = inspect_drive_readiness(
+        measured = capture_sqlite_read(
+            lambda: inspect_drive_readiness(
                 sources,
-                archive.source_connection,
+                None if "source" in archive.operation_degraded_components else archive.source_connection,
                 archive.index_connection,
                 drive_readiness_observation(Path(archive.archive_root)).witnesses,
             )
-        except (sqlite3.Error, OSError):
-            report = DriveCatchupReport(DriveCatchupState.UNKNOWN, gaps=("drive_archive_authority_unavailable",))
+        )
+        report = (
+            measured.value
+            if isinstance(measured, Measured)
+            else DriveCatchupReport(DriveCatchupState.UNKNOWN, gaps=("drive_archive_authority_unavailable",))
+        )
     return configured_source_component(report)

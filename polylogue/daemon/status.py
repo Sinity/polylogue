@@ -2217,7 +2217,7 @@ _UNMEASURED_SINEX_PUBLICATION: dict[str, object] = {
 
 def _configured_source_readiness_info() -> dict[str, object]:
     from polylogue.config import get_config
-    from polylogue.operations.daemon_status import _attachment_component
+    from polylogue.operations.daemon_status import _attachment_component, _source_connection
     from polylogue.operations.drive_readiness import configured_source_readiness_from_archive
     from polylogue.operations.operation_context import open_operation_read
 
@@ -2226,9 +2226,20 @@ def _configured_source_readiness_info() -> dict[str, object]:
         return {
             "configured_sources": configured_source_readiness_from_archive(pinned.archive, config),
             "attachments": _attachment_component(
-                pinned.archive.index_connection, pinned.archive.source_connection
+                pinned.archive.index_connection, _source_connection(pinned.archive)
             ).to_dict(),
         }
+
+
+def _configured_source_status_fingerprint() -> str:
+    from polylogue.config import get_config
+    from polylogue.operations.drive_readiness import configured_source_observation_fingerprint
+
+    return (
+        _daemon_status_fingerprint(_active_status_db_path())
+        + ":"
+        + configured_source_observation_fingerprint(get_config())
+    )
 
 
 def _daemon_status_component_specs(
@@ -2255,7 +2266,7 @@ def _daemon_status_component_specs(
             collector=_configured_source_readiness_info,
             deadline_s=2.0,
             cost_class="moderate",
-            fingerprint=fingerprint,
+            fingerprint=_configured_source_status_fingerprint,
         ),
         StatusComponentSpec(
             name="sinex_publication",
@@ -2671,7 +2682,10 @@ def build_daemon_status(
         """
         snapshot = snapshots[name]
         if unmeasured is not _UNMEASURED_UNSET and _component_is_unmeasured(
-            snapshot, current_fingerprint=current_fingerprint
+            snapshot,
+            current_fingerprint=_configured_source_status_fingerprint()
+            if name == "configured_source_readiness"
+            else current_fingerprint,
         ):
             return unmeasured
         value = snapshot.value

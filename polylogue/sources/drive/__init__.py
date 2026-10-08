@@ -9,6 +9,7 @@ from pathlib import Path
 
 import ijson
 
+from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.storage.blob_publication import publication_receipt_id
@@ -214,8 +215,11 @@ def download_drive_files(
         dest_path = drive_cache_file_path(drive_cache_directory(dest_dir, folder_id), file_id)
 
         try:
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
             client.download_to_path(file_id, dest_path)
             downloaded.append(dest_path)
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
             logger.warning("Failed to download %s (%s): %s", name, file_id, exc)
             failed.append(
@@ -311,6 +315,8 @@ def iter_drive_raw_data(
                     ):
                         witness.changed = True
                         continue
+                except DaemonOperationCancelled:
+                    raise
                 except Exception as exc:
                     tracker.record_failure(file_name=file_meta.name, error=exc)
                     witness.record_failure(source_path, "download", exc)
@@ -323,6 +329,8 @@ def iter_drive_raw_data(
                     continue
                 try:
                     _write_cache_atomically(cache_path, raw_bytes, file_meta.modified_time)
+                except DaemonOperationCancelled:
+                    raise
                 except Exception as exc:
                     tracker.record_failure(file_name=file_meta.name, error=exc)
                     witness.record_failure(source_path, "cache", exc)
@@ -330,6 +338,8 @@ def iter_drive_raw_data(
 
             try:
                 blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
+            except DaemonOperationCancelled:
+                raise
             except Exception as exc:
                 tracker.record_failure(file_name=file_meta.name, error=exc)
                 witness.record_failure(source_path, "blob", exc)

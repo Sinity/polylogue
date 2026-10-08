@@ -25,6 +25,8 @@ def test_listing_witness_pages_the_production_drive_client_before_declaring_comp
         calls: list[str | None] = []
 
         def list_files(self, *, page_token: str | None, **kwargs: Any) -> dict[str, Any]:
+            if kwargs.get("fields") == "files(id,name)":
+                return {"files": [{"id": "resolved-folder", "name": "configured-folder"}]}
             self.calls.append(page_token)
             ordinal = int(page_token or "0")
             files = (
@@ -45,6 +47,13 @@ def test_listing_witness_pages_the_production_drive_client_before_declaring_comp
                 result["nextPageToken"] = str(ordinal + 1)
             return result
 
+        def get_file(self, file_id: str, fields: str) -> dict[str, Any]:
+            return {
+                "id": "resolved-folder",
+                "name": "configured-folder",
+                "mimeType": "application/vnd.google-apps.folder",
+            }
+
     gateway = Gateway()
     client = DriveSourceClient(gateway=gateway)  # type: ignore[arg-type]
     witness = DriveListingWitness("aistudio", "configured-folder")
@@ -55,6 +64,8 @@ def test_listing_witness_pages_the_production_drive_client_before_declaring_comp
         assert summary["listed_count"] == count
         assert summary["listing_complete"] is summary["postlisting_complete"] is True
         assert summary["listing_digest"]
+        assert summary["postlisting_digest"] == summary["listing_digest"]
+        assert summary["postlisted_count"] == count
         assert gateway.calls == ([None] if count == 0 else [None, "1", "2"]) * 2
         assert not client._meta_cache  # Metadata stays on disk, not in a folder-sized Python cache.
         bootstrap_archive_root(tmp_path)
@@ -104,6 +115,9 @@ def test_postlisting_reobserves_native_membership_changes(tmp_path: Path, change
     class Client:
         files = [DriveFile("one", "name", GEMINI_PROMPT_MIME_TYPE, "2026-01-01T00:00:00Z", 1)]
 
+        def resolve_folder_id(self, folder: str) -> str:
+            return folder
+
         def iter_json_files(self, folder: str) -> Iterator[DriveFile]:
             yield from self.files
 
@@ -117,6 +131,28 @@ def test_postlisting_reobserves_native_membership_changes(tmp_path: Path, change
             client.files.clear()
         else:
             client.files[0].modified_time = "2026-01-02T00:00:00Z"
+        witness.reobserve(client)  # type: ignore[arg-type]
+        assert witness.changed
+        assert witness.postlisting_complete
+    finally:
+        witness.close()
+
+
+def test_postlisting_detects_named_folder_resolution_change() -> None:
+    class Client:
+        resolved = "first-folder"
+
+        def resolve_folder_id(self, folder: str) -> str:
+            return self.resolved
+
+        def iter_json_files(self, folder: str) -> Iterator[DriveFile]:
+            return iter(())
+
+    client = Client()
+    witness = DriveListingWitness("aistudio", "named-folder")
+    try:
+        witness.enumerate(client, client.resolved)  # type: ignore[arg-type]
+        client.resolved = "second-folder"
         witness.reobserve(client)  # type: ignore[arg-type]
         assert witness.changed
         assert witness.postlisting_complete

@@ -794,13 +794,20 @@ def _components(
     return components
 
 
-def _attachment_component(index_conn: sqlite3.Connection, source_conn: sqlite3.Connection | None) -> ComponentReadiness:
+def _attachment_component(
+    index_conn: sqlite3.Connection | None, source_conn: sqlite3.Connection | None
+) -> ComponentReadiness:
+    from polylogue.core.evidence import Measured
     from polylogue.operations.attachment_convergence import inspect_attachment_readiness
     from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
+    from polylogue.storage.tier_access import capture_sqlite_read
 
-    try:
-        counts = inspect_attachment_readiness(index_conn, source_conn)
-    except (sqlite3.Error, OSError):
+    measured = (
+        None
+        if index_conn is None or source_conn is None
+        else capture_sqlite_read(lambda: inspect_attachment_readiness(index_conn, source_conn))
+    )
+    if not isinstance(measured, Measured):
         return ComponentReadiness(
             component="attachments",
             scope="owed_drive_references",
@@ -808,6 +815,7 @@ def _attachment_component(index_conn: sqlite3.Connection, source_conn: sqlite3.C
             summary="attachment authority unavailable",
             caveats=("attachment_authority_unavailable",),
         )
+    counts = measured.value
     pending = counts["allowed_unfetched"]
     blocked = counts["unresolved_identity"] + counts["unattributed"]
     return ComponentReadiness(

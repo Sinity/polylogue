@@ -56,6 +56,7 @@ from polylogue.sources.drive import (
     iter_drive_raw_data,
 )
 from polylogue.sources.drive.types import DriveFile
+from polylogue.sources.drive.witness import drive_cache_directory, drive_source_coordinate
 from polylogue.sources.emitter import _SessionEmitter
 from polylogue.sources.parsers import chatgpt as chatgpt_parser
 from polylogue.sources.parsers import claude as claude_parser
@@ -1281,16 +1282,15 @@ def test_iter_source_sessions_skips_agent_meta_sidecars(tmp_path: Path) -> None:
     assert raw_items[0].source_path.endswith("agent-a123.meta.json")
 
 
-def test_drive_cache_file_path_sanitizes_and_normalizes_suffix_contract(tmp_path: Path) -> None:
-    """Drive cache naming must sanitize names and append a supported JSON suffix."""
-    sanitized = drive_cache_file_path(tmp_path, "../Prompt Export")
+def test_drive_cache_file_path_uses_exact_native_identity_contract(tmp_path: Path) -> None:
+    """Two native IDs remain distinct even when presentation names collide."""
+    import hashlib
 
-    assert sanitized.parent == tmp_path
-    assert sanitized.suffix == ".json"
-    assert ".." not in sanitized.name
-    assert "Prompt" in sanitized.stem
-    assert drive_cache_file_path(tmp_path, "session.jsonl") == tmp_path / "session.jsonl"
-    assert drive_cache_file_path(tmp_path, "trace.ndjson") == tmp_path / "trace.ndjson"
+    for file_id in ("../Prompt Export", "session.jsonl", "trace.ndjson"):
+        assert drive_cache_file_path(tmp_path, file_id) == tmp_path / (
+            hashlib.sha256(file_id.encode()).hexdigest() + ".json"
+        )
+    assert drive_cache_file_path(tmp_path, "session") != drive_cache_file_path(tmp_path, "session.json")
 
 
 def _parse_context(
@@ -2265,6 +2265,9 @@ class _StubDriveRawClient:
         del folder_id
         yield from self.files
 
+    def get_metadata(self, file_id: str, *, refresh: bool = False) -> DriveFile:
+        return next(file for file in self.files if file.file_id == file_id)
+
     def download_bytes(self, file_id: str) -> bytes:
         if file_id in self.failures:
             raise self.failures[file_id]
@@ -2301,8 +2304,8 @@ def test_iter_drive_raw_data_contract() -> None:
     items = list(iter_drive_raw_data(source=source, client=client, cursor_state=cursor_state))
 
     assert [item.source_path for item in items] == [
-        "/tmp/drive-cache/chatgpt-export.json",
-        "/tmp/drive-cache/gemini-prompt.json",
+        drive_source_coordinate("gemini", "folder:Google AI Studio", "chatgpt-1"),
+        drive_source_coordinate("gemini", "folder:Google AI Studio", "gemini-1"),
     ]
     assert [item.provider_hint for item in items] == [Provider.GEMINI, Provider.GEMINI]
     assert [item.file_mtime for item in items] == ["2025-01-01T00:00:00Z", "2025-01-01T00:05:00Z"]
@@ -2335,7 +2338,7 @@ def test_iter_drive_raw_data_reports_status_and_observations(monkeypatch: pytest
     assert len(items) == 1
     assert statuses == ["Scanning [gemini] reading gemini-prompt.json"]
     assert observations[0]["phase"] == "drive-file-streamed"
-    assert observations[0]["source_path"] == "/tmp/drive-cache/gemini-prompt.json"
+    assert observations[0]["source_path"] == drive_source_coordinate("gemini", "folder:Google AI Studio", "gemini-1")
     assert observations[0]["drive_file_id"] == "gemini-1"
     assert observations[0]["drive_file_name"] == "gemini-prompt.json"
 
@@ -2359,11 +2362,11 @@ def test_iter_drive_raw_data_skips_known_mtimes_and_tracks_failures() -> None:
             source=source,
             client=client,
             cursor_state=cursor_state,
-            known_mtimes={"/tmp/drive-cache/cached.json": "2025-01-01T00:00:00Z"},
+            known_mtimes={drive_source_coordinate("gemini", "folder:Google AI Studio", "old"): "2025-01-01T00:00:00Z"},
         )
     )
 
-    assert [item.source_path for item in items] == ["/tmp/drive-cache/new.json"]
+    assert [item.source_path for item in items] == [drive_source_coordinate("gemini", "folder:Google AI Studio", "new")]
     assert cursor_state["file_count"] == 3
     assert cursor_state["error_count"] == 1
     assert cursor_state["latest_error_file"] == "broken.json"
@@ -2387,7 +2390,7 @@ def test_download_drive_files_contract() -> None:
 
         assert result.total_files == 2
         assert len(result.downloaded_files) == 1
-        assert result.downloaded_files[0].name == "session.json"
+        assert result.downloaded_files[0] == drive_cache_file_path(drive_cache_directory(Path(tmp), folder_id), "one")
         assert result.downloaded_files[0].read_bytes() == b'{"id":"ok"}'
         assert result.failed_files == [{"file_id": "two", "name": "bad.jsonl", "error": "boom"}]
 

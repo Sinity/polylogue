@@ -51,6 +51,7 @@ class DriveListingWitness:
         self.listing_complete = False
         self.postlisting_complete = False
         self.changed = False
+        self.generation = 0
         self._lock = threading.RLock()
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-drive-listing-")
         self._conn = sqlite3.connect(Path(self._scratch.name) / "listing.sqlite", check_same_thread=False)
@@ -63,6 +64,7 @@ class DriveListingWitness:
         )
 
     def enumerate(self, client: DriveSourceAPI, folder_id: str) -> None:
+        self.generation += 1
         self.folder_id = folder_id
         self.started_at = datetime.now(UTC).isoformat()
         with self._lock:
@@ -82,14 +84,18 @@ class DriveListingWitness:
             self._conn.commit()
             self.listing_complete = True
             self.listed_at = datetime.now(UTC).isoformat()
+            self.generation += 1
 
     def reobserve(self, client: DriveSourceAPI) -> None:
         if self.folder_id is None:
             return
         with self._lock:
+            self.generation += 1
             self.postlisting_complete = False
+            resolved = client.resolve_folder_id(self.folder_ref)
+            self.changed = self.changed or resolved != self.folder_id
             self._conn.execute("DELETE FROM current")
-            for file in client.iter_json_files(self.folder_id):
+            for file in client.iter_json_files(resolved):
                 check_compute_cancelled()
                 self._conn.execute(
                     "INSERT INTO current VALUES (?,?,?,?,?)",
@@ -105,6 +111,7 @@ class DriveListingWitness:
             )
             self.postlisting_complete = True
             self.reobserved_at = datetime.now(UTC).isoformat()
+            self.generation += 1
 
     def files(self) -> Iterator[DriveFile]:
         after = ""
@@ -135,6 +142,7 @@ class DriveListingWitness:
     def record_acquired_revision(self, coordinate: str, revision: str | None) -> None:
         with self._lock:
             self._conn.execute("UPDATE listing SET acquired_revision=? WHERE coordinate=?", (revision, coordinate))
+            self.generation += 1
 
     @property
     def acquisition_failure_count(self) -> int:
@@ -148,6 +156,7 @@ class DriveListingWitness:
     def bind_raw(self, coordinate: str, raw_id: str) -> None:
         with self._lock:
             self._conn.execute("UPDATE listing SET raw_id=? WHERE coordinate=?", (raw_id, coordinate))
+            self.generation += 1
 
     def record_failure(self, coordinate: str, phase: str, error: Exception) -> None:
         with self._lock:
@@ -160,6 +169,7 @@ class DriveListingWitness:
                     coordinate,
                 ),
             )
+            self.generation += 1
 
     @property
     def failure_count(self) -> int:
@@ -174,12 +184,20 @@ class DriveListingWitness:
                 digest.update(json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode())
                 digest.update(b"\n")
                 count += 1
+            post_digest = hashlib.sha256()
+            post_count = 0
+            for row in self._conn.execute("SELECT id,name,mime,revision,size FROM current ORDER BY id"):
+                post_digest.update(json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode())
+                post_digest.update(b"\n")
+                post_count += 1
             return {
                 "configured_source": self.source_name,
                 "resolved_folder": self.folder_id,
                 "selection_rule": self.selection_rule,
                 "listing_digest": digest.hexdigest() if self.listing_complete else None,
                 "listed_count": count if self.listing_complete else None,
+                "postlisting_digest": post_digest.hexdigest() if self.postlisting_complete else None,
+                "postlisted_count": post_count if self.postlisting_complete else None,
                 "started_at": self.started_at,
                 "listed_at": self.listed_at,
                 "reobserved_at": self.reobserved_at,

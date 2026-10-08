@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.protocols import RawPersistenceStore
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.acquisition_records import pending_pre_parse_raw_admission_request
@@ -52,6 +53,8 @@ async def persist_raw_record(
         else:
             result.skipped += 1
         return admission.result.raw_id
+    except DaemonOperationCancelled:
+        raise
     except Exception as exc:
         logger.error(
             "Failed to store raw session",

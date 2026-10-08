@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.json import JSONDocument
 from polylogue.core.metrics import read_peak_rss_self_mb
 from polylogue.core.protocols import ProgressCallback
@@ -238,6 +239,8 @@ class AcquisitionService:
                     await _consume(record)
                     if progress_callback:
                         progress_callback(1, desc=f"{progress_label} [{source.name}]")
+            except DaemonOperationCancelled:
+                raise
             except Exception as exc:
                 logger.error(
                     "Failed to scan source",
@@ -415,6 +418,8 @@ class AcquisitionService:
                     observation = await self.execution.prepare(
                         lambda: inspect_raw_artifact(record, blob_store=blob_publisher)
                     )
+                except DaemonOperationCancelled:
+                    raise
                 except Exception as exc:
                     preparation_error = exc
             pending_records.append((record, observation, preparation_error))

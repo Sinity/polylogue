@@ -794,10 +794,10 @@ async def test_drive_report_binds_full_listing_to_actual_retained_materializatio
         monkeypatch.setattr(client, "download_bytes", fail)
     elif failure == "persist":
 
-        async def fail(*args: Any, **kwargs: Any) -> None:
+        async def fail_persist(*args: Any, **kwargs: Any) -> None:
             raise sqlite3.OperationalError("synthetic persistence failure")
 
-        monkeypatch.setattr(SessionRepository, "admit_raw", fail)
+        monkeypatch.setattr(SessionRepository, "admit_raw", fail_persist)
     elif failure == "revision_race":
         client.before_download = lambda: setattr(client, "modified_time", "2026-01-02T00:00:00Z")
     monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: client)
@@ -901,5 +901,43 @@ async def test_drive_acquired_backlog_is_pending_and_restart_requires_new_listin
     for result in (acquired, restarted):
         for witness in result.acquire_result.drive_witnesses.values():
             witness.close()
+    await parser.repository.close()
+    assert await coordinator.shutdown(timeout=30)
+
+
+@pytest.mark.parametrize("decision,state", [("deferred", "pending"), ("ambiguous", "blocked")])
+async def test_drive_membership_debt_keeps_its_canonical_readiness_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decision: str, state: str
+) -> None:
+    parser, source, coordinator = await make_parser(tmp_path, monkeypatch)
+    monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: DriveClient())
+    result = await parser.ingest_sources(sources=[source])
+    with sqlite3.connect(tmp_path / "source.db") as raw:
+        raw.execute("UPDATE raw_session_memberships SET decision=?", (decision,))
+    report = _read_drive_report(parser, source, result.acquire_result.drive_witnesses)
+    assert report.state.value == state
+    assert report.materialization_pending == 1
+    assert not any(failure.permanent for failure in report.failures)
+    for witness in result.acquire_result.drive_witnesses.values():
+        witness.close()
+    await parser.repository.close()
+    assert await coordinator.shutdown(timeout=30)
+
+
+async def test_drive_terminal_no_session_evidence_blocks_even_without_parse_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.operations.drive_readiness import DriveCatchupState
+
+    parser, source, coordinator = await make_parser(tmp_path, monkeypatch)
+    client = DriveClient()
+    monkeypatch.setattr(client, "download_bytes", lambda file_id: b'{"unrecognized_neutral_shape":true}')
+    monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: client)
+    result = await parser.ingest_sources(sources=[source])
+    report = _read_drive_report(parser, source, result.acquire_result.drive_witnesses)
+    assert report.state is DriveCatchupState.BLOCKED
+    assert report.failures[0].permanent
+    for witness in result.acquire_result.drive_witnesses.values():
+        witness.close()
     await parser.repository.close()
     assert await coordinator.shutdown(timeout=30)
