@@ -112,6 +112,82 @@ def test_message_content_hash_tracks_same_identity_body_edits(tmp_path: Path) ->
         conn.close()
 
 
+@pytest.mark.parametrize(
+    "field", ["text", "user_context_text", "model_name", "model_effort", "sender_name", "recipient", "delivery_status"]
+)
+def test_message_row_digest_preserves_absent_empty_and_literal_tag_on_replacement(tmp_path: Path, field: str) -> None:
+    """The same native message changes its row digest when optional content changes."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        hashes = []
+        for value in (None, "", "="):
+            message = ParsedMessage(
+                provider_message_id="same",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="retained block")],
+            )
+            message = message.model_copy(update={field: value})
+            session = ParsedSession(
+                source_name=Provider.CODEX, provider_session_id="optional-message", messages=[message]
+            )
+            session_id = write_fixture_index_session(conn, session)
+            row = conn.execute("SELECT * FROM messages WHERE session_id=?", (session_id,)).fetchone()
+            if field != "text":
+                assert row[field] == value
+            hashes.append(bytes(row["content_hash"]))
+            archive_tier_write._rehash_session_messages(conn, session_id)
+            conn.commit()
+            assert (
+                conn.execute("SELECT content_hash FROM messages WHERE session_id=?", (session_id,)).fetchone()[0]
+                == hashes[-1]
+            )
+        assert len(set(hashes)) == 3
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("field", ["text", "tool_name", "tool_id", "media_type", "language"])
+def test_block_digests_preserve_absent_empty_and_literal_tag_on_replacement(tmp_path: Path, field: str) -> None:
+    """Persisted block evidence and stored-row rehash use the parsed framing."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        message_hashes, evidence_hashes = [], []
+        for value in (None, "", "="):
+            block = ParsedContentBlock(type=BlockType.TEXT)
+            block = block.model_copy(
+                update={"metadata": {"language": value}} if field == "language" else {field: value}
+            )
+            session = ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="optional-block",
+                messages=[ParsedMessage(provider_message_id="same", role=Role.USER, blocks=[block])],
+            )
+            session_id = write_fixture_index_session(conn, session)
+            row = conn.execute("SELECT * FROM blocks WHERE session_id=?", (session_id,)).fetchone()
+            assert row[field] == value
+            envelope = read_archive_session_envelope(conn, session_id)
+            assert envelope is not None
+            if field == "text":
+                assert envelope.messages[0].blocks[0].text == value
+            evidence_hashes.append(bytes(row["content_hash"]))
+            message_hashes.append(
+                bytes(conn.execute("SELECT content_hash FROM messages WHERE session_id=?", (session_id,)).fetchone()[0])
+            )
+            archive_tier_write._rehash_session_messages(conn, session_id)
+            conn.commit()
+            assert (
+                conn.execute("SELECT content_hash FROM messages WHERE session_id=?", (session_id,)).fetchone()[0]
+                == message_hashes[-1]
+            )
+        assert len(set(message_hashes)) == 3
+        if field != "tool_id":  # Citation evidence deliberately excludes regenerated tool identity.
+            assert len(set(evidence_hashes)) == 3
+        else:
+            assert len(set(evidence_hashes)) == 1
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize("is_error, expected_outcome", [(False, "ok"), (True, "error")])
 def test_merge_append_reconciles_tool_use_from_prior_batch(
     tmp_path: Path, is_error: bool, expected_outcome: str
@@ -3767,6 +3843,58 @@ def test_archive_tiers_writer_replacement_clears_old_projection_rows(tmp_path: P
         ("session_provider_usage_events", "idx_session_provider_usage_events_source_message"),
     ):
         assert any(row["name"] == index_name for row in conn.execute(f"PRAGMA index_list({table})"))
+
+
+@pytest.mark.parametrize("foreign_keys", [True, False], ids=["ordinary", "bulk-rebuild"])
+def test_full_replacement_removes_attachment_identity_dependents_with_foreign_keys_off(
+    tmp_path: Path, foreign_keys: bool
+) -> None:
+    """Full replacement removes discarded refs' IDs and conserves another session."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        sessions = {}
+        for name in ("replaced", "retained"):
+            session = ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=name,
+                messages=[ParsedMessage(provider_message_id="old", role=Role.USER, text="Neutral attachment")],
+                attachments=[
+                    ParsedAttachment(
+                        provider_attachment_id=name + "-attachment",
+                        message_provider_id="old",
+                        name=name + ".txt",
+                        mime_type="text/plain",
+                        size_bytes=1,
+                    )
+                ],
+            )
+            sessions[name] = session
+            write_fixture_index_session(conn, session)
+        retained_ids = list(
+            conn.execute(
+                "SELECT n.ref_id,n.id_kind,n.native_id FROM attachment_native_ids n "
+                "JOIN attachment_refs r ON r.ref_id=n.ref_id WHERE r.session_id='codex-session:retained'"
+            )
+        )
+        assert retained_ids
+        assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] > len(retained_ids)
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = " + ("ON" if foreign_keys else "OFF"))
+        assert bool(conn.execute("PRAGMA foreign_keys").fetchone()[0]) is foreign_keys
+        replacement = sessions["replaced"].model_copy(
+            update={
+                "messages": [ParsedMessage(provider_message_id="new", role=Role.USER, text="Neutral replacement")],
+                "attachments": [],
+            }
+        )
+        session_id = write_fixture_index_session(conn, replacement, force_replace=True)
+        assert conn.execute("SELECT native_id FROM messages WHERE session_id=?", (session_id,)).fetchone()[0] == "new"
+        assert list(conn.execute("PRAGMA foreign_key_check")) == []
+        assert list(conn.execute("SELECT ref_id,id_kind,native_id FROM attachment_native_ids")) == retained_ids
+        envelope = read_archive_session_envelope(conn, session_id)
+        assert envelope is not None and envelope.messages[0].blocks[0].text == "Neutral replacement"
+    finally:
+        conn.close()
 
 
 def test_archive_tiers_writer_materializes_attachments_and_refs(tmp_path: Path) -> None:

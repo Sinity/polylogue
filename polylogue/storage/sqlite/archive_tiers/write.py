@@ -3259,6 +3259,12 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
         (session_id,),
     )
     _purge_session_message_fts_when_delete_trigger_missing(conn, session_id)
+    # Bulk rebuilds disable foreign keys, so mirror the refs' child cascade
+    # while their session membership can still identify the dependent rows.
+    conn.execute(
+        "DELETE FROM attachment_native_ids WHERE ref_id IN (SELECT ref_id FROM attachment_refs WHERE session_id = ?)",
+        (session_id,),
+    )
     for table in (
         "blocks",
         "attachment_refs",
@@ -4426,21 +4432,31 @@ def _message_content_hash(
     )
 
 
+def _row_digest_text(value: str | None) -> str:
+    """Frame optional stored text: absent is empty, every present value starts with ``=``.
+
+    The tag makes NULL, an empty string and literal tag strings disjoint.
+    SQLite's surrogate replacement is shared by parsed and stored-row routes.
+    """
+    text = _sqlite_text(value)
+    return "" if text is None else "=" + text
+
+
 def _message_fields_digest(message: ParsedMessage) -> bytes:
     """The message's own content fields, apart from its identity and its blocks."""
     return _hash_bytes(
         "message-fields",
-        _enum_value(message.role) or "",
-        _enum_value(message.message_type) or "",
-        _enum_value(message.material_origin) or "",
-        _sqlite_text(message.text) or "",
-        _sqlite_text(message.user_context_text) or "",
-        _enum_value(message.stop_reason) or "",
-        _sqlite_text(message.model_name) or "",
-        _sqlite_text(message.model_effort) or "",
-        _sqlite_text(message.sender_name) or "",
-        _sqlite_text(message.recipient) or "",
-        _sqlite_text(message.delivery_status) or "",
+        _row_digest_text(_enum_value(message.role)),
+        _row_digest_text(_enum_value(message.message_type)),
+        _row_digest_text(_enum_value(message.material_origin)),
+        _row_digest_text(message.text),
+        _row_digest_text(message.user_context_text),
+        _row_digest_text(_enum_value(message.stop_reason)),
+        _row_digest_text(message.model_name),
+        _row_digest_text(message.model_effort),
+        _row_digest_text(message.sender_name),
+        _row_digest_text(message.recipient),
+        _row_digest_text(message.delivery_status),
         "" if message.end_turn is None else str(int(message.end_turn)),
         "" if message.occurred_at_ms is None else str(message.occurred_at_ms),
     )
@@ -4450,16 +4466,16 @@ def _parsed_block_hash_parts(message: ParsedMessage) -> Iterator[str]:
     for block in _message_blocks(message):
         yield from (
             _block_type(block).value,
-            _sqlite_text(block.text) or "",
-            _sqlite_text(block.tool_name) or "",
-            _sqlite_text(block.tool_id) or "",
-            _json_dumps(block.tool_input) if block.tool_input is not None else "",
-            _sqlite_text(_semantic_type(block)) or "",
-            _sqlite_text(block.media_type) or "",
-            _sqlite_text(_block_language(block)) or "",
+            _row_digest_text(block.text),
+            _row_digest_text(block.tool_name),
+            _row_digest_text(block.tool_id),
+            _row_digest_text(_json_dumps(block.tool_input) if block.tool_input is not None else None),
+            _row_digest_text(_semantic_type(block)),
+            _row_digest_text(block.media_type),
+            _row_digest_text(_block_language(block)),
             "" if block.is_error is None else str(int(block.is_error)),
             "" if block.exit_code is None else str(block.exit_code),
-            _enum_value(block.tool_outcome) or "",
+            _row_digest_text(_enum_value(block.tool_outcome)),
         )
 
 
@@ -4470,16 +4486,16 @@ def _stored_block_hash_parts(block_rows: Iterable[Sequence[object]], b_idx: Mapp
         exit_code = row[b_idx["tool_result_exit_code"]]
         yield from (
             cast(str, row[b_idx["block_type"]]),
-            cast("str | None", row[b_idx["text"]]) or "",
-            cast("str | None", row[b_idx["tool_name"]]) or "",
-            cast("str | None", row[b_idx["tool_id"]]) or "",
-            cast("str | None", row[b_idx["tool_input"]]) or "",
-            cast("str | None", row[b_idx["semantic_type"]]) or "",
-            cast("str | None", row[b_idx["media_type"]]) or "",
-            cast("str | None", row[b_idx["language"]]) or "",
+            _row_digest_text(cast("str | None", row[b_idx["text"]])),
+            _row_digest_text(cast("str | None", row[b_idx["tool_name"]])),
+            _row_digest_text(cast("str | None", row[b_idx["tool_id"]])),
+            _row_digest_text(cast("str | None", row[b_idx["tool_input"]])),
+            _row_digest_text(cast("str | None", row[b_idx["semantic_type"]])),
+            _row_digest_text(cast("str | None", row[b_idx["media_type"]])),
+            _row_digest_text(cast("str | None", row[b_idx["language"]])),
             "" if is_error is None else str(int(cast(int, is_error))),
             "" if exit_code is None else str(cast(int, exit_code)),
-            cast("str | None", row[b_idx["tool_outcome"]]) or "",
+            _row_digest_text(cast("str | None", row[b_idx["tool_outcome"]])),
         )
 
 
@@ -4516,12 +4532,12 @@ def _row_fields_digest(row: Sequence[object], m_idx: Mapping[str, int]) -> bytes
     return _hash_bytes(
         "message-fields",
         *(
-            "" if row[m_idx[name]] is None else str(row[m_idx[name]])
+            _row_digest_text(None if row[m_idx[name]] is None else str(row[m_idx[name]]))
             for name in ("role", "message_type", "material_origin")
         ),
         "",
         *(
-            "" if row[m_idx[name]] is None else str(row[m_idx[name]])
+            _row_digest_text(None if row[m_idx[name]] is None else str(row[m_idx[name]]))
             for name in (
                 "user_context_text",
                 "stop_reason",
@@ -4530,10 +4546,9 @@ def _row_fields_digest(row: Sequence[object], m_idx: Mapping[str, int]) -> bytes
                 "sender_name",
                 "recipient",
                 "delivery_status",
-                "end_turn",
-                "occurred_at_ms",
             )
         ),
+        *("" if row[m_idx[name]] is None else str(row[m_idx[name]]) for name in ("end_turn", "occurred_at_ms")),
     )
 
 
@@ -4574,17 +4589,17 @@ def _block_content_hash(
     return _hash_bytes(
         "block",
         block_type,
-        _sqlite_text(text) or "",
-        _sqlite_text(tool_name) or "",
-        tool_input_json or "",
-        _sqlite_text(semantic_type) or "",
-        _sqlite_text(media_type) or "",
-        _sqlite_text(language) or "",
+        _row_digest_text(text),
+        _row_digest_text(tool_name),
+        _row_digest_text(tool_input_json),
+        _row_digest_text(semantic_type),
+        _row_digest_text(media_type),
+        _row_digest_text(language),
         "" if is_error is None else str(int(is_error)),
         "" if exit_code is None else str(exit_code),
-        _enum_value(tool_outcome) or "",
-        outcome_unknown_reason or "",
-        semantic_extra_json or "",
+        _row_digest_text(_enum_value(tool_outcome)),
+        _row_digest_text(outcome_unknown_reason),
+        _row_digest_text(semantic_extra_json),
     )
 
 
