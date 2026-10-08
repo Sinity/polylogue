@@ -1082,6 +1082,7 @@ class TestReaderSearchState:
         assert payload["total"] == 3
         assert len(payload["items"]) == 3
         row = next(item for item in payload["items"] if item["id"] == "claude-code-session:c1")
+        assert isinstance(row["word_count"], int)
         assert row["target_ref"] == {
             "target_type": "session",
             "target_id": "claude-code-session:c1",
@@ -3763,6 +3764,19 @@ class TestQueryNoResultsDiagnosticPath:
         assert "total" in payload
         assert payload["total"] == 0
         assert payload["items"] == []
+
+    def test_list_missing_session_is_empty_and_ambiguous_session_is_rejected(
+        self, workspace_env: dict[str, Path]
+    ) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            missing_status, missing = _get_json_ex(base_url, "/api/sessions?conv_id=absent-session")
+            ambiguous_status, ambiguous = _get_json_ex(base_url, "/api/sessions?conv_id=c")
+        assert missing_status == 200
+        assert missing["items"] == []
+        assert missing["total"] == 0
+        assert missing["route_state"]["state"] == "no_results"
+        assert ambiguous_status == 400
+        assert ambiguous["error"] == "QuerySpecError"
 
     def test_facets_global_returns_origins(self, workspace_env: dict[str, Path]) -> None:
         """Unscoped /api/facets returns scoped_to_query=False with origin counts."""

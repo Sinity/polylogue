@@ -3347,17 +3347,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if spec.similar_text or spec.similar_session_id:
             return await self._do_search_list(poly, spec, limit, offset, route=route)
 
-        filter_obj = spec.build_filter(poly.config)
         try:
-            summaries = await filter_obj.list_summaries()
+            summaries, total = await poly.list_session_summaries_with_count(spec)
         except ValueError as exc:
             if spec.session_id is None:
                 raise
             from polylogue.archive.query.spec import QuerySpecError
 
             raise QuerySpecError("id", spec.session_id) from exc
-        total = await spec.count(poly.config)
-
         diagnostics = None
         if not summaries and spec.has_filters():
             with contextlib.suppress(ImportError):

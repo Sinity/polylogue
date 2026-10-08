@@ -401,6 +401,76 @@ def test_random_post_filter_consumes_one_controlled_permutation(
     assert [row.session_id for row in rows] == [ids["action-one"]]
 
 
+def test_random_post_filter_deduplicates_sessions_across_fts_batches(
+    lane_archive: LaneArchive, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session with >500 matching blocks cannot consume a two-session page."""
+    from polylogue.archive.query.archive_execution import _archive_summaries
+
+    root, config, _ids = lane_archive
+    first = SessionBuilder(root / "index.db", "many-blocks").provider("codex").title("many blocks")
+    for index in range(501):
+        first.add_message(f"many-{index}", role="user", text="batchmarker")
+    first.save()
+    first_id = first.native_session_id()
+    second = SessionBuilder(root / "index.db", "last-block").provider("codex").title("last block")
+    second.add_message("one", role="user", text="batchmarker")
+    second.save()
+    second_id = second.native_session_id()
+
+    with open_operation_read(root) as pinned:
+        archive = pinned.archive
+        actual_matches = list(archive.iter_search_summaries("batchmarker", limit=None, sort="date"))
+        first_hits = [hit for hit in actual_matches if hit.session_id == first_id]
+        second_hits = [hit for hit in actual_matches if hit.session_id == second_id]
+        assert len(first_hits) == 501
+        assert len(second_hits) == 1
+        controlled = [*first_hits, *second_hits]
+
+        def one_random_permutation(*_args: object, **_kwargs: object) -> Iterator[object]:
+            yield from controlled
+
+        monkeypatch.setattr(archive, "iter_search_summaries", one_random_permutation)
+        plan = SessionQueryPlan(sort="random", query_terms=("batchmarker",), negative_terms=("unused",), limit=2)
+        rows = _archive_summaries(
+            plan,
+            archive,
+            config=config,
+            archive_root=root,
+            default_limit=2,
+            keep=lambda batch: batch,
+        )
+
+    assert [row.session_id for row in rows] == [first_id, second_id]
+
+
+@pytest.mark.asyncio
+async def test_session_list_page_and_total_share_one_snapshot(
+    lane_archive: LaneArchive, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A concurrent delete after page selection cannot make its total disagree."""
+    from polylogue.api import archive as archive_api
+
+    root, _config, ids = lane_archive
+    real_list = archive_api._archive_list_summaries_for_spec
+
+    def list_then_delete(archive: object, spec: object, **kwargs: object) -> list[object]:
+        summaries = real_list(archive, spec, **kwargs)  # type: ignore[arg-type]
+        with closing(sqlite3.connect(root / "index.db")) as writer:
+            writer.execute("DELETE FROM sessions WHERE session_id = ?", (ids["dialogue"],))
+            writer.commit()
+        return summaries
+
+    monkeypatch.setattr(archive_api, "_archive_list_summaries_for_spec", list_then_delete)
+    spec = SessionQuerySpec.from_params({"limit": 10}, strict=True)
+    async with Polylogue(archive_root=root, db_path=root / "index.db") as facade:
+        summaries, total = await facade.list_session_summaries_with_count(spec)
+        current_total = await facade.count_sessions()
+    assert len(summaries) == 3
+    assert total == 3
+    assert current_total == 2
+
+
 @pytest.mark.parametrize("sort", ("messages", "tokens", "words", "longest"))
 @pytest.mark.parametrize("reverse", (False, True))
 def test_ranked_hybrid_numeric_sort_matches_full_session_metrics(

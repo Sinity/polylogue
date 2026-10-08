@@ -5144,6 +5144,33 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             for summary in archive_summaries
         ]
 
+    async def list_session_summaries_with_count(
+        self,
+        spec: SessionQuerySpec,
+    ) -> tuple[builtins.list[SessionSummary], int]:
+        """Read one session page and its total from the same archive snapshot."""
+
+        def read(archive: Any) -> tuple[builtins.list[SessionSummary], int]:
+            if spec.session_id is not None:
+                try:
+                    archive.resolve_session_id(spec.session_id)
+                except KeyError:
+                    return [], 0
+            summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=DEFAULT_SESSION_LIST_LIMIT)
+            total = _archive_count_sessions_for_spec(archive, spec)
+            return [archive_summary_to_domain(summary) for summary in summaries], total
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.sessions.list-with-count",
+            arguments={"spec": spec},
+            work=read,
+            page_size=spec.limit,
+            offset=spec.offset,
+            projection="session-summary-and-count",
+            workload_class="scan" if spec.limit is None or spec.limit > 1000 else "interactive",
+        )
+
     async def count_sessions(
         self,
         *,

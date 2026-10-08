@@ -160,6 +160,7 @@ def _archive_summaries(
         if post_filter_fetch and sort == "random":
             random_kept_hits: list[ArchiveSessionSummary] = []
             random_kept_count = 0
+            random_seen: set[str] = set()
             with closing(
                 archive.iter_search_summaries(
                     query_text,
@@ -171,7 +172,9 @@ def _archive_summaries(
                 )
             ) as random_candidates:
                 while random_batch := list(islice(random_candidates, limit)):
-                    rows = _summaries_from_hits(archive, random_batch)
+                    fresh = [hit for hit in random_batch if hit.session_id not in random_seen]
+                    random_seen.update(hit.session_id for hit in fresh)
+                    rows = _summaries_from_hits(archive, fresh)
                     kept_rows = keep(rows) if keep is not None else rows
                     random_kept_count += len(kept_rows)
                     random_kept_hits.extend(deliver(kept_rows))
