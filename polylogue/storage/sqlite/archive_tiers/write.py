@@ -173,7 +173,12 @@ from polylogue.storage.sqlite.session_shard import (
     open_session_shard,
     shard_owner_reader_window,
 )
-from polylogue.storage.usage import UsageProjectionModel, project_provider_usage_events, provider_usage_event_identity
+from polylogue.storage.usage import (
+    UsageProjectionModel,
+    UsageRequestModelConflictError,
+    project_provider_usage_events,
+    provider_usage_event_identity,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3096,11 +3101,18 @@ def write_parsed_session_to_archive(
                 add_timing("index.model_usage_seed", t0)
                 if merge_append and session_event_result.wrote_provider_usage_events:
                     t0 = time.perf_counter()
-                    _aggregate_appended_provider_usage_into_model_usage(
+                    if origin is Origin.CLAUDE_CODE_SESSION and _has_appended_claude_message_usage(
                         conn,
                         session_id,
                         start_position=event_position_offset,
-                    )
+                    ):
+                        _reconcile_session_model_usage_from_persisted_evidence(conn, session_id)
+                    else:
+                        _aggregate_appended_provider_usage_into_model_usage(
+                            conn,
+                            session_id,
+                            start_position=event_position_offset,
+                        )
                     add_timing("index.provider_usage_rollup", t0)
                 elif not merge_append:
                     t0 = time.perf_counter()
@@ -12158,6 +12170,54 @@ def _aggregate_appended_provider_usage_into_model_usage(
             )
 
 
+def _has_appended_claude_message_usage(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    start_position: int,
+) -> bool:
+    return (
+        conn.execute(
+            """
+        SELECT 1 FROM session_provider_usage_events
+        WHERE session_id = ? AND provider_event_type = 'message_usage' AND position >= ?
+        LIMIT 1
+        """,
+            (session_id, start_position),
+        ).fetchone()
+        is not None
+    )
+
+
+def _reconcile_session_model_usage_from_persisted_evidence(
+    conn: sqlite3.Connection,
+    session_id: str,
+) -> int:
+    """Rebuild model usage from stored messages and provider events in this transaction."""
+    _reconcile_session_model_usage_rows(conn, session_id)
+    _aggregate_message_tokens_into_model_usage(conn, session_id)
+    _reprice_model_usage_rows(conn, session_id)
+    _aggregate_provider_usage_into_model_usage(conn, session_id)
+    reported_cost_row = conn.execute(
+        "SELECT reported_cost_usd FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    model_names = tuple(
+        str(row[0])
+        for row in conn.execute(
+            "SELECT model_name FROM session_model_usage WHERE session_id = ? ORDER BY model_name",
+            (session_id,),
+        )
+    )
+    if reported_cost_row is not None and reported_cost_row[0] is not None and model_names:
+        _write_provider_cost(conn, session_id, model_names, ProviderCost(float(reported_cost_row[0])))
+    row = conn.execute(
+        "SELECT COUNT(*) FROM session_model_usage WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
 def _provider_usage_existing_models(conn: sqlite3.Connection, session_id: str) -> list[str]:
     return [
         str(row[0]).strip()
@@ -17262,22 +17322,141 @@ def _provider_usage_projections(
     *,
     start_position: int | None = None,
 ) -> tuple[UsageProjectionModel, ...]:
-    """Stream the selected event authority through the canonical domain fold."""
+    """Stream the selected event authority through the canonical domain fold.
+
+    Claude Code can write several physical assistant records for one API
+    response. Its message-usage counters are snapshots at request grain, so
+    fold each request's latest present lane before the provider-neutral sum.
+    Every source event remains stored against its original fragment message.
+    """
     models = _provider_usage_existing_models(conn, session_id)
     sole_model = models[0] if len(models) == 1 else None
     cursor = conn.execute(
         """
-        SELECT ?, provider_event_type, model_name, position,
-               last_input_tokens, last_output_tokens, last_cached_input_tokens,
-               last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
-               total_input_tokens, total_output_tokens, total_cached_input_tokens,
-               total_cache_write_tokens, total_reasoning_output_tokens, total_tokens
-        FROM session_provider_usage_events
-        WHERE session_id = ? AND provider_event_type = 'token_count'
-          AND (? IS NULL OR position >= ?)
-        ORDER BY position
+        WITH message_usage_rows AS MATERIALIZED (
+            SELECT NULLIF(TRIM(request_id), '') AS request_key,
+                   model_name,
+                   position,
+                   last_input_tokens,
+                   last_output_tokens,
+                   last_cached_input_tokens,
+                   last_cache_write_tokens
+            FROM session_provider_usage_events
+            WHERE (SELECT origin FROM sessions WHERE session_id = ?) = 'claude-code-session'
+              AND session_id = ?
+              AND provider_event_type = 'message_usage'
+              AND (? IS NULL OR position >= ?)
+        ),
+        request_lane_positions AS (
+            SELECT request_key,
+                   COUNT(DISTINCT NULLIF(TRIM(model_name), '')) AS model_count,
+                   MIN(NULLIF(TRIM(model_name), '')) AS model_name,
+                   MAX(position) AS position,
+                   MAX(CASE WHEN last_input_tokens IS NOT NULL THEN position END) AS input_position,
+                   MAX(CASE WHEN last_output_tokens IS NOT NULL THEN position END) AS output_position,
+                   MAX(CASE WHEN last_cached_input_tokens IS NOT NULL THEN position END) AS cache_read_position,
+                   MAX(CASE WHEN last_cache_write_tokens IS NOT NULL THEN position END) AS cache_write_position
+            FROM message_usage_rows
+            WHERE request_key IS NOT NULL
+            GROUP BY request_key
+        ),
+        request_snapshots AS (
+            SELECT p.request_key,
+                   p.model_count,
+                   p.model_name,
+                   p.position,
+                   MAX(CASE WHEN e.position = p.input_position THEN e.last_input_tokens END) AS last_input_tokens,
+                   MAX(CASE WHEN e.position = p.output_position THEN e.last_output_tokens END) AS last_output_tokens,
+                   MAX(CASE WHEN e.position = p.cache_read_position THEN e.last_cached_input_tokens END) AS last_cached_input_tokens,
+                   MAX(CASE WHEN e.position = p.cache_write_position THEN e.last_cache_write_tokens END) AS last_cache_write_tokens
+            FROM request_lane_positions AS p
+            JOIN message_usage_rows AS e ON e.request_key = p.request_key
+            GROUP BY p.request_key, p.model_count, p.model_name, p.position
+        ),
+        event_rows AS (
+            SELECT ? AS session_id,
+                   provider_event_type,
+                   model_name,
+                   position,
+                   last_input_tokens,
+                   last_output_tokens,
+                   last_cached_input_tokens,
+                   last_cache_write_tokens,
+                   last_reasoning_output_tokens,
+                   last_total_tokens,
+                   total_input_tokens,
+                   total_output_tokens,
+                   total_cached_input_tokens,
+                   total_cache_write_tokens,
+                   total_reasoning_output_tokens,
+                   total_tokens,
+                   NULL AS request_key,
+                   0 AS model_conflict
+            FROM session_provider_usage_events
+            WHERE session_id = ? AND provider_event_type = 'token_count'
+              AND (? IS NULL OR position >= ?)
+
+            UNION ALL
+
+            SELECT ? AS session_id,
+                   'message_usage' AS provider_event_type,
+                   model_name,
+                   position,
+                   last_input_tokens,
+                   last_output_tokens,
+                   last_cached_input_tokens,
+                   last_cache_write_tokens,
+                   NULL AS last_reasoning_output_tokens,
+                   NULL AS last_total_tokens,
+                   NULL AS total_input_tokens,
+                   NULL AS total_output_tokens,
+                   NULL AS total_cached_input_tokens,
+                   NULL AS total_cache_write_tokens,
+                   NULL AS total_reasoning_output_tokens,
+                   NULL AS total_tokens,
+                   request_key,
+                   model_count > 1 AS model_conflict
+            FROM request_snapshots
+
+            UNION ALL
+
+            SELECT ? AS session_id,
+                   'message_usage' AS provider_event_type,
+                   model_name,
+                   position,
+                   last_input_tokens,
+                   last_output_tokens,
+                   last_cached_input_tokens,
+                   last_cache_write_tokens,
+                   NULL AS last_reasoning_output_tokens,
+                   NULL AS last_total_tokens,
+                   NULL AS total_input_tokens,
+                   NULL AS total_output_tokens,
+                   NULL AS total_cached_input_tokens,
+                   NULL AS total_cache_write_tokens,
+                   NULL AS total_reasoning_output_tokens,
+                   NULL AS total_tokens,
+                   request_key,
+                   0 AS model_conflict
+            FROM message_usage_rows
+            WHERE request_key IS NULL
+        )
+        SELECT *
+        FROM event_rows
+        ORDER BY position, provider_event_type
         """,
-        (session_id, session_id, start_position, start_position),
+        (
+            session_id,
+            session_id,
+            start_position,
+            start_position,
+            session_id,
+            session_id,
+            start_position,
+            start_position,
+            session_id,
+            session_id,
+        ),
     )
     names = (
         "session_id",
@@ -17296,12 +17475,18 @@ def _provider_usage_projections(
         "total_cache_write_tokens",
         "total_reasoning_output_tokens",
         "total_tokens",
+        "request_key",
+        "model_conflict",
     )
 
     def events() -> Iterator[dict[str, object]]:
         for row in cursor:
             values = dict(zip(names, row, strict=True))
+            if values["model_conflict"]:
+                raise UsageRequestModelConflictError(str(values["request_key"] or ""))
             values["model_name"] = str(values["model_name"] or "").strip() or sole_model
+            values.pop("request_key")
+            values.pop("model_conflict")
             if values["model_name"] is not None:
                 yield values
 

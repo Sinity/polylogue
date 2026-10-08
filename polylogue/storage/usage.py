@@ -65,6 +65,14 @@ UsageReportDetail = Literal["headline", "full"]
 UsageProjectionState = Literal["complete", "incomplete"]
 
 
+class UsageRequestModelConflictError(ValueError):
+    """One provider request ID names more than one nonempty model."""
+
+    def __init__(self, request_id: str) -> None:
+        self.request_id = request_id
+        super().__init__("one Claude Code usage request ID names multiple models")
+
+
 @dataclass(frozen=True, slots=True)
 class UsageProjectionModel:
     """One model-split usage projection derived from provider events.
@@ -3245,6 +3253,7 @@ __all__ = [
     "SessionUsageCost",
     "UsageProjectionModel",
     "UsageProjectionRollup",
+    "UsageRequestModelConflictError",
     "UsageProjectionState",
     "SESSION_USAGE_RECONCILED_COST_FAMILY",
     "SESSION_USAGE_RECONCILED_TOKENS_FAMILY",

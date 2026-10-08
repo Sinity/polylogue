@@ -44,7 +44,7 @@ provider-reported zero.
 
 | Origin | Provider | Declared coverage | Event stream | Token semantics |
 | --- | --- | --- | --- | --- |
-| `claude-code-session` | `claude-code` | exact where `message.usage` exists | `message_usage` | per-message/request usage; cache read and cache creation are separate lanes |
+| `claude-code-session` | `claude-code` | exact where `message.usage` exists | `message_usage` | request snapshots may repeat across linked assistant fragments; each request contributes its latest present value per lane, while cache read and cache creation remain separate lanes |
 | `codex-session` | `codex` | exact where `token_count` exists | `token_count` | `last_token_usage` is current/request-window telemetry; `total_token_usage` is cumulative and session-global, so rollups take the latest total per session |
 | `chatgpt-export` | `chatgpt` | estimate-only | transcript text | exports do not carry reliable per-request provider token counters |
 | `claude-ai-export` | `claude-ai` | estimate-only | transcript text | exports preserve conversation text, not exact provider usage counters |

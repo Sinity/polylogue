@@ -247,36 +247,10 @@ def reconcile_session_usage_rollup(conn: sqlite3.Connection, session_id: str) ->
     the session's binding no longer justifies rolls back with it.
     """
     from polylogue.storage.sqlite.archive_tiers.write import (
-        ProviderCost,
-        _aggregate_message_tokens_into_model_usage,
-        _aggregate_provider_usage_into_model_usage,
-        _reconcile_session_model_usage_rows,
-        _reprice_model_usage_rows,
-        _write_provider_cost,
+        _reconcile_session_model_usage_from_persisted_evidence,
     )
 
-    _reconcile_session_model_usage_rows(conn, session_id)
-    _aggregate_message_tokens_into_model_usage(conn, session_id)
-    _reprice_model_usage_rows(conn, session_id)
-    _aggregate_provider_usage_into_model_usage(conn, session_id)
-    reported_cost_row = conn.execute(
-        "SELECT reported_cost_usd FROM sessions WHERE session_id = ?",
-        (session_id,),
-    ).fetchone()
-    model_names = tuple(
-        str(row[0])
-        for row in conn.execute(
-            "SELECT model_name FROM session_model_usage WHERE session_id = ? ORDER BY model_name",
-            (session_id,),
-        )
-    )
-    if reported_cost_row is not None and reported_cost_row[0] is not None and model_names:
-        _write_provider_cost(conn, session_id, model_names, ProviderCost(float(reported_cost_row[0])))
-    row = conn.execute(
-        "SELECT COUNT(*) FROM session_model_usage WHERE session_id = ?",
-        (session_id,),
-    ).fetchone()
-    return int(row[0]) if row is not None else 0
+    return _reconcile_session_model_usage_from_persisted_evidence(conn, session_id)
 
 
 async def reconcile_session_usage_rollup_async(conn: aiosqlite.Connection, session_id: str) -> int:
