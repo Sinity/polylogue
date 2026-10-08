@@ -23,7 +23,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.core.enums import Provider
 from polylogue.core.errors import SchemaSkew
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
-from polylogue.sources import revision_backfill
+from polylogue.sources import prepared_jsonl, revision_backfill
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
@@ -1223,14 +1223,16 @@ def _append_chain_archive(root: Path) -> tuple[str, str]:
 _CHAIN_META = b'{"type":"session_meta","payload":{"id":"chain","timestamp":"2026-07-01T00:00:00Z"}}\n'
 
 
-def _chain_turn(index: int) -> bytes:
+def _chain_turn(index: int, *, include_message_id: bool = False) -> bytes:
+    message_id = b',"id":"turn-%d"' % index if include_message_id else b""
     return (
-        b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
-        b'[{"type":"input_text","text":"turn-%d"}]}}\n' % index
+        b'{"type":"response_item","payload":{"type":"message"'
+        + message_id
+        + b',"role":"user","content":[{"type":"input_text","text":"turn-%d"}]}}\n' % index
     )
 
 
-def _growing_chain_archive(root: Path, *, turns: int) -> list[str]:
+def _growing_chain_archive(root: Path, *, turns: int, include_message_ids: bool = False) -> list[str]:
     """One rollout file re-captured while it grows, oldest capture first.
 
     The first capture is the file as it exists between session start and the
@@ -1242,7 +1244,7 @@ def _growing_chain_archive(root: Path, *, turns: int) -> list[str]:
     payload = _CHAIN_META
     payloads = [payload]
     for index in range(turns):
-        payload = payload + _chain_turn(index)
+        payload = payload + _chain_turn(index, include_message_id=include_message_ids)
         payloads.append(payload)
     raw_ids: list[str] = []
     with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -1270,6 +1272,26 @@ def _census_facts(root: Path, raw_id: str) -> tuple[str | None, str, tuple[str, 
         ).fetchone()
     keys = tuple(iter_parser_census_logical_keys(receipt[0])) if receipt is not None else None
     return logical_key, str(authority), keys
+
+
+def _observe_retained_jsonl_parse_calls(monkeypatch: pytest.MonkeyPatch, root: Path) -> list[str]:
+    """Count current parser-boundary calls and bind each to its raw hash."""
+    with sqlite3.connect(root / "source.db") as conn:
+        raw_by_hash = {
+            bytes(blob_hash).hex(): str(raw_id)
+            for raw_id, blob_hash in conn.execute("SELECT raw_id, blob_hash FROM raw_sessions")
+        }
+    original = prepared_jsonl.prepare_jsonl_blob
+    parsed: list[str] = []
+
+    def counted(blob_path: str, source_path: str, provider_value: str, fallback_id: str, **kwargs: Any) -> Any:
+        source_hash = kwargs.get("source_sha256")
+        if source_hash in raw_by_hash:
+            parsed.append(raw_by_hash[source_hash])
+        return original(blob_path, source_path, provider_value, fallback_id, **kwargs)
+
+    monkeypatch.setattr(prepared_jsonl, "prepare_jsonl_blob", counted)
+    return parsed
 
 
 def test_byte_proof_refuses_a_head_between_forks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1350,27 +1372,21 @@ def test_chain_member_identity_refuted_by_its_own_parse(tmp_path: Path) -> None:
     assert _census_facts(tmp_path, finished) == ("codex-session:chain", "byte_proven", ("codex-session:chain",))
     # The refuted member keeps the classification its OWN bytes support.
     assert _census_facts(tmp_path, header_only) == (None, "quarantined", ())
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT raw_id, message_count FROM sessions").fetchall() == [(finished, 1)]
 
 
 def test_chain_inherits_only_its_interior_members(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The identity spot-check costs parses per CHAIN, never per member.
+    """The declared native-message-id checkpoint profile parses three raws per chain.
 
-    Opposite direction of the test above: a blanket "parse every member"
-    refusal would also keep a refuted member unbound, so this pins the
-    optimization polylogue-nh44 bought. Five captures whose smallest member is
-    header-only: the census parses the smallest, ascends until one capture's own
-    parse lands on the head's key, and inherits for every member bracketed
-    between that capture and the head.
+    This profile requires stable Codex message IDs so its exact prefix grammar
+    can prove each interior. ID-less Codex input remains valid and follows the
+    ordinary parser path, as the neighboring refuted-member test proves.
+    Five captures whose smallest member is header-only: the census parses the
+    smallest, first agreeing capture, and head, then inherits for the interior.
     """
-    raw_ids = _growing_chain_archive(tmp_path, turns=4)
-    original = revision_backfill.prepare_retained_jsonl_artifact
-    parsed: list[str] = []
-
-    def counted(evidence_reader: Any, raw_id: str, *, directory: Path, **kwargs: Any) -> Any:
-        parsed.append(raw_id)
-        return original(evidence_reader, raw_id, directory=directory, **kwargs)
-
-    monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", counted)
+    raw_ids = _growing_chain_archive(tmp_path, turns=4, include_message_ids=True)
+    parsed = _observe_retained_jsonl_parse_calls(monkeypatch, tmp_path)
 
     replay_retained_components(tmp_path)
 
@@ -1439,14 +1455,7 @@ def test_census_skips_parse_for_byte_proven_superseded_revisions_at_scale(
     calls (1 unique raw parsed instead of 51), ~3.3x wall-time reduction for
     the cohort (see PR body for the before/after numbers)."""
     raw_ids = build_revision_chain_corpus(tmp_path, native_singleton=True, **REVISION_CHAIN_SHAPE)
-    original = revision_backfill.prepare_retained_jsonl_artifact
-    parse_calls: list[str] = []
-
-    def counted(evidence_reader: Any, raw_id: str, *, directory: Path, **kwargs: Any) -> Any:
-        parse_calls.append(raw_id)
-        return original(evidence_reader, raw_id, directory=directory, **kwargs)
-
-    monkeypatch.setattr(revision_backfill, "prepare_retained_jsonl_artifact", counted)
+    parse_calls = _observe_retained_jsonl_parse_calls(monkeypatch, tmp_path)
 
     result = replay_retained_components(tmp_path)
 

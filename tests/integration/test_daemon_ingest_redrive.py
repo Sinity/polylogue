@@ -1230,10 +1230,16 @@ async def test_materialize_uses_original_non_json_carrier_and_writer_counts(
     original = revision_backfill.prepare_retained_non_json_artifact
     reached: list[str] = []
 
-    def prepare(reader: RetainedSessionRead, raw_id: str, *, directory: Path) -> PreparedJsonl:
+    def prepare(
+        reader: RetainedSessionRead,
+        raw_id: str,
+        *,
+        directory: Path,
+        validation_mode: ValidationMode = ValidationMode.ADVISORY,
+    ) -> PreparedJsonl:
         descriptor = reader.raw_revision_descriptor(raw_id)
         assert Path(descriptor[2]).suffix == ".capture"
-        artifact = original(reader, raw_id, directory=directory)
+        artifact = original(reader, raw_id, directory=directory, validation_mode=validation_mode)
         reached.append(raw_id)
         return artifact
 
