@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from polylogue.schemas.field_stats.stats import FieldStats
 from polylogue.schemas.inference.semantic.models import SemanticCandidate
 from polylogue.schemas.inference.semantic.runtime import infer_semantic_roles, select_best_roles
+from tests.infra.field_stats import distribution_sketch
 
 
 def _candidate_for_role(candidates: list[SemanticCandidate], role: str) -> SemanticCandidate | None:
@@ -33,7 +34,7 @@ class TestInferSemanticRoles:
         stats = {
             "$.messages": FieldStats(
                 path="$.messages",
-                array_lengths=[5, 8, 10],
+                array_length_distribution=distribution_sketch([5, 8, 10]),
                 total_samples=3,
                 present_count=3,
             ),
@@ -50,13 +51,13 @@ class TestInferSemanticRoles:
                 total_samples=100,
                 present_count=95,
                 value_count=100,
-                string_lengths=[4, 5, 6, 9],
+                string_length_distribution=distribution_sketch([4, 5, 6, 9]),
             ),
             "$.body": FieldStats(
                 path="$.body",
-                string_lengths=[100, 150, 200],
+                string_length_distribution=distribution_sketch([100, 150, 200]),
                 is_multiline=2,
-                newline_counts=[2, 3, 1],
+                newline_distribution=distribution_sketch([2, 3, 1]),
                 total_samples=3,
                 present_count=3,
                 value_count=3,
@@ -81,7 +82,7 @@ class TestInferSemanticRoles:
         stats = {
             "$.messages": FieldStats(
                 path="$.messages",
-                array_lengths=[5],
+                array_length_distribution=distribution_sketch([5]),
                 total_samples=1,
                 present_count=1,
             ),
@@ -95,7 +96,7 @@ class TestInferSemanticRoles:
         stats = {
             "$.messages": FieldStats(
                 path="$.messages",
-                array_lengths=[5, 8],
+                array_length_distribution=distribution_sketch([5, 8]),
                 total_samples=2,
                 present_count=2,
             ),
@@ -105,13 +106,13 @@ class TestInferSemanticRoles:
                 total_samples=100,
                 present_count=95,
                 value_count=100,
-                string_lengths=[4, 5, 9],
+                string_length_distribution=distribution_sketch([4, 5, 9]),
             ),
             "$.messages[*].text": FieldStats(
                 path="$.messages[*].text",
-                string_lengths=[100, 200, 300],
+                string_length_distribution=distribution_sketch([100, 200, 300]),
                 is_multiline=2,
-                newline_counts=[2, 5, 3],
+                newline_distribution=distribution_sketch([2, 5, 3]),
                 total_samples=3,
                 present_count=3,
                 value_count=3,
@@ -124,14 +125,14 @@ class TestInferSemanticRoles:
                 total_samples=100,
                 present_count=100,
                 value_count=100,
-                numeric_values=[1000000000, 1200000000, 1500000000],
+                numeric_distribution=distribution_sketch([1000000000, 1200000000, 1500000000]),
             ),
             "$.title": FieldStats(
                 path="$.title",
                 observed_values=Counter({"Chat 1": 1, "Chat 2": 1, "Chat 3": 1}),
-                string_lengths=[10, 12, 8],
+                string_length_distribution=distribution_sketch([10, 12, 8]),
                 is_multiline=0,
-                newline_counts=[0, 0, 0],
+                newline_distribution=distribution_sketch([0, 0, 0]),
                 total_samples=3,
                 present_count=3,
                 value_count=3,
@@ -190,7 +191,7 @@ class TestScoreMessageContainer:
         stats = {
             "$.messages": FieldStats(
                 path="$.messages",
-                array_lengths=[5, 8, 10],
+                array_length_distribution=distribution_sketch([5, 8, 10]),
                 total_samples=3,
                 present_count=3,
             ),
@@ -211,7 +212,7 @@ class TestScoreMessageContainer:
         stats = {
             "$.session_map": FieldStats(
                 path="$.session_map",
-                object_key_counts=[5, 7, 6],
+                object_fanout_distribution=distribution_sketch([5, 7, 6]),
                 total_samples=3,
                 present_count=3,
             ),
@@ -228,7 +229,7 @@ class TestScoreMessageContainer:
         stats_low = {
             "$.messages": FieldStats(
                 path="$.messages",
-                array_lengths=[5, 8],
+                array_length_distribution=distribution_sketch([5, 8]),
                 total_samples=100,
                 present_count=50,  # 50% frequency
             ),
@@ -240,7 +241,7 @@ class TestScoreMessageContainer:
         stats_high = {
             "$.messages": FieldStats(
                 path="$.messages",
-                array_lengths=[5, 8],
+                array_length_distribution=distribution_sketch([5, 8]),
                 total_samples=100,
                 present_count=95,  # 95% frequency
             ),
@@ -258,7 +259,7 @@ class TestScoreMessageContainer:
         stats = {
             "$.messages": FieldStats(
                 path="$.messages",
-                array_lengths=[5],
+                array_length_distribution=distribution_sketch([5]),
                 total_samples=1,
                 present_count=1,
             ),
@@ -283,7 +284,7 @@ class TestScoreMessageRole:
                 total_samples=100,
                 present_count=95,
                 value_count=100,
-                string_lengths=[4, 5, 9],
+                string_length_distribution=distribution_sketch([4, 5, 9]),
             ),
         }
         candidates = infer_semantic_roles(stats)
@@ -302,7 +303,7 @@ class TestScoreMessageRole:
                 total_samples=100,
                 present_count=100,
                 value_count=100,
-                string_lengths=[3, 3],
+                string_length_distribution=distribution_sketch([3, 3]),
             ),
         }
         candidates = infer_semantic_roles(stats)
@@ -320,7 +321,7 @@ class TestScoreMessageRole:
                 total_samples=100,
                 present_count=100,
                 value_count=100,
-                string_lengths=[1] * 20,
+                string_length_distribution=distribution_sketch([1] * 20),
             ),
         }
         candidates = infer_semantic_roles(stats)
@@ -336,9 +337,9 @@ class TestScoreMessageRole:
                 total_samples=100,
                 present_count=100,
                 value_count=100,
-                string_lengths=[9, 4],
+                string_length_distribution=distribution_sketch([9, 4]),
                 is_multiline=0,
-                newline_counts=[0] * 100,
+                newline_distribution=distribution_sketch([0] * 100),
             ),
         }
         candidates_no_nl = infer_semantic_roles(stats_no_nl)
@@ -351,9 +352,9 @@ class TestScoreMessageRole:
                 total_samples=100,
                 present_count=100,
                 value_count=100,
-                string_lengths=[9, 4],
+                string_length_distribution=distribution_sketch([9, 4]),
                 is_multiline=20,  # 20% multiline
-                newline_counts=[0] * 80 + [1] * 20,
+                newline_distribution=distribution_sketch([0] * 80 + [1] * 20),
             ),
         }
         candidates_nl = infer_semantic_roles(stats_nl)
@@ -370,9 +371,9 @@ class TestScoreMessageBody:
         stats = {
             "$.text": FieldStats(
                 path="$.text",
-                string_lengths=[100, 150, 200, 250],
+                string_length_distribution=distribution_sketch([100, 150, 200, 250]),
                 is_multiline=3,
-                newline_counts=[2, 3, 5, 4],
+                newline_distribution=distribution_sketch([2, 3, 5, 4]),
                 total_samples=4,
                 present_count=4,
                 value_count=4,
@@ -398,9 +399,9 @@ class TestScoreMessageBody:
         stats = {
             "$.content": FieldStats(
                 path="$.content",
-                string_lengths=[100, 150, 200],
+                string_length_distribution=distribution_sketch([100, 150, 200]),
                 is_multiline=2,
-                newline_counts=[2, 3, 1],
+                newline_distribution=distribution_sketch([2, 3, 1]),
                 total_samples=3,
                 present_count=3,
                 value_count=3,
@@ -417,9 +418,9 @@ class TestScoreMessageBody:
         stats = {
             "$.field": FieldStats(
                 path="$.field",
-                string_lengths=[1, 2, 3, 4, 5],
+                string_length_distribution=distribution_sketch([1, 2, 3, 4, 5]),
                 is_multiline=0,
-                newline_counts=[0] * 5,
+                newline_distribution=distribution_sketch([0] * 5),
                 total_samples=5,
                 present_count=5,
                 value_count=5,
@@ -435,9 +436,9 @@ class TestScoreMessageBody:
         stats = {
             "$.text": FieldStats(
                 path="$.text",
-                string_lengths=[100, 100, 100],
+                string_length_distribution=distribution_sketch([100, 100, 100]),
                 is_multiline=2,
-                newline_counts=[1, 2, 3],
+                newline_distribution=distribution_sketch([1, 2, 3]),
                 total_samples=3,
                 present_count=3,
                 value_count=3,
@@ -469,7 +470,7 @@ class TestScoreMessageTimestamp:
                 total_samples=100,
                 present_count=100,
                 value_count=100,
-                numeric_values=[1000000000, 1200000000, 1500000000],
+                numeric_distribution=distribution_sketch([1000000000, 1200000000, 1500000000]),
             ),
         }
         candidates = infer_semantic_roles(stats)
@@ -486,9 +487,9 @@ class TestScoreMessageTimestamp:
                 total_samples=100,
                 present_count=100,
                 value_count=100,
-                string_lengths=[20] * 100,
+                string_length_distribution=distribution_sketch([20] * 100),
                 is_multiline=0,
-                newline_counts=[0] * 100,
+                newline_distribution=distribution_sketch([0] * 100),
             ),
         }
         candidates = infer_semantic_roles(stats)
@@ -507,14 +508,14 @@ class TestScoreMessageTimestamp:
                 total_samples=100,
                 present_count=100,
                 value_count=100,
-                numeric_values=list(range(1000000000, 1000000100)),
+                numeric_distribution=distribution_sketch(list(range(1000000000, 1000000100))),
             ),
         }
         candidates = infer_semantic_roles(stats)
         ts = _candidate_for_role(candidates, "message_timestamp")
         assert ts is not None
-        # Monotonicity bonus requires _ordered_samples to be set (from array context)
-        # Plain numeric_values don't trigger monotonicity checking
+        # This scalar fixture has no array-order evidence; its name and format
+        # drive the timestamp candidate independently.
         assert ts.confidence >= 0.55
 
     def test_name_signal_bonus(self) -> None:
@@ -547,7 +548,7 @@ class TestScoreMessageTimestamp:
                 present_count=100,
                 value_count=100,
                 is_multiline=20,
-                newline_counts=[1] * 20 + [0] * 80,
+                newline_distribution=distribution_sketch([1] * 20 + [0] * 80),
             ),
         }
         candidates = infer_semantic_roles(stats)
@@ -565,9 +566,9 @@ class TestScoreSessionTitle:
             "$.title": FieldStats(
                 path="$.title",
                 observed_values=Counter({f"Chat {i}": 1 for i in range(10)}),
-                string_lengths=[8, 9, 7, 10, 8, 9],
+                string_length_distribution=distribution_sketch([8, 9, 7, 10, 8, 9]),
                 is_multiline=0,
-                newline_counts=[0] * 6,
+                newline_distribution=distribution_sketch([0] * 6),
                 total_samples=10,
                 present_count=10,
                 value_count=10,
@@ -586,9 +587,9 @@ class TestScoreSessionTitle:
             "$.subject": FieldStats(
                 path="$.subject",
                 observed_values=Counter({"Subject A": 1, "Subject B": 1}),
-                string_lengths=[9, 9],
+                string_length_distribution=distribution_sketch([9, 9]),
                 is_multiline=0,
-                newline_counts=[0, 0],
+                newline_distribution=distribution_sketch([0, 0]),
                 total_samples=2,
                 present_count=2,
                 value_count=2,
@@ -605,9 +606,9 @@ class TestScoreSessionTitle:
             "$.title": FieldStats(
                 path="$.title",
                 observed_values=Counter({"a" * 300: 1, "b" * 250: 1}),
-                string_lengths=[300, 250],
+                string_length_distribution=distribution_sketch([300, 250]),
                 is_multiline=0,
-                newline_counts=[0, 0],
+                newline_distribution=distribution_sketch([0, 0]),
                 total_samples=2,
                 present_count=2,
                 value_count=2,
@@ -623,9 +624,9 @@ class TestScoreSessionTitle:
             "$.title": FieldStats(
                 path="$.title",
                 observed_values=Counter({"Title A": 1, "Title B": 1}),
-                string_lengths=[7, 7],
+                string_length_distribution=distribution_sketch([7, 7]),
                 is_multiline=1,  # 50% multiline
-                newline_counts=[1, 0],
+                newline_distribution=distribution_sketch([1, 0]),
                 total_samples=2,
                 present_count=2,
                 value_count=2,
@@ -646,9 +647,9 @@ class TestScoreSessionTitle:
             "$.messages[*].subject": FieldStats(
                 path="$.messages[*].subject",
                 observed_values=Counter({"Subj A": 1, "Subj B": 1}),
-                string_lengths=[6, 6],
+                string_length_distribution=distribution_sketch([6, 6]),
                 is_multiline=0,
-                newline_counts=[0, 0],
+                newline_distribution=distribution_sketch([0, 0]),
                 total_samples=2,
                 present_count=2,
                 value_count=2,
@@ -666,9 +667,9 @@ class TestScoreSessionTitle:
             "$.a.b.c.d.e.title": FieldStats(
                 path="$.a.b.c.d.e.title",
                 observed_values=Counter({"Title A": 1}),
-                string_lengths=[7],
+                string_length_distribution=distribution_sketch([7]),
                 is_multiline=0,
-                newline_counts=[0],
+                newline_distribution=distribution_sketch([0]),
                 total_samples=1,
                 present_count=1,
                 value_count=1,

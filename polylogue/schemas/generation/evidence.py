@@ -91,12 +91,6 @@ def _reduce_field_stats_in_place(stats_by_path: Mapping[str, FieldStats]) -> Non
             for value in stats.safe_observed_values
         }
         stats.values_per_session = {}
-        stats.string_lengths = []
-        stats.newline_counts = []
-        stats.numeric_values = []
-        stats.array_lengths = []
-        stats.object_key_counts = []
-        stats._ordered_samples = []
         stats.documents_present = set()
         stats.distinct_value_count = 0
         stats.overflow_value_count = 0

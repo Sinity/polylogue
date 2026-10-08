@@ -17,7 +17,6 @@ from polylogue.schemas.field_stats.detection import (
 from polylogue.schemas.field_stats.models import (
     ENUM_MAX_CARDINALITY,
     ENUM_VALUE_CAP,
-    LEGACY_SAMPLE_CAP,
     REF_MATCH_THRESHOLD,
     SESSION_EVIDENCE_CAP,
     FieldStats,
@@ -29,7 +28,6 @@ DictKeySetsByPath: TypeAlias = dict[str, set[str]]
 
 _DICT_KEY_EVIDENCE_CAP = 2_048
 _CO_OCCURRENCE_FIELD_CAP = 256
-_ORDERED_SEQUENCE_CAP = 256
 _VALUES_PER_SESSION_CAP = 256
 
 
@@ -49,15 +47,6 @@ def _type_name(value: object) -> str:
     if isinstance(value, float):
         return "number"
     return "other"
-
-
-def _append_bounded(
-    values: list[int] | list[float] | list[list[float]], value: object, stats: FieldStats, key: str
-) -> None:
-    if len(values) < LEGACY_SAMPLE_CAP:
-        values.append(value)  # type: ignore[arg-type]
-    else:
-        stats.truncated_evidence[key] += 1
 
 
 def _increment_bounded(counter: dict[str, int], key: str, stats: FieldStats, evidence_key: str) -> None:
@@ -90,9 +79,6 @@ def _collect_field_stats(
         if path not in all_stats:
             all_stats[path] = FieldStats(path=path)
         return all_stats[path]
-
-    numeric_sample_cap = 500
-    string_length_cap = 2000
 
     current_session_id: str | None = None
     current_session_token: str | None = None
@@ -137,7 +123,6 @@ def _collect_field_stats(
                     key_evidence.add(key)
                 else:
                     stats.truncated_evidence["dictionary_keys"] += 1
-            _append_bounded(stats.object_key_counts, len(value), stats, "object_fanout_samples")
             stats.object_fanout_distribution.observe(len(value))
 
             collapse_all = path in dynamic_paths or (
@@ -162,9 +147,7 @@ def _collect_field_stats(
             return
 
         if isinstance(value, list):
-            _append_bounded(stats.array_lengths, len(value), stats, "array_length_samples")
             stats.array_length_distribution.observe(len(value))
-            numeric_seq: list[float] = []
             numeric_pair_count = 0
             numeric_increasing_pair_count = 0
             previous_numeric: float | None = None
@@ -177,17 +160,11 @@ def _collect_field_stats(
                             if fval >= previous_numeric:
                                 numeric_increasing_pair_count += 1
                         previous_numeric = fval
-                        if len(numeric_seq) < LEGACY_SAMPLE_CAP:
-                            numeric_seq.append(fval)
                 _walk(item, f"{path}[*]", depth + 1, sample_idx)
             if numeric_pair_count:
                 item_stats = _ensure_stats(f"{path}[*]")
                 item_stats.ordered_pair_count += numeric_pair_count
                 item_stats.ordered_increasing_pair_count += numeric_increasing_pair_count
-                if len(item_stats._ordered_samples) < _ORDERED_SEQUENCE_CAP:
-                    item_stats._ordered_samples.append(numeric_seq)
-                else:
-                    item_stats.truncated_evidence["ordered_sequences"] += 1
             return
 
         if isinstance(value, str):
@@ -206,10 +183,6 @@ def _collect_field_stats(
                 digest=value_digest,
                 session_token=current_session_token,
             )
-            if len(stats.string_lengths) < string_length_cap:
-                stats.string_lengths.append(len(value))
-            else:
-                stats.truncated_evidence["string_length_samples"] += 1
             stats.string_length_distribution.observe(len(value))
             if value in stats.observed_values or len(stats.observed_values) < ENUM_VALUE_CAP:
                 if value not in stats.observed_values:
@@ -241,7 +214,6 @@ def _collect_field_stats(
             newline_count = value.count("\n")
             if newline_count > 0:
                 stats.is_multiline += 1
-            _append_bounded(stats.newline_counts, newline_count, stats, "newline_samples")
             stats.newline_distribution.observe(newline_count)
             return
 
@@ -257,10 +229,6 @@ def _collect_field_stats(
                     stats.num_min = fval
                 if stats.num_max is None or fval > stats.num_max:
                     stats.num_max = fval
-                if len(stats.numeric_values) < numeric_sample_cap:
-                    stats.numeric_values.append(fval)
-                else:
-                    stats.truncated_evidence["numeric_samples"] += 1
                 fmt = _detect_numeric_format(value)
                 if fmt:
                     stats.detected_formats[fmt] += 1

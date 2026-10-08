@@ -13,7 +13,7 @@ from polylogue.schemas.field_stats.distributions import CategoricalSketch, Distr
 ENUM_MAX_CARDINALITY = 50
 ENUM_VALUE_CAP = 200
 REF_MATCH_THRESHOLD = 0.7
-LEGACY_SAMPLE_CAP = 2_000
+DOCUMENT_PRESENCE_CAP = 2_000
 SESSION_EVIDENCE_CAP = 16
 EQUALITY_EVIDENCE_CAP = 256
 _SAFE_STRUCTURAL_VALUES = frozenset({"assistant", "developer", "function", "human", "model", "system", "tool", "user"})
@@ -48,18 +48,12 @@ class FieldStats:
     num_max: float | None = None
     total_samples: int = 0
     present_count: int = 0
-    array_lengths: list[int] = field(default_factory=list)
     is_multiline: int = 0
     value_count: int = 0
     value_session_ids: dict[str, set[str]] = field(default_factory=dict)
-    string_lengths: list[int] = field(default_factory=list)
-    newline_counts: list[int] = field(default_factory=list)
-    numeric_values: list[float] = field(default_factory=list)
     distinct_value_count: int = 0
     values_per_session: dict[str, set[str]] = field(default_factory=dict)
-    _ordered_samples: list[list[float]] = field(default_factory=list)
     co_occurring_fields: Counter[str] = field(default_factory=Counter)
-    object_key_counts: list[int] = field(default_factory=list)
     max_depth_seen: int = 0
     ref_target: str | None = None
     documents_present: set[int] = field(default_factory=set)
@@ -91,28 +85,10 @@ class FieldStats:
     slash_value_count: int = 0
 
     def __post_init__(self) -> None:
-        """Backfill sketches for direct fixtures using legacy sample lists."""
-        if not self.string_length_distribution.count:
-            for value in self.string_lengths:
-                self.string_length_distribution.observe(value)
-        if not self.newline_distribution.count:
-            for value in self.newline_counts:
-                self.newline_distribution.observe(value)
-        if not self.numeric_distribution.count:
-            for numeric_value in self.numeric_values:
-                self.numeric_distribution.observe(numeric_value)
-        if not self.array_length_distribution.count:
-            for value in self.array_lengths:
-                self.array_length_distribution.observe(value)
-        if not self.object_fanout_distribution.count:
-            for value in self.object_key_counts:
-                self.object_fanout_distribution.observe(value)
+        """Backfill the bounded categorical sketch from explicit value counts."""
         if not self.categorical_distribution.count:
             for categorical_value, categorical_count in self.observed_values.items():
                 self.categorical_distribution.observe(categorical_value, count=categorical_count)
-        if self._ordered_samples and not self.ordered_pair_count:
-            for sequence in self._ordered_samples:
-                self.observe_ordered_sequence(sequence)
 
     def observe_document(self, sample_idx: int, *, non_null: bool) -> None:
         if self._last_encountered_document != sample_idx:
@@ -121,7 +97,7 @@ class FieldStats:
         if non_null and self._last_non_null_document != sample_idx:
             self.document_non_null_count += 1
             self._last_non_null_document = sample_idx
-            if len(self.documents_present) < LEGACY_SAMPLE_CAP:
+            if len(self.documents_present) < DOCUMENT_PRESENCE_CAP:
                 self.documents_present.add(sample_idx)
             else:
                 self.truncated_evidence["document_ids"] += 1
@@ -254,11 +230,11 @@ class FieldStats:
 
     @property
     def has_array_evidence(self) -> bool:
-        return bool(self.array_lengths or self.array_length_distribution.count)
+        return self.array_length_distribution.count > 0
 
     @property
     def has_object_fanout_evidence(self) -> bool:
-        return bool(self.object_key_counts or self.object_fanout_distribution.count)
+        return self.object_fanout_distribution.count > 0
 
     @property
     def string_length_stats(self) -> dict[str, float] | None:
@@ -279,16 +255,7 @@ class FieldStats:
     def monotonicity_score(self) -> float | None:
         if self.ordered_pair_count:
             return self.ordered_increasing_pair_count / self.ordered_pair_count
-        if not self._ordered_samples:
-            return None
-        total_pairs = 0
-        increasing_pairs = 0
-        for seq in self._ordered_samples:
-            for index in range(len(seq) - 1):
-                total_pairs += 1
-                if seq[index + 1] >= seq[index]:
-                    increasing_pairs += 1
-        return increasing_pairs / total_pairs if total_pairs else None
+        return None
 
     @property
     def avg_array_length(self) -> float | None:
@@ -317,7 +284,7 @@ __all__ = [
     "ENUM_VALUE_CAP",
     "EQUALITY_EVIDENCE_CAP",
     "FieldStats",
-    "LEGACY_SAMPLE_CAP",
+    "DOCUMENT_PRESENCE_CAP",
     "REF_MATCH_THRESHOLD",
     "SESSION_EVIDENCE_CAP",
 ]

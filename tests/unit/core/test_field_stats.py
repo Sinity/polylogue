@@ -24,6 +24,7 @@ from polylogue.schemas.generation.dynamic_keys import (
     merge_observed_structure_schemas,
     observed_structure_schema,
 )
+from tests.infra.field_stats import distribution_sketch
 
 # =============================================================================
 # is_dynamic_key
@@ -230,7 +231,7 @@ class TestFieldStatsProperties:
         assert not stats.is_enum_like
 
     def test_string_length_stats(self) -> None:
-        stats = FieldStats(path="$.x", string_lengths=[3, 5, 7, 9])
+        stats = FieldStats(path="$.x", string_length_distribution=distribution_sketch([3, 5, 7, 9]))
         result = stats.string_length_stats
         assert result is not None
         assert result["min"] == 3
@@ -239,7 +240,7 @@ class TestFieldStatsProperties:
         assert result["stddev"] > 0
 
     def test_string_length_stats_single(self) -> None:
-        stats = FieldStats(path="$.x", string_lengths=[10])
+        stats = FieldStats(path="$.x", string_length_distribution=distribution_sketch([10]))
         result = stats.string_length_stats
         assert result is not None
         assert result["stddev"] == 0.0
@@ -257,11 +258,11 @@ class TestFieldStatsProperties:
         assert stats.newline_rate == 0.0
 
     def test_monotonicity_score_increasing(self) -> None:
-        stats = FieldStats(path="$.x", _ordered_samples=[[1, 2, 3, 4, 5]])
+        stats = FieldStats(path="$.x", ordered_pair_count=4, ordered_increasing_pair_count=4)
         assert stats.monotonicity_score == pytest.approx(1.0)
 
     def test_monotonicity_score_decreasing(self) -> None:
-        stats = FieldStats(path="$.x", _ordered_samples=[[5, 4, 3, 2, 1]])
+        stats = FieldStats(path="$.x", ordered_pair_count=4, ordered_increasing_pair_count=0)
         assert stats.monotonicity_score == pytest.approx(0.0)
 
     def test_monotonicity_score_none(self) -> None:
@@ -269,7 +270,7 @@ class TestFieldStatsProperties:
         assert stats.monotonicity_score is None
 
     def test_avg_array_length(self) -> None:
-        stats = FieldStats(path="$.x", array_lengths=[2, 4, 6])
+        stats = FieldStats(path="$.x", array_length_distribution=distribution_sketch([2, 4, 6]))
         assert stats.avg_array_length == pytest.approx(4.0)
 
     def test_avg_array_length_none(self) -> None:
@@ -358,7 +359,7 @@ class TestCollectFieldStats:
         assert "$.*.v" in stats
         assert not any(path.startswith("$.ordinary-key-") for path in stats)
 
-    def test_large_numeric_arrays_retain_bounded_legacy_evidence(self) -> None:
+    def test_large_numeric_arrays_retain_exact_ordered_pair_evidence(self) -> None:
         values = list(range(10_000))
 
         stats = _collect_field_stats([{"values": values}])
@@ -366,7 +367,8 @@ class TestCollectFieldStats:
         item_stats = stats["$.values[*]"]
         assert item_stats.ordered_pair_count == 9_999
         assert item_stats.ordered_increasing_pair_count == 9_999
-        assert len(item_stats._ordered_samples[0]) == 2_000
+        assert item_stats.monotonicity_score == 1.0
+        assert "ordered_sequences" not in item_stats.truncated_evidence
 
     def test_session_ids_tracked(self) -> None:
         samples: list[JSONDocument] = [{"status": "active"}, {"status": "active"}, {"status": "pending"}]

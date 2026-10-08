@@ -32,6 +32,7 @@ from polylogue.schemas.inference.semantic.runtime import (
 )
 from polylogue.schemas.observation_models import ProviderConfig
 from polylogue.schemas.operator.annotations import build_review_evidence
+from tests.infra.field_stats import distribution_sketch
 
 
 def _payload_documents(records: list[dict[str, str]]) -> list[JSONValue]:
@@ -122,9 +123,9 @@ class TestRecordStreamTitleAbstention:
             "$.title": FieldStats(
                 path="$.title",
                 observed_values=Counter({f"Chat {i}": 1 for i in range(20)}),
-                string_lengths=[7] * 20,
+                string_length_distribution=distribution_sketch([7] * 20),
                 is_multiline=0,
-                newline_counts=[0] * 20,
+                newline_distribution=distribution_sketch([0] * 20),
                 total_samples=20,
                 present_count=20,
                 value_count=20,
@@ -135,7 +136,7 @@ class TestRecordStreamTitleAbstention:
                 total_samples=100,
                 present_count=100,
                 value_count=100,
-                string_lengths=[4, 9],
+                string_length_distribution=distribution_sketch([4, 9]),
             ),
         }
 
@@ -195,9 +196,9 @@ class TestRecordStreamTitleAbstention:
             "$.title": FieldStats(
                 path="$.title",
                 observed_values=Counter({f"Chat {i}": 1 for i in range(20)}),
-                string_lengths=[7] * 20,
+                string_length_distribution=distribution_sketch([7] * 20),
                 is_multiline=0,
-                newline_counts=[0] * 20,
+                newline_distribution=distribution_sketch([0] * 20),
                 total_samples=20,
                 present_count=20,
                 value_count=20,
@@ -358,7 +359,7 @@ class TestConfidenceToScoreRename:
                 total_samples=100,
                 present_count=100,
                 value_count=100,
-                string_lengths=[4, 9],
+                string_length_distribution=distribution_sketch([4, 9]),
             ),
         }
         result = annotate_semantic_and_relational(schema, field_stats)

@@ -140,8 +140,8 @@ def test_field_collection_retains_full_counts_while_bounding_legacy_evidence() -
 
     assert stats["$.items"].array_length_distribution.count == 5_000
     assert stats["$.items"].array_length_distribution.maximum == 36
-    assert len(stats["$.items"].array_lengths) == 2_000
-    assert stats["$.items"].truncated_evidence["array_length_samples"] == 3_000
+    assert stats["$.items"].array_length_distribution.minimum == 0
+    assert "array_length_samples" not in stats["$.items"].truncated_evidence
     assert stats["$.text"].string_length_distribution.count == 5_000
     assert stats["$.text"].categorical_distribution.count == 5_000
     assert stats["$.items"].object_key_distribution.count == 0
