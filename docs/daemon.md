@@ -32,6 +32,12 @@ receipt from its immutable blob before consulting the cursor-authority gate.
 The same `~/.codex` source retains the install-level `session_index.jsonl` and
 `history.jsonl` as raw evidence for Codex titles and prompt history; it admits
 no other JSONL.
+The periodic convergence owner rechecks completed frontier coverage even when
+its stage-debt ledger is empty. Existing frontier debt retains its retry
+schedule and backoff. Missing or changed coverage without frontier debt
+schedules the census on its admitted worker; a blocked census records deferred
+frontier debt, and unchanged healthy coverage is reused. Transient compute
+saturation therefore leaves inspection owed after the input was published.
 Operators can have the daemon record the same census, without applying plans, with `polylogue ops maintenance raw-authority-frontier` (the `maintenance.raw-authority-frontier` operation).
 
 Accepted ingest records changed session IDs in its terminal audit receipt. Up to 10,000 IDs are inline. Larger ingests append sorted pages of at most 256 IDs to the same operation's continuity-backed audit events before finalization; the receipt records their operation reference, exact count, page count, and digest. The local API reads those durable pages after completion and checks their order, count, and digest before returning the full `ParseResult.processed_ids` set. Profile target evidence uses the same audit route when more than 40 insight pages are needed; `AuditRepository.resolve_ingest_insight_pages` returns every typed target and checks the pages against the terminal count and digest. A source item with more than 10,000 raw IDs stores 256-raw attribution pages, including each raw's unresolved flag, and keeps exact counts and a digest in its input receipt. Completed operations resolve these pages from audit history rather than deriving them from the current index.

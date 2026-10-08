@@ -273,3 +273,23 @@ async def test_archive_lock_never_advances_or_excludes_cursor(
         await processor.ingest_files([source], emit_event=False)
 
     assert cursor.get_record(source) is None
+
+
+def test_convergence_debt_lock_exhaustion_raises_retryable_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Critical retry debt cannot use the progress-write best-effort contract."""
+    from polylogue.core.sqlite_locking import is_transient_sqlite_lock
+
+    store = CursorStore(tmp_path / "live.sqlite")
+
+    def locked_connect() -> sqlite3.Connection:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr("polylogue.sources.live.sqlite_locking.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(store, "_connect_ops", locked_connect)
+    with pytest.raises(sqlite3.OperationalError) as raised:
+        store.record_convergence_debt(stage="raw_frontier_inspection", subject_type="source_path", subject_id="neutral")
+    assert is_transient_sqlite_lock(raised.value)
+    assert raised.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+    assert store.list_convergence_debt(stage="raw_frontier_inspection") == []

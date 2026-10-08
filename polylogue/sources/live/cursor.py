@@ -811,7 +811,13 @@ class CursorStore:
                     deferred=deferred,
                 )
 
-        best_effort_cursor_write("archive ops convergence debt sync", write)
+        if not best_effort_cursor_write("archive ops convergence debt sync", write):
+            # Unlike progress telemetry, retry debt is required state. Its
+            # caller cannot claim an unfinished stage was handed to backoff.
+            failure = sqlite3.OperationalError("database is locked: convergence debt was not persisted")
+            failure.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            failure.sqlite_errorname = "SQLITE_BUSY"
+            raise failure
 
     def _sync_convergence_debt_on_conn(
         self,

@@ -12,6 +12,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -281,3 +282,149 @@ def test_generic_retry_preserves_each_unevaluated_stage(archive: Path) -> None:
     )
     daemon_cli._record_convergence_debt_retries(cursor, [debt], {("convergence", "session_id", subject): state})
     assert _rows(archive) == [("lineage", subject), ("titles", subject)]
+
+
+@pytest.mark.parametrize("due", [False, True])
+@pytest.mark.parametrize("converges", [False, True])
+def test_frontier_fallback_preserves_existing_debt_retry_schedule(
+    archive: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bounded_compute_adapter: BoundedComputeAdapter,
+    due: bool,
+    converges: bool,
+) -> None:
+    """An existing frontier debt owns the census, even after its due retry."""
+    stage = _Stage("raw_frontier_inspection", subject_independent=True, converges=converges)
+    _install(monkeypatch, stage)
+    monkeypatch.setattr(
+        "polylogue.operations.raw_frontier_inspection.make_raw_frontier_inspection_stage",
+        lambda _db, **_kwargs: stage.build(),
+    )
+    _seed(archive, stage.name, 1)
+    if not due:
+        with sqlite3.connect(archive / "ops.db") as conn:
+            conn.execute("UPDATE convergence_debt SET next_retry_at = '2999-01-01T00:00:00+00:00'")
+
+    daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert len(stage.executions) == int(due)
+    assert len(_rows(archive)) == int(not (due and converges))
+
+
+def test_blocked_frontier_fallback_retains_registered_telemetry_outcome(
+    archive: Path, monkeypatch: pytest.MonkeyPatch, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
+    """The real event validator must retain the incomplete census outcome."""
+    from polylogue import logging as plog
+
+    stage = _Stage("raw_frontier_inspection", subject_independent=True, converges=False)
+    _install(monkeypatch, stage)
+    monkeypatch.setattr(
+        "polylogue.operations.raw_frontier_inspection.make_raw_frontier_inspection_stage",
+        lambda _db, **_kwargs: stage.build(),
+    )
+    with plog.capture() as records:
+        daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    terminal = [r for r in records if r["event"] == "daemon.raw_frontier_inspection.pass.completed"]
+    assert len(terminal) == 1
+    assert terminal[0]["outcome"] == "degraded"
+    assert terminal[0]["reason"] == "frontier_inspection_blocked"
+    assert not [r for r in records if r["event"] == "log.field_rejected"]
+    cursor = CursorStore(archive / "index.db", initialize=False)
+    debt = cursor.list_convergence_debt(stage=stage.name)
+    assert len(debt) == 1
+    assert debt[0].status == "deferred"
+    assert debt[0].next_retry_at is not None
+    assert cursor.list_convergence_debt(stage=stage.name, retry_due_only=True) == []
+    daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert len(stage.executions) == 1
+    # A due retry runs once, keeps pending debt, and schedules its next backoff.
+    with sqlite3.connect(archive / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'")
+    daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert len(stage.executions) == 2
+    assert cursor.list_convergence_debt(stage=stage.name, retry_due_only=True) == []
+    daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert len(stage.executions) == 2
+
+
+@pytest.mark.parametrize("failure_kind", ["stale_seal", "io", "cancelled"])
+def test_frontier_fallback_exception_records_failed_debt_except_cancellation(
+    archive: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bounded_compute_adapter: BoundedComputeAdapter,
+    failure_kind: str,
+) -> None:
+    """An exception from the actual inspection factory keeps canonical backoff."""
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.operations import raw_frontier_inspection
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+    failures: dict[str, Exception] = {
+        "stale_seal": ReferenceSealStaleError("neutral cursor authority changed"),
+        "io": OSError("neutral observation unavailable"),
+        "cancelled": DaemonOperationCancelled("neutral cancellation"),
+    }
+    failure = failures[failure_kind]
+    executions = 0
+
+    def fail_inspection(*_args: object, **_kwargs: object) -> object:
+        nonlocal executions
+        executions += 1
+        raise failure
+
+    monkeypatch.setattr(raw_frontier_inspection, "frontier_coverage_for_archive", lambda _root: {})
+    monkeypatch.setattr(raw_frontier_inspection, "inspect_prepared_raw_authority_frontier", fail_inspection)
+    with pytest.raises(type(failure)) as raised:
+        daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert raised.value is failure
+    cursor = CursorStore(archive / "index.db", initialize=False)
+    debt = cursor.list_convergence_debt(stage="raw_frontier_inspection")
+    if failure_kind == "cancelled":
+        assert debt == []
+    else:
+        assert len(debt) == 1
+        assert debt[0].status == "failed"
+        assert cursor.list_convergence_debt(stage="raw_frontier_inspection", retry_due_only=True) == []
+        daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+        assert executions == 1
+
+
+@pytest.mark.parametrize("inspection_raises", [False, True])
+def test_frontier_fallback_refuses_unpersisted_retry_debt(
+    archive: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bounded_compute_adapter: BoundedComputeAdapter,
+    inspection_raises: bool,
+) -> None:
+    """Both fallback outcomes must surface a refused canonical debt write."""
+    from types import SimpleNamespace
+
+    from polylogue import logging as plog
+    from polylogue.core.sqlite_locking import is_transient_sqlite_lock
+    from polylogue.operations import raw_frontier_inspection
+    from polylogue.sources.live import cursor as cursor_module
+    from polylogue.sources.live.sqlite_locking import best_effort_cursor_write
+
+    original_write = best_effort_cursor_write
+    inspection_failure = OSError("neutral inspection unavailable")
+
+    def refuse_debt(label: str, write: Any) -> bool:
+        if label == "archive ops convergence debt sync":
+            return False
+        return original_write(label, write)
+
+    def inspect(*_args: object, **_kwargs: object) -> object:
+        if inspection_raises:
+            raise inspection_failure
+        return SimpleNamespace(healthy=False)
+
+    monkeypatch.setattr(cursor_module, "best_effort_cursor_write", refuse_debt)
+    monkeypatch.setattr(raw_frontier_inspection, "frontier_coverage_for_archive", lambda _root: {})
+    monkeypatch.setattr(raw_frontier_inspection, "inspect_prepared_raw_authority_frontier", inspect)
+    with plog.capture() as records, pytest.raises(sqlite3.OperationalError) as raised:
+        daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert is_transient_sqlite_lock(raised.value)
+    if inspection_raises:
+        assert raised.value.__context__ is inspection_failure
+    assert not [r for r in records if r["event"] == "daemon.raw_frontier_inspection.pass.completed"]
+    assert _rows(archive) == []
