@@ -832,7 +832,11 @@ CHATGPT_EXTRACT_MESSAGES_CASES: list[ExtractMessagesCase] = [
         1,
         "parts with None",
     ),
-    ({"node1": {"message": {"id": "1", "author": {"role": "user"}, "content": {"parts": []}}}}, 0, "empty parts"),
+    (
+        {"node1": {"message": {"id": "1", "author": {"role": "user"}, "content": {"parts": []}}}},
+        1,
+        "empty parts retain native identity",
+    ),
     # Role normalization
     ({"node1": make_chatgpt_node("msg1", "human", ["Hi"])}, 1, "human role alias"),
     ({"node1": make_chatgpt_node("msg1", "model", ["Response"])}, 1, "model role alias"),
@@ -959,7 +963,7 @@ def test_chatgpt_extract_parent_and_branch_index(
         )
 
 
-def test_chatgpt_drops_parent_links_to_filtered_messages() -> None:
+def test_chatgpt_retains_parent_links_to_empty_messages() -> None:
     messages, _ = extract_messages_from_mapping(
         {
             "empty-parent": make_chatgpt_node("parent-msg", "user", [], children=["child"]),
@@ -971,7 +975,7 @@ def test_chatgpt_drops_parent_links_to_filtered_messages() -> None:
 
     parents = {message.provider_message_id: message.parent_message_provider_id for message in messages}
 
-    assert parents["child-msg"] is None
+    assert parents["child-msg"] == "parent-msg"
     assert parents["valid-child-msg"] == "root-msg"
 
 
@@ -1806,7 +1810,7 @@ def test_regeneration_preserves_all_branches_and_marks_active_leaf() -> None:
     }
     conv = chatgpt_parse(payload, "fallback-id")
     texts = [m.text for m in conv.messages]
-    assert texts == ["question", "OLD wrong answer", "NEW correct answer"]
+    assert texts == ["", "question", "OLD wrong answer", "NEW correct answer"]
     by_id = {m.provider_message_id: m for m in conv.messages}
     assert by_id["u1"].is_active_path is True
     assert by_id["a_old"].is_active_path is False
@@ -1869,6 +1873,7 @@ def test_chatgpt_position_stays_mapping_order_when_active_path_timestamps_are_sc
         ("a1", "100.0"),
         ("u2", "200.0"),
         ("u1", "300.0"),
+        ("root", None),
     ]
 
 
@@ -2619,17 +2624,20 @@ def test_nonempty_system_node_becomes_runtime_context_message() -> None:
     assert messages[0].material_origin is MaterialOrigin.RUNTIME_CONTEXT
 
 
-def test_empty_system_node_remains_omitted() -> None:
+def test_empty_system_node_retains_native_identity() -> None:
     mapping = {
         "node1": make_chatgpt_node("msg1", "system", []),
     }
 
     messages, _attachments = extract_messages_from_mapping(mapping)
 
-    assert messages == []
+    assert len(messages) == 1
+    assert messages[0].provider_message_id == "msg1"
+    assert messages[0].text == ""
+    assert messages[0].blocks == []
 
 
-def test_model_editable_context_memory_payload_is_kept_and_empty_is_dropped() -> None:
+def test_model_editable_context_memory_payload_and_empty_identity_are_kept() -> None:
     def node(msg_id: str, model_set_context: str) -> dict[str, object]:
         return {
             "id": msg_id,
@@ -2650,7 +2658,9 @@ def test_model_editable_context_memory_payload_is_kept_and_empty_is_dropped() ->
 
     messages, _attachments = extract_messages_from_mapping(mapping)
 
-    assert [m.provider_message_id for m in messages] == ["msg1"]
+    assert [m.provider_message_id for m in messages] == ["msg1", "msg2"]
+    assert messages[1].text == ""
+    assert messages[1].blocks == []
     assert messages[0].message_type is MessageType.CONTEXT
     assert messages[0].text is not None
     assert "Prefers rigorous verification" in messages[0].text

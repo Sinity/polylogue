@@ -318,6 +318,15 @@ provider (`docs/provider-origin-identity.md:15-30`;
 
 ## Invariants
 
+ChatGPT retains every supported nonnull native mapping message, including empty
+text with zero blocks, with its native identity, parent, role, nullable time and
+active-branch coordinates. Null structural nodes remain topology only.
+`chatgpt_message_delivery` carries the message's declared reasoning title, title
+list and status even when the message has no prose; these labels never create
+thinking prose or a synthetic block. Initial/finished rendering strings retain
+their declared exclusion as redundant generation labels; that exclusion alone
+is not proof of source-specific timing equivalence.
+
 - Native Codex browser-capture envelopes retain the original record array and
   delegate to the ordinary Codex parser before merging envelope attachments;
   the extension does not provide a Codex page adapter.
