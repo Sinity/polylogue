@@ -100,11 +100,6 @@
       "digest": "b1fb0bf40d24901b2df0687c7b4d97668485c75b"
     },
     {
-      "file": "polylogue/browser_capture/server.py",
-      "digest": "efdc04713894a74ac4b6a34d7485098632f7320e",
-      "count": 3
-    },
-    {
       "file": "polylogue/cli/commands/paths.py",
       "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
     },

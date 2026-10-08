@@ -524,6 +524,12 @@
     ]
   },
   {
+    "file": "polylogue/storage/sqlite/literal_cells.py",
+    "tiers": [
+      "audit"
+    ]
+  },
+  {
     "file": "polylogue/storage/sqlite/migration_runner.py",
     "tiers": [
       "source",

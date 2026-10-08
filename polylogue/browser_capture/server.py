@@ -625,7 +625,6 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                         self._capture_job_storage_error(exc)
                     else:
                         self.close_connection = True
-                    return
                 return
             if suffix.startswith("orphans/") and suffix.endswith("/payload"):
                 if self.server.config.auth_token is None:
@@ -701,7 +700,6 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     self._capture_job_storage_error(exc)
                 else:
                     self.close_connection = True
-                return
             return
         self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
 

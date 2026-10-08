@@ -166,13 +166,13 @@ writes:
     tier: "unresolved"
     classification: row_supersession
     reason: "The original lineage replacement guard captures only the finite _MESSAGE_REF_COLUMNS Index reference relations into its private TEMP refs table. In the same Index replacement transaction this statement follows the copied or reanchored composed row only where the captured cell still equals its old ID or is null and the target message exists; it never targets Source/User/Audit rows."
-  - file: "polylogue/storage/sqlite/audit_continuity.py"
-    function: "write_canonical_audit_literal"
+  - file: "polylogue/storage/sqlite/literal_cells.py"
+    function: "write_literal_text"
     table: "?"
     kind: "update"
     tier: "unresolved"
     classification: guarded_producer_refinement
-    reason: "The helper accepts only operation_events.detail_json or audit_continuity_control.pending_payload_json, requires the original retained native owner and active transaction, and fills the same producer-created placeholder with the verified streamed literal before commit. It does not revise an already published confident payload; physical SQLite length refusal and blob settlement remain enforced."
+    reason: "The shared incremental TEXT writer requires the exact retained original native connection owner and an active transaction. Audit retains its allowlist of operation_events.detail_json and audit_continuity_control.pending_payload_json and verified canonical literal chunks. The CaptureJob producer fills its same-transaction placeholders in capture_jobs.intent_json, capture_job_events.refs_json/payload_json, capture_job_native_acquisitions.header_json, capture_job_native_members.metadata_json, and capture_job_native_assets.outcome_json; duplicate/CAS/acquisition-state checks precede publication. These are current receiver registry cells, not archive tiers. The helper fills the producer-selected row before commit, enforces physical SQLite length and exact streamed byte count, and retains failed Blob settlement with its creator. This moves the previous Audit placeholder refinement without permitting revisions of already published confident payloads."
   - file: "polylogue/storage/sqlite/archive_tiers/user_write.py"
     function: "advance_session_marker_delivery"
     table: "session_marker_delivery"
