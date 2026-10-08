@@ -1653,11 +1653,11 @@ def _tool_execution_result_payload(item: dict[str, object]) -> dict[str, object]
     found only two of its ~60 observed subfields read anywhere
     (``backgroundTaskId``, ``retrieval_status``/``task`` -- see
     ``_background_task_id``/``_task_output_outcome`` above); this covers the
-    remaining structurally bounded facts. Deliberately excluded: free-text
+    remaining structural facts. Deliberately excluded: free-text
     output fields (``stdout``/``stderr``/``output``/``fullOutput``) that
     duplicate content already visible in the message's own ``tool_result``
     block and could be unbounded in size; ``filenames``/``file.filePath`` are
-    kept because they are bounded path lists, not command output.
+    kept in full because they are declared path evidence, not command output.
     """
     tool_result = item.get("toolUseResult")
     if not isinstance(tool_result, dict):
@@ -1702,9 +1702,9 @@ def _tool_execution_result_payload(item: dict[str, object]) -> dict[str, object]
         payload["file_path"] = tool_result["filePath"]
     filenames = tool_result.get("filenames")
     if isinstance(filenames, list):
-        bounded_filenames = [name for name in filenames if isinstance(name, str)]
-        if bounded_filenames:
-            payload["filenames"] = bounded_filenames[:50]
+        valid_filenames = [name for name in filenames if isinstance(name, str)]
+        if valid_filenames:
+            payload["filenames"] = valid_filenames
     structured_patch = tool_result.get("structuredPatch")
     if isinstance(structured_patch, list) and structured_patch:
         hunks = [hunk for hunk in structured_patch if isinstance(hunk, dict)]

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import BranchType, SessionKind, TitleSource
 from polylogue.sources.dispatch import merge_parsed_session_chunks
 from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
@@ -1747,3 +1749,89 @@ def test_session_environment_survives_a_chunked_stream_as_one_row() -> None:
     assert [e.payload for e in environment] == [
         {"entrypoints": {"sdk-cli": 2}, "cli_versions": {"2.1.261": 1, "2.1.263": 1}}
     ]
+
+
+@pytest.mark.parametrize(
+    "filenames",
+    [
+        [f"neutral-{index:03d}.txt" for index in range(75)] + ["neutral-000.txt", ""],
+        ["first.txt", None, 7, {}, False, "last.txt"],
+        [],
+        [None, 7, {}],
+        None,
+        "not-a-list",
+    ],
+)
+def test_tool_use_result_preserves_complete_filename_evidence_on_eager_and_streamed_routes(
+    filenames: object, tmp_path: Path
+) -> None:
+    """Every declared string survives past the old fifty-name boundary in wire order."""
+    import io
+    import json
+
+    from polylogue.core.enums import Provider
+    from polylogue.sources.decoders import _iter_json_stream
+    from polylogue.sources.dispatch import parse_payload, parse_stream_payload
+
+    record = {
+        "type": "user",
+        "uuid": "filename-result",
+        "sessionId": "filename-session",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "message": {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "complete"}],
+        },
+        "toolUseResult": {"filenames": filenames},
+    }
+    expected = [name for name in filenames if isinstance(name, str)] if isinstance(filenames, list) else []
+    records = [
+        {
+            "type": "user",
+            "uuid": "filename-request",
+            "sessionId": "filename-session",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": "user", "content": "List the declared files."},
+        },
+        record,
+    ]
+    eager_sessions = parse_payload(Provider.CLAUDE_CODE, records, "filename-session")
+    assert len(eager_sessions) == 1
+    eager = eager_sessions[0]
+    wire = ("\n".join(json.dumps(item) for item in records) + "\n").encode()
+    streamed = parse_stream_payload(
+        Provider.CLAUDE_CODE, _iter_json_stream(io.BytesIO(wire), "filenames.jsonl"), "filename-session"
+    )
+    assert len(streamed) == 1
+    for session in (eager, streamed[0]):
+        events = [event for event in session.session_events if event.event_type == "claude_tool_execution_result"]
+        assert len(events) == 1
+        assert events[0].source_message_provider_id == "filename-result"
+        assert events[0].payload["tool_use_id"] == "tool-1"
+        if expected:
+            assert events[0].payload["filenames"] == expected
+        else:
+            assert "filenames" not in events[0].payload
+
+    if len(expected) > 50:
+        import sqlite3
+
+        from tests.infra.index_writer import fixture_index_connection, write_fixture_index_session
+
+        for label, parsed in (("eager", eager), ("streamed", streamed[0])):
+            index_path = tmp_path / label / "index.db"
+            index_path.parent.mkdir()
+            with fixture_index_connection(index_path) as index:
+                session_id = write_fixture_index_session(index, parsed)
+            with sqlite3.connect(index_path) as index:
+                rows = index.execute(
+                    "SELECT m.native_id,e.payload_json FROM session_events e "
+                    "JOIN messages m ON m.message_id=e.source_message_id "
+                    "WHERE e.session_id=? AND e.event_type='claude_tool_execution_result'",
+                    (session_id,),
+                ).fetchall()
+            assert len(rows) == 1
+            assert rows[0][0] == "filename-result"
+            stored = json.loads(rows[0][1])
+            assert stored["tool_use_id"] == "tool-1"
+            assert stored["filenames"] == expected
