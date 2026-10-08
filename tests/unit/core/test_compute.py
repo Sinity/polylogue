@@ -7,6 +7,7 @@ import sqlite3
 import threading
 from builtins import BaseExceptionGroup
 from collections.abc import Callable
+from concurrent.futures import Future
 
 import pytest
 
@@ -44,11 +45,11 @@ def test_shutdown_during_queued_dispatch_settles_both_operation_futures(
         second = adapter.submit(queued_invoked.set)
         original_submit = adapter.executor.submit
 
-        def shutdown_at_submission(*args: object, **kwargs: object) -> object:
+        def shutdown_at_submission(function: Callable[..., object], *args: object, **kwargs: object) -> Future[object]:
             if reject_submission:
                 adapter.shutdown(wait=False)
-                return original_submit(*args, **kwargs)
-            execution = original_submit(*args, **kwargs)
+                return original_submit(function, *args, **kwargs)
+            execution = original_submit(function, *args, **kwargs)
             # The first task still owns the only physical worker, so this
             # accepted executor future cannot start before shutdown cancels it.
             adapter.shutdown(wait=False)
