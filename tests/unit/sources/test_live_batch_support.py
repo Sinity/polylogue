@@ -1301,7 +1301,7 @@ def test_unreadable_state_database_stays_retryable_instead_of_excluded(tmp_path:
     assert record is None or (record.excluded is False and record.failure_count == 0)
 
 
-@pytest.mark.parametrize("fault_stage", ["classification", "capture"])
+@pytest.mark.parametrize("fault_stage", ["classification", "capture", "wrapped_capture"])
 def test_repeated_sqlite_read_faults_defer_without_quarantining_unchanged_input(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault_stage: str
 ) -> None:
@@ -1339,6 +1339,8 @@ def test_repeated_sqlite_read_faults_defer_without_quarantining_unchanged_input(
         if reads <= 6:
             fault = sqlite3.OperationalError("synthetic source read busy")
             fault.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            if fault_stage == "wrapped_capture":
+                raise OSError("synthetic snapshot adapter") from fault
             raise fault
         return original(*args, **kwargs)
 
