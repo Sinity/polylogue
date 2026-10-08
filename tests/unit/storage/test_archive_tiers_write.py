@@ -3892,7 +3892,7 @@ def test_full_replacement_removes_attachment_identity_dependents_with_foreign_ke
         assert list(conn.execute("PRAGMA foreign_key_check")) == []
         assert list(conn.execute("SELECT ref_id,id_kind,native_id FROM attachment_native_ids")) == retained_ids
         envelope = read_archive_session_envelope(conn, session_id)
-        assert envelope is not None and envelope.messages[0].blocks[0].text == "Neutral replacement"
+        assert envelope.messages[0].blocks[0].text == "Neutral replacement"
     finally:
         conn.close()
 
