@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from polylogue.analysis.claude_workflow_evidence import (
     ClaudeWorkflowCoordinatorInvocation,
     ClaudeWorkflowPromptEvidence,
@@ -278,3 +280,40 @@ def test_claude_workflow_stage_reads_without_daemon_writer_lease(tmp_path) -> No
         with stage_write_admission(admit):
             assert stage.check(subject) is False
             assert stage.execute(subject) is True
+
+
+@pytest.mark.parametrize("conventional_path", ["missing", "stale-shadow"])
+def test_claude_workflow_stage_projects_the_active_index_generation(tmp_path, conventional_path) -> None:  # type: ignore[no-untyped-def]
+    """Reading and publishing the conventional shadow would leave the active graph stale."""
+    import shutil
+    import sqlite3
+    from contextlib import closing
+
+    from polylogue.operations.claude_workflow_convergence import make_claude_workflow_stage
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "index.db")) as conn:
+        conn.execute(
+            "INSERT INTO work_evidence_graphs(graph_id, corpus_snapshot_ref) VALUES (?, ?)",
+            ("claude-workflow:stale", ObjectRef(kind="context-snapshot", object_id="stale").format()),
+        )
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    generation = tmp_path / ".index-generations" / "promoted"
+    generation.mkdir(parents=True)
+    if conventional_path == "missing":
+        (tmp_path / "index.db").rename(generation / "index.db")
+    else:
+        shutil.copy2(tmp_path / "index.db", generation / "index.db")
+    (tmp_path / ".index-active-pointer").write_text(str(generation / "index.db"), encoding="utf-8")
+
+    stage = make_claude_workflow_stage(tmp_path / "index.db")
+    subject = tmp_path / "project" / "session" / "subagents" / "workflows" / RUN_ID / "journal.jsonl"
+    assert stage.execute(subject) is True
+    assert stage.check(subject) is False
+    with closing(sqlite3.connect(generation / "index.db")) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM work_evidence_graphs").fetchone()[0] == 0
+    if conventional_path == "stale-shadow":
+        with closing(sqlite3.connect(tmp_path / "index.db")) as conn:
+            assert conn.execute("SELECT graph_id FROM work_evidence_graphs").fetchone()[0] == "claude-workflow:stale"

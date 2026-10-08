@@ -37,6 +37,7 @@ from polylogue.sources.parsers.claude.orchestration import (
     ClaudeOrchestrationFact,
     parse_claude_orchestration_artifact,
 )
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
 from polylogue.storage.sqlite.population_admission import assert_population_admitted
@@ -186,7 +187,7 @@ def claude_workflow_reparse_plan(archive_root: Path) -> ClaudeWorkflowReparsePla
 
 def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
     source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
+    index_db = resolve_active_index_path(archive_root)
     if not source_db.exists() or not index_db.exists():
         raise FileNotFoundError("Claude Workflow materialization requires source.db and index.db")
 
@@ -551,7 +552,7 @@ def _corpus_snapshot(
 
 
 def _replace_graph_family(archive_root: Path, graphs: Sequence[WorkEvidenceGraph]) -> None:
-    index_db = archive_root / "index.db"
+    index_db = resolve_active_index_path(archive_root)
     assert_population_admitted(index_db)
     conn = open_isolated_write_connection(
         index_db,

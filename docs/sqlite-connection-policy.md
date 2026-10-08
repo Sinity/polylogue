@@ -63,9 +63,11 @@ Authenticated detached population requires its exact owned destination and root
 lease before copying. The daemon arms lease enforcement; it does not replace
 `sqlite3.connect` process-wide.
 
-The existing layering gate rejects locally resolved writable tier opens that
-precede root admission. This is a regression check over declared paths; dynamic
-paths remain the owning factory's runtime responsibility. Read-only, scratch and
+The existing layering gate rejects locally resolved writable tier opens without
+an earlier explicit archive admission in their owner function. It tracks local
+paths and lexical statement order, not control-flow dominance or arbitrary
+runtime values. This positive regression check supplements the owning factory's
+runtime root enforcement. Read-only, scratch and
 external databases keep their own destination contracts.
 
 The CLI uses one per-open residency and archive-ownership check whether a daemon

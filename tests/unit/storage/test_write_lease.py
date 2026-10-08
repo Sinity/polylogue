@@ -158,7 +158,7 @@ def test_index_generation_bootstrap_requires_the_archive_bound_lease(
 
     Anti-vacuity: removing the lease assertion from ``IndexGenerationStore``
     lets this production bootstrap create an archive-tier ``index.db`` while
-    the daemon's connection guard is armed but no writer owns the archive.
+    the daemon's lease enforcement is armed but no writer owns the archive.
     """
     from polylogue.storage.index_generation import IndexGenerationStore
 
@@ -2309,3 +2309,34 @@ async def test_daemon_acquisition_physical_drain_keeps_gate_before_next_writer(
     assert isinstance(outcome[0], BaseExceptionGroup)
     assert ran == ["next"]
     assert owner not in leases._CUSTODIES
+
+
+@pytest.mark.parametrize("owner", ["bootstrap", "durable-train", "embedding-checkpoint"])
+def test_specialized_native_openers_require_their_configured_root_without_an_interceptor(
+    tmp_path: Path, owner: str
+) -> None:
+    """Removing any specialized owner's admission permits the two refused calls."""
+    from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
+    from polylogue.storage.sqlite.durable_change_train import _open_existing_tier
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    other = tmp_path / "other"
+    other.mkdir()
+
+    def construct() -> None:
+        if owner == "bootstrap":
+            initialize_archive_database(root / "ops.db", ArchiveTier.OPS, allow_create=False)
+        elif owner == "durable-train":
+            with _open_existing_tier(root / "source.db") as connection:
+                assert connection.execute("PRAGMA user_version").fetchone()[0] >= 1
+        else:
+            EmbeddingGenerationStore(root)._checkpoint_database(root / "embeddings.db", label="active")
+
+    with arm_write_lease_enforcement():
+        with pytest.raises(UnleasedWriteError):
+            construct()
+        with write_lease("test.wrong-root", archive_root=other), pytest.raises(UnleasedWriteError):
+            construct()
+        with write_lease("test.right-root", archive_root=root):
+            construct()
