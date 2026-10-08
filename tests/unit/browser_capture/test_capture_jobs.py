@@ -3142,3 +3142,148 @@ def test_staged_artifact_durability_is_distinct_from_transient_json_cells(
         finally:
             staged.discard()
     assert not list((tmp_path / ".staging").iterdir())
+
+
+def test_maximum_http_event_page_succeeds_with_low_descriptor_headroom(tmp_path: Path) -> None:
+    """Retaining two spill connections per event fails this actual 500-row route."""
+    import resource
+
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        registry = CaptureJobRegistry(tmp_path, "neutral-page-writer")
+        with registry._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for index in range(500):
+                registry._append_event(
+                    connection,
+                    job["job_id"],
+                    "capture-attempted",
+                    f"page-{index}",
+                    0,
+                    {"conversation_ref": "neutral-page"},
+                    {"ordinal": index, "nested": [index, {"exact": "value"}]},
+                    advance_revision=False,
+                )
+        limits = resource.getrlimit(resource.RLIMIT_NOFILE)
+        with os.scandir("/proc/self/fd") as descriptors:
+            headroom_limit = max(int(entry.name) for entry in descriptors) + 40
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (min(limits[0], headroom_limit), limits[1]))
+            status, page = request(
+                host,
+                port,
+                "GET",
+                f"/v1/capture-jobs/{job['job_id']}/events?provider=chatgpt&scope={SCOPE_QUERY}&client_protocol=2&limit=500",
+                {},
+            )
+            assert status == 200
+            assert len(page["events"]) == 500 and page["has_more"] is True
+            assert [event["payload"]["ordinal"] for event in page["events"]] == list(range(500))
+            assert page["events"][-1]["payload"]["nested"] == [499, {"exact": "value"}]
+            assert [event["payload"]["ordinal"] for event in page["timelines"]["neutral-page"]] == list(
+                reversed(range(500))
+            )
+        finally:
+            resource.setrlimit(resource.RLIMIT_NOFILE, limits)
+
+
+@pytest.mark.parametrize("population", [100, 10_000])
+def test_ordinary_gc_skips_held_population_and_advances_orphan_frontier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, population: int
+) -> None:
+    """VM work stays independent of held jobs; each request advances one artifact."""
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+    registry = CaptureJobRegistry(tmp_path, "neutral-gc-owner")
+    with registry._connection() as connection:
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(capture_jobs)")]
+        template = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job["job_id"],)).fetchone()
+        assert template is not None
+        connection.execute("BEGIN IMMEDIATE")
+        for index in range(population):
+            values = dict(zip(columns, template, strict=True))
+            values.update(job_id=f"held-{index}", intent_key=f"held-intent-{index}")
+            # Both ordinary held jobs and otherwise eligible jobs with live
+            # leases must be excluded by indexed selection before Python reads.
+            if index % 2:
+                values.update(
+                    retention_json=canonical_json({"state": "eligible", "timeline_authoritative": False}),
+                    retry_json=canonical_json({"state": "completed"}),
+                    checkpoint_sequence=1,
+                    receipt_json="{}",
+                    lease_json=canonical_json({"expires_at": "2099-01-01T00:00:00Z"}),
+                )
+            connection.execute(
+                "INSERT INTO capture_jobs (" + ",".join(columns) + ") VALUES (" + ",".join("?" for _ in columns) + ")",
+                tuple(values[column] for column in columns),
+            )
+    directory = capture_job_store_root(tmp_path) / "artifacts"
+    directory.mkdir(exist_ok=True)
+    for index in range(8):
+        (directory / (f"{index:064x}.native")).write_bytes(b"unpublished neutral orphan")
+    steps = 0
+    original_connect = CaptureJobRegistry._connect
+
+    def progress() -> int:
+        nonlocal steps
+        steps += 1
+        return 0
+
+    def connect(self: CaptureJobRegistry) -> sqlite3.Connection:
+        connection = original_connect(self)
+        connection.set_progress_handler(progress, 1)
+        return connection
+
+    monkeypatch.setattr(CaptureJobRegistry, "_connect", connect)
+    assert registry.gc(incremental_artifacts=True)["count"] == 0
+    # This is an operation bound, not an elapsed-time assertion. The previous
+    # SELECT-all/sort visits every row and each artifact root query scans jobs.
+    assert steps < 500, steps
+    assert len(list(directory.iterdir())) == 7
+    for _ in range(8):
+        assert CaptureJobRegistry(tmp_path, "same-owner").gc(incremental_artifacts=True)["count"] == 0
+    assert list(directory.iterdir()) == []
+    with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM capture_jobs").fetchone()[0] == population + 1
+
+
+def test_fresh_library_create_owns_gc_scratch_without_existing_spool(tmp_path: Path) -> None:
+    spool = tmp_path / "not-created"
+    payload = {"neutral": "fresh"}
+    registry = CaptureJobRegistry(spool, "neutral-fresh")
+    with registry.result_scope():
+        status, result = registry.create(
+            {
+                "provider": "chatgpt",
+                "scope": ACCOUNT_SCOPE,
+                "client_protocol": 2,
+                "intent": {
+                    "schema_version": 1,
+                    "version": 1,
+                    "intent_key": INTENT_KEY,
+                    "payload": payload,
+                    "digest": canonical_digest(payload),
+                },
+            }
+        )
+        assert status == 201 and result["created"] is True
+    assert capture_job_database_path(spool).is_file()
+
+
+def test_orphan_frontier_restarts_after_artifact_directory_identity_changes(tmp_path: Path) -> None:
+    registry = CaptureJobRegistry(tmp_path, "neutral-frontier")
+    registry.gc(incremental_artifacts=True)
+    directory = capture_job_store_root(tmp_path) / "artifacts"
+    directory.mkdir()
+    for index in range(2):
+        (directory / (f"{index:064x}.native")).write_bytes(b"old neutral orphan")
+    registry.gc(incremental_artifacts=True)
+    assert len(list(directory.iterdir())) == 1
+    previous = directory.with_name("previous-artifacts")
+    directory.rename(previous)
+    directory.mkdir()
+    new = directory / ("f" * 64 + ".native")
+    new.write_bytes(b"new neutral orphan")
+    CaptureJobRegistry(tmp_path, "new-request").gc(incremental_artifacts=True)
+    assert not new.exists()
+    assert len(list(previous.iterdir())) == 1

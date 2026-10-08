@@ -22,7 +22,23 @@ sent with their exact `Content-Length` in chunks. Intent payloads, event refs
 and payloads, native preparation metadata, and asset outcomes use lazy JSON
 views through registry publication and reads. Their collection cardinality does
 not require a decoded Python tree; individual strings, parser records, and
-SQLite cells still occupy memory while being processed. The
+SQLite cells still occupy memory while being processed. Event pages stage each
+event under its own two cell-view owners and release them before reading the
+next event. One lazy page document then serves the events and their timelines;
+open spill connections do not scale with the selected event count.
+
+Ordinary create and first-page discovery select retirement candidates through
+receiver-local eligibility and lease indexes. They collect each retired job's
+exact artifact references after its deletion commits and advance one entry of
+a process-owned orphan-directory sweep. Repeated requests finish the sweep;
+restart begins a new sweep. Replacing the registry or artifact directory closes
+the prior frontier. Explicit registry GC retains a complete streamed sweep.
+Artifact root checks and active-reader locks still precede removal. The indexes
+add only receiver registry metadata, without changing archive tiers or capture
+wire fields. Retired artifact membership stays on temporary scratch until the
+registry transaction commits.
+
+The
 ordinary browser-action, pairing, health, and assertion control routes retain
 their separate bounded in-memory request contract.
 

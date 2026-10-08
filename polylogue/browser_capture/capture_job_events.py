@@ -22,7 +22,7 @@ def read_capture_job_events(
     limit: int,
     before_revision: int | None = None,
     *,
-    decode: Callable[[sqlite3.Connection, sqlite3.Row], dict[str, object]],
+    decode_page: Callable[[sqlite3.Connection, list[sqlite3.Row]], list[dict[str, object]]],
 ) -> tuple[list[dict[str, object]], int | None]:
     """Read the newest bounded page, receiver-ordered, plus a cursor into older events.
 
@@ -41,7 +41,7 @@ def read_capture_job_events(
     has_more = len(rows) > limit
     page = list(reversed(rows[:limit]))
     next_cursor = int(page[0]["event_revision"]) if has_more and page else None
-    events = [decode(connection, row) for row in page]
+    events = decode_page(connection, page)
     return events, next_cursor
 
 

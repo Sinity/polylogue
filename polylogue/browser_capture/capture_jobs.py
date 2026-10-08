@@ -22,7 +22,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import BinaryIO, cast
+from typing import IO, BinaryIO, Protocol, cast
 from uuid import UUID, uuid4
 
 import ijson
@@ -266,6 +266,21 @@ def _stamp(value: datetime | None = None) -> str:
 
 _SCHEMA_LOCK = threading.Lock()
 _SCHEMA_READY: set[tuple[str, int, int]] = set()
+_ARTIFACT_SWEEP_LOCK = threading.Lock()
+
+
+class _ArtifactSweep(Protocol):
+    def __next__(self) -> os.DirEntry[str]: ...
+    def close(self) -> None: ...
+
+
+_ARTIFACT_SWEEPS: dict[str, tuple[tuple[int, int, int, int], _ArtifactSweep]] = {}
+_GC_PREDICATE = (
+    "json_extract(retention_json, '$.state')='eligible' "
+    "AND json_extract(retention_json, '$.timeline_authoritative')=0 "
+    "AND json_extract(retry_json, '$.state') IN ('completed','abandoned') "
+    "AND checkpoint_sequence IS NOT NULL AND receipt_json IS NOT NULL AND receipt_json!=''"
+)
 
 
 def _database_identity(path: Path) -> tuple[str, int, int] | None:
@@ -441,6 +456,27 @@ class CaptureJobRegistry:
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS capture_job_discovery ON capture_jobs(provider, scope_key, created_at DESC, job_id DESC)"
+        )
+
+        # Receiver registry metadata only; no archive tier identity changes.
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS capture_job_gc_unleased ON capture_jobs(updated_at) WHERE "
+            + _GC_PREDICATE
+            + " AND lease_json IS NULL"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS capture_job_gc_leased ON capture_jobs("
+            "lease_json, updated_at) WHERE " + _GC_PREDICATE + " AND lease_json IS NOT NULL"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS capture_native_unfinished ON capture_job_native_acquisitions(job_id) "
+            "WHERE final_receipt_json IS NULL AND state!='cancelled'"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS capture_job_checkpoint_root ON capture_jobs(checkpoint_artifact_ref)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS capture_receipt_checkpoint_root ON capture_job_receipts(checkpoint_digest)"
         )
 
     def _spool_root(self) -> Path:
@@ -881,7 +917,7 @@ class CaptureJobRegistry:
             body.get("provider"), body.get("scope"), body.get("client_protocol")
         )
         intent = self._intent(body.get("intent"))
-        self.gc()
+        self.gc(incremental_artifacts=True)
         now = _stamp()
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -960,7 +996,7 @@ class CaptureJobRegistry:
         # retired jobs are collected. Collecting before listing means the
         # client never adopts a job this pass is about to delete.
         if body.get("cursor") is None:
-            self.gc()
+            self.gc(incremental_artifacts=True)
         cursor = body.get("cursor")
         if cursor is not None and (
             not isinstance(cursor, dict)
@@ -1067,7 +1103,7 @@ class CaptureJobRegistry:
                     (job_id,),
                 ).fetchall()
             ]
-            events, _cursor = read_capture_job_events(connection, job_id, 500, decode=self._event_dict)
+            events, _cursor = read_capture_job_events(connection, job_id, 500, decode_page=self._event_page)
             lifecycle = read_capture_job_retention(connection, job_id)
             return {
                 "job": self._summary(connection, row),
@@ -1258,11 +1294,31 @@ class CaptureJobRegistry:
             "occurred_at": now,
         }
 
-    def _event_dict(self, connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, object]:
-        if self._result_owner is None:
-            raise RuntimeError("capture event consumer requires result_scope")
-        payload = self._json_cell(connection, row["event_rowid"], "payload_json", self._result_owner)
-        refs = self._json_cell(connection, row["event_rowid"], "refs_json", self._result_owner)
+    def _event_page(self, connection: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict[str, object]]:
+        """Detach one page while releasing each event's two spill owners in turn."""
+        from polylogue.browser_capture.native_preparation import json_chunks
+        from polylogue.schemas.observation_spill import StreamedJSONDocument
+
+        def chunks() -> Iterator[bytes]:
+            yield b"["
+            for index, row in enumerate(rows):
+                if index:
+                    yield b","
+                with ExitStack() as event_owner:
+                    yield from json_chunks(self._event_dict(connection, row, event_owner))
+            yield b"]"
+
+        owner = self._require_result_owner()
+        staged = self._stage_json_chunks(chunks(), durable=False)
+        owner.callback(staged.discard)
+        return cast(list[dict[str, object]], owner.enter_context(StreamedJSONDocument(staged.path)))
+
+    def _event_dict(
+        self, connection: sqlite3.Connection, row: sqlite3.Row, owner: ExitStack | None = None
+    ) -> dict[str, object]:
+        owner = owner if owner is not None else self._require_result_owner()
+        payload = self._json_cell(connection, row["event_rowid"], "payload_json", owner)
+        refs = self._json_cell(connection, row["event_rowid"], "refs_json", owner)
         if not isinstance(payload, dict):
             raise CaptureJobError(500, "invalid_stored_event_payload")
         return {
@@ -1315,7 +1371,7 @@ class CaptureJobRegistry:
                 connection, job_id, body.get("provider"), body.get("scope"), body.get("client_protocol")
             )
             events, next_cursor = read_capture_job_events(
-                connection, job_id, limit, before_revision, decode=self._event_dict
+                connection, job_id, limit, before_revision, decode_page=self._event_page
             )
             return {
                 "events": events,
@@ -1581,15 +1637,47 @@ class CaptureJobRegistry:
             ).fetchone()
             return {"job": self._summary(connection, next_row), "receipt": receipt, "duplicate": False}
 
-    def gc(self, *, now: datetime | None = None, limit: int = 100) -> dict[str, object]:
+    def gc(
+        self, *, now: datetime | None = None, limit: int = 100, incremental_artifacts: bool = False
+    ) -> dict[str, object]:
         """Delete only explicitly eligible, acknowledged, non-authoritative jobs."""
         if not 1 <= limit <= 1000:
             raise CaptureJobError(400, "invalid_gc_limit")
         current = now or _now()
         deleted: list[str] = []
+        # Retired membership can be arbitrarily large even for one job. Keep
+        # its exact candidate names on request-owned scratch until commit.
+        with tempfile.TemporaryFile(mode="w+t", encoding="ascii") as artifact_names:
+            return self._gc_retire(current, limit, incremental_artifacts, deleted, artifact_names)
+
+    def _gc_retire(
+        self,
+        current: datetime,
+        limit: int,
+        incremental_artifacts: bool,
+        deleted: list[str],
+        artifact_names: IO[str],
+    ) -> dict[str, object]:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            rows = connection.execute("SELECT " + _JOB_COLUMNS + " FROM capture_jobs ORDER BY updated_at")
+            # Every lease producer uses canonical_json and _stamp(_now()), so
+            # expires_at is the first key and its value is UTC with a Z suffix.
+            # A next-second ceiling also admits a whole-second stamp before a
+            # fractional current instant. Python below checks the exact expiry.
+            lease_ceiling = _stamp(current.astimezone(UTC).replace(microsecond=0) + timedelta(seconds=1))
+            rows = connection.execute(
+                "SELECT " + _JOB_COLUMNS + " FROM capture_jobs WHERE " + _GC_PREDICATE + " AND lease_json IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM capture_job_native_acquisitions n WHERE n.job_id=capture_jobs.job_id "
+                "AND n.final_receipt_json IS NULL AND n.state!='cancelled') "
+                "UNION ALL SELECT "
+                + _JOB_COLUMNS
+                + " FROM capture_jobs WHERE "
+                + _GC_PREDICATE
+                + " AND lease_json IS NOT NULL AND lease_json<? "
+                "AND NOT EXISTS (SELECT 1 FROM capture_job_native_acquisitions n WHERE n.job_id=capture_jobs.job_id "
+                "AND n.final_receipt_json IS NULL AND n.state!='cancelled') ORDER BY updated_at",
+                ('{"expires_at":"' + lease_ceiling + '"',),
+            )
             for row in rows:
                 if len(deleted) >= limit:
                     break
@@ -1621,6 +1709,21 @@ class CaptureJobRegistry:
                         continue
                 if row["checkpoint_sequence"] is None or not row["receipt_json"]:
                     continue
+                for digest_row in connection.execute(
+                    "SELECT checkpoint_digest AS digest FROM capture_job_receipts WHERE job_id=? "
+                    "UNION SELECT checkpoint_artifact_ref FROM capture_jobs WHERE job_id=?",
+                    (row["job_id"], row["job_id"]),
+                ):
+                    if digest_row[0]:
+                        artifact_names.write(str(digest_row[0]).removeprefix("sha256:") + ".checkpoint\n")
+                for digest_row in connection.execute(
+                    "SELECT sha256 FROM capture_job_native_members WHERE job_id=? "
+                    "UNION SELECT sha256 FROM capture_job_native_assets WHERE job_id=? "
+                    "UNION SELECT sha256 FROM capture_job_native_artifacts WHERE job_id=?",
+                    (row["job_id"], row["job_id"], row["job_id"]),
+                ):
+                    if digest_row[0]:
+                        artifact_names.write(str(digest_row[0]) + ".native\n")
                 connection.execute("DELETE FROM capture_job_events WHERE job_id=?", (row["job_id"],))
                 connection.execute("DELETE FROM capture_job_receipts WHERE job_id=?", (row["job_id"],))
                 connection.execute("DELETE FROM capture_job_update_receipts WHERE job_id=?", (row["job_id"],))
@@ -1628,46 +1731,74 @@ class CaptureJobRegistry:
                 deleted.append(row["job_id"])
         # Job retirement must commit before any artifact is removed. Otherwise
         # a crash could restore a row whose payload had already been deleted.
-        self._collect_checkpoint_artifacts()
+        artifact_names.seek(0)
+        self._collect_checkpoint_artifacts(
+            (name.rstrip("\n") for name in artifact_names), incremental=incremental_artifacts
+        )
         return {"deleted": deleted, "count": len(deleted)}
 
-    def _collect_checkpoint_artifacts(self) -> None:
+    def _collect_checkpoint_artifacts(self, retired: Iterable[str], *, incremental: bool) -> None:
         directory = capture_job_store_root(self._spool_root()) / "artifacts"
         if not directory.is_dir():
             return
-        with self._connection() as connection:
+        # Ordinary acquisition requests advance one orphan-directory entry, not
+        # one full sweep. The frontier survives per-request registry instances;
+        # restart begins a fresh sweep. Explicit gc drains its complete scan.
+        names: list[str] = []
+        if incremental:
+            identity = _database_identity(capture_job_database_path(self.spool_path))
+            if identity is None:
+                return
+            with _ARTIFACT_SWEEP_LOCK:
+                status = directory.stat()
+                physical = (identity[1], identity[2], status.st_dev, status.st_ino)
+                previous = _ARTIFACT_SWEEPS.get(identity[0])
+                if previous is not None and previous[0] != physical:
+                    previous[1].close()
+                    del _ARTIFACT_SWEEPS[identity[0]]
+                    previous = None
+                entries = previous[1] if previous is not None else os.scandir(directory)
+                _ARTIFACT_SWEEPS[identity[0]] = (physical, entries)
+                try:
+                    names.append(next(entries).name)
+                except StopIteration:
+                    entries.close()
+                    del _ARTIFACT_SWEEPS[identity[0]]
+        with ExitStack() as scan_owner, self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    if entry.name.endswith(".native"):
-                        digest = entry.name.removesuffix(".native")
-                        rooted = connection.execute(
-                            "SELECT 1 FROM capture_job_native_members WHERE sha256=? "
-                            "UNION ALL SELECT 1 FROM capture_job_native_assets WHERE sha256=? "
-                            "UNION ALL SELECT 1 FROM capture_job_native_artifacts WHERE sha256=? LIMIT 1",
-                            (digest, digest, digest),
-                        ).fetchone()
-                    elif entry.name.endswith(".checkpoint"):
-                        digest = "sha256:" + entry.name.removesuffix(".checkpoint")
-                        rooted = connection.execute(
-                            "SELECT 1 FROM capture_jobs WHERE checkpoint_artifact_ref=? "
-                            "UNION ALL SELECT 1 FROM capture_job_receipts WHERE checkpoint_digest=? LIMIT 1",
-                            (digest, digest),
-                        ).fetchone()
-                    else:
-                        continue
-                    if rooted:
-                        continue
-                    try:
-                        with open(entry.path, "rb") as handle:
-                            try:
-                                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                            except BlockingIOError:
-                                continue
-                            if os.stat(entry.path).st_ino == os.fstat(handle.fileno()).st_ino:
-                                os.unlink(entry.path)
-                    except FileNotFoundError:
-                        continue
+            scan = scan_owner.enter_context(os.scandir(directory)) if not incremental else ()
+            from itertools import chain
+
+            for name in chain(retired, names, (entry.name for entry in scan)):
+                if name.endswith(".native"):
+                    digest = name.removesuffix(".native")
+                    rooted = connection.execute(
+                        "SELECT 1 FROM capture_job_native_members WHERE sha256=? "
+                        "UNION ALL SELECT 1 FROM capture_job_native_assets WHERE sha256=? "
+                        "UNION ALL SELECT 1 FROM capture_job_native_artifacts WHERE sha256=? LIMIT 1",
+                        (digest, digest, digest),
+                    ).fetchone()
+                elif name.endswith(".checkpoint"):
+                    digest = "sha256:" + name.removesuffix(".checkpoint")
+                    rooted = connection.execute(
+                        "SELECT 1 FROM capture_jobs WHERE checkpoint_artifact_ref=? "
+                        "UNION ALL SELECT 1 FROM capture_job_receipts WHERE checkpoint_digest=? LIMIT 1",
+                        (digest, digest),
+                    ).fetchone()
+                else:
+                    continue
+                if rooted:
+                    continue
+                try:
+                    with open(directory / name, "rb") as handle:
+                        try:
+                            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            continue
+                        if os.stat(directory / name).st_ino == os.fstat(handle.fileno()).st_ino:
+                            os.unlink(directory / name)
+                except FileNotFoundError:
+                    continue
 
     def _native_artifact_path(self, sha256: object) -> Path:
         if not isinstance(sha256, str) or len(sha256) != 64:
