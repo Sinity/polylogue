@@ -349,7 +349,12 @@ argument; its default is advisory. Changing an environment variable after
 constructing an owner does not change its policy. The derivation recipe
 includes the selected mode, and retained artifacts carry their own detached
 validation verdict. Declared raw-only artifacts bypass session decoding and
-schema validation; empty session inputs retain terminal decoder evidence.
+schema validation; empty session inputs retain terminal decoder evidence. A
+current non-session parser census alone does not waive schema validation for
+an eligible structured document that yields no sessions. A missing artifact
+observation is treated as eligible; only that raw revision's exact provider
+path declaration or a recorded ineligible artifact observation can establish
+that no session validation verdict is required.
 
 ## Gotchas
 

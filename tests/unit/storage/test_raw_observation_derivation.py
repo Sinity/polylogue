@@ -720,6 +720,76 @@ def test_missing_prepared_raw_retries_without_quarantining_source(tmp_path: Path
     _run_raw_law(tmp_path, run_phase)
 
 
+def test_empty_eligible_chatgpt_document_still_requires_validation_evidence(tmp_path: Path) -> None:
+    def run_phase(compute_adapter: BoundedComputeAdapter) -> None:
+        """A current non-session census cannot stand in for eligible JSON validation."""
+        from polylogue.sources.revision_backfill import (
+            RetainedPreparationRetryableError,
+            prepare_revision_source_census,
+        )
+
+        bootstrap_archive_root(tmp_path)
+        payload = json.dumps(
+            {
+                "id": "empty-eligible",
+                "conversation_id": "empty-eligible",
+                "title": "empty eligible document",
+                "create_time": 1_700_000_000,
+                "current_node": "node-1",
+                "mapping": {
+                    "node-1": {
+                        "id": "node-1",
+                        "parent": None,
+                        "children": [],
+                        "message": {
+                            "id": "message-1",
+                            "author": {"role": "user"},
+                            "create_time": 1_700_000_000,
+                            "content": {"content_type": "text", "parts": []},
+                        },
+                    }
+                },
+            }
+        ).encode()
+        with _fixture_archive(tmp_path) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path="empty-eligible.json",
+                canonical_source_path="empty-eligible.json",
+                acquired_at_ms=1,
+            )
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
+        frame = raw_observation_frame(tmp_path)
+        initial = adapter.compute(frame, raw_id)
+        assert _publish_to_valid(adapter, frame, initial)
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            assert conn.execute(
+                "SELECT validation_status, validation_mode FROM raw_sessions WHERE raw_id=?", (raw_id,)
+            ).fetchone() == ("passed", "advisory")
+            assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id=?", (raw_id,)).fetchone() == (0,)
+            assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id=?", (raw_id,)).fetchone() == (
+                "non_session",
+            )
+            conn.execute(
+                "UPDATE raw_sessions SET validated_at_ms=NULL, validation_status=NULL, "
+                "validation_error=NULL, validation_drift_count=0, validation_mode=NULL WHERE raw_id=?",
+                (raw_id,),
+            )
+            conn.commit()
+        from polylogue.storage.blob_store import BlobStore
+        from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+        with PreparedIndexMutation.source_only(archive_root=tmp_path) as seal:
+            with seal.original_read_snapshot(), seal.source_producer():
+                reader = PreparedSessionSourceRead(seal, blob_store=BlobStore(tmp_path / "blob"))
+                assert reader.raw_schema_eligible(raw_id)
+                with pytest.raises(RetainedPreparationRetryableError, match="lacks captured validation evidence"):
+                    prepare_revision_source_census(seal, reader, selected_raw_ids=[raw_id], prepared_inputs={})
+
+    _run_raw_law(tmp_path, run_phase)
+
+
 def test_retained_jsonl_replay_consumes_worker_carrier_without_inline_parse(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -3855,8 +3855,16 @@ def prepare_revision_source_census(
             return True
         prepared = prepared_inputs.get(raw_id)
         artifact = prepared.prepared_artifact if prepared is not None else None
+        schema_validation_required = evidence_reader.raw_schema_eligible(raw_id)
+        # A current non-session parser census alone is insufficient: an
+        # eligible structured document may legitimately yield no sessions.
+        # The provider's exact raw-only path declaration is the independent
+        # evidence that this revision does not require session validation.
+        if schema_validation_required:
+            provider, _blob_hash, source_path, _revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
+            schema_validation_required = not path_declaration_refuses_session(provider, source_path)
         if artifact is None:
-            if evidence_reader.raw_schema_eligible(raw_id):
+            if schema_validation_required:
                 raise RetainedPreparationRetryableError(
                     f"current retained parser receipt lacks captured validation evidence for raw {raw_id}"
                 )
@@ -3893,7 +3901,7 @@ def prepare_revision_source_census(
         verdict = artifact.validation_verdict
         staged = False
         if verdict is None:
-            if evidence_reader.raw_schema_eligible(raw_id):
+            if schema_validation_required:
                 raise RetainedPreparationRetryableError(
                     f"current retained parser receipt lacks captured validation evidence for raw {raw_id}"
                 )

@@ -2296,19 +2296,29 @@ class RawObservationDerivation(RawObservationInspection):
                         reference_seal,
                         blob_store=BlobStore(self.archive_root / "blob"),
                     )
-                    complete_census = {
-                        raw_id
-                        for raw_id in raw_ids
-                        if prepared_parser_census_is_current(reference_seal, raw_id)
-                        and (
-                            census_read.raw_validation_mode(raw_id) == self._validation_mode.value
-                            or (
-                                census_read.raw_validation_mode(raw_id) is None
-                                and not census_read.raw_schema_eligible(raw_id)
-                                and census_read.raw_parser_confirmed_non_session(raw_id)
+                    from polylogue.sources.origin_specs import path_declaration_refuses_session
+
+                    complete_census: set[str] = set()
+                    for raw_id in raw_ids:
+                        if not prepared_parser_census_is_current(reference_seal, raw_id):
+                            continue
+                        validation_mode = census_read.raw_validation_mode(raw_id)
+                        if validation_mode == self._validation_mode.value:
+                            complete_census.add(raw_id)
+                            continue
+                        if validation_mode is not None:
+                            continue
+                        declared_non_session = False
+                        schema_eligible = census_read.raw_schema_eligible(raw_id)
+                        if schema_eligible:
+                            provider, _blob_hash, source_path, _kind, _raw_size = census_read.raw_revision_descriptor(
+                                raw_id
                             )
-                        )
-                    }
+                            declared_non_session = path_declaration_refuses_session(provider, source_path)
+                        if (
+                            not schema_eligible or declared_non_session
+                        ) and census_read.raw_parser_confirmed_non_session(raw_id):
+                            complete_census.add(raw_id)
                 # Every retained raw needs its actual parser authority before
                 # replay can select a session. A singleton can still refine an
                 # opaque acquisition identity or prove a non-session artifact.
