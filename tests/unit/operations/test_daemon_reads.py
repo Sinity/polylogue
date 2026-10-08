@@ -809,3 +809,10 @@ def test_keyless_text_search_with_retained_binding_remains_disabled(
     finally:
         connection.close()
     acquisition.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["cli.query", "read.temporal", "read.chronicle", "read.compact"])
+@pytest.mark.parametrize("session_ref", ["codex-session:selected", "", None])
+def test_only_selected_temporal_reads_skip_vector_admission(name: str, session_ref: str | None) -> None:
+    payload = {"session_id": session_ref, "params": {"similar_text": "synthetic query"}}
+    assert requires_vector_snapshot(name, payload) is not (name == "read.temporal" and bool(session_ref))

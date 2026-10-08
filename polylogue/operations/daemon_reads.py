@@ -456,6 +456,9 @@ def requires_vector_snapshot(name: str, payload: Mapping[str, object], *, acquis
 
     if name not in {"cli.query", "read.temporal", "read.chronicle", "read.compact"}:
         return False
+    session_ref = payload.get("session_id")
+    if name == "read.temporal" and isinstance(session_ref, str) and session_ref:
+        return False
     from polylogue.core.errors import PolylogueError
 
     try:

@@ -2828,3 +2828,55 @@ def test_annotation_import_commits_summary_and_pages_all_amplified_errors(
                     assert page["next_offset"] == (offset + 1 if offset < 199_999 else None)
 
         asyncio.run(read_pages())
+
+
+@pytest.mark.parametrize("criterion", ["similar_text", "similar_session_id"])
+@pytest.mark.parametrize("selected", [True, False])
+def test_temporal_selected_reference_skips_unavailable_vector_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, criterion: str, selected: bool
+) -> None:
+    from unittest.mock import MagicMock
+
+    from polylogue.operations.daemon_reads import DaemonReadDependencies, VectorReadBinding
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+
+    admit = MagicMock(side_effect=FileNotFoundError("synthetic unavailable embeddings tier"))
+    acquire = MagicMock(side_effect=AssertionError("this read must not acquire vectors"))
+    monkeypatch.setattr("polylogue.storage.search_providers.sqlite_vec_runtime.open_vector_read_snapshot", admit)
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", acquire)
+    ids: list[str] = []
+
+    def seed(root: Path) -> None:
+        for number in range(2):
+            builder = SessionBuilder(root / "index.db", f"temporal-vector-{number}").provider("codex")
+            builder.add_message(text="synthetic temporal evidence").save()
+            ids.append(builder.native_session_id())
+
+    with running_daemon_operations(
+        tmp_path / "archive",
+        seed_archive=seed,
+        read_dependencies=DaemonReadDependencies(
+            vector_binding=VectorReadBinding("synthetic-unused", "voyage-3-lite", 1024)
+        ),
+    ) as stack:
+        envelope = stack.client.operation(
+            "read.temporal",
+            {
+                "session_id": ids[1] if selected else None,
+                "params": {criterion: "synthetic query" if criterion == "similar_text" else ids[0]},
+            },
+            archive_root=str(stack.archive_root),
+        )
+    assert envelope is not None
+    acquire.assert_not_called()
+    if selected:
+        assert envelope["outcome"] == "completed", envelope
+        assert envelope["readiness"]["degraded_components"] == [], envelope
+        events = envelope["result"]["payload"]["temporal_window"]["events"]
+        assert {ref for event in events for ref in event["evidence_refs"] if ref.startswith("session:")} == {
+            f"session:{ids[1]}"
+        }
+        admit.assert_not_called()
+    else:
+        admit.assert_called_once()
+        assert "semantic_snapshot" in envelope["readiness"]["degraded_components"], envelope

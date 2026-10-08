@@ -34,6 +34,8 @@ title alternative retains the ordinary substring-match semantics.
 A temporal read with a resolved single-session reference retains that session
 even when its original selection contains text or ranking criteria. An absent
 reference selects a query set; a missing selected reference stays empty.
+Selected temporal reads do not admit a vector snapshot; ranked query-set reads
+retain their ordinary vector admission and named availability gaps.
 
 ## Shared read input
 
