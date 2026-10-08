@@ -4255,6 +4255,7 @@ def test_http_repository_csv_preserves_literal_segments_and_repetitions() -> Non
     from polylogue.daemon.http import _build_query_spec_params
 
     result = _build_query_spec_params(
-        {"repo": ["project ,pipe|repo", "other ", "project ", "project"]}, _QueryParamBuilderHandler()
-    )  # type: ignore[arg-type]
+        {"repo": ["project ,pipe|repo", "other ", "project ", "project"]},
+        _QueryParamBuilderHandler(),  # type: ignore[arg-type]
+    )
     assert result["repo"] == ("project ", "pipe|repo", "other ", "project")
