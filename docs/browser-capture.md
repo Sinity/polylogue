@@ -214,6 +214,11 @@ and retains its acknowledgement before responding. Foreground completion and
 backfill queue retirement use this acknowledgement. A retry after response loss
 publishes the same retained artifact and obtains the same durable receipt.
 Committed raw, prefix and asset custody survive cancellation and lease takeover.
+A cancelled native acquisition is terminal even without a publication receipt.
+Its artifacts retire only when the owning job is explicitly eligible and
+non-authoritative, its retry state is completed or abandoned, its checkpoint
+is acknowledged, and its lease has expired. Unpublished live acquisitions
+continue to protect their custody from job collection.
 Only an already admitted physical upload can renew its unchanged expired lease
 when actual byte progress resumes; a later request must prove a current lease.
 No timer turns a slow producer pause into failure.

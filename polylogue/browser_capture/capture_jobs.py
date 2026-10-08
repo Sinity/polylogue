@@ -1375,11 +1375,13 @@ class CaptureJobRegistry:
                 if retry.get("state") not in {"completed", "abandoned"}:
                     continue
                 if connection.execute(
-                    "SELECT 1 FROM capture_job_native_acquisitions WHERE job_id=? AND final_receipt_json IS NULL LIMIT 1",
+                    "SELECT 1 FROM capture_job_native_acquisitions WHERE job_id=? AND final_receipt_json IS NULL AND state != 'cancelled' LIMIT 1",
                     (row["job_id"],),
                 ).fetchone():
                     # A terminal scheduling choice is not capture acceptance.
-                    # Unpublished native bytes remain inspectable custody.
+                    # Unpublished live native bytes remain inspectable custody.
+                    # Cancellation permanently fences acquisition; its artifacts
+                    # retire only with the independently eligible owning job.
                     continue
                 if lease is not None:
                     expires_at = lease.get("expires_at")

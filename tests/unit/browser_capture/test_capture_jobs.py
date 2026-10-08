@@ -2740,3 +2740,54 @@ def test_native_preparation_reordered_mapping_keeps_full_ids_hashes_and_refuses_
         )
     assert full_ids[0] == full_ids[1]
     assert len(set(full_ids[0])) == 2
+
+
+@pytest.mark.parametrize("terminal_retry", ["completed", "abandoned"])
+@pytest.mark.parametrize("cancelled", [True, False])
+def test_terminal_job_gc_retires_only_cancelled_unpublished_native_acquisition(
+    tmp_path: Path, terminal_retry: str, cancelled: bool
+) -> None:
+    """NULL publication receipt protects live acquisition, not a cancelled one."""
+    with receiver(tmp_path) as (host, port):
+        raw = b'{"conversation_id":"neutral-unpublished"}'
+        native_path, descriptor, _ = _retain_native_occurrences(host, port, raw)
+        job_id = native_path.removeprefix("/v1/capture-jobs/").removesuffix("/native")
+        if cancelled:
+            status, result = request(host, port, "POST", native_path + "/cancel", descriptor)
+            assert status == 200 and result["state"] == "cancelled"
+            status, refused = request(host, port, "POST", native_path + "/plan", descriptor)
+            assert status == 409 and refused["error"]["code"] == "native_acquisition_cancelled"
+        lease = {name: descriptor[name] for name in ("lease_id", "generation", "proof")}
+        checkpointed = _checkpoint(
+            host, port, job_id, lease, cast(int, descriptor["expected_revision"]), 0, {"cursor": 1}, "gc-checkpoint"
+        )
+        status, terminal = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job_id}/update",
+            {
+                **descriptor,
+                "request_id": "gc-terminal-choice",
+                "expected_revision": checkpointed["job"]["revision"],
+                "retry": {"state": terminal_retry, "attempt": 1, "reason": None, "next_eligible_at": None},
+                "retention": {"state": "eligible", "hold_reason": None, "timeline_authoritative": False},
+            },
+        )
+        assert status == 200 and terminal["job"]["retention"]["state"] == "eligible"
+        with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
+            row = connection.execute(
+                "SELECT state, final_receipt_json FROM capture_job_native_acquisitions WHERE job_id=?", (job_id,)
+            ).fetchone()
+        assert row is not None and row[1] is None
+        artifact = capture_job_store_root(tmp_path) / "artifacts" / (hashlib.sha256(raw).hexdigest() + ".native")
+        assert artifact.is_file()
+        registry = CaptureJobRegistry(tmp_path, "neutral-gc-reader")
+        result = registry.gc(now=datetime(2050, 1, 1, tzinfo=UTC))
+        assert result["deleted"] == ([job_id] if cancelled else [])
+        assert (job_id in _stored_job_ids(tmp_path)) is not cancelled
+        assert artifact.exists() is not cancelled
+        with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
+            assert connection.execute(
+                "SELECT COUNT(*) FROM capture_job_native_acquisitions WHERE job_id=?", (job_id,)
+            ).fetchone()[0] == (0 if cancelled else 1)
