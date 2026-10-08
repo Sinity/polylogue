@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -111,3 +115,69 @@ def test_a_page_proves_each_binding_without_a_fresh_reader(tmp_path: Path, monke
             assert capture.canonical_source_path == str(path.parent.resolve() / path.name)
             with store.open(capture.blob_hash) as retained:
                 assert retained.read() == path.read_bytes()
+
+
+@pytest.mark.parametrize("operation", ["bytes", "sqlite"])
+def test_source_workers_inherit_parent_runtime_import_paths(tmp_path: Path, operation: str) -> None:
+    """A packaged parent's injected import paths survive its fresh readers.
+
+    The parent uses the bare interpreter with no Python environment overrides
+    and a non-checkout cwd, then injects paths only into its own sys.path, as
+    an installed console entry point does. Removing the worker bootstrap makes
+    both byte capture and logical SQLite export fail before returning bytes.
+    """
+    source = _inputs(tmp_path, 1)[0]
+    if operation == "sqlite":
+        source = tmp_path / "neutral.db"
+        with sqlite3.connect(source) as conn:
+            conn.execute("CREATE TABLE item (value TEXT)")
+            conn.execute("INSERT INTO item VALUES ('neutral')")
+    working = tmp_path / "outside-checkout"
+    working.mkdir()
+    bootstrap = """
+import json, sys
+from pathlib import Path
+sys.path[:] = json.loads(sys.argv[1])
+from polylogue.sources.acquisition_boundary import capture_bound_path
+from polylogue.sources.sqlite_export import logical_export_bytes
+from polylogue.core.enums import Provider
+from polylogue.storage.blob_store import BlobStore
+source = Path(sys.argv[2])
+if sys.argv[3] == 'bytes':
+    store = BlobStore(Path(sys.argv[4]))
+    capture = capture_bound_path(store, source, Provider.CLAUDE_CODE)
+    with store.open(capture.blob_hash) as retained:
+        assert retained.read() == source.read_bytes()
+    print(json.dumps({'size': capture.blob_size}))
+else:
+    payload = logical_export_bytes(source, tables=('item',))
+    rows = [json.loads(line) for line in payload.splitlines()]
+    assert rows[-1][-1] == ['t', 'neutral']
+    print(json.dumps({'tables': rows[0]['tables']}))
+"""
+    paths = [str(Path(path or os.getcwd()).resolve()) for path in sys.path]
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "PYTHONUSERBASE"}
+    }
+    result = subprocess.run(
+        [
+            os.path.realpath(sys.executable),
+            "-c",
+            bootstrap,
+            json.dumps(paths),
+            str(source),
+            operation,
+            str(tmp_path / "blobs"),
+        ],
+        cwd=working,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == (
+        {"size": source.stat().st_size} if operation == "bytes" else {"tables": ["item"]}
+    )

@@ -3961,8 +3961,9 @@ async def _run_browser_host(*, host: str, port: int, daemon_origin: str) -> None
     """Own the optional browser process for one supervised service lifetime."""
     process = await asyncio.create_subprocess_exec(
         sys.executable,
-        "-m",
-        "polylogue.daemon.browser_host",
+        "-c",
+        f"import sys, runpy; sys.path[:] = {sys.path!r}; "
+        "runpy.run_module('polylogue.daemon.browser_host', run_name='__main__', alter_sys=True)",
         "--host",
         host,
         "--port",

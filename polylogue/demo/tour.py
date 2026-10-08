@@ -204,7 +204,13 @@ def _run_cli_step(
     archive_root: Path,
     output_path: Path,
 ) -> tuple[DemoTourStep, str]:
-    command = (sys.executable, "-m", "polylogue", *args)
+    command = (
+        sys.executable,
+        "-c",
+        f"import sys, runpy; sys.path[:] = {sys.path!r}; "
+        "runpy.run_module('polylogue', run_name='__main__', alter_sys=True)",
+        *args,
+    )
     started = time.perf_counter()
     completed = subprocess.run(command, env=env, text=True, capture_output=True, check=False)
     duration_s = time.perf_counter() - started

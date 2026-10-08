@@ -181,7 +181,11 @@ EOF and actual reap; any request fault or cancellation kills and reaps that
 exact child before pipes, sockets or scratch retire. Empty pages allocate no
 reader. Standalone capture and preflight use the same owner for one input;
 logical SQLite export and its native custody stay in their separate fresh
-process. A retained ZIP allocates its disposition spool only on its first
+process. Every source reader uses the parent's exact interpreter and runtime
+import paths, including paths injected by an installed console entry point;
+its dependency closure does not depend on the working directory or an ambient
+`PYTHONPATH`. Failed byte captures report their error type and detail (including OS errno)
+before the admission adapter reports the affected path. A retained ZIP allocates its disposition spool only on its first
 actual refusal or unselected member, keeping their original ordinal and
 completion laws.
 

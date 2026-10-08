@@ -73,6 +73,7 @@ def demo_resident(archive_root: Path) -> Iterator[dict[str, str]]:
                 (
                     sys.executable,
                     "-c",
+                    f"import sys; sys.path[:] = {sys.path!r}; "
                     "from polylogue.daemon.commands import main; main(prog_name='polylogued')",
                     "run",
                     "--no-watch",

@@ -2,6 +2,12 @@
 
 ## Runtime ownership
 
+Python child processes for Source readers, the optional browser host and demo
+commands retain the parent's exact interpreter and runtime import paths.
+Installed console entry points can inject dependency paths only in memory;
+child imports do not depend on ambient `PYTHONPATH` or a checkout cwd. Module
+children retain their module entry point and argument semantics.
+
 HTTP mutations first acquire the existing writer bridge admission. Their bodies
 run on the coordinator's writer worker under explicit child-task delegation;
 they do not enter the read compute pool or acquire another writer gate. A client
