@@ -202,6 +202,63 @@ def test_content_carrier_cannot_disagree_with_existing_inline_bytes(tmp_path: Pa
     assert result.convergence is CaptureConvergence.SUPERSEDED
 
 
+def test_inline_carrier_cannot_be_replaced_by_newer_turn_snapshot(tmp_path: Path) -> None:
+    """Inline/data bytes are carrier evidence too, not replaceable descriptors."""
+    for field_name in ("inline_base64", "data"):
+        root = tmp_path / field_name
+        resident: dict[str, Any] = _payload(
+            turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+        )
+        resident["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", field_name: "YQ=="}]
+        incoming = copy.deepcopy(resident)
+        incoming["provenance"]["captured_at"] = "2026-04-24T00:01:00Z"
+        incoming["session"]["updated_at"] = "2026-04-24T00:01:00Z"
+        incoming["session"]["turns"].append(_turn("t2", ordinal=1))
+        incoming["session"]["turns"][0]["attachments"][0][field_name] = "YWI="
+
+        _write(resident, root)
+        result = _write(incoming, root)
+
+        assert result.convergence is CaptureConvergence.SUPERSEDED
+
+
+def test_malformed_inline_carrier_cannot_replace_a_retained_snapshot(tmp_path: Path) -> None:
+    """Malformed inline/data bytes cannot evade the invalid-carrier refusal."""
+    for field_name in ("inline_base64", "data"):
+        root = tmp_path / field_name
+        resident: dict[str, Any] = _payload(
+            turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+        )
+        resident["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", field_name: "YQ=="}]
+        incoming = copy.deepcopy(resident)
+        incoming["provenance"]["captured_at"] = "2026-04-24T00:01:00Z"
+        incoming["session"]["updated_at"] = "2026-04-24T00:01:00Z"
+        incoming["session"]["turns"].append(_turn("t2", ordinal=1))
+        incoming["session"]["turns"][0]["attachments"][0][field_name] = "not-base64!"
+
+        _write(resident, root)
+        result = _write(incoming, root)
+
+        assert result.convergence is CaptureConvergence.SUPERSEDED
+
+
+def test_inline_carrier_enrichment_is_accepted_at_same_observation(tmp_path: Path) -> None:
+    """An inline/data body can enrich an unchanged attachment without newer timestamps."""
+    for field_name in ("inline_base64", "data"):
+        root = tmp_path / field_name
+        observed: dict[str, Any] = _payload(
+            turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+        )
+        observed["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A"}]
+        acquired = copy.deepcopy(observed)
+        acquired["session"]["turns"][0]["attachments"][0][field_name] = "YQ=="
+
+        _write(observed, root)
+        result = _write(acquired, root)
+
+        assert result.convergence is CaptureConvergence.PUBLISH
+
+
 def test_self_declared_wrong_identity_is_not_acknowledged_as_native(tmp_path: Path) -> None:
     """Anti-vacuity: copying observation fidelity alone incorrectly returns native."""
     payload: dict[str, Any] = _payload(

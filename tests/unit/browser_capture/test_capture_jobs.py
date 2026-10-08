@@ -32,6 +32,9 @@ from polylogue.browser_capture.capture_jobs import (
 )
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import (
+    CaptureConvergence,
+    capture_convergence,
+    summarize_capture_envelope,
     write_capture_envelope,
 )
 from polylogue.browser_capture.route_contracts import browser_capture_route_contract_for
@@ -2591,6 +2594,29 @@ def test_native_preparation_preserves_duplicate_asset_occurrences_and_canonical_
         literal = artifact.read_bytes()
         assert raw in literal
         envelope = json.loads(literal)
+        staged_asset_count = 0
+        carrierless = json.loads(literal)
+        for attachments in [
+            carrierless["session"].get("attachments", []),
+            *(turn.get("attachments", []) for turn in carrierless["session"].get("turns", [])),
+        ]:
+            for attachment in attachments:
+                if "content_base64" not in attachment:
+                    continue
+                staged_asset_count += 1
+                attachment.pop("content_base64")
+                attachment.pop("inline_base64", None)
+                attachment.pop("data", None)
+                attachment.pop("size_bytes", None)
+                attachment["provider_meta"]["asset_acquisition"] = {"status": "recovered_bytes_unavailable"}
+                attachment["provider_meta"].pop("content_sha256", None)
+        assert staged_asset_count == 2
+        produced = BrowserCaptureEnvelope.model_validate(envelope)
+        unavailable = BrowserCaptureEnvelope.model_validate(carrierless)
+        assert (
+            capture_convergence(summarize_capture_envelope(produced), summarize_capture_envelope(unavailable))
+            is CaptureConvergence.PUBLISH
+        )
         assert envelope["raw_provider_payload"] == native
         assert envelope["provenance"]["extension_instance_id"] is None
         assert envelope["provenance"]["acquisition_sequence"] is None

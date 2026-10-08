@@ -376,12 +376,12 @@ def capture_response_id(provider: str, provider_session_id: str, capture_id: str
     return value if value.startswith(prefix) else f"{prefix}{value}"
 
 
-def _capture_has_content_carrier(summary: CaptureSummary) -> bool:
-    return any(fact.carrier is not None for fact in summary.attachments)
+def _capture_has_any_carrier(summary: CaptureSummary) -> bool:
+    return any(fact.carrier_evidence for fact in summary.attachments)
 
 
-def _capture_has_invalid_content_carrier(summary: CaptureSummary) -> bool:
-    return any(fact.carrier is not None and not fact.carrier_valid for fact in summary.attachments)
+def _capture_has_invalid_or_conflicting_carrier(summary: CaptureSummary) -> bool:
+    return any(fact.has_invalid_or_conflicting_carrier for fact in summary.attachments)
 
 
 def _capture_carrier_conflicts(
@@ -408,11 +408,13 @@ def _capture_carrier_conflicts(
                 and current.size_bytes != previous.size_bytes
             ):
                 return True
-            current_carrier, current_valid = current.effective_carrier
-            previous_carrier, previous_valid = previous.effective_carrier
-            if current_carrier is None or previous_carrier is None:
+            current_evidence = current.carrier_evidence
+            previous_evidence = previous.carrier_evidence
+            if not current_evidence:
                 continue
-            if not current_valid or not previous_valid or current_carrier != previous_carrier:
+            if current.has_invalid_or_conflicting_carrier or previous.has_invalid_or_conflicting_carrier:
+                return True
+            if previous_evidence and current.effective_carrier[0] != previous.effective_carrier[0]:
                 return True
     return False
 
@@ -451,17 +453,22 @@ def _attachment_content_enrichment(incoming: CaptureSummary, existing: CaptureSu
             and incoming_attachment.size_bytes != existing_attachment.size_bytes
         ):
             return False
-        if incoming_attachment.carrier is None:
-            if existing_attachment.carrier is not None:
+        incoming_evidence = incoming_attachment.carrier_evidence
+        existing_evidence = existing_attachment.carrier_evidence
+        if not incoming_evidence:
+            if existing_evidence:
                 return False
             continue
-        if not incoming_attachment.carrier_valid:
+        if incoming_attachment.has_invalid_or_conflicting_carrier:
             return False
+        incoming_carrier, _ = incoming_attachment.effective_carrier
         existing_carrier, existing_valid = existing_attachment.effective_carrier
         if existing_carrier is None:
             added_carrier = True
             continue
-        if not existing_valid or incoming_attachment.carrier != existing_carrier:
+        if existing_attachment.has_invalid_or_conflicting_carrier or not existing_valid:
+            return False
+        if incoming_carrier != existing_carrier:
             return False
     return added_carrier
 
@@ -777,7 +784,7 @@ def capture_convergence(incoming: CaptureSummary, existing: CaptureSummary) -> C
     """
     if incoming.provider is not existing.provider or incoming.provider_session_id != existing.provider_session_id:
         return CaptureConvergence.NAME_COLLISION
-    if _capture_has_invalid_content_carrier(incoming):
+    if _capture_has_invalid_or_conflicting_carrier(incoming):
         return CaptureConvergence.SUPERSEDED
     if existing.dedup_content_hash == incoming.dedup_content_hash:
         return CaptureConvergence.DUPLICATE
@@ -786,7 +793,7 @@ def capture_convergence(incoming: CaptureSummary, existing: CaptureSummary) -> C
     # A carrier that contradicts a resident attachment is not freshness
     # evidence.  Otherwise ordinary newer/richer snapshots (for example a new
     # turn carrying an attachment) retain their existing admission semantics.
-    if _capture_has_content_carrier(incoming) and _capture_carrier_conflicts(incoming, existing):
+    if _capture_has_any_carrier(incoming) and _capture_carrier_conflicts(incoming, existing):
         return CaptureConvergence.SUPERSEDED
     if not _capture_is_newer_or_richer(incoming, existing):
         return CaptureConvergence.SUPERSEDED

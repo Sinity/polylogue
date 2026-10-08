@@ -83,9 +83,10 @@ A response carries a typed `outcome`: `accepted` publishes the submission, `noop
 
 Snapshot convergence compares attachment occurrences within their observed
 owner and provider attachment ID. Stable provider descriptors and compatible
-known byte evidence guard replacement: an absent size or acquired byte carrier
-may be enriched, while unequal known sizes or different known bytes for the
-same occurrence remain a conflict. Native-plan acquisition outcomes, content
+known byte evidence guard replacement: an absent size or supported encoded
+byte carrier (`content_base64`, `inline_base64`, or `data`) may be enriched,
+while unequal known sizes, malformed carriers, or different known bytes for
+the same occurrence remain a conflict. Native-plan acquisition outcomes, content
 hashes, and raw-revision ordinal coordinates remain in the accepted envelope
 but do not redefine the provider attachment across snapshots when a stable
 native message owner is available. Attachments without that owner retain

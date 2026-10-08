@@ -326,8 +326,10 @@ class AttachmentFact:
 
     ``identity`` digests the stable observed provider descriptor;
     ``size_bytes`` is compatible evidence (unknown may be enriched);
-    ``carrier`` digests the decoded ``content_base64`` bytes (``None`` when the
-    attachment carries none); ``carrier_valid`` is false for a malformed one.
+    ``carrier`` digests the decoded ``content_base64`` bytes; ``inline_carrier``
+    and ``data_carrier`` digest the corresponding fallback fields. A digest is
+    ``None`` when that carrier is absent; its validity flag is false when the
+    field is present but malformed.
     ``scope`` (``session`` or ``turn:<provider_turn_id>``) and ``attachment_id``
     locate it: attachment IDs need not be unique, and a turn inserted before
     another must not pair its attachments with the other turn's.
@@ -344,13 +346,38 @@ class AttachmentFact:
     #: carries (``None`` when neither is present; an empty string is present).
     inline_carrier: bytes | None = None
     inline_valid: bool = True
+    data_carrier: bytes | None = None
+    data_valid: bool = True
 
     @property
     def effective_carrier(self) -> tuple[bytes | None, bool]:
-        """The bytes this attachment carries by any carrier, and their validity."""
-        if self.carrier is not None:
-            return self.carrier, self.carrier_valid
-        return self.inline_carrier, self.inline_valid
+        """The preferred present carrier and its validity."""
+        for digest, valid in (
+            (self.carrier, self.carrier_valid),
+            (self.inline_carrier, self.inline_valid),
+            (self.data_carrier, self.data_valid),
+        ):
+            if digest is not None:
+                return digest, valid
+        return None, True
+
+    @property
+    def carrier_evidence(self) -> tuple[tuple[bytes, bool], ...]:
+        """Every present encoded byte carrier, preserving malformed evidence."""
+        return tuple(
+            (digest, valid)
+            for digest, valid in (
+                (self.carrier, self.carrier_valid),
+                (self.inline_carrier, self.inline_valid),
+                (self.data_carrier, self.data_valid),
+            )
+            if digest is not None
+        )
+
+    @property
+    def has_invalid_or_conflicting_carrier(self) -> bool:
+        evidence = self.carrier_evidence
+        return any(not valid for _, valid in evidence) or len({digest for digest, _ in evidence}) > 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -408,19 +435,16 @@ def carrier_digest(value: str) -> bytes | None:
 
 def _attachment_fact(attachment: BrowserCaptureAttachment, *, scope: str) -> AttachmentFact:
     identity = dumps_bytes(_attachment_comparison_payload(attachment), sort_keys=True)
-    carrier: bytes | None = None
-    valid = True
-    if attachment.content_base64 is not None:
-        decoded_digest = carrier_digest(attachment.content_base64)
-        valid = decoded_digest is not None
-        carrier = decoded_digest if decoded_digest is not None else hashlib.sha256(b"").digest()
-    inline_value = attachment.inline_base64 if attachment.inline_base64 is not None else attachment.data
-    inline_carrier: bytes | None = None
-    inline_valid = True
-    if inline_value is not None:
-        inline_digest = carrier_digest(inline_value)
-        inline_valid = inline_digest is not None
-        inline_carrier = inline_digest if inline_digest is not None else hashlib.sha256(b"").digest()
+
+    def digest(value: str | None) -> tuple[bytes | None, bool]:
+        if value is None:
+            return None, True
+        decoded = carrier_digest(value)
+        return (decoded if decoded is not None else hashlib.sha256(b"").digest()), decoded is not None
+
+    carrier, valid = digest(attachment.content_base64)
+    inline_carrier, inline_valid = digest(attachment.inline_base64)
+    data_carrier, data_valid = digest(attachment.data)
     return AttachmentFact(
         identity=hashlib.sha256(identity).digest(),
         size_bytes=attachment.size_bytes,
@@ -431,6 +455,8 @@ def _attachment_fact(attachment: BrowserCaptureAttachment, *, scope: str) -> Att
         message_provider_id=attachment.message_provider_id,
         inline_carrier=inline_carrier,
         inline_valid=inline_valid,
+        data_carrier=data_carrier,
+        data_valid=data_valid,
     )
 
 
