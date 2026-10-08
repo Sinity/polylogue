@@ -207,6 +207,8 @@ theme = "auto" # auto, dark, or light
 validation = "advisory" # off, advisory, or strict
 
 [notifications]
+# Equal reloads and other backends' changes retain email allowance. Changing
+# email settings or restarting the daemon starts a fresh allowance.
 backend = "log"
 # webhook_url = "https://..."
 # webhook_secret = "..."

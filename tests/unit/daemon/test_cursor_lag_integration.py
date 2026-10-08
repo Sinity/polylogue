@@ -317,8 +317,10 @@ async def test_default_periodic_health_schedule_runs_medium_probes_and_records_c
     monkeypatch.setattr("polylogue.daemon.cli.asyncio.sleep", _immediate_sleep)
     monkeypatch.setattr("polylogue.daemon.notifications.send_notifications", lambda *_args, **_kwargs: None)
 
+    from polylogue.daemon.notifications import ConfiguredNotificationBackend
+
     with pytest.raises(asyncio.CancelledError):
-        await daemon_cli._periodic_health_check()
+        await daemon_cli._periodic_health_check(backend=ConfiguredNotificationBackend())
 
     assert set(admitted) <= {"daemon.cursor_lag.sample", "daemon.cursor_lag.gc"}
     assert "daemon.cursor_lag.sample" in admitted

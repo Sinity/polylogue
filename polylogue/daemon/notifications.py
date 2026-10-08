@@ -22,6 +22,7 @@ per-backend so multi-destination configurations stay resilient.
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 
 from polylogue.daemon.health import HealthAlert, HealthSeverity
 from polylogue.daemon.notification_backends import (
@@ -190,38 +191,60 @@ def _resolve_backend(backend_name: str, config: dict[str, object] | None = None)
     return FanOutNotificationBackend(instances)
 
 
+class ConfiguredNotificationBackend:
+    """Retain selected adapters for the daemon lifetime, without a global cache.
+
+    Each adapter survives equal reloads and changes to other adapters' settings.
+    A genuine change to its own settings replaces that adapter with a fresh
+    allowance. Removed destinations are not retained for later reactivation.
+    """
+
+    def __init__(self) -> None:
+        self._backends: dict[str, tuple[dict[str, object], NotificationBackend]] = {}
+
+    def notify(self, alerts: list[HealthAlert], *, config: dict[str, object] | None = None) -> None:
+        if not alerts:
+            return
+        cfg = config or {}
+        spec = cfg.get("notification_backend", "log")
+        names = _parse_backend_spec(spec) if isinstance(spec, (str, list, tuple)) else ["log"]
+        if not names:
+            raise ValueError("notification_backend resolved to an empty list")
+        selected: dict[str, tuple[dict[str, object], NotificationBackend]] = {}
+        instances: list[NotificationBackend] = []
+        for name in names:
+            if name not in selected:
+                prefix = f"notification_{name}_"
+                settings = deepcopy({key: value for key, value in cfg.items() if key.startswith(prefix)})
+                previous = self._backends.get(name)
+                backend = (
+                    previous[1]
+                    if previous is not None and previous[0] == settings
+                    else _resolve_backend(name, config=cfg)
+                )
+                selected[name] = (settings, backend)
+            instances.append(selected[name][1])
+        # A refused replacement cannot send through stale settings or replace
+        # the resident graph. Retain only the successfully selected adapters.
+        self._backends = selected
+        backend = instances[0] if len(instances) == 1 else FanOutNotificationBackend(instances)
+        backend.notify(alerts, config=config)
+
+
 def send_notifications(
     alerts: list[HealthAlert],
     *,
-    backend: NotificationBackend | None = None,
+    backend: NotificationBackend,
     config: dict[str, object] | None = None,
 ) -> None:
-    """Send health alert notifications through the configured backend(s).
+    """Dispatch through an operation-owned or daemon-owned backend instance.
 
-    Args:
-        alerts: Health alerts to deliver.
-        backend: Optional pre-built backend instance. When provided, it is
-            used verbatim and ``config`` is forwarded to ``notify``.
-        config: Runtime config dict. The ``notification_backend`` key may be
-            a name, comma-separated names, or a list; backend-specific keys
-            (e.g. ``notification_webhook_url``,
-            ``notification_apprise_urls``) are consumed during construction.
+    Configuration is forwarded verbatim. Configured daemon dispatch supplies
+    its resident ``ConfiguredNotificationBackend`` rather than rebuilding
+    adapters for every alert batch. Injected adapters retain their identity.
     """
-    if backend is not None:
-        _backend: NotificationBackend = backend
-    elif config is not None and "notification_backend" in config:
-        spec = config["notification_backend"]
-        if isinstance(spec, (str, list, tuple)):
-            _backend = _resolve_backend(
-                spec if isinstance(spec, str) else ",".join(str(s) for s in spec), config=config
-            )
-        else:
-            _backend = LogNotificationBackend()
-    else:
-        _backend = LogNotificationBackend()
-
     if alerts:
-        _backend.notify(alerts, config=config)
+        backend.notify(alerts, config=config)
     else:
         emit("daemon.health.notify", level=DEBUG, outcome="empty", alerts=0)
 
@@ -231,6 +254,7 @@ __all__ = [
     "AppriseNotificationBackend",
     "BackendConfigError",
     "BackendUnavailableError",
+    "ConfiguredNotificationBackend",
     "EmailConfigError",
     "EmailNotificationBackend",
     "FanOutNotificationBackend",

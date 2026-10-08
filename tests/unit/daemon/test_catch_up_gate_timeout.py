@@ -111,8 +111,8 @@ def test_run_daemon_services_schema_block_logs_parked_loops_and_emits_event() ->
     async def lifecycle_heartbeat() -> None:
         await asyncio.Event().wait()
 
-    async def fake_health_check(*, sources: object = None) -> None:
-        del sources
+    async def fake_health_check(*, backend: object, sources: object = None) -> None:
+        del backend, sources
         await asyncio.Event().wait()
 
     def fail_background_work(*_args: object, **_kwargs: object) -> object:

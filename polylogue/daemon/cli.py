@@ -53,6 +53,7 @@ from polylogue.daemon.health import (
 from polylogue.daemon.intake import AdmissionOutcome, AdmissionResult, FairIntakeDispatcher, IntakeClassSpec
 from polylogue.daemon.lineage_startup import LineageStartupCensus
 from polylogue.daemon.lineage_startup import census_lineage_startup_sync as _census_lineage_startup_sync
+from polylogue.daemon.notification_backends import NotificationBackend
 from polylogue.daemon.periodic import daemon_periodic_runner, watcher_registered_gate
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
 from polylogue.daemon.services import (
@@ -1715,17 +1716,20 @@ def _pending_convergence_stage_names(stages: object) -> tuple[str, ...]:
     return tuple(pending)
 
 
-async def _periodic_health_check(*, sources: tuple[WatchSource, ...] | None = None) -> None:
+async def _periodic_health_check(
+    *, backend: NotificationBackend, sources: tuple[WatchSource, ...] | None = None
+) -> None:
     """Run periodic health checks with config-driven notification backend.
 
     Health check tiers and interval are read from PolylogueConfig.
     Notifications are sent through the configured notification backend.
     """
 
+    from polylogue.daemon.notifications import send_notifications
+
     async def once() -> None:
         from polylogue.config import load_polylogue_config
         from polylogue.daemon.health import check_health
-        from polylogue.daemon.notifications import send_notifications
 
         cfg = load_polylogue_config()
         # The checks are reads on their own read-only connections, so they run
@@ -1737,7 +1741,7 @@ async def _periodic_health_check(*, sources: tuple[WatchSource, ...] | None = No
             partial(check_health, tiers=resolve_health_tiers(cfg.health_check_tiers), sources=sources),
         )
         if health.overall_status != "ok":
-            send_notifications(health.alerts, config=cfg.raw)
+            send_notifications(health.alerts, backend=backend, config=cfg.raw)
 
     await daemon_periodic_runner().run(
         "health_check",
@@ -2695,9 +2699,12 @@ async def _run_daemon_services_under_active_writer_lease(
 
     supervisor.start("lifecycle_heartbeat", _periodic_lifecycle_heartbeat)
     supervisor.start("termination_reconciliation", _reconcile_ended_daemon_runs)
+    from polylogue.daemon.notifications import ConfiguredNotificationBackend
+
+    notifications = ConfiguredNotificationBackend()
     supervisor.start(
         "health_check",
-        lambda: _periodic_health_check(sources=sources if enable_watch else ()),
+        lambda: _periodic_health_check(backend=notifications, sources=sources if enable_watch else ()),
     )
     supervisor.start("schema_preflight_recheck", _periodic_schema_preflight_recheck)
 
