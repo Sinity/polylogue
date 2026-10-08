@@ -225,7 +225,7 @@ def session_write_is_suppressed(conn: sqlite3.Connection, session_id: str) -> bo
     scope = current_index_mutation_scope()
     if scope is not None:
         scope.require_new_work(conn)
-        reader = scope.suppression_reader()
+        reader = scope.user_reader()
         return _reader_suppresses(reader, session_id) if reader is not None else False
     target_ref = f"session:{session_id}"
     resolution = suppression_resolution_for_connection(conn)

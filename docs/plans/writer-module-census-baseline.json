@@ -130,12 +130,6 @@
     "authority": "scratch"
   },
   {
-    "file": "polylogue/operations/facade_writers.py",
-    "tiers": [
-      "index"
-    ]
-  },
-  {
     "file": "polylogue/operations/ingest_inputs.py",
     "tiers": [],
     "authority": "scratch"

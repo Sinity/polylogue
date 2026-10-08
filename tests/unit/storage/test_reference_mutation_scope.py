@@ -394,9 +394,9 @@ def test_active_suppression_uses_the_batch_user_observer(tmp_path: Path, monkeyp
             with prepared_fixture_index_batch(archive._conn, sessions, archive_root=tmp_path) as (seal, prepared):
                 with archive.index_mutation_scope(prepared_seal=seal) as scope:
                     assert scope is not None
-                    first = scope.suppression_reader()
+                    first = scope.user_reader()
                     for session, carrier in zip(sessions, prepared, strict=True):
-                        assert scope.suppression_reader() is first
+                        assert scope.user_reader() is first
                         write_fixture_index_session(
                             archive._conn,
                             session,
@@ -407,7 +407,7 @@ def test_active_suppression_uses_the_batch_user_observer(tmp_path: Path, monkeyp
 
 
 @pytest.mark.parametrize("terminal", ["commit", "rollback", "close"])
-def test_inactive_suppression_reader_retains_exact_scope_until_creator_retry(
+def test_inactive_user_reader_retains_exact_scope_until_creator_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: str
 ) -> None:
     from polylogue.storage.index_generation import IndexGenerationStore
@@ -444,7 +444,7 @@ def test_inactive_suppression_reader_retains_exact_scope_until_creator_retry(
             monkeypatch.setattr(reference_seal, "_open_readonly_owner", open_reader)
             with pytest.raises(NativeConnectionSettlementError):
                 with destination.mutation_scope(connection) as scope:
-                    assert scope.suppression_reader() is scope.suppression_reader()
+                    assert scope.user_reader() is scope.user_reader()
                     assert len(opened) == 1
                     import threading
 
@@ -533,7 +533,7 @@ def test_scope_rollback_fault_still_attempts_user_cleanup_once_and_retains_exact
             try:
                 with pytest.raises((OSError, BaseExceptionGroup)) as caught:
                     with destination.mutation_scope(connection) as scope:
-                        scope.suppression_reader()
+                        scope.user_reader()
                         connection.execute("CREATE TABLE uncommitted(value INTEGER)")
                         connection.rollback_failure = rollback
                         if terminal == "body-failure":
@@ -605,7 +605,7 @@ def test_archive_retains_failed_scope_and_retries_children_only_on_explicit_owne
             assert isinstance(connection, ControlledConnection)
             with pytest.raises(BaseExceptionGroup):
                 with archive.index_mutation_scope() as scope:
-                    scope.suppression_reader()
+                    scope.user_reader()
                     connection.execute("CREATE TABLE uncommitted(value INTEGER)")
                     connection.rollback_failure = failure
                     raise ValueError("synthetic mutation failure")
@@ -1018,7 +1018,7 @@ def test_inactive_scope_reader_settles_once_through_its_actual_store_census(
         try:
             with pytest.raises(BaseExceptionGroup):
                 with archive.index_mutation_scope() as scope:
-                    scope.suppression_reader()
+                    scope.user_reader()
                     owner = scope._user_owner
                     assert owner is not None and owner._terminal_parent is archive
                     assert owner.custody is None
@@ -1059,7 +1059,7 @@ def test_healthy_inactive_scope_reader_retires_parent_and_lifetime_after_commit(
         )
         try:
             with archive.index_mutation_scope() as scope:
-                connection = scope.suppression_reader()
+                connection = scope.user_reader()
                 assert connection is not None
                 assert connection.execute("SELECT 1").fetchone()[0] == 1
                 owner = scope._user_owner
@@ -1116,7 +1116,7 @@ def test_inactive_reader_initializer_failure_retains_original_store_before_sql(
         try:
             with pytest.raises(NativeConnectionSettlementError) as caught:
                 with archive.index_mutation_scope() as scope:
-                    scope.suppression_reader()
+                    scope.user_reader()
             assert caught.value.__cause__ is primary
             assert caught.value.owner is scope._user_owner
             assert caught.value.owner._terminal_parent is archive
@@ -1173,7 +1173,7 @@ def test_owned_inactive_scope_without_store_parent_preserves_reader_custody(tmp_
         destination = IndexMutationDestination.owned_inactive(generation)
         with closing(open_connection(generation.index_path)) as connection:
             with destination.mutation_scope(connection) as scope:
-                reader = scope.suppression_reader()
+                reader = scope.user_reader()
                 assert reader is not None and reader.execute("SELECT 1").fetchone()[0] == 1
                 owner = scope._user_owner
                 assert owner is not None and owner._terminal_parent is None

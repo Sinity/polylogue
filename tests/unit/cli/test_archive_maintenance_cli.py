@@ -578,6 +578,53 @@ def test_assertion_export_cli_filters_and_writes_json_file(
     assert [row["assertion_id"] for row in payload["assertions"]] == ["export-deleted-note"]
 
 
+@pytest.mark.parametrize("damage", ["missing", "unreadable"])
+@pytest.mark.parametrize("existing_output", [False, True])
+def test_assertion_export_refusal_preserves_output(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+    existing_output: bool,
+) -> None:
+    root = cli_workspace["archive_root"]
+    output = root / "export.json"
+    if existing_output:
+        output.write_bytes(b"neutral existing output")
+    with cli_daemon_archive(root, monkeypatch):
+        user_path = root / "user.db"
+        user_path.rename(root / "user-retained.db")
+        if damage == "unreadable":
+            user_path.write_bytes(b"neutral invalid SQLite authority")
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "assertion-export", "--format", "json", "--out", str(output)],
+        )
+    assert result.exit_code != 0, result.output
+    if existing_output:
+        assert output.read_bytes() == b"neutral existing output"
+    else:
+        assert not output.exists()
+
+
+def test_assertion_export_present_empty_user_writes_valid_empty_output(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = cli_workspace["archive_root"]
+    output = root / "empty-export.json"
+    with cli_daemon_archive(root, monkeypatch):
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "assertion-export", "--format", "json", "--out", str(output)],
+        )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(output.read_text())
+    assert payload["count"] == 0
+    assert payload["assertions"] == []
+
+
 def test_blob_gc_cli_dry_run_reports_without_deleting(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,

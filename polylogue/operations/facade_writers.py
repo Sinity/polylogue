@@ -323,70 +323,63 @@ def record_manual_continuation_product(config: Config, child_session_id: str, pa
     parent = str(parent_session_id).strip()
     if not child or not parent or ":" not in child or ":" not in parent:
         raise ValueError("manual continuation requires origin-prefixed child and parent session ids")
-    parent_origin, parent_native = parent.split(":", 1)
     root = _active_archive_root(config)
     _require_archive_write_authority(config, "api.record_manual_continuation")
+    from polylogue.core.errors import ArchiveTierUnavailableError
+
+    if not (root / "user.db").is_file():
+        raise ArchiveTierUnavailableError(
+            tier="user.db",
+            path=str(root / "user.db"),
+            reason="required User authority is missing",
+            guidance="restore the durable User tier from a verified backup before recording a continuation",
+        )
     now_ms = int(datetime.now(UTC).timestamp() * 1000)
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+    from polylogue.storage.sqlite.archive_tiers.write import (
+        MANUAL_CONTINUATION_VALUE_SCHEMA,
+        _project_manual_continuations,
+        _resolve_session_graph,
+        _would_create_cycle,
+    )
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
     index = open_connection(root / "index.db", archive_root=root)
     try:
         if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (child,)).fetchone() is None:
             raise ValueError("manual continuation child session does not exist")
         if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (parent,)).fetchone() is None:
             raise ValueError("manual continuation parent session does not exist")
-        from polylogue.storage.sqlite.archive_tiers.write import _resolve_session_graph, _would_create_cycle
-
-        # The edge is written already resolved, and the resolver's cycle guard
-        # only examines unresolved inbound edges, so validate it here before any
-        # projection refresh can publish a cyclic parent chain.
         cycle_walk = _would_create_cycle(index, child_id=child, proposed_parent_id=parent)
         if cycle_walk.outcome != "acyclic":
             raise ValueError(f"manual continuation refused ({cycle_walk.outcome}): {' -> '.join(cycle_walk.path)}")
-        index.execute(
-            # ``status`` is an exceptional marker (``TopologyEdgeStatus``:
-            # repaired / quarantined / authority-contradicted), not the
-            # ordinary resolved state -- resolvedness is carried by
-            # ``resolved_dst_session_id IS NOT NULL``. Writing 'resolved'
-            # here failed the column's generated CHECK, so this route
-            # raised IntegrityError on every call (polylogue-pkst).
-            """INSERT OR REPLACE INTO session_links
-               (src_session_id, dst_origin, dst_native_id, link_type, inheritance,
-                resolved_dst_session_id, method, confidence, evidence_json, observed_at_ms)
-               VALUES (?, ?, ?, 'continuation', 'spawned-fresh', ?,
-                       'manual-continuation', 1.0, '[]', ?)""",
-            (child, parent_origin, parent_native, parent, now_ms),
-        )
-        # Reuse the canonical topology projection pass so the accepted edge's
-        # read accelerators are refreshed in the same transaction.
-        child_origin, child_native = child.split(":", 1)
-        _resolve_session_graph(index, child, child_native, child_origin)
-        index.commit()
+        # Commit the durable authority before publishing its rebuildable edge.
+        # A failed Index publication leaves replayable User evidence.
+        user = open_connection(root / "user.db", archive_root=root)
+        try:
+            upsert_assertion(
+                user,
+                assertion_id="handoff:" + hashlib.sha256(f"{child}\0{parent}".encode()).hexdigest()[:32],
+                target_ref=f"session:{child}",
+                kind=AssertionKind.HANDOFF,
+                value={"_schema": MANUAL_CONTINUATION_VALUE_SCHEMA, "parent_session_id": parent},
+                body_text=f"Continuation from session {parent}.",
+                author_ref="actor:polylogue",
+                author_kind="service",
+                evidence_refs=[f"session:{parent}", f"session:{child}"],
+                status=AssertionStatus.CANDIDATE,
+                context_policy={"inject": False, "promotion_required": True},
+                now_ms=now_ms,
+            )
+            user.commit()
+        finally:
+            user.close()
+        with PreparedIndexMutation(root / "index.db", archive_root=root) as seal, seal.mutation_scope(index):
+            _project_manual_continuations(index, child)
+            child_origin, child_native = child.split(":", 1)
+            _resolve_session_graph(index, child, child_native, child_origin)
     finally:
         index.close()
-
-    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
-
-    user = open_connection(root / "user.db", archive_root=root)
-    try:
-        upsert_assertion(
-            user,
-            assertion_id="handoff:" + hashlib.sha256(f"{child}\0{parent}".encode()).hexdigest()[:32],
-            target_ref=f"session:{child}",
-            kind=AssertionKind.HANDOFF,
-            body_text=f"Continuation from session {parent}.",
-            # ``author_ref`` is an ObjectRef: ``service`` is not a
-            # declared kind, so this raised before the assertion landed
-            # (polylogue-pkst). ``actor:`` is the kind the other
-            # automated writers use (``actor:judgment-automation``).
-            author_ref="actor:polylogue",
-            author_kind="service",
-            evidence_refs=[f"session:{parent}", f"session:{child}"],
-            status=AssertionStatus.CANDIDATE,
-            context_policy={"inject": False, "promotion_required": True},
-            now_ms=now_ms,
-        )
-        user.commit()
-    finally:
-        user.close()
 
 
 def record_context_ledger_product(config: Config, admission: Any, *, observed_at_ms: int) -> None:

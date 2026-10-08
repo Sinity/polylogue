@@ -54,17 +54,14 @@ def execute_cli_aux_read(name: str, payload: Mapping[str, object], *, archive: A
             list_assertions_for_export,
         )
 
-        attached = {str(row[1]) for row in archive._conn.execute("PRAGMA database_list")}
-        if "user_tier" not in attached:
-            rows = []
-        else:
-            rows = list_assertions_for_export(
-                archive._conn,
-                kinds=cast(list[str] | None, payload.get("kinds")),
-                statuses=cast(list[str] | None, payload.get("statuses")),
-                limit=cast(int | None, payload.get("limit")),
-                schema="user_tier",
-            )
+        archive.require_attached_user_tier()
+        rows = list_assertions_for_export(
+            archive._conn,
+            kinds=cast(list[str] | None, payload.get("kinds")),
+            statuses=cast(list[str] | None, payload.get("statuses")),
+            limit=cast(int | None, payload.get("limit")),
+            schema="user_tier",
+        )
         items = [assertion_envelope_to_payload(row) for row in rows]
         return {
             "items": items,

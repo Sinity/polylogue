@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, cast
 from polylogue.core.errors import ArchiveTierUnavailableError, SchemaRefusalError
 from polylogue.core.user_state_targets import TARGET_MESSAGE
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.tier_access import TierRefusal, open_tier_reader
 
 if TYPE_CHECKING:
@@ -146,7 +145,7 @@ def _resolve_scope(archive: ArchiveStore, token: str | None, target_id: str | No
 
 def _assertions(payload: Mapping[str, object], archive: ArchiveStore) -> dict[str, object]:
     from polylogue.core.enums import AssertionKind, AssertionStatus
-    from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_claims
+    from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CLAIM_KINDS, list_assertion_claims
     from polylogue.surfaces.payloads import AssertionClaimListPayload, AssertionClaimPayload
 
     kinds_input = payload.get("kinds")
@@ -164,30 +163,17 @@ def _assertions(payload: Mapping[str, object], archive: ArchiveStore) -> dict[st
     context_inject = payload.get("context_inject")
     if not isinstance(context_inject, bool):
         context_inject = None
-    conn = open_readonly_connection(archive.user_db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        if kinds is None:
-            claims = list_assertion_claims(
-                conn,
-                target_ref=_text(payload, "target_ref"),
-                scope_ref=_text(payload, "scope_ref"),
-                statuses=statuses,
-                context_inject=context_inject,
-                limit=limit,
-            )
-        else:
-            claims = list_assertion_claims(
-                conn,
-                kinds=kinds,
-                target_ref=_text(payload, "target_ref"),
-                scope_ref=_text(payload, "scope_ref"),
-                statuses=statuses,
-                context_inject=context_inject,
-                limit=limit,
-            )
-    finally:
-        conn.close()
+    archive.require_attached_user_tier()
+    claims = list_assertion_claims(
+        archive._conn,
+        schema="user_tier",
+        target_ref=_text(payload, "target_ref"),
+        scope_ref=_text(payload, "scope_ref"),
+        statuses=statuses,
+        context_inject=context_inject,
+        limit=limit,
+        kinds=kinds if kinds is not None else ASSERTION_CLAIM_KINDS,
+    )
     items = tuple(AssertionClaimPayload.from_envelope(claim) for claim in claims)
     return AssertionClaimListPayload(
         items=items,

@@ -6,10 +6,14 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
+import pytest
+
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.operations.daemon_protocol import validate_operation_result
 from polylogue.operations.daemon_reads import execute_read_operation
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -29,7 +33,7 @@ def test_identity_reset_targets_resolve_on_the_pinned_archive(tmp_path: Path) ->
     assert result["session_ids"] == [session_id]
 
 
-def test_assertion_export_keeps_a_missing_user_tier_empty(tmp_path: Path) -> None:
+def test_assertion_export_keeps_a_present_empty_user_tier_empty(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     root.mkdir()
     SessionBuilder(root / "index.db", "assertion-export").provider("codex").title("Export").save()
@@ -124,3 +128,64 @@ def test_assertion_export_uses_the_pinned_user_snapshot(tmp_path: Path) -> None:
     assert isinstance(items, list) and len(items) == 1
     assert isinstance(items[0], dict)
     assert items[0]["assertion_id"] == "pinned-assertion"
+
+
+@pytest.mark.parametrize("damage", ["missing", "unreadable", "wrong-root"])
+@pytest.mark.parametrize("operation", ["user.assertions.export", "user.assertions.list"])
+def test_assertion_export_refuses_unavailable_user_authority(tmp_path: Path, damage: str, operation: str) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    SessionBuilder(root / "index.db", "authority-export").provider("codex").save()
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        archive._conn.execute("DETACH DATABASE user_tier")
+        if damage == "unreadable":
+            attach_readonly_database(archive._conn, root / "user.db", alias="user_tier")
+            archive._conn.set_authorizer(
+                lambda action, _a, _b, _db, _trigger: (
+                    sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_PRAGMA else sqlite3.SQLITE_OK
+                )
+            )
+        elif damage == "wrong-root":
+            other_root = tmp_path / "other"
+            other_root.mkdir()
+            SessionBuilder(other_root / "index.db", "other").provider("codex").save()
+            attach_readonly_database(archive._conn, other_root / "user.db", alias="user_tier")
+        with pytest.raises(ArchiveTierUnavailableError) as failure:
+            execute_read_operation(operation, {}, archive=archive, serving_identity="test")
+    assert failure.value.tier == "user.db"
+
+
+@pytest.mark.parametrize("replacement", [False, True])
+def test_assertion_list_uses_pinned_user_after_update_or_path_replacement(tmp_path: Path, replacement: bool) -> None:
+    from polylogue.core.enums import AssertionKind
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    SessionBuilder(root / "index.db", "assertion-list-pin").provider("codex").save()
+    with sqlite3.connect(root / "user.db") as user:
+        upsert_assertion(
+            user,
+            assertion_id="neutral-handoff",
+            target_ref="session:codex-session:assertion-list-pin",
+            kind=AssertionKind.HANDOFF,
+            body_text="old snapshot",
+            now_ms=1000,
+        )
+    with open_operation_read(root) as pinned:
+        with sqlite3.connect(root / "user.db") as writer:
+            writer.execute("UPDATE assertions SET body_text='new snapshot' WHERE assertion_id='neutral-handoff'")
+            writer.commit()
+            if replacement:
+                other = tmp_path / "replacement.db"
+                with sqlite3.connect(other) as changed:
+                    writer.backup(changed)
+                    changed.execute("UPDATE assertions SET body_text='replacement snapshot'")
+                other.replace(root / "user.db")
+        result = execute_read_operation(
+            "user.assertions.list", {"kinds": ["handoff"]}, archive=pinned.archive, serving_identity="test"
+        )
+        items = result["items"]
+        assert isinstance(items, list) and len(items) == 1
+        assert isinstance(items[0], dict)
+        assert items[0]["body_text"] == "old snapshot"

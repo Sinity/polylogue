@@ -3306,7 +3306,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         return session_ids, message_anchor_by_session, omitted
 
     async def record_manual_continuation(self, child_session_id: str, parent_session_id: str) -> None:
-        """Record a spawned-fresh continuation and its first handoff claim."""
+        """Commit a durable handoff parent and derive its spawned-fresh continuation."""
         from polylogue.api.facade_client import submit_facade_writer
 
         child = str(child_session_id).strip()

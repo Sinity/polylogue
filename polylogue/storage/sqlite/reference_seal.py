@@ -10241,7 +10241,7 @@ class IndexMutationScope:
         else:
             self._rollback_index()
 
-    def suppression_reader(self) -> sqlite3.Connection | None:
+    def user_reader(self) -> sqlite3.Connection | None:
         """Borrow the declared User observer for this exact commit window."""
         self.require_new_work(self.conn)
         if self.seal is not None:
@@ -10265,7 +10265,7 @@ class IndexMutationScope:
                 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
                 if not isinstance(parent, ArchiveStore) or parent._owned_index_connection is not self.conn:
-                    raise ReferenceSealError("suppression reader requires its exact Index Store owner")
+                    raise ReferenceSealError("User reader requires its exact Index Store owner")
                 if custody is not None:
                     # Preserve the original grant once on the Store. Its
                     # terminal census owns both Index and User, including
@@ -10299,7 +10299,7 @@ class IndexMutationScope:
             custody.assert_namespace()
         return owner.require_connection()
 
-    def _close_suppression_reader(self) -> None:
+    def _close_user_reader(self) -> None:
         owner = self._user_owner
         if owner is not None:
             owner.close()
@@ -10406,7 +10406,7 @@ class IndexMutationScope:
             )
             self.seal.accept_index_commit(self._commit_receipt)
         self._cleanup_started = True
-        self._close_suppression_reader()
+        self._close_user_reader()
 
     @property
     def settled(self) -> bool:
@@ -10453,7 +10453,7 @@ class IndexMutationScope:
             except BaseException as failure:
                 failures.append(failure)
         try:
-            self._close_suppression_reader()
+            self._close_user_reader()
         except BaseException as failure:
             failures.append(failure)
         if len(failures) == 1:

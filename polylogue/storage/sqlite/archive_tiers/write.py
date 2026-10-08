@@ -3134,6 +3134,7 @@ def write_parsed_session_to_archive(
                     graph_kwargs["invalidated_session_ids"] = invalidated_identity_children
                 if source_read is not None:
                     graph_kwargs["source_read"] = source_read
+                _project_manual_continuations(conn, session_id)
                 graph_changed_ids = _resolve_session_graph(conn, session_id, native_id, origin.value, **graph_kwargs)
                 add_timing("index.graph_resolve", t0)
                 materialized_ids: set[str] = set()
@@ -10295,6 +10296,60 @@ def _supersede_stale_authoritative_links(
         ):
             pass
         read.superseded_link(src_session_id, link_type, stale_native_id)
+
+
+MANUAL_CONTINUATION_VALUE_SCHEMA = "polylogue.manual-continuation.v1"
+
+
+class ManualContinuationAuthorityError(ReferenceSealError):
+    """Durable manual continuation authority cannot be read or projected."""
+
+
+def _project_manual_continuations(conn: sqlite3.Connection, session_id: str) -> None:
+    """Derive operator continuation edges from this scope's declared User tier.
+
+    Prose handoff assertions have no topology semantics. Only the explicit
+    value discriminator written by the manual continuation product is read.
+    Missing parents stay unresolved until the canonical graph pass sees them.
+    """
+    scope = current_index_mutation_scope()
+    if scope is None:
+        raise ManualContinuationAuthorityError("manual continuation projection requires its Index mutation scope")
+    scope.require_new_work(conn)
+    reader = scope.user_reader()
+    if reader is None:
+        # A declared standalone Index has no durable assertions to project.
+        return
+    scope.note_lineage_change(session_id)
+    conn.execute("DELETE FROM session_links WHERE src_session_id=? AND method='manual-continuation'", (session_id,))
+    try:
+        with connection_cursor(
+            reader,
+            "SELECT assertion_id, value_json, updated_at_ms FROM assertions "
+            "WHERE target_ref=? AND kind='handoff' AND COALESCE(status, '')!='deleted' "
+            "ORDER BY assertion_id",
+            (f"session:{session_id}",),
+        ) as rows:
+            for assertion_id, value_json, observed_at_ms in rows:
+                value = None if value_json is None else json.loads(value_json)
+                if not isinstance(value, dict) or value.get("_schema") != MANUAL_CONTINUATION_VALUE_SCHEMA:
+                    continue
+                parent = value.get("parent_session_id")
+                if not isinstance(parent, str) or ":" not in parent or not all(parent.split(":", 1)):
+                    raise ManualContinuationAuthorityError(
+                        f"manual continuation assertion {assertion_id!r} lacks an exact parent session id"
+                    )
+                parent_origin, parent_native = parent.split(":", 1)
+                # Explicit operator authority retains the manual product's
+                # replacement semantics for this exact edge coordinate.
+                conn.execute(
+                    "INSERT OR REPLACE INTO session_links "
+                    "(src_session_id,dst_origin,dst_native_id,link_type,inheritance,method,confidence,evidence_json,observed_at_ms) "
+                    "VALUES (?, ?, ?, 'continuation', 'spawned-fresh', 'manual-continuation', 1.0, '[]', ?)",
+                    (session_id, parent_origin, parent_native, observed_at_ms),
+                )
+    except (sqlite3.Error, json.JSONDecodeError) as exc:
+        raise ManualContinuationAuthorityError("cannot read durable manual continuation assertions") from exc
 
 
 def _upsert_session_link(

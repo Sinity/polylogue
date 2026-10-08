@@ -6422,6 +6422,24 @@ class ArchiveStore:
             "the reader will not create a replacement or search another archive root",
         )
 
+    def require_attached_user_tier(self) -> None:
+        """Validate the operation's existing User handle without opening a path."""
+        try:
+            attached = next((row for row in self._conn.execute("PRAGMA database_list") if row[1] == "user_tier"), None)
+            if attached is None:
+                raise self._user_tier_unavailable(reason="user tier is not attached to the operation snapshot")
+            if Path(str(attached[2])).absolute() != self.user_db_path.absolute():
+                raise self._user_tier_unavailable(reason="attached user tier belongs to a different archive root")
+            version = int(self._conn.execute("PRAGMA user_tier.user_version").fetchone()[0])
+            if version != archive_tier_spec(ArchiveTier.USER).version:
+                raise self._user_tier_unavailable(reason=f"attached user tier has unsupported schema version {version}")
+            if not _table_exists(self._conn, "assertions", schema="user_tier"):
+                raise self._user_tier_unavailable(reason="attached user tier lacks the assertions table")
+        except ArchiveTierUnavailableError:
+            raise
+        except (sqlite3.Error, OSError) as exc:
+            raise self._user_tier_unavailable(reason=f"cannot read attached user authority ({exc})") from exc
+
     def require_user_tier(self) -> None:
         """Validate the durable user tier before an assertion read executes SQL."""
         if not self.user_db_path.exists():
