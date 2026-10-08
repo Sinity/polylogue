@@ -14,6 +14,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import overload
 
 
 class SourceContinuityError(ValueError):
@@ -130,13 +131,23 @@ class _FrontierMemberStore:
         self.count += 1
         self.byte_count += member.size
 
-    def rows(self) -> Iterator[tuple[object, ...]]:
+    def rows(self) -> Iterator[tuple[str, str, str, str, int, str | None, str, str]]:
         cursor = self.connection.execute(
             """SELECT source_id, coordinate, identity, content_sha256, size, logical_sha256,
                       source_path, physical_identity FROM members ORDER BY ordinal"""
         )
         while page := cursor.fetchmany(512):
-            yield from page
+            for source_id, coordinate, identity, content, size, logical, source_path, physical_identity in page:
+                yield (
+                    str(source_id),
+                    str(coordinate),
+                    str(identity),
+                    str(content),
+                    int(size),
+                    None if logical is None else str(logical),
+                    str(source_path),
+                    str(physical_identity),
+                )
 
     def verify_integrity(self, declaration_ids: set[str]) -> None:
         """Check the captured spool without rebuilding its member set in memory."""
@@ -201,6 +212,12 @@ class _FrontierMembers(Sequence[FrontierMember]):
                 int(size),
                 None if logical is None else str(logical),
             )
+
+    @overload
+    def __getitem__(self, index: int) -> FrontierMember: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[FrontierMember, ...]: ...
 
     def __getitem__(self, index: int | slice) -> FrontierMember | tuple[FrontierMember, ...]:
         if isinstance(index, slice):
@@ -280,6 +297,11 @@ class SourceFrontier:
     def close(self) -> None:
         if isinstance(self.members, _FrontierMembers):
             self.members.close()
+
+    def copy_members_to(self, connection: sqlite3.Connection) -> None:
+        if not isinstance(self.members, _FrontierMembers):
+            raise SourceContinuityError("source frontier member store is unavailable")
+        self.members.copy_to(connection)
 
     def __enter__(self) -> SourceFrontier:
         return self
@@ -407,6 +429,7 @@ def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFr
                 root_is_directory = declaration.root.is_dir()
                 disappeared: Path | None = None
                 for item in iter_observe_source_members(declaration):
+                    identity: tuple[int, ...]
                     if declaration.role is SourceRole.ARCHIVE_MEMBER:
                         device, inode, _ctime, offset = item.identity.split(":")
                         identity = (int(device), int(inode), int(offset))

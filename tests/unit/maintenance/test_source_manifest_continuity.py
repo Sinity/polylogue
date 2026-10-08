@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import polylogue.maintenance.source_manifest_continuity as continuity
 from polylogue.maintenance.source_manifest_continuity import (
     FrontierState,
     SourceContinuityError,
@@ -308,15 +309,15 @@ def test_configured_frontier_retains_unreadable_canonical_provider_root(
     original_stat = Path.stat
     original_lstat = Path.lstat
 
-    def denied(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+    def denied(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
         if path == codex or codex in path.parents:
             raise PermissionError("synthetic unreadable provider root")
-        return original_stat(path, *args, **kwargs)
+        return original_stat(path, follow_symlinks=follow_symlinks)
 
-    def denied_lstat(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+    def denied_lstat(path: Path) -> os.stat_result:
         if path == codex or codex in path.parents:
             raise PermissionError("synthetic unreadable provider root")
-        return original_lstat(path, *args, **kwargs)
+        return original_lstat(path)
 
     monkeypatch.setattr(Path, "stat", denied)
     monkeypatch.setattr(Path, "lstat", denied_lstat)
@@ -340,6 +341,7 @@ def test_frontier_members_are_spilled_and_digest_remains_canonical(tmp_path: Pat
     try:
         assert frontier.item_count == 700
         assert len(frontier.members) == 700
+        assert isinstance(frontier.members, continuity._FrontierMembers)
         db_path = frontier.members._store.connection.execute("PRAGMA database_list").fetchone()[2]
         assert db_path
         assert Path(db_path).is_file()

@@ -29,7 +29,7 @@ import os
 import sqlite3
 import stat
 import zipfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -43,7 +43,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.raw_coordinates import read_captured_zip_coordinate_receipt
 from polylogue.core.sqlite_introspection import table_exists
-from polylogue.maintenance.source_manifest_continuity import SourceContinuityError, SourceFrontier
+from polylogue.maintenance.source_manifest_continuity import SourceFrontier
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule
 from polylogue.sources.value_bounds import VALUE_BOUND_REFUSED, VALUE_BOUND_REFUSED_HEAD
 from polylogue.storage.sqlite.connection_profile import readonly_temp_staging
@@ -948,10 +948,8 @@ def audit_source_conservation(
         # Spill the source denominator into the connection's file-backed TEMP
         # schema, then let SQLite join it to raw acquisition by path and digest.
         # Neither side is collected in Python; the raw DB remains opened read-only.
-        if not isinstance(frontier.members, Sequence) or not hasattr(frontier.members, "copy_to"):
-            raise SourceContinuityError("source frontier cannot be paged into conservation")
         with readonly_temp_staging(conn, temp_store="FILE"):
-            frontier.members.copy_to(conn)  # type: ignore[attr-defined]
+            frontier.copy_members_to(conn)
         owner_rows = conn.execute(
             """SELECT m.source_id, m.coordinate, COUNT(r.raw_id) AS owner_count
                FROM temp._polylogue_source_frontier_member m
