@@ -940,7 +940,7 @@ def uri_modes(root):
     )
 
     assert len(findings) == 1
-    assert findings[0]["line"] == 5
+    assert findings[0]["line"] == 4
 
 
 def test_layering_production_census_baseline_is_exact() -> None:
