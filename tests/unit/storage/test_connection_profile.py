@@ -141,6 +141,24 @@ def test_readonly_temp_staging_cannot_write_persistent_or_attached_database(tmp_
         reader.close()
 
 
+def test_readonly_temp_staging_can_select_file_backing_before_projection(tmp_path: Path) -> None:
+    db_path = tmp_path / "index.db"
+    with sqlite3.connect(db_path) as writer:
+        writer.execute("CREATE TABLE evidence (value TEXT)")
+    reader = connection_profile.open_readonly_connection(db_path, validate_schema=False)
+    try:
+        with connection_profile.readonly_temp_staging(reader, temp_store="FILE"):
+            assert reader.execute("PRAGMA temp_store").fetchone() == (1,)
+            reader.execute("CREATE TEMP TABLE projection (value TEXT)")
+            reader.execute("INSERT INTO projection VALUES ('derived')")
+        assert reader.execute("SELECT value FROM projection").fetchone() == ("derived",)
+        with pytest.raises(ValueError, match="before TEMP objects exist"):
+            with connection_profile.readonly_temp_staging(reader, temp_store="FILE"):
+                pass
+    finally:
+        reader.close()
+
+
 def test_attach_database_on_a_profiled_reader_is_read_only(tmp_path: Path) -> None:
     """A reader's sibling attachment succeeds and cannot write the sibling.
 

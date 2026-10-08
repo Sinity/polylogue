@@ -126,6 +126,18 @@ pending receipt and candidate generation, and source-conservation checks
 durable acquired Source evidence independently; those are the owners of
 previously observed item obligations.
 
+Canonical provider roots come from resolved source paths as well as the
+runtime source list, so an unreadable configured root remains in the frontier
+as `UNAVAILABLE` and blocks source-conservation. A definitely absent optional
+canonical path that has not entered the runtime source list is omitted; a root
+already admitted by that list remains in the denominator if it disappears
+before observation. The CLI builds the frontier only for a full verification
+or when `source-conservation` is selected. Frontier members are observed into
+a private disk-backed SQLite spool, and source-conservation joins its paged
+members to `raw_sessions` through a file-backed TEMP projection while the
+archive tiers remain read-only. The CLI closes the frontier after the check;
+the connection owns and removes the TEMP projection.
+
 Exit code is non-zero when any check reports `error` (or, with `--strict`,
 `warning`). A single check's failure — including a tier database being
 temporarily busy under a concurrent rebuild — never aborts the rest; each

@@ -286,6 +286,84 @@ def test_configured_frontier_keeps_a_disappeared_source_in_its_denominator(
     assert any(blocker.startswith("unavailable:configured:browser-capture:") for blocker in frontier.blockers)
 
 
+def test_configured_frontier_retains_unreadable_canonical_provider_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Config.exists() may omit a root, but the resolved path declaration survives."""
+    from polylogue import paths
+    from polylogue.maintenance import source_manifest_continuity as continuity
+
+    home = tmp_path / "home"
+    codex = home / ".codex"
+    codex.mkdir(parents=True)
+    archive = tmp_path / "archive"
+    (archive / "hooks").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive))
+    monkeypatch.setattr(paths, "archive_root", lambda: archive)
+    monkeypatch.setattr(
+        "polylogue.sources.hooks.hook_spool_sources",
+        lambda: (SimpleNamespace(source_id="primary-hook-spool", root=archive / "hooks"),),
+    )
+    original_stat = Path.stat
+    original_lstat = Path.lstat
+
+    def denied(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if path == codex or codex in path.parents:
+            raise PermissionError("synthetic unreadable provider root")
+        return original_stat(path, *args, **kwargs)
+
+    def denied_lstat(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if path == codex or codex in path.parents:
+            raise PermissionError("synthetic unreadable provider root")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", denied)
+    monkeypatch.setattr(Path, "lstat", denied_lstat)
+
+    frontier = continuity.configured_source_frontier(archive)
+
+    assert "configured:codex-state" in {row.source_id for row in frontier.declarations}
+    assert frontier.root_states["configured:codex-state"] is FrontierState.UNAVAILABLE
+    assert not frontier.complete
+
+
+def test_frontier_members_are_spilled_and_digest_remains_canonical(tmp_path: Path) -> None:
+    import json
+
+    root = tmp_path / "many"
+    root.mkdir()
+    for index in range(700):
+        (root / f"{index:04}.json").write_text(f"{index}\n", encoding="utf-8")
+
+    frontier = build_source_frontier((SourceDeclaration("many", SourceRole.DIRECTORY, root, True),))
+    try:
+        assert frontier.item_count == 700
+        assert len(frontier.members) == 700
+        db_path = frontier.members._store.connection.execute("PRAGMA database_list").fetchone()[2]
+        assert db_path
+        assert Path(db_path).is_file()
+        payload = {
+            "declarations": [
+                (d.source_id, d.role.value, str(d.root), d.mutable, d.layout_name, d.exclude_coordinates)
+                for d in frontier.declarations
+            ],
+            "members": [
+                (m.source_id, m.coordinate, m.identity, m.content_sha256, m.size, m.logical_sha256)
+                for m in frontier.members
+            ],
+            "root_states": sorted((key, value.value) for key, value in frontier.root_states.items()),
+            "blockers": list(frontier.blockers),
+        }
+        assert (
+            frontier.frontier_sha256
+            == hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        )
+        frontier.verify_integrity()
+    finally:
+        frontier.close()
+
+
 @pytest.mark.parametrize("payload", [b"", b'{"display":"prompt"}\n'], ids=["empty", "nonempty"])
 def test_configured_frontier_observes_optional_claude_history_file_as_append_jsonl(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: bytes

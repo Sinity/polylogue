@@ -564,13 +564,17 @@ def _walk_files(
 
 
 def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:
+    return tuple(_iter_observe(binding))
+
+
+def _iter_observe(binding: SourceCutBinding) -> Iterator[CutItem]:
     root = Path(binding.source.root)
     if binding.policy.mode is SnapshotMode.SQLITE_LOGICAL_EXPORT:
         if _root_identity(root) != binding.root_identity:
             raise SourceMutationError(f"source root identity changed: {root}")
         if binding.root_identity.kind == "directory":
             with _open_source_root(binding) as (anchor, root_info, physical_root):
-                result = _observe_sqlite_members(
+                yield from _observe_sqlite_members(
                     binding,
                     _walk_files(
                         root,
@@ -582,21 +586,20 @@ def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:
                     ),
                 )
         else:
-            result = _observe_sqlite_members(binding, ((root.name, root, root.stat(), None, root.parent),))
+            yield from _observe_sqlite_members(binding, ((root.name, root, root.stat(), None, root.parent),))
         if _root_identity(root) != binding.root_identity:
             raise SourceMutationError(f"source root identity changed: {root}")
-        return result
+        return
     with _open_source_root(binding) as (anchor, root_info, physical_root):
-        result = _observe_root(binding, anchor, root_info, physical_root)
+        yield from _observe_root(binding, anchor, root_info, physical_root)
         if _root_identity(root) != binding.root_identity:
             raise SourceMutationError(f"source root identity changed: {root}")
-        return result
+        return
 
 
 def _observe_sqlite_members(
     binding: SourceCutBinding, members: Iterable[tuple[str, Path, os.stat_result, int | None, Path]]
-) -> tuple[CutItem, ...]:
-    result = []
+) -> Iterator[CutItem]:
     for coordinate, path, before, parent_anchor, semantic_parent in members:
         check_compute_cancelled()
         expected = before.st_dev, before.st_ino
@@ -621,13 +624,12 @@ def _observe_sqlite_members(
         after = path.stat() if parent_anchor is None else path.lstat()
         if not stat.S_ISREG(after.st_mode) or (after.st_dev, after.st_ino) != expected:
             raise SourceMutationError(f"source database identity changed: {path}")
-        result.append(CutItem(binding.source.source_id, coordinate, identity, identity, before.st_size))
-    return tuple(sorted(result, key=lambda item: item.coordinate))
+        yield CutItem(binding.source.source_id, coordinate, identity, identity, before.st_size)
 
 
 def _observe_root(
     binding: SourceCutBinding, anchor: int, root_info: os.stat_result, physical_root: Path
-) -> tuple[CutItem, ...]:
+) -> Iterator[CutItem]:
     root = Path(binding.source.root)
     mode = binding.policy.mode
     if mode is SnapshotMode.ARCHIVE_MEMBER:
@@ -639,7 +641,6 @@ def _observe_root(
                 os.fdopen(os.dup(anchor), "rb") as stream,
                 zipfile.ZipFile(stream) as archive,
             ):
-                items = []
                 for info in sorted(archive.infolist(), key=lambda item: item.filename):
                     check_compute_cancelled()
                     if info.is_dir():
@@ -651,24 +652,21 @@ def _observe_root(
                             check_compute_cancelled()
                             digest.update(chunk)
                             size += len(chunk)
-                    items.append(
-                        CutItem(
-                            binding.source.source_id,
-                            f"{root.name}!{info.filename}",
-                            f"{archive_info.st_dev}:{archive_info.st_ino}:{archive_info.st_ctime_ns}:{info.header_offset}",
-                            digest.hexdigest(),
-                            size,
-                        )
+                    yield CutItem(
+                        binding.source.source_id,
+                        f"{root.name}!{info.filename}",
+                        f"{archive_info.st_dev}:{archive_info.st_ino}:{archive_info.st_ctime_ns}:{info.header_offset}",
+                        digest.hexdigest(),
+                        size,
                     )
                 after = os.fstat(anchor)
                 if (after.st_size, after.st_ctime_ns) != (archive_info.st_size, archive_info.st_ctime_ns):
                     raise SourceMutationError(f"archive changed during inventory: {root}")
-                return tuple(items)
+                return
         except DaemonOperationCancelled:
             raise
         except (OSError, zipfile.BadZipFile, KeyError, RuntimeError) as exc:
             raise SourceSnapshotError(f"archive member inventory failed: {root}") from exc
-    result: list[CutItem] = []
     for coordinate, path, member_info, _parent_anchor, _semantic_parent in _walk_files(
         root,
         anchor,
@@ -683,8 +681,25 @@ def _observe_root(
             anchor=anchor,
             coordinate=coordinate if binding.root_identity.kind == "directory" else "",
         )
-        result.append(CutItem(binding.source.source_id, coordinate, identity, content_sha256, captured_size))
-    return tuple(sorted(result, key=lambda item: item.coordinate))
+        yield CutItem(binding.source.source_id, coordinate, identity, content_sha256, captured_size)
+
+
+def iter_observe_source_members(declaration: SourceDeclaration) -> Iterator[CutItem]:
+    """Stream one declared source inventory without retaining its members.
+
+    This uses the same descriptor-bound observation law as source cuts. The
+    caller must exhaust the iterator to receive the final root identity check.
+    """
+    try:
+        yield from _iter_observe(
+            SourceCutBinding(
+                declaration,
+                _root_identity(declaration.root),
+                _default_policy(declaration.role),
+            )
+        )
+    except sqlite3.DatabaseError as exc:
+        raise SourceSnapshotError(f"source database unreadable: {exc}") from exc
 
 
 def observe_source_members(declaration: SourceDeclaration) -> tuple[CutItem, ...]:
@@ -695,18 +710,7 @@ def observe_source_members(declaration: SourceDeclaration) -> tuple[CutItem, ...
     are observed at their declared logical granularity rather than being
     reduced to one root row or a filesystem byte count.
     """
-    try:
-        return _observe(
-            SourceCutBinding(
-                declaration,
-                _root_identity(declaration.root),
-                _default_policy(declaration.role),
-            )
-        )
-    except sqlite3.DatabaseError as exc:
-        # An unreadable declared SQLite root is an unavailable source, typed
-        # at this seam rather than by each caller.
-        raise SourceSnapshotError(f"source database unreadable: {exc}") from exc
+    return tuple(iter_observe_source_members(declaration))
 
 
 def _try_reflink(descriptor: int, destination: Path) -> bool:
@@ -1499,6 +1503,7 @@ __all__ = [
     "SourceSnapshotStrategy",
     "SourceSnapshotResult",
     "execute_source_cut",
+    "iter_observe_source_members",
     "load_source_cut",
     "preflight_source_cut",
     "observe_source_members",

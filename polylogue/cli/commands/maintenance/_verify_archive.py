@@ -79,17 +79,23 @@ def verify_archive_command(
 
     declared_names = archive_verification_names_for_route("live-archive")
 
+    needs_frontier = not selected_checks or "source-conservation" in selected_checks
+    frontier = None
     try:
-        frontier = configured_source_frontier(archive_root())
+        if needs_frontier:
+            frontier = configured_source_frontier(archive_root())
         report = verify_archive(
             archive_root(),
             checks=selected_checks or None,
             sample_limit=sample_limit,
             source_frontier=frontier,
-            require_source_frontier=True,
+            require_source_frontier=needs_frontier,
         )
     except ValueError as exc:
         raise click.ClickException(f"cannot establish configured source frontier: {exc}") from exc
+    finally:
+        if frontier is not None:
+            frontier.close()
 
     if output_format == "json":
         click.echo(json.dumps(report.to_json(), indent=2, sort_keys=True))

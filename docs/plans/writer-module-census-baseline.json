@@ -103,6 +103,11 @@
     ]
   },
   {
+    "file": "polylogue/maintenance/source_manifest_continuity.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/operations/attachment_convergence.py",
     "tiers": [
       "index"

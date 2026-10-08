@@ -25,7 +25,9 @@ def _isolated_source_frontier(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     """CLI tests never enumerate the operator's real provider directories."""
     from polylogue.maintenance import source_manifest_continuity
 
-    declaration = SourceDeclaration("test-empty", SourceRole.DIRECTORY, tmp_path / "inputs", True)
+    empty_source = tmp_path / "inputs"
+    empty_source.mkdir()
+    declaration = SourceDeclaration("test-empty", SourceRole.DIRECTORY, empty_source, True)
     monkeypatch.setattr(
         source_manifest_continuity,
         "configured_source_frontier",
@@ -110,6 +112,28 @@ def test_verify_archive_cli_restricts_to_selected_checks(
     payload = json.loads(result.stdout)
     names = {check["name"] for check in payload["checks"]}
     assert names == {"tier-schema", "planner-stats"}
+
+
+def test_selected_non_source_check_does_not_construct_source_frontier(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.maintenance import source_manifest_continuity
+
+    def unexpected_frontier(_root: Path) -> object:
+        pytest.fail("an unrelated selected check must not observe provider roots")
+
+    monkeypatch.setattr(source_manifest_continuity, "configured_source_frontier", unexpected_frontier)
+
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "verify-archive", "--check", "tier-schema", "--output-format", "json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert {check["name"] for check in payload["checks"]} == {"tier-schema"}
 
 
 def test_verify_archive_cli_uses_independent_source_frontier_for_missing_input(

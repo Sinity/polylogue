@@ -1171,6 +1171,26 @@ def test_historical_revision_is_not_an_orphan(tmp_path: Path) -> None:
     assert stray_check.status is OutcomeStatus.ERROR
 
 
+def test_frontier_orphan_does_not_replace_session_orphan_count(tmp_path: Path) -> None:
+    """A raw outside configured roots is not an index session with no raw."""
+    _seed(tmp_path)
+    outside = tmp_path / "outside" / "session.jsonl"
+    outside.parent.mkdir(parents=True)
+    outside.write_bytes(b"session payload")
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        source_conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (str(outside),))
+        source_conn.execute("UPDATE blob_refs SET source_path = ? WHERE ref_id = 'raw-session'", (str(outside),))
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    check = _run_with_frontier(tmp_path, _configured_frontier(tmp_path))
+
+    assert _count(check, "session_orphan") == 0
+    assert _count(check, "frontier_orphan") == 1
+
+
 def test_multi_session_raw_is_not_a_mismatch(tmp_path: Path) -> None:
     """A grouped raw that emits two sessions conserves both memberships.
 

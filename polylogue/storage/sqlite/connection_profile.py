@@ -2385,19 +2385,35 @@ def _authorize_read_temp_operation(
         sqlite3.SQLITE_CREATE_TEMP_INDEX,
         sqlite3.SQLITE_DROP_TEMP_TABLE,
         sqlite3.SQLITE_DROP_TEMP_INDEX,
+        sqlite3.SQLITE_REINDEX,
     }:
         return sqlite3.SQLITE_OK
     return _authorize_read_operation(action, argument1, argument2, database, trigger)
 
 
 @contextmanager
-def readonly_temp_staging(conn: sqlite3.Connection) -> Iterator[None]:
-    """Permit TEMP projection rows while persistent attached tiers stay read-only."""
+def readonly_temp_staging(
+    conn: sqlite3.Connection,
+    *,
+    temp_store: Literal["FILE", "MEMORY"] | None = None,
+) -> Iterator[None]:
+    """Permit TEMP projection rows while persistent attached tiers stay read-only.
+
+    ``temp_store`` may be selected before the projection is created. SQLite
+    drops existing TEMP objects when this setting changes, so this option is
+    restricted to a connection whose TEMP schema is empty.
+    """
     if conn.execute("PRAGMA query_only").fetchone()[0] != 1:
         raise ValueError("TEMP staging requires a query-only reader")
+    if temp_store not in {None, "FILE", "MEMORY"}:
+        raise ValueError("TEMP staging store must be FILE or MEMORY")
+    if temp_store is not None and conn.execute("SELECT 1 FROM sqlite_temp_master LIMIT 1").fetchone() is not None:
+        raise ValueError("TEMP staging store can only be selected before TEMP objects exist")
     conn.set_authorizer(None)
     try:
         conn.execute("PRAGMA query_only = OFF")
+        if temp_store is not None:
+            conn.execute(f"PRAGMA temp_store = {temp_store}")
         conn.set_authorizer(_authorize_read_temp_operation)
         yield
     finally:
