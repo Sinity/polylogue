@@ -362,7 +362,9 @@ coverage after draining stage debts. It runs the existing inspection stage on
 the same admitted compute worker and stage writer bridge when the mark is absent
 or its source/cursor authority changed. A full-convergence admission refusal
 can leave no debt rows, so an empty debt ledger does not suppress this check.
-Existing frontier debt retains its due retry and backoff ownership; the
+The owner performs the admitted Ops bootstrap before the debt probe, so a
+missing disposable tier can be recreated. Existing frontier debt retains its
+due retry and backoff ownership; the
 coverage fallback never runs another census in that debt pass. A blocked
 fallback records deferred frontier debt through the stage writer bridge, so
 later attempts use the canonical debt retry schedule and backoff. An inspection

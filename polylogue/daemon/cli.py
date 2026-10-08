@@ -1177,7 +1177,9 @@ def _drain_convergence_debt_and_frontier(db: Path, *, compute_adapter: BoundedCo
     from polylogue.operations.raw_frontier_inspection import make_raw_frontier_inspection_stage
     from polylogue.sources.live.cursor import CursorStore
 
-    cursor = CursorStore(db, initialize=False)
+    # Ops is disposable: restore it through the original admitted bootstrap
+    # before querying debt, while retaining the pre-drain ownership snapshot.
+    cursor = admit_stage_write("maintenance.convergence_debt.initialize", partial(CursorStore, db))
     frontier_debt = cursor.list_convergence_debt(stage="raw_frontier_inspection", limit=1)
     retried = _drain_convergence_debt_backlog(db, compute_adapter=compute_adapter)
     # Recorded debt owns both due execution and backoff. Check before draining

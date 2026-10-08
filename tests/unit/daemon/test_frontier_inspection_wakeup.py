@@ -111,3 +111,37 @@ async def test_periodic_owner_inspects_after_full_convergence_admission_rejected
         # With unchanged authority, another ordinary tick does not census again.
         assert await daemon_cli._retry_convergence_debt_once(root / "index.db") is None
         assert inspections == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock
+async def test_periodic_frontier_worker_recreates_missing_disposable_ops_before_debt_probe(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    bounded_compute_adapter: BoundedComputeAdapter,
+) -> None:
+    """A pre-bootstrap read-only debt probe permanently strands missing Ops."""
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    root = workspace_env["archive_root"]
+    root.mkdir(parents=True, exist_ok=True)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    monkeypatch.setattr(compute, "compute_adapter", lambda: bounded_compute_adapter)
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: coordinator)
+    try:
+        await coordinator.run_sync("fixture.archive.bootstrap", lambda: bootstrap_archive_root(root))
+
+        def remove_disposable_ops() -> None:
+            for name in ("ops.db", "ops.db-wal", "ops.db-shm"):
+                (root / name).unlink(missing_ok=True)
+
+        await coordinator.run_sync("fixture.ops.absent", remove_disposable_ops)
+        assert (root / "index.db").exists()
+        assert not (root / "ops.db").exists()
+        assert await daemon_cli._retry_convergence_debt_once(root / "index.db") is None
+        assert (root / "ops.db").exists()
+        coverage = read_frontier_coverage_for_archive(root)
+        assert coverage["current"] and coverage["healthy"], coverage
+    finally:
+        assert await coordinator.shutdown(timeout=5)
