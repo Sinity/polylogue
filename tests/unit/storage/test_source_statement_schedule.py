@@ -119,6 +119,205 @@ def test_no_effect_source_statement_still_requires_schedule_consumption_and_refu
             seal.accept_known_tier_commit(permit.committed())
 
 
+def test_source_rollback_publishes_no_captured_row_or_commit_receipt(source_statement_root: Path) -> None:
+    root = source_statement_root
+    with PreparedIndexMutation.source_only(archive_root=root) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            _stage_raw(seal, "rolled-back")
+        permit = seal.prepare_source_mutation()
+        with permit.hold_authority(), permit.mutation_connection() as source:
+            with closing(source.execute("BEGIN IMMEDIATE")):
+                pass
+            permit.apply_source_statements(source)
+            permit.allow_commit(source)
+            source.rollback()
+            with pytest.raises(ReferenceSealError):
+                permit.committed()
+        with seal.original_read_snapshot():
+            with seal.original_rows("source", "SELECT 1 FROM raw_sessions WHERE raw_id='rolled-back'") as rows:
+                assert rows.fetchone() is None
+        assert seal._pending_tier_receipts == {}
+
+
+def test_source_acceptance_settles_after_commit_even_when_cancellation_is_pending(
+    source_statement_root: Path,
+) -> None:
+    import threading
+
+    from polylogue.core.compute_cancel import compute_cancel
+
+    root = source_statement_root
+    with PreparedIndexMutation.source_only(archive_root=root) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            _stage_raw(seal, "committed-before-cancel")
+        permit = seal.prepare_source_mutation()
+        with permit.hold_authority(), permit.mutation_connection() as source:
+            with closing(source.execute("BEGIN IMMEDIATE")):
+                pass
+            permit.apply_source_statements(source)
+            permit.allow_commit(source)
+            source.commit()
+            cancelled = threading.Event()
+            token = compute_cancel.set(cancelled)
+            try:
+                cancelled.set()
+                seal.accept_known_tier_commit(permit.committed())
+            finally:
+                cancelled.clear()
+                compute_cancel.reset(token)
+        with seal.original_read_snapshot():
+            with seal.original_rows(
+                "source", "SELECT raw_id FROM raw_sessions WHERE raw_id=?", ("committed-before-cancel",)
+            ) as rows:
+                assert tuple(rows.fetchone()) == ("committed-before-cancel",)
+        seal.validate_observers_current()
+
+
+@pytest.mark.parametrize("boundary", ["before_begin", "after_commit"])
+def test_source_capture_refuses_foreign_commit_on_either_side_of_publication(
+    source_statement_root: Path,
+    boundary: str,
+) -> None:
+    import sqlite3
+
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+    root = source_statement_root
+    _seed_original_raw(root)
+    with PreparedIndexMutation.source_only(archive_root=root) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            _stage_raw(seal, "captured-by-original")
+        permit = seal.prepare_source_mutation()
+        original_version = seal.observer_version("source")
+        with permit.hold_authority(), permit.mutation_connection() as source:
+            if boundary == "before_begin":
+                with closing(sqlite3.connect(root / "source.db")) as foreign:
+                    with closing(
+                        foreign.execute("UPDATE raw_sessions SET file_mtime_ms=2 WHERE raw_id='original-raw'")
+                    ):
+                        pass
+                    foreign.commit()
+            with closing(source.execute("BEGIN IMMEDIATE")):
+                pass
+            if boundary == "before_begin":
+                with pytest.raises(ReferenceSealStaleError):
+                    permit.apply_source_statements(source)
+                source.rollback()
+            else:
+                permit.apply_source_statements(source)
+                permit.allow_commit(source)
+                source.commit()
+                receipt = permit.committed()
+                with closing(sqlite3.connect(root / "source.db")) as foreign:
+                    with closing(
+                        foreign.execute("UPDATE raw_sessions SET file_mtime_ms=3 WHERE raw_id='original-raw'")
+                    ):
+                        pass
+                    foreign.commit()
+                with pytest.raises(ReferenceSealStaleError):
+                    seal.accept_known_tier_commit(receipt)
+        assert seal.observer_version("source") == original_version
+        with closing(sqlite3.connect(root / "source.db")) as observed:
+            with closing(
+                observed.execute("SELECT raw_id FROM raw_sessions WHERE raw_id=?", ("captured-by-original",))
+            ) as rows:
+                captured = rows.fetchone()
+            if boundary == "before_begin":
+                assert captured is None
+            else:
+                assert captured == ("captured-by-original",)
+
+
+def test_source_captured_statement_rejects_an_undeclared_row_effect(source_statement_root: Path) -> None:
+    root = source_statement_root
+    _seed_original_raw(root)
+    with PreparedIndexMutation.source_only(archive_root=root) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            _stage_raw(seal, "declared-only")
+        permit = seal.prepare_source_mutation()
+        with permit.hold_authority(), permit.mutation_connection() as source:
+            with closing(source.execute("BEGIN IMMEDIATE")):
+                pass
+            permit.apply_source_statements(source)
+            with pytest.raises(sqlite3.DatabaseError):
+                source.execute("UPDATE raw_sessions SET file_mtime_ms=99 WHERE raw_id='original-raw'")
+            source.rollback()
+        with seal.original_read_snapshot():
+            with seal.original_rows(
+                "source", "SELECT file_mtime_ms FROM raw_sessions WHERE raw_id='original-raw'"
+            ) as rows:
+                assert tuple(rows.fetchone()) == (None,)
+            with seal.original_rows("source", "SELECT 1 FROM raw_sessions WHERE raw_id='declared-only'") as rows:
+                assert rows.fetchone() is None
+
+
+@pytest.mark.parametrize("route", ["connection", "custom_cursor", "executemany"])
+def test_source_writer_rejects_uncaptured_row_effect_through_each_sql_entrypoint(
+    source_statement_root: Path,
+    route: str,
+) -> None:
+    root = source_statement_root
+    _seed_original_raw(root)
+    with PreparedIndexMutation.source_only(archive_root=root) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            _stage_raw(seal, "only-captured-insert")
+        permit = seal.prepare_source_mutation()
+        with permit.hold_authority(), permit.mutation_connection() as source:
+            with closing(source.execute("BEGIN IMMEDIATE")):
+                pass
+            sql = "UPDATE raw_sessions SET file_mtime_ms=99 WHERE raw_id=?"
+            with pytest.raises(sqlite3.DatabaseError):
+                if route == "custom_cursor":
+                    with closing(source.cursor(factory=sqlite3.Cursor)) as cursor:
+                        cursor.execute(sql, ("original-raw",))
+                elif route == "executemany":
+                    source.executemany(sql, [("original-raw",)])
+                else:
+                    source.execute(sql, ("original-raw",))
+            source.rollback()
+        with seal.original_read_snapshot():
+            with seal.original_rows(
+                "source", "SELECT file_mtime_ms FROM raw_sessions WHERE raw_id='original-raw'"
+            ) as rows:
+                assert tuple(rows.fetchone()) == (None,)
+
+
+def test_source_commit_reserves_original_observer_until_acceptance(
+    source_statement_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = source_statement_root
+    _seed_original_raw(root)
+    with PreparedIndexMutation.source_only(archive_root=root) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            _stage_raw(seal, "acceptance-reserved")
+        permit = seal.prepare_source_mutation()
+        attempted = False
+        with closing(sqlite3.connect(root / "source.db", timeout=0)) as foreign:
+            original_unpinned = seal._require_unpinned_observer
+
+            def observe_reservation(tier: str) -> sqlite3.Connection:
+                nonlocal attempted
+                if tier == "source" and permit._acceptance_reservation:
+                    attempted = True
+                    with pytest.raises(sqlite3.OperationalError) as refusal:
+                        foreign.execute("UPDATE raw_sessions SET file_mtime_ms=9 WHERE raw_id='original-raw'")
+                    assert refusal.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+                    foreign.rollback()
+                return original_unpinned(tier)
+
+            monkeypatch.setattr(seal, "_require_unpinned_observer", observe_reservation)
+            with permit.hold_authority(), permit.mutation_connection() as source:
+                with closing(source.execute("BEGIN IMMEDIATE")):
+                    pass
+                permit.apply_source_statements(source)
+                permit.allow_commit(source)
+                source.commit()
+                seal.accept_known_tier_commit(permit.committed())
+        assert attempted
+        seal.validate_observers_current()
+
+
 @pytest.mark.parametrize(
     "field", ["native_id", "source_path", "blob_hash", "source_revision", "origin", "file_mtime_ms"]
 )
