@@ -135,6 +135,23 @@ async def test_actions_lane_count_counts_only_sessions_its_search_returns(lane_a
     assert await count_archive(dialogue, archive_root=root, config=None) == 3
 
 
+@pytest.mark.asyncio
+async def test_post_filtered_count_streams_candidates_without_materializing_result_pages(
+    lane_archive: LaneArchive, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.archive.query.archive_execution as execution
+
+    root, _config, _ids = lane_archive
+
+    def refuse_materialized_list(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("count must stream its candidate batches")
+
+    monkeypatch.setattr(execution, "list_archive", refuse_materialized_list)
+    monkeypatch.setattr(execution, "list_summaries_archive", refuse_materialized_list)
+    plan = SessionQueryPlan(negative_terms=("ordinary conversation",), limit=1)
+    assert await count_archive(plan, archive_root=root, config=None) == 2
+
+
 def test_spec_count_counts_only_sessions_its_actions_search_returns(lane_archive: LaneArchive) -> None:
     """The facade and daemon count seam applies the same actions lane.
 

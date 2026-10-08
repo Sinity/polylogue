@@ -10,7 +10,12 @@ from typing import Any, Never, cast
 
 import pytest
 
-from polylogue.archive.query.archive_execution import archive_search_hits, list_archive, list_summaries_archive
+from polylogue.archive.query.archive_execution import (
+    archive_search_hits,
+    count_archive,
+    list_archive,
+    list_summaries_archive,
+)
 from polylogue.archive.query.execution_control import QueryCancelledError
 from polylogue.archive.query.expression import ExpressionCompileError, compile_expression
 from polylogue.archive.query.plan import SessionQueryPlan
@@ -47,6 +52,27 @@ def test_rare_scope_precedes_vector_ranking(tmp_path: Path, monkeypatch: pytest.
     assert result.execution.completed_lanes == ("vector",)
     assert result.execution.exactness == "exact"
     assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_semantic_count_applies_content_postfilters_like_the_ranked_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    config, provider, _ids, _requests = ranking_archive(
+        root,
+        [
+            ("kept", "m", "Candidate has sufficient semantic prose", 0.0),
+            ("excluded", "m", "Candidate has excluded semantic prose", 1.0),
+        ],
+        query_axis=0.0,
+        monkeypatch=monkeypatch,
+    )
+    plan = SessionQueryPlan(similar_text="question", negative_terms=("excluded",), vector_provider=provider)
+    page = await list_summaries_archive(plan, archive_root=root, config=config)
+    total = await count_archive(plan, archive_root=root, config=config)
+    assert len(page) == 1
+    assert total == 1
 
 
 @pytest.mark.parametrize("full", (False, True))

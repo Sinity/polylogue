@@ -451,9 +451,8 @@ async def list_summaries_archive(
     )
 
 
-def _list_sessions_in_archive(
+async def list_archive(
     plan: SessionQueryPlan,
-    archive: ArchiveStore,
     *,
     archive_root: Path,
     config: Config | None,
@@ -613,36 +612,11 @@ def _list_sessions_in_archive(
         page = plan._finalize(ordered)
         return attach(archive, page) if complete and ranked_window else page if filtering else attach(archive, page)
 
-    return read(archive)
-
-
-async def list_archive(
-    plan: SessionQueryPlan,
-    *,
-    archive_root: Path,
-    config: Config | None,
-    default_limit: int = DEFAULT_SESSION_LIST_LIMIT,
-    with_units: tuple[str, ...] = (),
-    with_unit_fields: dict[str, tuple[str, ...]] | None = None,
-    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
-) -> builtins.list[Session]:
-    ranked_window = _ranked_window(plan)
-    composed_order = plan.sort in _COMPOSED_COUNT_SORTS
-    complete = (not ranked_window and composed_order) or (ranked_window and plan.sample is not None)
     return await run_archive_read(
         archive_root,
         operation="archive.query.list",
         arguments={"plan": plan, "default_limit": default_limit, "with_units": with_units},
-        work=lambda archive: _list_sessions_in_archive(
-            plan,
-            archive,
-            config=config,
-            archive_root=archive_root,
-            default_limit=default_limit,
-            with_units=with_units,
-            with_unit_fields=with_unit_fields,
-            with_unit_windows=with_unit_windows,
-        ),
+        work=read,
         page_size=plan.limit,
         offset=plan.offset,
         projection="sessions",
@@ -670,81 +644,20 @@ async def count_archive(
     archive_root: Path,
     config: Config | None,
 ) -> int:
-    if (
-        not plan.has_post_filters()
-        and plan.similar_text is None
-        and plan.similar_session_id is None
-        and plan.retrieval_lane not in {"semantic", "hybrid"}
-    ):
-        filter_kwargs = plan_filter_kwargs(plan)
-        query_text = _plan_text_query(plan)
-        with archive_read_context(
-            archive_root,
-            operation="archive.query.count",
-            arguments={"plan": plan},
-            page_size=1,
-            projection="count",
-            workload_class="scan",
-        ) as archive:
-            if query_text is not None:
-                return int(
-                    archive.count_search_sessions(
-                        query_text,
-                        actions_only=plan.retrieval_lane == "actions",
-                        **filter_kwargs,
-                    )
-                )
-            return int(archive.count_sessions(**filter_kwargs))
-
-    if _ranked_window(plan):
-        unbounded = replace(plan, limit=None, offset=0)
-
-        def read(archive: ArchiveStore) -> int:
-            total = 0
-
-            def count_batch(rows: list[ArchiveSessionSummary]) -> None:
-                nonlocal total
-                total += len(rows)
-
-            _archive_summaries(
-                unbounded,
-                archive,
-                config=config,
-                archive_root=archive_root,
-                default_limit=DEFAULT_SESSION_LIST_LIMIT,
-                complete=True,
-                on_batch=count_batch,
-            )
-            return min(total, plan.sample) if plan.sample is not None else total
-
-        return await run_archive_read(
-            archive_root,
-            operation="archive.query.count",
-            arguments={"plan": plan},
-            work=read,
-            page_size=1,
-            projection="count",
-            workload_class="scan",
-        )
-
-    # A count is the size of the whole result, not of one page: the SQL
-    # count above ignores the window, so this route drops the offset too.
-    unbounded = replace(plan, limit=None, offset=0)
-    if unbounded.can_use_summaries():
-        rows = await list_summaries_archive(
-            unbounded,
-            archive_root=archive_root,
+    return await run_archive_read(
+        archive_root,
+        operation="archive.query.count",
+        arguments={"plan": plan},
+        work=lambda archive: _count_in_archive(
+            plan,
+            archive,
             config=config,
-            default_limit=1_000_000,
-        )
-        return len(rows)
-    sessions = await list_archive(
-        unbounded,
-        archive_root=archive_root,
-        config=config,
-        default_limit=1_000_000,
+            archive_root=archive_root,
+        ),
+        page_size=1,
+        projection="count",
+        workload_class="scan",
     )
-    return len(sessions)
 
 
 def _count_in_archive(
@@ -775,25 +688,6 @@ def _count_in_archive(
         return int(archive.count_sessions(**filter_kwargs))
 
     unbounded = replace(plan, limit=None, offset=0)
-    if _ranked_window(plan):
-        total = 0
-
-        def count_ranked_batch(rows: list[ArchiveSessionSummary]) -> None:
-            nonlocal total
-            total += len(rows)
-
-        _archive_summaries(
-            unbounded,
-            archive,
-            config=config,
-            archive_root=archive_root,
-            default_limit=default_limit,
-            complete=True,
-            on_batch=count_ranked_batch,
-        )
-        return min(total, plan.sample) if plan.sample is not None else total
-
-    total = 0
 
     def keep(rows: list[ArchiveSessionSummary]) -> list[ArchiveSessionSummary]:
         if unbounded.can_use_summaries():
@@ -812,6 +706,27 @@ def _count_in_archive(
             ]
             survivor_ids = {str(session.id) for session in unbounded._apply_full_filters(sessions, sql_pushed=True)}
         return [row for row in rows if row.session_id in survivor_ids]
+
+    if _ranked_window(plan):
+        total = 0
+
+        def count_ranked_batch(rows: list[ArchiveSessionSummary]) -> None:
+            nonlocal total
+            total += len(rows)
+
+        _archive_summaries(
+            unbounded,
+            archive,
+            config=config,
+            archive_root=archive_root,
+            default_limit=default_limit,
+            keep=keep if unbounded.has_post_filters() else None,
+            complete=True,
+            on_batch=count_ranked_batch,
+        )
+        return min(total, plan.sample) if plan.sample is not None else total
+
+    total = 0
 
     def count_batch(rows: list[ArchiveSessionSummary]) -> None:
         nonlocal total
