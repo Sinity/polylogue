@@ -19,7 +19,7 @@ import pytest
 from polylogue.daemon.uds import MachineOperationHandler
 from polylogue.daemon_client import DaemonClient, DaemonOperationRejectedError
 from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
-from polylogue.operations.mutation_transaction import MAX_MUTATION_PLAN_TARGETS, MutationPlan, MutationReceipt
+from polylogue.operations.mutation_transaction import MUTATION_PLAN_PAGE_SIZE, MutationPlan, MutationReceipt
 from tests.infra.daemon_operations import running_daemon_operations
 from tests.infra.storage_records import SessionBuilder
 
@@ -1302,7 +1302,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
 
     def seed(root: Path) -> None:
         nonlocal session_ids
-        session_ids = _seed_sessions(root, count=MAX_MUTATION_PLAN_TARGETS + 1)
+        session_ids = _seed_sessions(root, count=MUTATION_PLAN_PAGE_SIZE + 1)
 
     entered_apply = threading.Event()
     release_apply = threading.Event()

@@ -16,13 +16,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 class _DeleteContext(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    session_ids: list[str] = Field(max_length=256)
+    session_ids: list[str]
 
 
 class _BulkContext(_DeleteContext):
     requested_session_ids: list[str]
     unresolved_session_ids: list[str]
-    requested_session_count: int = Field(ge=0, le=10_000)
+    requested_session_count: int = Field(ge=0)
 
     @model_validator(mode="after")
     def validate_request_evidence(self) -> _BulkContext:

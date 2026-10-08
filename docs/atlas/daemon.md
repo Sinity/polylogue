@@ -307,7 +307,9 @@ uses executable transport work, so blocked identity cannot keep retrying.
 
 
 Bulk tag and metadata mutation plans retain original requested IDs and the
-missing-ID gap separately from exact authorized session targets. Ordinary
+missing-ID gap separately from exact authorized session targets. Plan admission
+has no session-count ceiling; the daemon pages publication work in groups of
+256 without limiting the request. Ordinary
 recovery replays only those targets and reports the frozen named gap, even
 if a missing session has appeared since authorization. Correction recovery
 checks the exact kind, payload, note and normalized author before replay;

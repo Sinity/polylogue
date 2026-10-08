@@ -1405,7 +1405,7 @@ def test_cli_delete_pages_every_phase_past_one_machine_batch(monkeypatch: pytest
     """
     from polylogue.operations import daemon_mutations
 
-    monkeypatch.setattr(daemon_mutations, "MAX_MUTATION_PLAN_TARGETS", 2)
+    monkeypatch.setattr(daemon_mutations, "MUTATION_PLAN_PAGE_SIZE", 2)
     monkeypatch.setattr(daemon_mutations, "_MUTATION_SELECTION_PAGE_SIZE", 2)
     monkeypatch.setattr(daemon_mutations, "MACHINE_PAGE_PARTS", 1)
     archive_root = tmp_path / "archive"
@@ -1439,7 +1439,7 @@ def test_cli_delete_cancels_a_preview_of_many_pages(monkeypatch: pytest.MonkeyPa
     than one page cannot be released."""
     from polylogue.operations import daemon_mutations
 
-    monkeypatch.setattr(daemon_mutations, "MAX_MUTATION_PLAN_TARGETS", 2)
+    monkeypatch.setattr(daemon_mutations, "MUTATION_PLAN_PAGE_SIZE", 2)
     monkeypatch.setattr(daemon_mutations, "MACHINE_PAGE_PARTS", 1)
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
@@ -1469,7 +1469,7 @@ def test_cli_delete_keeps_progressing_past_its_request_deadline(
     from polylogue.daemon import operation_runtime
     from polylogue.operations import daemon_mutations
 
-    monkeypatch.setattr(daemon_mutations, "MAX_MUTATION_PLAN_TARGETS", 2)
+    monkeypatch.setattr(daemon_mutations, "MUTATION_PLAN_PAGE_SIZE", 2)
     monkeypatch.setattr(daemon_mutations, "MACHINE_PAGE_PARTS", 1)
 
     def past_deadline_after_acceptance(runtime: operation_runtime.DaemonOperationRuntime, request: Any) -> str | None:

@@ -12,6 +12,7 @@ fail; removing the confirmation-strength floor check in ``authorize`` makes
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast
 
@@ -107,65 +108,66 @@ def test_plan_hash_changes_when_target_set_changes() -> None:
     assert _hash(("session:a",)) != _hash(("session:a", "session:b"))
 
 
-def test_build_plan_refuses_over_256_targets() -> None:
-    """A mutation plan over the 256-target plan budget must never be constructed.
-
-    Anti-vacuity: removing the ``len(target_refs) > MAX_MUTATION_PLAN_TARGETS``
-    guard in ``build_plan`` makes this test fail -- 257 targets would build a
-    plan instead of raising, and a plan of exactly 256 would also need to
-    keep succeeding (checked below) so the fix doesn't over-tighten the cap.
-    """
-
-    too_many = tuple(f"session:{i}" for i in range(257))
-    with pytest.raises(ValueError, match="256"):
-        build_plan(
-            operation="mutate-bulk-fixture",
-            destructive_class="delete",
-            target_refs=too_many,
-            affected_tiers=("index",),
-            reversible=False,
-        )
-    exactly_budget = tuple(f"session:{i}" for i in range(256))
-    plan = build_plan(
-        operation="mutate-bulk-fixture",
-        destructive_class="delete",
-        target_refs=exactly_budget,
-        affected_tiers=("index",),
-        reversible=False,
+def test_large_bulk_plan_preserves_all_requests_and_targets() -> None:
+    """Restoring either constructor/context cap refuses this valid 10001-ID request."""
+    from polylogue.operations.machine_plan_context import context_from_replay, replay_context
+    from polylogue.operations.mutation_actuators import (
+        BulkMetadataSetActuator,
+        BulkMetadataSetArgs,
+        BulkTagActuator,
+        BulkTagArgs,
     )
-    assert plan.target_count == 256
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
+    ids = tuple(f"codex-session:neutral-{index}" for index in range(10001))
 
-def test_build_typed_plan_refuses_over_256_targets() -> None:
-    """Typed plans cannot bypass the bounded mutation plan budget."""
+    class ExactArchive(ArchiveStore):
+        # Actual prepare uses only the declared exact membership seam; no
+        # 10001 SQLite fixture writes are needed to prove plan admission.
+        def stored_session_ids(self, session_ids: Sequence[str]) -> tuple[str, ...]:
+            assert tuple(session_ids) == ids
+            return ids
 
-    targets = tuple(
-        MutationTarget(
-            kind="session",
-            ref=f"session:{index}",
-            policy_key="session",
-            identity_digest=f"identity:{index}",
-            effect_identity=f"effect:{index}",
-            durability="derived",
-            recovery="none",
-        )
-        for index in range(257)
+    archive = object.__new__(ExactArchive)
+    plans = (
+        BulkTagActuator().prepare(BulkTagArgs(archive, ids, ("neutral",))),
+        BulkMetadataSetActuator().prepare(BulkMetadataSetArgs(archive, ids, (("neutral", "value"),))),
     )
-    with pytest.raises(ValueError, match="256"):
-        build_typed_plan(
-            operation="mutate-bulk-fixture",
+    for plan in plans:
+        assert plan.target_refs == tuple(f"session:{sid}" for sid in ids)
+        assert plan.context["requested_session_count"] == 10001
+        replay = replay_context(plan.operation, plan.context)
+        assert replay is not None
+        assert context_from_replay(plan.operation, replay) == plan.context
+        targets = tuple(
+            MutationTarget(
+                kind="session",
+                ref=ref,
+                policy_key="session",
+                identity_digest=ref,
+                effect_identity=ref,
+                durability="derived",
+                recovery="none",
+            )
+            for ref in plan.target_refs
+        )
+        typed = build_typed_plan(
+            operation=plan.operation,
             operation_version=1,
-            archive_instance_id="archive:test",
-            archive_identity_digest="identity:test",
+            archive_instance_id="archive:neutral",
+            archive_identity_digest="identity:neutral",
             targets=targets,
-            affected_tiers=("index",),
-            parameter_digest="params:test",
+            affected_tiers=("user",),
+            parameter_digest="params:neutral",
             required_capabilities=("test.mutate",),
             destructive_class="reversible",
             required_confirmation="role_only",
             prepared_at_ms=1,
             expires_at_ms=2,
+            context=plan.context,
         )
+        assert typed.target_count == 10001
+        assert typed.context == plan.context
 
 
 def test_prepare_performs_zero_mutation() -> None:

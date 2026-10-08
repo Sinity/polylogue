@@ -32,7 +32,7 @@ from polylogue.operations.mutation_actuators import (
     SessionDeleteArgs,
 )
 from polylogue.operations.mutation_transaction import (
-    MAX_MUTATION_PLAN_TARGETS,
+    MUTATION_PLAN_PAGE_SIZE,
     ConfirmationRequiredError,
     MutationPreview,
     OperationExecutor,
@@ -826,9 +826,9 @@ def _execute_batch(
                 )
                 requested_ids = None
                 if request.operation in {"mutation.session.tag", "mutation.session.metadata"}:
-                    offset = _audit_int(part["ordinal"], field="part ordinal") * MAX_MUTATION_PLAN_TARGETS
+                    offset = _audit_int(part["ordinal"], field="part ordinal") * MUTATION_PLAN_PAGE_SIZE
                     requested_ids = tuple(
-                        cast(list[str], request.payload["session_ids"])[offset : offset + MAX_MUTATION_PLAN_TARGETS]
+                        cast(list[str], request.payload["session_ids"])[offset : offset + MUTATION_PLAN_PAGE_SIZE]
                     )
                 operation, args = _part_args(archive, preview, requested_session_ids=requested_ids)
                 with audit.bind_machine_request(
@@ -876,8 +876,8 @@ def _inline_mutation(
         ids = tuple(cast(list[str], request.payload["session_ids"]))
         operation = runtime_operation_binding(BulkMetadataSetActuator() if metadata else BulkTagActuator())
         args: list[object] = []
-        for offset in range(0, len(ids), MAX_MUTATION_PLAN_TARGETS):
-            chunk = ids[offset : offset + MAX_MUTATION_PLAN_TARGETS]
+        for offset in range(0, len(ids), MUTATION_PLAN_PAGE_SIZE):
+            chunk = ids[offset : offset + MUTATION_PLAN_PAGE_SIZE]
             if metadata:
                 pairs = tuple((str(pair[0]), pair[1]) for pair in cast(list[list[object]], request.payload["pairs"]))
                 args.append(BulkMetadataSetArgs(snapshot.archive, chunk, pairs))
@@ -1903,7 +1903,7 @@ async def execute_session_delete_preview_operation(request: DaemonOperationReque
                         "session_ids_sample": [],
                         "affected_count": 0,
                     }
-                total = (selection.session_count + MAX_MUTATION_PLAN_TARGETS - 1) // MAX_MUTATION_PLAN_TARGETS
+                total = (selection.session_count + MUTATION_PLAN_PAGE_SIZE - 1) // MUTATION_PLAN_PAGE_SIZE
                 offset = 0
                 chunk: list[str] = []
                 pending: list[MutationPreview] = []
@@ -1950,7 +1950,7 @@ async def execute_session_delete_preview_operation(request: DaemonOperationReque
                         if not isinstance(sid, str) or not sid:
                             raise ValueError("sealed deletion identity is invalid")
                         chunk.append(sid)
-                        if len(chunk) == MAX_MUTATION_PLAN_TARGETS:
+                        if len(chunk) == MUTATION_PLAN_PAGE_SIZE:
                             retain()
                             if len(pending) == MACHINE_PAGE_PARTS:
                                 accept()
@@ -2012,7 +2012,7 @@ def _combined_user_intents(
         if not isinstance(sid, str) or not sid:
             raise ValueError("sealed mutation identity is invalid")
         chunk.append(sid)
-        if len(chunk) == MAX_MUTATION_PLAN_TARGETS:
+        if len(chunk) == MUTATION_PLAN_PAGE_SIZE:
             yield from intents(tuple(chunk))
             chunk.clear()
             emitted = True
@@ -2072,7 +2072,7 @@ async def execute_session_mark_operation(request: DaemonOperationRequest, contex
                     len(cast(list[str], request.payload.get(field) or []))
                     for field in ("add_marks", "remove_marks", "remove_tags")
                 ) + (request.payload.get("note_text") is not None)
-                chunks = max(1, (selection.session_count + MAX_MUTATION_PLAN_TARGETS - 1) // MAX_MUTATION_PLAN_TARGETS)
+                chunks = max(1, (selection.session_count + MUTATION_PLAN_PAGE_SIZE - 1) // MUTATION_PLAN_PAGE_SIZE)
                 total = selection.session_count * per_session + chunks * sum(
                     bool(request.payload.get(field)) for field in ("tags", "pairs")
                 )

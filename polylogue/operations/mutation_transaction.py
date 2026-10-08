@@ -413,11 +413,6 @@ def build_typed_plan(
 ) -> MutationPlan:
     """Construct a plan whose hash covers the complete typed authority input."""
 
-    if len(targets) > MAX_MUTATION_PLAN_TARGETS:
-        raise ValueError(
-            f"{operation!r} plan has {len(targets)} target(s), exceeding the "
-            f"{MAX_MUTATION_PLAN_TARGETS}-target mutation plan budget"
-        )
     target_digest = compute_target_digest(targets)
     plan_hash = compute_typed_plan_hash(
         operation=operation,
@@ -476,11 +471,9 @@ def validate_mutation_plan_integrity(plan: MutationPlan) -> None:
         raise AuthorizationMismatchError("preview plan payload does not match its authority hash")
 
 
-#: Mutation plans carry at most this many targets. The cap began as the
-#: operator-adjudication command budget (polylogue-39pdi); adjudication is
-#: deleted, and whether recovery still needs the cap is polylogue-aw070's
-#: decision.
-MAX_MUTATION_PLAN_TARGETS = 256
+#: Daemon publication pages bound resident work without limiting a plan's
+#: total authorized target set.
+MUTATION_PLAN_PAGE_SIZE = 256
 
 #: How many canonical session IDs a delete preview result names. The selection
 #: itself has no count cap, so the result reports its size and a leading sample
@@ -500,11 +493,6 @@ def build_plan(
 ) -> MutationPlan:
     """Construct a :class:`MutationPlan` with a freshly computed plan hash."""
 
-    if len(target_refs) > MAX_MUTATION_PLAN_TARGETS:
-        raise ValueError(
-            f"{operation!r} plan has {len(target_refs)} target(s), exceeding the "
-            f"{MAX_MUTATION_PLAN_TARGETS}-target mutation plan budget"
-        )
     resolved_context = dict(context or {})
     plan_hash = compute_plan_hash(
         operation=operation,
