@@ -140,7 +140,8 @@ def test_export_cancellation_retires_partial_image_and_closes_source_cursor(
 
     def tracked_directory(*, prefix: str) -> tempfile.TemporaryDirectory[str]:
         directory = original_directory(prefix=prefix, dir=tmp_path)
-        scratch.append(Path(directory.name))
+        if prefix == "polylogue-assertion-export-":
+            scratch.append(Path(directory.name))
         return directory
 
     monkeypatch.setattr("polylogue.operations.assertion_export.tempfile.TemporaryDirectory", tracked_directory)
@@ -196,7 +197,7 @@ def test_daemon_abandoned_equivalent_starts_share_bytes_and_release_independentl
     with running_daemon_operations(root, seed_archive=_seed) as stack:
         # Each completed first-page HTTP exchange disconnects, with no release
         # or continuation. Restoring a fresh image per start makes this red.
-        for _ in range(12):
+        for _ in range(128):
             abandoned = stack.client.operation("user.assertions.export", {"page_size": 1}, archive_root=str(root))
             assert abandoned is not None and abandoned["result"]["total"] == 513
 
@@ -208,6 +209,14 @@ def test_daemon_abandoned_equivalent_starts_share_bytes_and_release_independentl
         with ThreadPoolExecutor(max_workers=2) as callers:
             left, right = list(callers.map(lambda _: start(), range(2)))
         assert left["selection_ref"] != right["selection_ref"]
+        owner = stack.runtime.assertion_exports
+        # Returning to a resident per-client dictionary makes this red: all
+        # abandoned handles are in the private SQLite relation, not RAM.
+        assert not hasattr(owner, "_references")
+        assert len(owner._images) == 1 and len(owner._frames) == 1
+        with owner._lock:
+            assert owner._handles.execute("SELECT COUNT(*) FROM handles").fetchone()[0] == 130
+            assert owner._handles.execute("PRAGMA cache_size").fetchone()[0] == -64
         assert len(scratch) == 1 and (scratch[0] / "rows.db").is_file()
         released = stack.client.operation(
             "user.assertions.export.release", {"selection_ref": left["selection_ref"]}, archive_root=str(root)
@@ -238,7 +247,8 @@ def test_new_assertion_frame_retires_abandoned_bytes_without_recreating_an_older
 
     def tracked_directory(*, prefix: str) -> tempfile.TemporaryDirectory[str]:
         directory = original_directory(prefix=prefix, dir=tmp_path)
-        scratch.append(Path(directory.name))
+        if prefix == "polylogue-assertion-export-":
+            scratch.append(Path(directory.name))
         return directory
 
     monkeypatch.setattr("polylogue.operations.assertion_export.tempfile.TemporaryDirectory", tracked_directory)
@@ -265,6 +275,16 @@ def test_new_assertion_frame_retires_abandoned_bytes_without_recreating_an_older
                     dependencies=dependencies,
                 )
                 assert current["total"] == 512
+                assert len(owner._images) == 1
+                assert not hasattr(owner, "_references")
+                with owner._lock:
+                    assert owner._handles.execute("SELECT COUNT(*) FROM handles").fetchone()[0] == 2
+                    assert (
+                        owner._handles.execute(
+                            "SELECT COUNT(*) FROM images WHERE retired_epoch IS NOT NULL"
+                        ).fetchone()[0]
+                        == 1
+                    )
                 assert len(scratch) == 2 and not scratch[0].exists() and scratch[1].exists()
                 with pytest.raises(QueryContinuationStaleError):
                     execute_read_operation(
@@ -278,5 +298,55 @@ def test_new_assertion_frame_retires_abandoned_bytes_without_recreating_an_older
                 assert owner.release(str(first["selection_ref"]), principal)
                 assert owner.release(str(current["selection_ref"]), principal)
                 assert not scratch[1].exists()
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize("transition", ["release", "retire"])
+def test_export_failed_metadata_commit_keeps_handle_and_bytes_retryable(tmp_path: Path, transition: str) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    _seed(root)
+    owner = AssertionExportImages()
+    principal = MutationPrincipal("neutral", frozenset(), "cli")
+    try:
+        with open_operation_read(root) as pinned:
+            first = owner.page({}, archive=pinned.archive, principal=principal, checkpoint=lambda: None)
+        image = next(iter(owner._images.values()))
+        original_frames = dict(owner._frames)
+        # A deferred foreign-key constraint produces a real commit failure,
+        # after DELETE/UPDATE has succeeded. No mocked export route is used.
+        owner._handles.executescript(
+            "PRAGMA foreign_keys=ON; CREATE TABLE commit_parent(id INTEGER PRIMARY KEY);"
+            "CREATE TABLE commit_fault(id INTEGER REFERENCES commit_parent(id) DEFERRABLE INITIALLY DEFERRED);"
+        )
+        event = "DELETE ON handles" if transition == "release" else "UPDATE ON images"
+        owner._handles.execute(
+            f"CREATE TRIGGER fail_commit AFTER {event} BEGIN INSERT INTO commit_fault VALUES(1); END"
+        )
+        owner._handles.commit()
+        if transition == "retire":
+            with sqlite3.connect(root / "user.db") as user:
+                user.execute("DELETE FROM assertions WHERE assertion_id='neutral-0000'")
+        with pytest.raises(sqlite3.IntegrityError):
+            if transition == "release":
+                owner.release(str(first["selection_ref"]), principal)
+            else:
+                with open_operation_read(root) as current:
+                    owner.page({}, archive=current.archive, principal=principal, checkpoint=lambda: None)
+        assert image.path.is_file() and len(owner._images) == 1
+        assert owner._frames == original_frames
+        assert owner._reference(str(first["selection_ref"])) is not None
+        assert owner._handles.execute("SELECT retired_epoch FROM images").fetchone()[0] is None
+        owner._handles.execute("DROP TRIGGER fail_commit")
+        owner._handles.commit()
+        if transition == "release":
+            assert owner.release(str(first["selection_ref"]), principal)
+            assert not image.path.exists()
+        else:
+            with open_operation_read(root) as current:
+                page = owner.page({}, archive=current.archive, principal=principal, checkpoint=lambda: None)
+                assert page["total"] == 512
+            assert not image.path.exists()
     finally:
         owner.close()

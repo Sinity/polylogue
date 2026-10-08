@@ -217,7 +217,9 @@ Index ingestion and User settings do not. The original attached User authority
 remains required, including for an empty export. The final page remains
 replayable until `user.assertions.export.release`; release reads no User tier.
 Equivalent starts for the same principal, filters, limit and assertion frame
-share one immutable image with independent release references. A release
+share one immutable image with independent release references held in a private
+SQLite relation with a bounded page cache; abandoned starts add no resident
+per-client entries. A release
 cannot invalidate another client's final-page replay. Observing a newer
 assertion revision retires older image bytes after page reads settle; their
 remaining handles still refuse continuation as stale. The daemon deletes

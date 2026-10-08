@@ -26,8 +26,7 @@ class _ExportImage:
     scope: tuple[tuple[str, ...] | None, tuple[str, ...] | None, int | None]
     epoch: str
     count: int
-    references: int = 0
-    retired_epoch: str | None = None
+    image_id: str
 
     @property
     def path(self) -> Path:
@@ -49,14 +48,23 @@ def assertion_export_epoch(archive: ArchiveStore) -> str:
 class AssertionExportImages:
     """Share immutable bytes, with independently releasable client references.
 
-    Equivalent starts share one disk relation. Lost releases retain scalar
-    handles, not another complete image. Observing a newer assertion revision
-    retires older bytes after active page reads settle under the owner lock.
+    Equivalent starts share one disk relation. Lost releases retain disk-backed
+    handles, not resident entries or another complete image. Observing a newer
+    assertion revision retires older bytes after active page reads settle under the owner lock.
     """
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._references: dict[str, _ExportImage] = {}
+        self._handle_directory = tempfile.TemporaryDirectory(prefix="polylogue-assertion-handles-")
+        self._handles = sqlite3.connect(Path(self._handle_directory.name) / "handles.db", check_same_thread=False)
+        self._handles.row_factory = sqlite3.Row
+        self._handles.execute("PRAGMA cache_size = -64")
+        self._handles.executescript(
+            "CREATE TABLE images (image_id TEXT PRIMARY KEY, actor TEXT NOT NULL, surface TEXT NOT NULL, "
+            "scope TEXT NOT NULL, epoch TEXT NOT NULL, count INTEGER NOT NULL, retired_epoch TEXT) STRICT;"
+            "CREATE TABLE handles (reference TEXT PRIMARY KEY, image_id TEXT NOT NULL) STRICT;"
+            "CREATE INDEX handles_image ON handles(image_id);"
+        )
         self._images: dict[
             tuple[tuple[str, str], tuple[tuple[str, ...] | None, tuple[str, ...] | None, int | None], str],
             _ExportImage,
@@ -69,21 +77,55 @@ class AssertionExportImages:
             self._closed = True
             images = tuple(self._images.values())
             self._images.clear()
-            self._references.clear()
+            self._handles.close()
+            self._handle_directory.cleanup()
             self._frames.clear()
             for image in images:
                 image.directory.cleanup()
 
+    def _reference(self, reference: str) -> sqlite3.Row | None:
+        return cast(
+            sqlite3.Row | None,
+            self._handles.execute(
+                "SELECT images.* FROM handles JOIN images USING(image_id) WHERE reference = ?", (reference,)
+            ).fetchone(),
+        )
+
+    def _add_reference(self, image: _ExportImage) -> str:
+        reference = f"assertion-export:{uuid4().hex}"
+        try:
+            self._handles.execute("INSERT INTO handles VALUES (?, ?)", (reference, image.image_id))
+            self._handles.commit()
+        except BaseException:
+            self._handles.rollback()
+            raise
+        return reference
+
     def release(self, reference: str, principal: MutationPrincipal) -> bool:
         with self._lock:
-            image = self._references.get(reference)
-            if image is None:
+            if self._closed:
                 return False
-            self._require_principal(image, principal)
-            del self._references[reference]
-            image.references -= 1
-            if not image.references and image.retired_epoch is None:
-                del self._images[(image.principal, image.scope, image.epoch)]
+            record = self._reference(reference)
+            if record is None:
+                return False
+            self._require_principal((record["actor"], record["surface"]), principal)
+            try:
+                self._handles.execute("DELETE FROM handles WHERE reference = ?", (reference,))
+                remaining = self._handles.execute(
+                    "SELECT 1 FROM handles WHERE image_id = ? LIMIT 1", (record["image_id"],)
+                ).fetchone()
+                if remaining is None:
+                    self._handles.execute("DELETE FROM images WHERE image_id = ?", (record["image_id"],))
+                self._handles.commit()
+            except BaseException:
+                self._handles.rollback()
+                raise
+            if remaining is None and record["retired_epoch"] is None:
+                kinds, statuses, limit = json.loads(record["scope"])
+                scope = (None if kinds is None else tuple(kinds), None if statuses is None else tuple(statuses), limit)
+                key = ((record["actor"], record["surface"]), scope, record["epoch"])
+                image = self._images[key]
+                del self._images[key]
                 image.directory.cleanup()
             return True
 
@@ -98,17 +140,28 @@ class AssertionExportImages:
             # obsolete by a newer snapshot of the same physical User tier.
             raise QueryContinuationStaleError(issued_epoch=epoch, current_epoch=latest[1])
         if latest is None or revision > latest[0]:
-            self._frames[identity] = (revision, epoch)
-            for key, image in tuple(self._images.items()):
+            retired = []
+            for key, image in self._images.items():
                 image_identity, image_revision = image.epoch.rsplit(":", 1)
                 if image_identity == identity and int(image_revision) < revision:
-                    image.directory.cleanup()
-                    image.retired_epoch = epoch
-                    del self._images[key]
+                    retired.append((key, image))
+            try:
+                for _, image in retired:
+                    self._handles.execute(
+                        "UPDATE images SET retired_epoch = ? WHERE image_id = ?", (epoch, image.image_id)
+                    )
+                self._handles.commit()
+            except BaseException:
+                self._handles.rollback()
+                raise
+            self._frames[identity] = (revision, epoch)
+            for key, image in retired:
+                del self._images[key]
+                image.directory.cleanup()
 
     @staticmethod
-    def _require_principal(image: _ExportImage, principal: MutationPrincipal) -> None:
-        if image.principal != (principal.actor_ref, principal.surface):
+    def _require_principal(owner: tuple[str, str], principal: MutationPrincipal) -> None:
+        if owner != (principal.actor_ref, principal.surface):
             raise AuthorizationMismatchError("assertion export does not belong to the authenticated principal")
 
     @staticmethod
@@ -138,10 +191,7 @@ class AssertionExportImages:
         key = ((principal.actor_ref, principal.surface), scope, epoch)
         image = self._images.get(key)
         if image is not None:
-            reference = f"assertion-export:{uuid4().hex}"
-            image.references += 1
-            self._references[reference] = image
-            return reference
+            return self._add_reference(image)
         directory = tempfile.TemporaryDirectory(prefix="polylogue-assertion-export-")
         count = 0
         try:
@@ -170,12 +220,16 @@ class AssertionExportImages:
                         count += 1
                 rows.commit()
             checkpoint()
-            reference = f"assertion-export:{uuid4().hex}"
-            image = _ExportImage(directory, (principal.actor_ref, principal.surface), scope, epoch, count, references=1)
+            image = _ExportImage(directory, (principal.actor_ref, principal.surface), scope, epoch, count, uuid4().hex)
+            self._handles.execute(
+                "INSERT INTO images VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                (image.image_id, *image.principal, json.dumps(scope), epoch, count),
+            )
+            reference = self._add_reference(image)
             self._images[key] = image
-            self._references[reference] = image
             return reference
         except BaseException:
+            self._handles.rollback()
             directory.cleanup()
             raise
 
@@ -207,17 +261,18 @@ class AssertionExportImages:
                 reference = self._prepare(archive, scope, principal, checkpoint, current)
             if not isinstance(reference, str):
                 raise ValueError("invalid assertion export selection")
-            image = self._references.get(reference)
-            if image is None:
+            record = self._reference(reference)
+            if record is None:
                 raise ValueError("assertion export selection is unavailable")
-            self._require_principal(image, principal)
-            if scope != image.scope:
+            self._require_principal((record["actor"], record["surface"]), principal)
+            if json.dumps(scope) != record["scope"]:
                 raise ValueError("assertion export selection parameters changed")
             try:
-                if image.retired_epoch is not None or current != image.epoch:
+                if record["retired_epoch"] is not None or current != record["epoch"]:
                     raise QueryContinuationStaleError(
-                        issued_epoch=image.epoch, current_epoch=image.retired_epoch or current
+                        issued_epoch=record["epoch"], current_epoch=record["retired_epoch"] or current
                     )
+                image = self._images[((record["actor"], record["surface"]), scope, record["epoch"])]
                 checkpoint()
                 size = int(cast(int, payload.get("page_size", 256)))
                 start = min(offset, image.count)
