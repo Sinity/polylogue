@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime
 
 from polylogue.analysis.archive import SessionCostInsight
 from polylogue.cost.outlook import DailyUsage
@@ -24,7 +24,9 @@ from polylogue.cost.outlook import DailyUsage
 __all__ = ["session_costs_to_daily_usd"]
 
 
-def session_costs_to_daily_usd(insights: Iterable[SessionCostInsight]) -> list[DailyUsage]:
+def session_costs_to_daily_usd(
+    insights: Iterable[SessionCostInsight], *, as_of: datetime | None = None
+) -> list[DailyUsage]:
     """Aggregate ``insights`` into one ``DailyUsage`` row per UTC day.
 
     The resulting rows carry ``basis="usd"`` and ``amount`` equal to the
@@ -32,10 +34,14 @@ def session_costs_to_daily_usd(insights: Iterable[SessionCostInsight]) -> list[D
     by day, deterministically, so snapshot tests over CLI/MCP payloads
     are stable.
 
+    ``as_of`` includes observations at that exact instant and excludes later
+    timestamps before their UTC dates are folded together.
+
     Sessions without a parseable ``created_at`` or with
     ``total_usd <= 0`` are excluded — they cannot contribute to a cycle
     burn rate without misrepresenting coverage.
     """
+    cutoff = as_of.astimezone(UTC) if as_of is not None else None
     daily_totals: dict[str, float] = defaultdict(float)
     for insight in insights:
         if insight.estimate.total_usd is None or insight.estimate.total_usd <= 0.0:
@@ -44,25 +50,16 @@ def session_costs_to_daily_usd(insights: Iterable[SessionCostInsight]) -> list[D
         if not ts:
             continue
         try:
-            day_iso = _parse_iso_day(ts)
+            parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            # Archive timestamps without an offset use the UTC convention.
+            parsed = parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
         except ValueError:
             continue
-        daily_totals[day_iso] += float(insight.estimate.total_usd)
+        if cutoff is not None and parsed > cutoff:
+            continue
+        daily_totals[parsed.date().isoformat()] += float(insight.estimate.total_usd)
 
     return [
         DailyUsage(day=datetime.fromisoformat(day_iso).date(), basis="usd", amount=amount)
         for day_iso, amount in sorted(daily_totals.items())
     ]
-
-
-def _parse_iso_day(ts: str) -> str:
-    """Return the ``YYYY-MM-DD`` UTC date for ``ts``.
-
-    Accepts trailing ``Z`` as a synonym for ``+00:00``. Raises
-    :class:`ValueError` for unparseable strings — callers are expected
-    to swallow it as a coverage gap rather than aborting the whole
-    aggregation.
-    """
-    normalized = ts.replace("Z", "+00:00") if ts.endswith("Z") else ts
-    parsed = datetime.fromisoformat(normalized)
-    return parsed.date().isoformat()

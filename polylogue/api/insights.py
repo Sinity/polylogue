@@ -481,9 +481,9 @@ class PolylogueInsightsMixin:
         if cycle is None:
             return None
         session_costs = await self.list_session_cost_insights(
-            SessionCostInsightQuery(since=cycle[0], until=cycle[1], limit=None)
+            SessionCostInsightQuery(since=cycle[0], until=when.isoformat(), limit=None)
         )
-        daily = session_costs_to_daily_usd(session_costs)
+        daily = session_costs_to_daily_usd(session_costs, as_of=when)
         return build_cycle_outlook(plan, daily, now=when, method=method)
 
     # ------------------------------------------------------------------

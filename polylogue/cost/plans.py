@@ -66,7 +66,7 @@ class PlanLookupError(PolylogueError):
 class SubscriptionPlan(BaseModel):
     """Typed subscription plan with cycle, quota, and overage rules.
 
-    All durations and prices are explicit; no implicit unit conversions. The
+    Monthly cycles reset on the declared UTC day of month. The
     model is frozen so plan instances flow safely through the cost rollup
     pipeline without surprise mutation.
     """
@@ -78,7 +78,6 @@ class SubscriptionPlan(BaseModel):
     display_name: str = Field(min_length=1, description="Human-readable plan label.")
     monthly_cost_usd: float = Field(ge=0.0, description="Recurring monthly fee in USD.")
     currency: str = Field(default="USD", min_length=3, max_length=3)
-    billing_cycle_days: int = Field(default=30, ge=1, le=366)
     cycle_anchor_day: int | None = Field(
         default=None,
         ge=1,
@@ -134,7 +133,8 @@ def cycle_for(plan: SubscriptionPlan, now: datetime) -> tuple[str, str] | None:
         # Roll back one month.
         prev_month_end = candidate.replace(day=1) - timedelta(days=1)
         candidate = prev_month_end.replace(day=anchor, hour=0, minute=0, second=0, microsecond=0)
-    end = candidate + timedelta(days=plan.billing_cycle_days)
+    next_month = (candidate.replace(day=28) + timedelta(days=4)).replace(day=1)
+    end = next_month.replace(day=anchor)
     return (candidate.isoformat().replace("+00:00", "Z"), end.isoformat().replace("+00:00", "Z"))
 
 

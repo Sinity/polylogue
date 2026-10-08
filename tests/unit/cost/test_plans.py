@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -139,13 +139,12 @@ def test_cycle_for_anchor_mid_month() -> None:
         display_name="X",
         monthly_cost_usd=1.0,
         cycle_anchor_day=10,
-        billing_cycle_days=30,
     )
     # now is after anchor day in May -> cycle starts May 10.
     start, end = cycle_for(plan, datetime(2026, 5, 17, 12, 0, tzinfo=UTC)) or (None, None)
     assert start is not None and end is not None
     assert start.startswith("2026-05-10T00:00:00")
-    assert end.startswith("2026-06-09T00:00:00")
+    assert end.startswith("2026-06-10T00:00:00")
 
 
 def test_cycle_for_anchor_before_now_rolls_back() -> None:
@@ -264,7 +263,7 @@ def test_cycle_window_dst_invariant() -> None:
 
     The plan model normalizes ``now`` to UTC inside ``cycle_for``. Pin the
     invariant by computing the cycle across a DST transition and asserting
-    the boundaries differ by exactly ``billing_cycle_days * 86400`` seconds.
+    the boundaries retain the same monthly anchor in UTC.
     """
     plan = SubscriptionPlan(
         name="dst-anchor",
@@ -272,7 +271,6 @@ def test_cycle_window_dst_invariant() -> None:
         display_name="DST-spanning",
         monthly_cost_usd=10.0,
         cycle_anchor_day=15,
-        billing_cycle_days=30,
     )
     # US DST starts mid-March 2026. UTC math must remain stable.
     now = datetime(2026, 3, 20, 7, 0, tzinfo=UTC)
@@ -280,4 +278,40 @@ def test_cycle_window_dst_invariant() -> None:
     assert window is not None
     start = datetime.fromisoformat(window[0].replace("Z", "+00:00"))
     end = datetime.fromisoformat(window[1].replace("Z", "+00:00"))
-    assert (end - start).total_seconds() == 30 * 86400
+    assert (end - start).total_seconds() == 31 * 86400
+    from zoneinfo import ZoneInfo
+
+    assert cycle_for(plan, now.astimezone(ZoneInfo("America/New_York"))) == window
+
+
+@pytest.mark.parametrize("anchor", range(1, 29))
+def test_monthly_cycles_cover_each_day_and_join_at_anchor(anchor: int) -> None:
+    plan = SubscriptionPlan(
+        name="calendar", provider="test", display_name="Calendar", monthly_cost_usd=0, cycle_anchor_day=anchor
+    )
+    for year in (2024, 2026):
+        now = datetime(year, 1, 1, 12, tzinfo=UTC)
+        while now.year == year:
+            window = cycle_for(plan, now)
+            assert window is not None
+            start, end = (datetime.fromisoformat(value.replace("Z", "+00:00")) for value in window)
+            assert start <= now < end
+            assert start.day == end.day == anchor
+            successor = cycle_for(plan, end)
+            assert successor is not None and successor[0] == window[1]
+            assert cycle_for(plan, end - timedelta(microseconds=1)) == window
+            now += timedelta(days=1)
+
+
+def test_monthly_plan_rejects_conflicting_fixed_duration() -> None:
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        SubscriptionPlan.model_validate(
+            {
+                "name": "calendar",
+                "provider": "test",
+                "display_name": "Calendar",
+                "monthly_cost_usd": 0,
+                "cycle_anchor_day": 1,
+                "billing_cycle_days": 30,
+            }
+        )
