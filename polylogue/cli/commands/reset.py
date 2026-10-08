@@ -146,19 +146,16 @@ def _identity_reset_targets(env: AppEnv, *, conv_id: str | None, source_path: Pa
     payload: dict[str, object] = {"session": conv_id} if conv_id else {"source_path": str(source_path)}
     payload["reason"] = "reset --session" if conv_id else f"reset --source {source_path}"
     response = _submit(env, "mutation.identity-reset.preview", payload)
-    result = response.get("result")
-    if (
-        not isinstance(result, dict)
-        or not isinstance(result.get("preview_ref"), str)
-        or not isinstance(result.get("session_count"), int)
-        or result["session_count"] < 0
-    ):
+    reference = response.get("reference")
+    request_id = reference.get("request_id") if isinstance(reference, dict) else None
+    count = response.get("session_count")
+    if not isinstance(request_id, str) or type(count) is not int or count < 0:
         raise click.ClickException("identity reset preview returned an invalid result")
     label = f"session {conv_id!r}" if conv_id else f"source {source_path}"
-    return result["preview_ref"], result["session_count"], label
+    return request_id, count, label
 
 
-def _identity_reset_target_pages(env: AppEnv, preview_ref: str, count: int) -> Iterator[list[str]]:
+def _identity_reset_target_pages(env: AppEnv, preview_request_id: str, count: int) -> Iterator[list[str]]:
     from polylogue.cli.operation_kernel import OperationKernelError, configured_read_operation
 
     offset = 0
@@ -167,7 +164,7 @@ def _identity_reset_target_pages(env: AppEnv, preview_ref: str, count: int) -> I
             result = configured_read_operation(
                 env.config,
                 "session.identity-reset.targets",
-                {"preview_ref": preview_ref, "offset": offset, "page_size": 256},
+                {"preview_request_id": preview_request_id, "offset": offset, "page_size": 256},
             ).value
         except OperationKernelError as exc:
             from polylogue.cli.render.outcome import exit_for_read_failure
@@ -201,7 +198,7 @@ def _emit_identity_reset_result(
     env: AppEnv,
     *,
     status: MutationStatus,
-    preview_ref: str,
+    preview_request_id: str,
     session_count: int,
     affected_count: int,
     output_format: str | None,
@@ -223,7 +220,7 @@ def _emit_identity_reset_result(
             else:
                 staged.write(plain_message + ": ")
             written = 0
-            for ids in _identity_reset_target_pages(env, preview_ref, session_count):
+            for ids in _identity_reset_target_pages(env, preview_request_id, session_count):
                 for session_id in ids:
                     if written:
                         staged.write(", " if output_format != "json" else ",")
@@ -325,13 +322,13 @@ def reset_command(
     # up front so the dry-run preview and the real mutation act on the
     # identical id set (#jnj.5).
     if conv_id or source_path:
-        preview_ref, count, label = _identity_reset_targets(env, conv_id=conv_id, source_path=source_path)
+        preview_request_id, count, label = _identity_reset_targets(env, conv_id=conv_id, source_path=source_path)
 
         if dry_run:
             _emit_identity_reset_result(
                 env,
                 status="preview",
-                preview_ref=preview_ref,
+                preview_request_id=preview_request_id,
                 session_count=count,
                 affected_count=0,
                 output_format=output_format,
@@ -344,7 +341,7 @@ def reset_command(
             _emit_identity_reset_result(
                 env,
                 status="ok",
-                preview_ref=preview_ref,
+                preview_request_id=preview_request_id,
                 session_count=0,
                 affected_count=0,
                 output_format=output_format,
@@ -357,7 +354,7 @@ def reset_command(
                 _emit_identity_reset_result(
                     env,
                     status="aborted",
-                    preview_ref=preview_ref,
+                    preview_request_id=preview_request_id,
                     session_count=count,
                     affected_count=0,
                     output_format=output_format,
@@ -372,10 +369,18 @@ def reset_command(
                 env.ui.console.print("Aborted.")
                 return
 
+        authorized = _submit(
+            env,
+            "mutation.identity-reset.authorize",
+            {"preview_request_id": preview_request_id, "confirm": True},
+        )
+        reference = authorized.get("reference")
+        if not isinstance(reference, dict) or not isinstance(reference.get("request_id"), str):
+            raise click.ClickException("identity reset authorization returned an invalid reference")
         result = _submit(
             env,
             "mutation.identity-reset",
-            {"preview_ref": preview_ref, "confirm": True},
+            {"authorization_request_id": reference["request_id"]},
         )
         result_payload = result.get("result")
         result_payload = result_payload if isinstance(result_payload, dict) else {}
@@ -395,7 +400,7 @@ def reset_command(
         _emit_identity_reset_result(
             env,
             status="ok",
-            preview_ref=preview_ref,
+            preview_request_id=preview_request_id,
             session_count=count,
             affected_count=suppressed,
             output_format=output_format,

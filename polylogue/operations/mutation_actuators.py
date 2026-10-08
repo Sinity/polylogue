@@ -431,8 +431,9 @@ class IdentityResetActuator(ConvergentReplay):
     user.db suppression, ``_delete_archive_sessions`` drops the rebuildable
     index.db rows). Target resolution (token -> exact session ids) happens
     once by the resident preview owner before ``prepare`` is invoked. The
-    client receives the frozen preview reference; confirmation reconstructs
-    these arguments from that audited plan. ``prepare`` re-verifies the exact
+    client receives a sealed preview-batch request reference. Confirmation
+    authorizes its exact bounded plans, and apply submits only the authorization
+    batch reference; each part reconstructs arguments from its audited plan. ``prepare`` re-verifies the exact
     recorded IDs so a concurrent target change is caught before APPLY.
     """
 

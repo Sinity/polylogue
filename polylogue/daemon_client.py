@@ -259,7 +259,10 @@ class DaemonClient:
         # A write never gives up the way a read does: once the request is on
         # the socket, an offline retry would make the actuator outcome
         # ambiguous, so the transport reports indeterminacy instead of absence.
-        writes = spec.authority is not DaemonAuthority.READ and operation != "operation.result"
+        writes = spec.authority is not DaemonAuthority.READ and operation not in {
+            "operation.result",
+            "user.assertions.export.release",
+        }
         # Reads wait for completion unless the caller supplies a deadline.
         # Explicit and mutation deadlines leave room for the server response
         # without changing a client shared by other calls.
@@ -282,6 +285,7 @@ class DaemonClient:
                 if request.index_schema_version is None and operation not in {
                     "maintenance.backup",
                     "maintenance.restore_verified_backup",
+                    "user.assertions.export.release",
                     "user.settings.get",
                     "user.settings.list",
                     "insights.hermes_health",

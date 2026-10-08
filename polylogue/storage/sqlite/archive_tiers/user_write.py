@@ -13,7 +13,7 @@ import itertools
 import json
 import sqlite3
 from builtins import BaseExceptionGroup
-from collections.abc import Collection, Iterator, Mapping, Sequence
+from collections.abc import Collection, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -2703,42 +2703,25 @@ def _assertion_export_selection(
     return (" WHERE " + " AND ".join(where) if where else ""), tuple(params)
 
 
-def count_assertions_for_export(
-    conn: sqlite3.Connection,
-    *,
-    kinds: Sequence[str | AssertionKind] | None = None,
-    statuses: Sequence[str | AssertionStatus] | None = None,
-    schema: str = "main",
-) -> int:
-    """Count the same all-kind/status relation the export iterator reads."""
-    if schema not in {"main", "user_tier"}:
-        raise ValueError(f"unsupported assertion export schema: {schema}")
-    if not _table_exists(conn, "assertions", schema=schema):
-        return 0
-    where, params = _assertion_export_selection(kinds=kinds, statuses=statuses)
-    return int(conn.execute(f"SELECT COUNT(*) FROM {schema}.assertions" + where, params).fetchone()[0])
-
-
 def iter_assertions_for_export(
     conn: sqlite3.Connection,
     *,
     kinds: Sequence[str | AssertionKind] | None = None,
     statuses: Sequence[str | AssertionStatus] | None = None,
     limit: int | None = None,
-    offset: int = 0,
     schema: str = "main",
-) -> Iterator[ArchiveAssertionEnvelope]:
+) -> Generator[ArchiveAssertionEnvelope, None, None]:
     """Stream durable export rows, including every kind and status by default."""
     if schema not in {"main", "user_tier"}:
         raise ValueError(f"unsupported assertion export schema: {schema}")
-    if offset < 0 or (limit is not None and limit < 0):
+    if limit is not None and limit < 0:
         raise ValueError("assertion export bounds must be nonnegative")
     if not _table_exists(conn, "assertions", schema=schema):
         return
     where, params = _assertion_export_selection(kinds=kinds, statuses=statuses)
     sql = f"SELECT {_ASSERTION_COLUMNS} FROM {schema}.assertions" + where
-    sql += " ORDER BY created_at_ms, assertion_id LIMIT ? OFFSET ?"
-    cursor = conn.execute(sql, (*params, -1 if limit is None else limit, offset))
+    sql += " ORDER BY created_at_ms, assertion_id LIMIT ?"
+    cursor = conn.execute(sql, (*params, -1 if limit is None else limit))
     try:
         for row in cursor:
             yield _assertion_row_to_envelope(row)
@@ -3101,7 +3084,6 @@ __all__ = [
     "list_assertion_candidates",
     "list_assertion_candidate_reviews",
     "list_assertion_claims",
-    "count_assertions_for_export",
     "iter_assertions_for_export",
     "list_assertions_by_kind",
     "list_assertions_for_target",

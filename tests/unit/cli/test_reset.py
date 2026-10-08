@@ -31,12 +31,12 @@ def test_reset_session_resolution_uses_server_owned_preview(monkeypatch: pytest.
 
     def submit(_env: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
         seen.append((operation, payload))
-        return {"result": {"preview_ref": "preview:neutral", "session_count": 1}}
+        return {"reference": {"request_id": "neutral-preview-request"}, "session_count": 1}
 
     monkeypatch.setattr(reset_module, "_submit", submit)
     env = SimpleNamespace(config=object())
     assert reset_module._identity_reset_targets(env, conv_id="selected", source_path=None) == (
-        "preview:neutral",
+        "neutral-preview-request",
         1,
         "session 'selected'",
     )

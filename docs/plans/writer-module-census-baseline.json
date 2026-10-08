@@ -108,6 +108,11 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/operations/assertion_export.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/operations/attachment_convergence.py",
     "tiers": [
       "index"

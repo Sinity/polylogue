@@ -73,6 +73,7 @@ from polylogue.storage.sqlite.audit_leaf import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
     from polylogue.operations.insight_acceptance import AcceptedInsightPart
 
 AuditTargetState = Literal[
@@ -141,6 +142,31 @@ class MachineRequestBinding:
 
     def to_dict(self) -> dict[str, str]:
         return {field.name: str(getattr(self, field.name)) for field in fields(self)}
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedIdentityResetCustody:
+    """Transient proof minted by relational Audit verification, never wire input."""
+
+    repository: AuditRepository
+    preview_ref: str
+    plan_hash: str
+    preview_request_id: str
+    descendant: MachineRequestBinding
+    ordinal: int
+    principal: MutationPrincipal
+    issued_at_ms: int
+    source_part_count: int
+
+    def require_authorization(self, preview: MutationPreview, principal: MutationPrincipal) -> None:
+        if (
+            preview.preview_ref != self.preview_ref
+            or preview.plan.plan_hash != self.plan_hash
+            or principal != self.principal
+            or preview.plan.operation != "mutate-identity-reset"
+        ):
+            raise AuthorizationMismatchError("reset authority differs from its verified custody")
+        self.repository._revalidate_identity_reset_authorization_proof(self, preview, principal)
 
 
 class MachineRequestConflictError(ValueError):
@@ -296,6 +322,13 @@ def _continuity_mutation(kind: str) -> Callable[[_F], _F]:
                 ):
                     raise MachineRequestRecoveredError(prior)
                 payload["machine_request"] = binding.to_dict()
+                if binding.operation_name in {
+                    "mutation.identity-reset.authorize",
+                    "mutation.identity-reset",
+                } and kind in {"issue_authorization_batch", "accept_execution_batch"}:
+                    if self._identity_reset_intent is None:
+                        raise AuthorizationMismatchError("reset acceptance requires its admitted custody intent")
+                    payload["identity_reset_intent"] = dict(self._identity_reset_intent)
                 if page is not None:
                     payload["machine_page"] = {"offset": page[0], "final": page[1]}
                 if self._machine_part is not None:
@@ -599,6 +632,8 @@ class AuditRepository:
         self._machine_part: int | None = None
         self._machine_deadline_unix_ms: int | None = None
         self._machine_page: tuple[int, bool] | None = None
+        self._identity_reset_intent: Mapping[str, object] | None = None
+        self._accepted_reset_custody: AcceptedIdentityResetCustody | None = None
         self._before_machine_prepare = before_machine_prepare
         self._on_commit = on_commit
         self._settled_reader = threading.local()
@@ -652,6 +687,271 @@ class AuditRepository:
             self._machine_part = None
             self._machine_deadline_unix_ms = None
             self._machine_page = None
+
+    @contextmanager
+    def bind_identity_reset_request(
+        self,
+        binding: MachineRequestBinding,
+        admitted_request: DaemonOperationRequest,
+        *,
+        transition: str,
+        page: tuple[int, bool],
+    ) -> Iterator[None]:
+        """Carry admitted reset intent on the existing outer continuity command."""
+        expected = {
+            "issue_authorization_batch": ("mutation.identity-reset.authorize", "preview_request_id"),
+            "accept_execution_batch": ("mutation.identity-reset", "authorization_request_id"),
+        }.get(transition)
+        if (
+            expected is None
+            or admitted_request.operation != expected[0]
+            or admitted_request.request_id != binding.request_id
+            or admitted_request.fingerprint != binding.fingerprint
+            or binding.operation_name != admitted_request.operation
+        ):
+            raise AuthorizationMismatchError("reset custody differs from the admitted request")
+        source = admitted_request.payload.get(expected[1])
+        if not isinstance(source, str) or (
+            expected[0].endswith(".authorize") and admitted_request.payload.get("confirm") is not True
+        ):
+            raise AuthorizationMismatchError("reset custody requires its confirmed source request")
+        descriptor = {
+            "format": "identity-reset-custody/v1",
+            "source_request_id": source,
+            "request_intent": admitted_request.fingerprint_intent,
+        }
+        with self.bind_machine_request(binding, transition=transition, page=page):
+            self._identity_reset_intent = descriptor
+            try:
+                yield
+            finally:
+                self._identity_reset_intent = None
+
+    def require_accepted_identity_reset_custody(
+        self,
+        preview: MutationPreview,
+        principal: MutationPrincipal,
+        *,
+        ordinal: int,
+        issued_at_ms: int,
+    ) -> AcceptedIdentityResetCustody:
+        """Mint a transient proof from live request custody and durable preview rows."""
+        if self._machine_binding is None or self._identity_reset_intent is None or self._machine_page is None:
+            raise AuthorizationMismatchError("reset authorization requires accepted request custody")
+        binding, transition = self._machine_binding
+        command = {
+            "machine_request": binding.to_dict(),
+            "machine_page": {"offset": self._machine_page[0], "final": self._machine_page[1]},
+            "identity_reset_intent": self._identity_reset_intent,
+        }
+        with self._connection() as conn:
+            return self._verify_identity_reset_custody(
+                conn,
+                command=command,
+                transition=transition,
+                ordinal=ordinal,
+                preview=preview,
+                principal=principal,
+                issued_at_ms=issued_at_ms,
+            )
+
+    def _verify_identity_reset_custody(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        command: Mapping[str, object],
+        transition: str,
+        ordinal: int,
+        preview: MutationPreview,
+        principal: MutationPrincipal,
+        issued_at_ms: int,
+        authorization_ref: str | None = None,
+    ) -> AcceptedIdentityResetCustody:
+        """Re-prove each reset part at the normal/replay persistence boundary."""
+        from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL, DaemonOperationRequest
+
+        raw_binding = command.get("machine_request")
+        if not isinstance(raw_binding, dict):
+            raise AuthorizationMismatchError("reset custody lacks its machine request")
+        binding = MachineRequestBinding(
+            *(
+                str(raw_binding[key])
+                for key in ("archive_identity", "request_id", "principal_ref", "fingerprint", "operation_name")
+            )
+        )
+        if binding.principal_ref != principal.actor_ref or preview.plan.operation != "mutate-identity-reset":
+            raise AuthorizationMismatchError("reset custody differs from its principal or operation")
+        current_row = conn.execute(
+            "SELECT * FROM machine_requests WHERE request_id=?", (binding.request_id,)
+        ).fetchone()
+        current = None if current_row is None else dict(current_row)
+        if current is not None and any(
+            current[key] != value for key, value in binding.to_dict().items() if key != "archive_identity"
+        ):
+            raise AuthorizationMismatchError("reset custody request belongs to another principal or intent")
+        source: dict[str, object] | None
+        source_kind: str
+        source_operation: str
+        if transition == "consume_authorization_and_start":
+            if (
+                binding.operation_name != "mutation.identity-reset"
+                or current is None
+                or current["artifact_kind"] != "execution-batch"
+                or current.get("stop_reason") is not None
+                or command.get("machine_part") != ordinal
+                or authorization_ref is None
+            ):
+                raise AuthorizationMismatchError("reset execution is not a sealed unconsumed request part")
+            reserved = conn.execute(
+                "SELECT authorization_ref,preview_ref,operation_id FROM machine_request_parts "
+                "WHERE archive_identity=? AND request_id=? AND ordinal=?",
+                (binding.archive_identity, binding.request_id, ordinal),
+            ).fetchone()
+            if reserved is None or tuple(reserved) != (authorization_ref, preview.preview_ref, None):
+                raise AuthorizationMismatchError("reset execution reservation differs from its exact part")
+            sources = conn.execute(
+                "SELECT r.* FROM machine_request_parts p JOIN machine_requests r "
+                "ON r.archive_identity=p.archive_identity AND r.request_id=p.request_id "
+                "WHERE p.artifact_ref=? AND r.operation_name='mutation.identity-reset.authorize' "
+                "AND r.artifact_kind='authorization-batch'",
+                (authorization_ref,),
+            ).fetchall()
+            if len(sources) != 1:
+                raise AuthorizationMismatchError("reset execution lacks sealed confirmation custody")
+            source = dict(sources[0])
+            source_kind, source_operation = "authorization-batch", "mutation.identity-reset.authorize"
+        else:
+            expected = {
+                "issue_authorization_batch": (
+                    "mutation.identity-reset.authorize",
+                    "preview_request_id",
+                    "preview-batch",
+                    "mutation.identity-reset.preview",
+                    "authorization-batch-pages",
+                ),
+                "accept_execution_batch": (
+                    "mutation.identity-reset",
+                    "authorization_request_id",
+                    "authorization-batch",
+                    "mutation.identity-reset.authorize",
+                    "execution-batch-pages",
+                ),
+            }.get(transition)
+            descriptor = command.get("identity_reset_intent")
+            page = command.get("machine_page")
+            if (
+                expected is None
+                or not isinstance(descriptor, dict)
+                or not isinstance(page, dict)
+                or descriptor.get("format") != "identity-reset-custody/v1"
+                or set(descriptor) != {"format", "source_request_id", "request_intent"}
+                or not isinstance(descriptor.get("request_intent"), dict)
+            ):
+                raise AuthorizationMismatchError("reset custody intent is unavailable")
+            request = DaemonOperationRequest.from_dict(
+                {
+                    **descriptor["request_intent"],
+                    "request_id": binding.request_id,
+                    "protocol": DAEMON_OPERATION_PROTOCOL,
+                }
+            )
+            source_id = descriptor.get("source_request_id")
+            offset = page.get("offset")
+            if (
+                request.operation != expected[0]
+                or request.operation != binding.operation_name
+                or request.fingerprint != binding.fingerprint
+                or request.payload.get(expected[1]) != source_id
+                or (transition == "issue_authorization_batch" and request.payload.get("confirm") is not True)
+                or type(offset) is not int
+                or type(page.get("final")) is not bool
+                or ordinal < offset
+                or ordinal >= offset + MACHINE_PAGE_PARTS
+            ):
+                raise AuthorizationMismatchError("reset custody intent differs from its exact admitted part")
+            if current is None:
+                if offset != 0:
+                    raise AuthorizationMismatchError("reset custody has no earlier staged page")
+            elif (
+                current["artifact_kind"] != expected[4]
+                or current["part_count"] != offset
+                or current.get("stop_reason") is not None
+            ):
+                raise AuthorizationMismatchError("reset custody staged request is stopped or inconsistent")
+            source_row = conn.execute(
+                "SELECT * FROM machine_requests WHERE request_id=? AND principal_ref=?",
+                (str(source_id), principal.actor_ref),
+            ).fetchone()
+            source = None if source_row is None else dict(source_row)
+            source_kind, source_operation = expected[2], expected[3]
+        if (
+            source is None
+            or source["artifact_kind"] != source_kind
+            or source["operation_name"] != source_operation
+            or source["principal_ref"] != principal.actor_ref
+            or source.get("stop_reason") is not None
+            or ordinal < 0
+            or ordinal >= int(cast(int, source["part_count"]))
+        ):
+            raise AuthorizationMismatchError("reset custody source is not a sealed principal-owned phase")
+        source_part = conn.execute(
+            "SELECT p.preview_ref,COALESCE(p.authorization_ref,p.artifact_ref),v.plan_hash,v.operation_name,v.principal_actor_ref,"
+            "v.principal_surface,v.role_label,v.state FROM machine_request_parts p "
+            "JOIN operation_previews v ON v.preview_id=p.preview_ref "
+            "WHERE p.archive_identity=? AND p.request_id=? AND p.ordinal=?",
+            (source["archive_identity"], source["request_id"], ordinal),
+        ).fetchone()
+        if (
+            source_part is None
+            or source_part[0] != preview.preview_ref
+            or source_part[2] != preview.plan.plan_hash
+            or tuple(source_part[3:7])
+            != ("mutate-identity-reset", principal.actor_ref, principal.surface, principal.role_label)
+            or source_part[7] != "prepared"
+            or (authorization_ref is not None and source_part[1] != authorization_ref)
+        ):
+            raise AuthorizationMismatchError("reset custody does not match its frozen preview and principal")
+        origins = conn.execute(
+            "SELECT r.* FROM machine_request_parts p JOIN machine_requests r "
+            "ON r.archive_identity=p.archive_identity AND r.request_id=p.request_id "
+            "WHERE p.preview_ref=? AND p.ordinal=? AND r.operation_name='mutation.identity-reset.preview' "
+            "AND r.artifact_kind='preview-batch'",
+            (preview.preview_ref, ordinal),
+        ).fetchall()
+        if (
+            len(origins) != 1
+            or origins[0]["principal_ref"] != principal.actor_ref
+            or origins[0]["stop_reason"] is not None
+        ):
+            raise AuthorizationMismatchError("reset custody originating preview is unavailable or cancelled")
+        if issued_at_ms < 0:
+            raise AuthorizationMismatchError("reset custody issuance time is invalid")
+        return AcceptedIdentityResetCustody(
+            self,
+            preview.preview_ref,
+            preview.plan.plan_hash,
+            str(origins[0]["request_id"]),
+            binding,
+            ordinal,
+            principal,
+            issued_at_ms,
+            int(origins[0]["part_count"]),
+        )
+
+    def _revalidate_identity_reset_authorization_proof(
+        self,
+        proof: AcceptedIdentityResetCustody,
+        preview: MutationPreview,
+        principal: MutationPrincipal,
+    ) -> None:
+        fresh = self.require_accepted_identity_reset_custody(
+            preview,
+            principal,
+            ordinal=proof.ordinal,
+            issued_at_ms=proof.issued_at_ms,
+        )
+        if fresh != proof:
+            raise AuthorizationMismatchError("reset authorization custody changed")
 
     def handshake_as_of_ms(
         self,
@@ -817,49 +1117,85 @@ class AuditRepository:
             raise AuthorizationMismatchError("preview does not belong to the authenticated principal")
         return MutationPreview(preview_ref=preview_ref, plan=_plan_from_payload(json.loads(row[0])))
 
-    def identity_reset_machine_preview_summary(self, binding: MachineRequestBinding) -> dict[str, object]:
-        """Recover only the bounded product of a durably accepted preview."""
-        with self._connection() as conn:
-            row = conn.execute(
-                """SELECT p.preview_id, p.target_count, p.expires_at_ms
-                FROM machine_requests AS m JOIN operation_previews AS p ON p.preview_id = m.artifact_ref
-                WHERE m.archive_identity = ? AND m.request_id = ? AND m.principal_ref = ?
-                  AND m.fingerprint = ? AND m.operation_name = 'mutation.identity-reset.preview'
-                  AND m.artifact_kind = 'preview' AND p.operation_name = 'mutate-identity-reset'""",
-                (binding.archive_identity, binding.request_id, binding.principal_ref, binding.fingerprint),
-            ).fetchone()
-        if row is None:
-            raise MachineRequestConflictError("identity reset preview custody is unavailable")
-        return {"preview_ref": row[0], "session_count": int(row[1]), "expires_at_ms": int(row[2])}
-
     def identity_reset_preview_target_page(
-        self, preview_ref: str, principal: MutationPrincipal, *, offset: int, page_size: int
+        self,
+        preview_request_id: str,
+        principal: MutationPrincipal,
+        *,
+        archive_identity: str,
+        offset: int,
+        page_size: int,
     ) -> tuple[tuple[str, ...], int]:
-        """Read immutable target ordinals without decoding the whole plan."""
+        """Seek bounded target relations belonging to a complete reset selection.
+
+        The publisher fills each plan to MUTATION_PLAN_PAGE_SIZE, except its
+        final part. Offset therefore selects a part and its local target ordinal,
+        never an OFFSET scan over the full target population.
+        """
+        from polylogue.operations.mutation_transaction import MUTATION_PLAN_PAGE_SIZE
+
         if offset < 0 or page_size < 1:
             raise ValueError("invalid identity reset target page")
+        record = self.machine_request_for_principal(archive_identity, preview_request_id, principal.actor_ref)
+        if (
+            record is None
+            or record["operation_name"] != "mutation.identity-reset.preview"
+            or record["artifact_kind"] != "preview-batch"
+            or record.get("stop_reason") is not None
+        ):
+            raise AuthorizationMismatchError("reset selection is not a sealed principal-owned preview batch")
+        coordinates = (str(record["archive_identity"]), str(record["request_id"]))
         with self._connection() as conn:
-            row = conn.execute(
-                "SELECT operation_name, principal_actor_ref, principal_surface FROM operation_previews WHERE preview_id = ?",
-                (preview_ref,),
+            last = conn.execute(
+                "SELECT p.ordinal,v.target_count,v.operation_name,v.principal_actor_ref,v.principal_surface "
+                "FROM machine_request_parts p JOIN operation_previews v ON v.preview_id=p.preview_ref "
+                "WHERE p.archive_identity=? AND p.request_id=? ORDER BY p.ordinal DESC LIMIT 1",
+                coordinates,
             ).fetchone()
-            if row is None or row[1] != principal.actor_ref or row[2] != principal.surface:
-                raise AuthorizationMismatchError("preview does not belong to the authenticated principal")
-            if row[0] != "mutate-identity-reset":
-                raise AuthorizationMismatchError("preview is not an identity reset")
-            total = int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM operation_preview_targets WHERE preview_id = ?", (preview_ref,)
-                ).fetchone()[0]
-            )
-            ids = tuple(
-                str(row[0]).removeprefix("session:")
-                for row in conn.execute(
-                    "SELECT target_ref FROM operation_preview_targets WHERE preview_id = ? ORDER BY ordinal LIMIT ? OFFSET ?",
-                    (preview_ref, min(page_size, max(0, total - offset)), min(offset, total)),
-                )
-            )
-        return ids, total
+            if (
+                last is None
+                or int(last[0]) + 1 != record["part_count"]
+                or not 0 <= int(last[1]) <= MUTATION_PLAN_PAGE_SIZE
+                or tuple(last[2:]) != ("mutate-identity-reset", principal.actor_ref, principal.surface)
+            ):
+                raise AuthorizationMismatchError("reset selection's final immutable part is unavailable")
+            total = int(last[0]) * MUTATION_PLAN_PAGE_SIZE + int(last[1])
+            first = conn.execute(
+                "SELECT v.principal_actor_ref,v.principal_surface FROM machine_request_parts p "
+                "JOIN operation_previews v ON v.preview_id=p.preview_ref "
+                "WHERE p.archive_identity=? AND p.request_id=? AND p.ordinal=0",
+                coordinates,
+            ).fetchone()
+            if first is None or tuple(first) != (principal.actor_ref, principal.surface):
+                raise AuthorizationMismatchError("reset selection belongs to another principal")
+            part_ordinal, target_ordinal = divmod(min(offset, total), MUTATION_PLAN_PAGE_SIZE)
+            remaining = min(page_size, max(0, total - offset))
+            ids: list[str] = []
+            while remaining:
+                part = conn.execute(
+                    "SELECT v.preview_id,v.operation_name,v.principal_actor_ref,v.principal_surface,v.target_count "
+                    "FROM machine_request_parts p JOIN operation_previews v ON v.preview_id=p.preview_ref "
+                    "WHERE p.archive_identity=? AND p.request_id=? AND p.ordinal=?",
+                    (*coordinates, part_ordinal),
+                ).fetchone()
+                if (
+                    part is None
+                    or tuple(part[1:4]) != ("mutate-identity-reset", principal.actor_ref, principal.surface)
+                    or int(part[4]) > MUTATION_PLAN_PAGE_SIZE
+                ):
+                    raise AuthorizationMismatchError("reset selection part is invalid")
+                rows = conn.execute(
+                    "SELECT target_ref FROM operation_preview_targets WHERE preview_id=? AND ordinal>=? "
+                    "ORDER BY ordinal LIMIT ?",
+                    (str(part[0]), target_ordinal, remaining),
+                ).fetchall()
+                if not rows:
+                    raise ValueError("reset selection target population is incomplete")
+                ids.extend(str(row[0]).removeprefix("session:") for row in rows)
+                remaining -= len(rows)
+                part_ordinal += 1
+                target_ordinal = 0
+        return tuple(ids), total
 
     def authorization_for_principal(
         self, authorization_ref: str, principal: MutationPrincipal
@@ -1293,12 +1629,20 @@ class AuditRepository:
             raise ValueError("machine preview authority is incomplete")
         return {
             "status": "prepared",
-            "operation": "delete",
+            "operation": "identity-reset" if binding.operation_name == "mutation.identity-reset.preview" else "delete",
             "reference": AcceptedOperationReference.from_record(record).to_dict(),
-            **({"preview_ref": str(first[0])} if facts[0] == 1 else {}),
+            **(
+                {"preview_ref": str(first[0])}
+                if facts[0] == 1 and binding.operation_name != "mutation.identity-reset.preview"
+                else {}
+            ),
             "session_ids_sample": sample,
             "session_count": count,
-            "expires_at_ms": int(facts[1]),
+            **(
+                {"lifetime": "accepted-request"}
+                if binding.operation_name == "mutation.identity-reset.preview"
+                else {"expires_at_ms": int(facts[1])}
+            ),
         }
 
     @classmethod
@@ -1457,7 +1801,10 @@ class AuditRepository:
                     child_args = (item, principal)
                 else:
                     child_args = (item, principal, authorizations[ordinal])
-                child_payload = self._continuity_payload(child_kind, child_args, {})
+                child_values: dict[str, object] = {}
+                if child_kind == "issue_authorization" and self._identity_reset_intent is not None:
+                    child_values["issued_at_ms"] = authorizations[ordinal].expires_at_ms
+                child_payload = self._continuity_payload(child_kind, child_args, child_values)
                 if child_kind == "issue_authorization" and as_of_ms is not None:
                     child_payload["authority_as_of_ms"] = as_of_ms
                 commands.append(
@@ -1944,9 +2291,33 @@ class AuditRepository:
         if outer is None or conn is None:
             raise RuntimeError("authority batches require source-WAL continuity")
         results: list[str] = []
+        previous_proof = self._accepted_reset_custody
+        commands = cast(list[dict[str, object]], outer.mapping_payload["commands"])
+        raw_binding = outer.mapping_payload.get("machine_request")
+        reset = (
+            isinstance(raw_binding, dict) and raw_binding.get("operation_name") == "mutation.identity-reset.authorize"
+        )
         try:
-            for command in cast(list[dict[str, object]], outer.mapping_payload["commands"]):
-                result = self._replay_domain_mutation(conn, AuditMutation.from_command(command))
+            for index, command in enumerate(commands):
+                child = AuditMutation.from_command(command)
+                self._accepted_reset_custody = None
+                if reset:
+                    page = cast(dict[str, object], outer.mapping_payload["machine_page"])
+                    payload = child.mapping_payload
+                    if outer.kind != "issue_authorization_batch" or child.kind != "issue_authorization":
+                        raise AuthorizationMismatchError("reset custody belongs to another authority transition")
+                    proof = self._verify_identity_reset_custody(
+                        conn,
+                        command=outer.mapping_payload,
+                        transition=outer.kind,
+                        ordinal=cast(int, page["offset"]) + index,
+                        preview=_preview_from_payload(payload["preview"]),
+                        principal=_principal_from_payload(payload["principal"]),
+                        issued_at_ms=cast(int, payload["issued_at_ms"]),
+                    )
+                    self._require_reset_page_completion(page, len(commands), proof)
+                    self._accepted_reset_custody = proof
+                result = self._replay_domain_mutation(conn, child)
                 if outer.kind == "cancel_preview_batch":
                     result = cast(dict[str, object], cast(dict[str, object], command["payload"])["preview"])[
                         "preview_ref"
@@ -1956,7 +2327,16 @@ class AuditRepository:
                 results.append(result)
             return results
         finally:
+            self._accepted_reset_custody = previous_proof
             self._coordinated_mutation, self._coordinated_connection = outer, conn
+
+    @staticmethod
+    def _require_reset_page_completion(
+        page: Mapping[str, object], count: int, proof: AcceptedIdentityResetCustody
+    ) -> None:
+        end = cast(int, page["offset"]) + count
+        if end > proof.source_part_count or page["final"] != (end == proof.source_part_count):
+            raise AuthorizationMismatchError("reset page does not close its exact source population")
 
     @_continuity_mutation("create_preview_batch")
     def create_preview_batch(self, plans: tuple[MutationPlan, ...], principal: MutationPrincipal) -> list[str]:
@@ -2017,7 +2397,7 @@ class AuditRepository:
         now_ms = int(cast(int, self._command_value("now_ms", int(time.time() * 1000))))
         now_ms = int(cast(int, self._command_value("authority_as_of_ms", now_ms)))
         with self._connection() as conn:
-            for ref in refs:
+            for index, ref in enumerate(refs):
                 row = conn.execute(
                     """SELECT a.actor_ref, a.surface, a.state, a.expires_at_ms, p.state
                     FROM operation_authorizations a JOIN operation_previews p ON p.preview_id = a.preview_id
@@ -2028,7 +2408,24 @@ class AuditRepository:
                     raise AuthorizationMismatchError("execution authority belongs to another principal")
                 if row[2] != "active" or row[4] != "prepared":
                     raise TokenConsumedError("execution authority is no longer active")
-                if int(row[3]) <= now_ms:
+                command = {} if self._coordinated_mutation is None else self._coordinated_mutation.mapping_payload
+                raw_binding = command.get("machine_request")
+                reset = isinstance(raw_binding, dict) and raw_binding.get("operation_name") == "mutation.identity-reset"
+                if reset:
+                    preview, _ = self.authorization_for_principal(ref, principal)
+                    page = cast(dict[str, object], command["machine_page"])
+                    proof = self._verify_identity_reset_custody(
+                        conn,
+                        command=command,
+                        transition="accept_execution_batch",
+                        ordinal=cast(int, page["offset"]) + index,
+                        preview=preview,
+                        principal=principal,
+                        issued_at_ms=now_ms,
+                        authorization_ref=ref,
+                    )
+                    self._require_reset_page_completion(page, len(refs), proof)
+                elif int(row[3]) <= now_ms:
                     raise TokenExpiredError("execution authority is expired")
                 capabilities = {
                     str(r[0])
@@ -2407,7 +2804,16 @@ class AuditRepository:
                 raise ValueError("preview plan hash does not match its durable row")
             if str(preview_row[2]) != "prepared":
                 raise ValueError("preview is not authorizable")
-            durable_expires_at_ms = int(preview_row[1])
+            proof = self._accepted_reset_custody
+            if proof is not None and (
+                proof.preview_ref != preview.preview_ref
+                or proof.plan_hash != preview.plan.plan_hash
+                or proof.principal != principal
+                or proof.issued_at_ms != effective_issued_at_ms
+                or authorization.expires_at_ms != effective_issued_at_ms
+            ):
+                raise AuthorizationMismatchError("authorization differs from its verified reset custody")
+            durable_expires_at_ms = int(preview_row[1]) if proof is None else effective_issued_at_ms
             durable_capabilities = tuple(
                 str(row[0])
                 for row in conn.execute(
@@ -2441,7 +2847,7 @@ class AuditRepository:
             # A paged handshake judges expiry as of its progress, not its wall
             # time (``handshake_as_of_ms``); issuance time stays real.
             as_of_ms = cast(int, self._command_value("authority_as_of_ms", effective_issued_at_ms))
-            if as_of_ms >= durable_expires_at_ms:
+            if proof is None and as_of_ms >= durable_expires_at_ms:
                 conn.execute(
                     "UPDATE operation_previews SET state = 'expired' WHERE preview_id = ? AND state = 'prepared'",
                     (preview.preview_ref,),
@@ -2617,7 +3023,26 @@ class AuditRepository:
                     raise TokenConsumedError("authorization is reserved to an accepted machine request")
             if str(row[6]) != "active":
                 raise TokenConsumedError("authorization token is already consumed or revoked")
-            if int(row[7]) <= cast(int, self._command_value("authority_as_of_ms", now_ms)):
+            raw_binding = command.get("machine_request")
+            reset = isinstance(raw_binding, dict) and raw_binding.get("operation_name") == "mutation.identity-reset"
+            if reset:
+                principal = MutationPrincipal(
+                    actor_ref=authorization.actor,
+                    surface=cast(Any, authorization.surface),
+                    role_label=authorization.role or None,
+                    capabilities=frozenset(authorization.capabilities),
+                )
+                self._verify_identity_reset_custody(
+                    conn,
+                    command=command,
+                    transition="consume_authorization_and_start",
+                    ordinal=cast(int, command["machine_part"]),
+                    preview=preview,
+                    principal=principal,
+                    issued_at_ms=now_ms,
+                    authorization_ref=str(row[0]),
+                )
+            if not reset and int(row[7]) <= cast(int, self._command_value("authority_as_of_ms", now_ms)):
                 conn.execute(
                     "UPDATE operation_authorizations SET state = 'expired' WHERE authorization_id = ?",
                     (str(row[0]),),
@@ -3894,7 +4319,7 @@ class AuditRepository:
                 after = int(row["ordinal"])
                 yield dict(row)
 
-    def machine_delete_preview_origin(self, binding: MachineRequestBinding) -> str | None:
+    def machine_preview_origin(self, binding: MachineRequestBinding) -> str | None:
         """Recover the exact source preview phase from durable shared preview refs."""
         with self._connection() as conn:
             rows = conn.execute(
@@ -3902,8 +4327,14 @@ class AuditRepository:
                 "JOIN machine_request_parts source ON source.preview_ref = current.preview_ref "
                 "JOIN machine_requests origin ON origin.request_id = source.request_id AND origin.archive_identity = source.archive_identity "
                 "WHERE current.archive_identity = ? AND current.request_id = ? "
-                "AND origin.operation_name = 'mutation.session.delete.preview' AND origin.artifact_kind = 'preview-batch' LIMIT 2",
-                (binding.archive_identity, binding.request_id),
+                "AND origin.operation_name = ? AND origin.artifact_kind = 'preview-batch' LIMIT 2",
+                (
+                    binding.archive_identity,
+                    binding.request_id,
+                    "mutation.identity-reset.preview"
+                    if binding.operation_name.startswith("mutation.identity-reset")
+                    else "mutation.session.delete.preview",
+                ),
             ).fetchall()
         if len(rows) != 1:
             return None

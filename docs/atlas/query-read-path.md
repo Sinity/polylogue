@@ -205,32 +205,49 @@ the final typed envelope are refused rather than enlarged.
 
 ## Assertion export and identity reset
 
-Assertion export reads ordered `created_at_ms, assertion_id` pages through the
-resident `user.assertions.export` v2 contract. `limit` selects the requested
-export prefix, including an explicitly empty prefix; page size only selects
-one transport window. Each continuation binds the original Index/User frame.
-A changed frame refuses the walk. CLI JSON and JSONL exports stream rows into
-private staging and expose output only after every page succeeds. The original
-attached User authority remains required, including for an empty export.
-Python export callers use `iter_assertions_for_export`; the unpaged list
-producer is retired. SQL counts and offset scans can still scale with the
-relation, and one assertion's content remains proportional to one row.
+Assertion export reads `created_at_ms, assertion_id` order through the resident
+`user.assertions.export` v3 contract. The first request streams that pinned User
+selection into a private SQLite relation, sorting once and counting inserted
+rows. `limit` selects the chronological export prefix, including an explicitly
+empty prefix; page size selects only a transport window. Later pages seek the
+owned relation by ordinal, without rescanning or counting User assertions.
+The opaque `selection_ref` binds the authenticated principal, filters, limit,
+and assertion-only User frame. Assertion changes refuse continuation; unrelated
+Index ingestion and User settings do not. The original attached User authority
+remains required, including for an empty export. The final page remains
+replayable until `user.assertions.export.release`; release reads no User tier.
+The daemon deletes abandoned images after its exchanges physically settle on
+shutdown. There is no selection expiry or population cap.
+CLI JSON and JSONL exports stage rows and expose output only after every page
+succeeds, then release the image; failed and cancelled walks also release it.
+Python callers use `iter_assertions_for_export`. One assertion's payload remains
+proportional to one row.
 
-Identity reset retains its selector as one authenticated Audit preview on the
-resident writer. Preview creation binds its request ID to that durable preview,
-so repeats recover the same bounded summary without selecting again. It has no
-implicit execution deadline; cancellation before acceptance creates no preview.
-Confirmation also binds its request to the accepted Audit operation without an
-implicit execution deadline. Its typed historical receipt retains the suppression
-count, absent-index count and rows deleted by the completing apply. A recovered
-completion reports that apply's count, not a reconstructed lifetime total.
-Confirmation submits only that preview reference and executes
-its frozen exact targets, never a fresh path selection. New matching arrivals
-remain outside the authorized plan. Principal-checked target pages read immutable
-Audit ordinals without decoding the whole plan. CLI dry-run and JSON ID arrays
-stream through staging; dry-run writes the Audit preview but changes no sessions.
-This bounds transport and client target memory. The existing canonical audited
-mutation plan remains proportional to its full target population.
+Identity reset freezes the complete selector on private disk before publishing
+bounded canonical plans through an Audit preview batch. The client retains only
+that sealed request reference. Confirmation submits it to
+`mutation.identity-reset.authorize`; apply submits only the resulting sealed
+authorization request to `mutation.identity-reset`. Each continuity page holds
+at most forty plans, each plan at most the declared mutation page size. Selection,
+authorization and reservation complete before any session effect. New matching
+arrivals remain outside the frozen selection. Target pages seek immutable Audit
+part and target ordinals without decoding the complete selection.
+
+There is no implicit execution deadline or confirmation expiry for this accepted
+reset custody. Audit re-proves the originating sealed batch, authenticated
+confirmation intent, principal, exact part/hash and uncancelled phase at issuance,
+reservation and consumption, including journal replay. A reset authorization's
+real issuance timestamp is also its expiry: it has no transferable standalone
+lease. Other expired previews and authorizations retain their ordinary refusal.
+Stale plans still refuse. Cancellation or refusal after an applied prefix reports
+the partial batch, never a completed untouched suffix.
+
+The typed historical receipt sums recorded suppression, absent-index and deleted
+row counts across completed parts. Deleted rows belong to each completing apply;
+recovery does not reconstruct a lifetime deletion total. CLI dry-run and JSON ID
+arrays stream through staging; dry-run writes Audit previews but changes no
+sessions. Python target memory and continuity payloads are bounded by a page;
+Audit disk remains proportional to the selected population.
 
 ## Durable setting reads
 

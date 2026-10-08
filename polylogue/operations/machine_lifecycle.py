@@ -124,22 +124,13 @@ def machine_request_state(
                 return {**state, "outcome": outcome, "effect": "no-effect", "stop_reason": record["stop_reason"]}
             return {**state, "outcome": "running", "effect": "no-effect"}
         if kind not in {"operation", "execution-batch", "source-generation"}:
-            if kind == "preview" and binding.operation_name == "mutation.identity-reset.preview":
-                state["result"] = {
-                    "operation": binding.operation_name,
-                    "outcome": "completed",
-                    "sequence": 1,
-                    "effect": "no-effect",
-                    "affected_count": 0,
-                    "result": audit.identity_reset_machine_preview_summary(binding),
-                }
-            elif kind == "preview-batch":
+            if kind == "preview-batch":
                 state["result"] = audit.machine_preview_summary(binding)
             elif kind == "authorization-batch":
                 authorized: dict[str, object] = {
                     "status": "authorized",
                     "reference": state["reference"],
-                    "source_request_id": audit.machine_delete_preview_origin(binding),
+                    "source_request_id": audit.machine_preview_origin(binding),
                 }
                 if record["part_count"] == 1:
                     authorized["authorization_ref"] = next(iter(parts))["artifact_ref"]
@@ -148,7 +139,7 @@ def machine_request_state(
                 state["result"] = {
                     "status": "cancelled",
                     "reference": state["reference"],
-                    "source_request_id": audit.machine_delete_preview_origin(binding),
+                    "source_request_id": audit.machine_preview_origin(binding),
                 }
             return state
         if kind == "operation":
@@ -159,6 +150,7 @@ def machine_request_state(
         unattempted: list[int] = []
         outcomes: set[str] = set()
         attempted_count = unattempted_count = part_count = 0
+        reset_suppressed = reset_deleted = reset_absent = reset_receipts = 0
         first_attempted: dict[str, object] | None = None
         final_attempted: dict[str, object] | None = None
         for part in parts:
@@ -199,6 +191,13 @@ def machine_request_state(
             ):
                 outcome = "indeterminate"
 
+            if record.get("operation_name") == "mutation.identity-reset" and historical is not None:
+                if not isinstance(historical, IdentityResetHistoricalReceipt):
+                    raise ValueError("identity reset run carries a non-reset historical receipt")
+                reset_suppressed += historical.suppressed_count
+                reset_deleted += historical.deleted_archive_rows
+                reset_absent += historical.tombstoned_without_index_row_count
+                reset_receipts += 1
             outcomes.add(outcome)
             attempted_count += 1
             settled_part = {
@@ -271,27 +270,20 @@ def machine_request_state(
                     "sequence": receipt["final_sequence"],
                     "historical_receipt": receipt,
                 }
-        if (
-            record.get("operation_name") == "mutation.identity-reset"
-            and first_attempted is not None
-            and first_attempted["outcome"] == "completed"
-        ):
-            raw = first_attempted["receipt"]
-            if raw is None:
-                outcome = "indeterminate"
-            else:
-                history = decode_machine_receipt(raw)
-                if not isinstance(history, IdentityResetHistoricalReceipt):
-                    raise ValueError("identity reset run carries a non-reset historical receipt")
-                result = {
-                    "operation": binding.operation_name,
-                    "outcome": "completed",
-                    "sequence": sequence,
-                    "effect": "committed" if history.suppressed_count else "no-effect",
-                    "affected_count": history.suppressed_count,
-                    "receipt_ref": f"mutation-operation:{first_attempted['operation_id']}",
-                    "result": history.result_counts(),
-                }
+        if record.get("operation_name") == "mutation.identity-reset" and reset_receipts:
+            result = {
+                "operation": binding.operation_name,
+                "outcome": outcome,
+                "sequence": sequence,
+                "effect": "committed" if reset_suppressed else "no-effect",
+                "affected_count": reset_suppressed,
+                "receipt_ref": f"accepted-request:{binding.request_id}",
+                "result": IdentityResetHistoricalReceipt(
+                    suppressed_count=reset_suppressed,
+                    deleted_archive_rows=reset_deleted,
+                    tombstoned_without_index_row_count=reset_absent,
+                ).result_counts(),
+            }
         if record.get("operation_name") == "maintenance.insights.rebuild" and outcome == "completed":
             # The declared result is the terminal summary the final page's receipt
             # closed; the generic lifecycle counters are not that result. A

@@ -100,6 +100,7 @@ _STAGED_OPERATIONS = frozenset(
         "maintenance.backup",
         "maintenance.restore_verified_backup",
         "mutation.session.delete.preview",
+        "mutation.identity-reset.preview",
         "mutation.session.mark",
     }
 )
@@ -170,6 +171,9 @@ class DaemonOperationRuntime:
         self._condition = threading.Condition(threading.RLock())
         self._exchanges: dict[str, _Exchange] = {}
         self._closing = False
+        from polylogue.operations.assertion_export import AssertionExportImages
+
+        self.assertion_exports = AssertionExportImages()
         self._terminal_scratch: tempfile.TemporaryDirectory[str] | None = None
         self._terminal_epoch = uuid.uuid4().hex
         # The ingest owner's re-drive of accepted generations a dead process
@@ -305,6 +309,7 @@ class DaemonOperationRuntime:
             if pending.done():
                 with self._condition:
                     self._exchanges.clear()
+                    self.assertion_exports.close()
                     if self._terminal_scratch is not None:
                         self._terminal_scratch.cleanup()
                         self._terminal_scratch = None
@@ -873,7 +878,12 @@ class DaemonOperationRuntime:
             if self._read_dependencies_factory is not None
             else self._read_dependencies
         )
-        dependencies = replace(dependencies or DaemonReadDependencies(), status_now_ms=int(time() * 1000))
+        dependencies = replace(
+            dependencies or DaemonReadDependencies(),
+            status_now_ms=int(time() * 1000),
+            assertion_exports=self.assertion_exports,
+            assertion_export_principal=principal,
+        )
         archive_scan = spec.authority is DaemonAuthority.READ and read_is_archive_scan(
             request.operation, request.payload
         )
@@ -1146,7 +1156,7 @@ class DaemonOperationRuntime:
                         from polylogue.operations.daemon_mutations import (
                             execute_raw_authority_blocker_resolve_operation,
                             execute_raw_authority_frontier_operation,
-                            execute_session_delete_preview_operation,
+                            execute_selected_preview_operation,
                             execute_session_mark_operation,
                         )
                         from polylogue.operations.facade_writers import facade_record_work_event
@@ -1157,7 +1167,8 @@ class DaemonOperationRuntime:
                             "mutation.facade.record_work_event": facade_record_work_event,
                             "maintenance.raw-authority-frontier": execute_raw_authority_frontier_operation,
                             "mutation.raw-authority-blocker.resolve": execute_raw_authority_blocker_resolve_operation,
-                            "mutation.session.delete.preview": execute_session_delete_preview_operation,
+                            "mutation.session.delete.preview": execute_selected_preview_operation,
+                            "mutation.identity-reset.preview": execute_selected_preview_operation,
                             "mutation.session.mark": execute_session_mark_operation,
                             "maintenance.insights.rebuild": execute_insights_rebuild_operation,
                             "maintenance.embeddings.backfill": execute_embedding_backfill_operation,

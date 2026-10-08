@@ -43,6 +43,7 @@ _T = TypeVar("_T")
 
 if TYPE_CHECKING:
     from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.operations.assertion_export import AssertionExportImages
     from polylogue.operations.audit import CanonicalAuditLiteral
     from polylogue.operations.insight_acceptance import AcceptedInsightPart, SessionInsightPartReceipt
     from polylogue.operations.raw_observation_owner import RetainedMaterializationResult
@@ -50,6 +51,8 @@ if TYPE_CHECKING:
 
 class OperationRuntime(Protocol):
     """Resident authority injected into the product executor by its owner."""
+
+    assertion_exports: AssertionExportImages
 
     def publication_guard(self) -> AbstractContextManager[object]: ...
 
@@ -276,6 +279,35 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
         request = validate_execution_request(request, context)
         spec = daemon_operation_spec(request.operation)
         assert spec is not None
+        if request.operation == "user.assertions.export.release":
+            # Release owns only private scratch and must work after User disappears.
+            from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+
+            read_control = context.read_control or QueryExecutionContext(
+                call_id=str(request.request_id),
+                query_ref=request.fingerprint,
+                deadline_monotonic=None if request.deadline_ms is None else started + request.deadline_ms / 1000,
+                owner_ref=context.principal.actor_ref,
+            )
+            snapshot = _observe_explicit_index_condition(
+                request,
+                OperationControlRead(
+                    ArchiveIdentity.resolve_location(ArchiveLocation.resolve(context.archive_root)), {}, ()
+                ),
+                archive_root=context.archive_root,
+                read_control=read_control,
+            )
+            _validate_identity(request, context, snapshot)
+            if context.runtime is None:
+                raise ValueError("assertion export requires its resident selection owner")
+            result: dict[str, object] = {
+                "released": context.runtime.assertion_exports.release(
+                    str(request.payload["selection_ref"]), context.principal
+                )
+            }
+            read_control.mark_cleanup_complete()
+            validate_operation_result(request.operation, result)
+            return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
         if request.operation == "mutation.session.excision":
             raise PermissionError("staged_execution_required")
         if request.operation == "insights.hermes_health":
@@ -372,7 +404,17 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                     result = identity_reset_targets(request, context, audit, snapshot)
                 checkpoint()
                 validate_operation_result(request.operation, result)
-                return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
+                # A reset batch can settle a committed prefix while cancellation
+                # leaves its suffix untouched. Its terminal envelope must carry
+                # the same durable outcome as the batch, never default success.
+                outcome = (
+                    str(result["outcome"])
+                    if request.operation == "mutation.identity-reset" and isinstance(result, dict)
+                    else "completed"
+                )
+                return operation_envelope(
+                    request, context, snapshot=snapshot, started_at=started, result=result, outcome=outcome
+                )
 
         if request.operation.startswith("operation."):
             assert context.runtime is not None

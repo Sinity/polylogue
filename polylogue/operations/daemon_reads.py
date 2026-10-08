@@ -31,6 +31,8 @@ if TYPE_CHECKING:
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.config import Config, PolylogueConfig
     from polylogue.core.protocols import VectorProvider
+    from polylogue.operations.assertion_export import AssertionExportImages
+    from polylogue.operations.mutation_transaction import MutationPrincipal
     from polylogue.operations.session_contracts import SessionRead
     from polylogue.storage.embeddings.identity import EmbeddingRecipe
     from polylogue.storage.search.cache import ReadViewIdentity
@@ -115,6 +117,8 @@ class DaemonReadDependencies:
     status_now_ms: int | None = None
     status_config: Config | PolylogueConfig | None = None
     hermes_root: Path | None = None
+    assertion_exports: AssertionExportImages | None = None
+    assertion_export_principal: MutationPrincipal | None = None
 
     @property
     def vector_provider(self) -> VectorProvider | None:
@@ -292,7 +296,14 @@ def execute_read_operation(
     }:
         from polylogue.operations.cli_aux_reads import execute_cli_aux_read
 
-        result = execute_cli_aux_read(name, payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
+        result = execute_cli_aux_read(
+            name,
+            payload,
+            archive=archive,
+            checkpoint=dependencies.raise_if_aborted,
+            assertion_exports=dependencies.assertion_exports,
+            principal=dependencies.assertion_export_principal,
+        )
     elif name == "query.units":
         params = _params(payload)
         result = _query_units_payload(params, archive=archive, serving_identity=serving_identity)

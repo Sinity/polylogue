@@ -4,18 +4,26 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from polylogue.operations.assertion_export import AssertionExportImages
+    from polylogue.operations.mutation_transaction import MutationPrincipal
 
 from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
 def execute_cli_aux_read(
-    name: str, payload: Mapping[str, object], *, archive: ArchiveStore, checkpoint: Callable[[], None] = lambda: None
+    name: str,
+    payload: Mapping[str, object],
+    *,
+    archive: ArchiveStore,
+    checkpoint: Callable[[], None] = lambda: None,
+    assertion_exports: AssertionExportImages | None = None,
+    principal: MutationPrincipal | None = None,
 ) -> dict[str, object]:
     """Execute the small CLI-only read contracts against the daemon's pinned reader."""
-    from polylogue.surfaces.outcome import decide_outcome
-
     if name == "session.excision.plan":
         from polylogue.security.excision import LineageDependentsError, plan_session_excision
 
@@ -40,43 +48,10 @@ def execute_cli_aux_read(
         }
 
     if name == "user.assertions.export":
-        from polylogue.archive.query.transaction import archive_snapshot_epoch
-        from polylogue.storage.sqlite.archive_tiers.user_write import (
-            assertion_envelope_to_payload,
-            count_assertions_for_export,
-            iter_assertions_for_export,
-        )
-
         archive.require_attached_user_tier()
-        checkpoint()
-        kinds = cast(list[str] | None, payload.get("kinds"))
-        statuses = cast(list[str] | None, payload.get("statuses"))
-        limit = cast(int | None, payload.get("limit"))
-        offset = int(cast(int, payload.get("offset", 0)))
-        page_size = int(cast(int, payload.get("page_size", 256)))
-        total = count_assertions_for_export(archive._conn, kinds=kinds, statuses=statuses, schema="user_tier")
-        if limit is not None:
-            total = min(total, limit)
-        items = []
-        for row in iter_assertions_for_export(
-            archive._conn,
-            kinds=kinds,
-            statuses=statuses,
-            limit=min(page_size, max(0, total - offset)),
-            offset=min(offset, total),
-            schema="user_tier",
-        ):
-            checkpoint()
-            items.append(assertion_envelope_to_payload(row))
-        next_offset = offset + len(items)
-        return {
-            "items": items,
-            "total": total,
-            "offset": offset,
-            "next_offset": next_offset if next_offset < total else None,
-            "snapshot_epoch": f"{archive.index_db_path.resolve()}:{archive_snapshot_epoch(archive)}",
-            "outcome": decide_outcome(matched=total).to_dict(),
-        }
+        if assertion_exports is None or principal is None:
+            raise ValueError("assertion export requires its resident selection owner")
+        return assertion_exports.page(payload, archive=archive, principal=principal, checkpoint=checkpoint)
 
     raise ValueError(f"unsupported CLI auxiliary read operation: {name}")
 
@@ -103,7 +78,7 @@ def _resolve_session_prefixes(archive: ArchiveStore, tokens: list[str]) -> list[
     return list(dict.fromkeys(resolved))
 
 
-def _sessions_from_source_path(archive: ArchiveStore, path: Path) -> tuple[str, ...]:
+def _iter_sessions_from_source_path(archive: ArchiveStore, path: Path) -> Iterator[str]:
     attached = {str(row[1]) for row in archive._conn.execute("PRAGMA database_list")}
     if "source_tier" not in attached:
         raise ArchiveTierUnavailableError(
@@ -126,13 +101,10 @@ def _sessions_from_source_path(archive: ArchiveStore, path: Path) -> tuple[str, 
     )
     from polylogue.core.compute_cancel import check_compute_cancelled
 
-    def selected_ids() -> Iterator[str]:
+    try:
         for row in rows:
             check_compute_cancelled()
             yield str(row[0])
-
-    try:
-        return tuple(selected_ids())
     finally:
         rows.close()
 

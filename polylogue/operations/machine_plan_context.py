@@ -1,4 +1,4 @@
-"""Closed replay semantics for the three declared machine mutation families.
+"""Closed replay semantics for declared machine mutation families.
 
 Only operation meaning enters this versioned record. Transport envelopes,
 credentials, arbitrary plan extensions and runtime objects are not replay data.
@@ -17,6 +17,20 @@ class _DeleteContext(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     session_ids: list[str]
+
+
+class _IdentityResetContext(_DeleteContext):
+    present_in_index: list[str]
+    reason: str
+
+    @model_validator(mode="after")
+    def exact_presence(self) -> _IdentityResetContext:
+        if len(set(self.session_ids)) != len(self.session_ids):
+            raise ValueError("reset replay repeats a suppression target")
+        present = set(self.present_in_index)
+        if self.present_in_index != [value for value in self.session_ids if value in present]:
+            raise ValueError("reset replay presence is not an ordered target subset")
+        return self
 
 
 class _BulkContext(_DeleteContext):
@@ -167,6 +181,7 @@ class _ExcisionContext(BaseModel):
 
 _CONTEXT_MODELS: dict[str, type[BaseModel]] = {
     "mutate-delete-session": _DeleteContext,
+    "mutate-identity-reset": _IdentityResetContext,
     "mutate-session-excision": _ExcisionContext,
     "mutate-add-mark": _MarkContext,
     "mutate-remove-mark": _MarkContext,

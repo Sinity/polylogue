@@ -58,7 +58,7 @@ from polylogue.core.errors import SchemaRefusalError
 from polylogue.operations.machine_receipts import MachineHistoricalReceipt, encode_machine_receipt
 
 if TYPE_CHECKING:
-    from polylogue.operations.audit import AuditRepository
+    from polylogue.operations.audit import AcceptedIdentityResetCustody, AuditRepository
     from polylogue.operations.bindings import OperationBinding
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -961,6 +961,7 @@ class OperationExecutor:
         principal: MutationPrincipal,
         *,
         confirmation_strength: ConfirmationStrength | None = None,
+        identity_reset_custody: AcceptedIdentityResetCustody | None = None,
     ) -> MutationAuthorization:
         """Issue a random one-time token bound to the persisted preview."""
 
@@ -971,7 +972,9 @@ class OperationExecutor:
         if not required.issubset(principal.capabilities):
             missing = sorted(required - principal.capabilities)
             raise CapabilityDeniedError(f"principal lacks declared capabilities: {missing}")
-        if self._now_ms() >= plan.expires_at_ms:
+        if identity_reset_custody is not None:
+            identity_reset_custody.require_authorization(preview, principal)
+        if identity_reset_custody is None and self._now_ms() >= plan.expires_at_ms:
             raise TokenExpiredError("cannot authorize an expired preview")
         # A destructive plan is never authorized with the interim boolean
         # strength.  Callers that omit the strength receive the canonical
@@ -984,6 +987,8 @@ class OperationExecutor:
             raise ConfirmationRequiredError(
                 f"{binding.spec.name!r} requires {plan.required_confirmation!r}, got {strength!r}"
             )
+        if identity_reset_custody is not None and strength != "bound_token":
+            raise ConfirmationRequiredError("accepted identity reset requires bound confirmation")
         token = self._token_factory()
         authorization = MutationAuthorization(
             plan_hash=plan.plan_hash,
@@ -994,7 +999,7 @@ class OperationExecutor:
             authorized_at=_utcnow_iso(),
             preview_ref=preview.preview_ref,
             token=token,
-            expires_at_ms=plan.expires_at_ms,
+            expires_at_ms=plan.expires_at_ms if identity_reset_custody is None else identity_reset_custody.issued_at_ms,
             capabilities=tuple(sorted(required)),
             surface=principal.surface,
         )

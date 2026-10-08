@@ -530,7 +530,7 @@ class IdentityResetPreviewRequest(_OperationPayload):
 
 
 class IdentityResetTargetsRequest(_OperationPayload):
-    preview_ref: str = Field(min_length=1)
+    preview_request_id: str = Field(min_length=1)
     offset: int = Field(default=0, ge=0)
     page_size: int = Field(default=256, ge=1)
 
@@ -548,13 +548,17 @@ class AssertionExportRequest(_OperationPayload):
     limit: int | None = Field(default=None, ge=0)
     offset: int = Field(default=0, ge=0)
     page_size: int = Field(default=256, ge=1)
-    selection_epoch: str | None = Field(default=None, min_length=1)
+    selection_ref: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
-    def continued_export_requires_epoch(self) -> AssertionExportRequest:
-        if self.offset and self.selection_epoch is None:
-            raise ValueError("continued assertion export requires selection_epoch")
+    def continued_export_requires_selection(self) -> AssertionExportRequest:
+        if self.offset and self.selection_ref is None:
+            raise ValueError("continued assertion export requires selection_ref")
         return self
+
+
+class AssertionExportReleaseRequest(_OperationPayload):
+    selection_ref: str = Field(min_length=1)
 
 
 class ContinuationRouteRequest(_OperationPayload):
@@ -1245,9 +1249,13 @@ class SessionLifecycleRequest(_OperationPayload):
     confirm: bool = False
 
 
-class IdentityResetRequest(_OperationPayload):
-    preview_ref: str = Field(min_length=1)
+class IdentityResetAuthorizeRequest(_OperationPayload):
+    preview_request_id: str = Field(min_length=1)
     confirm: bool = False
+
+
+class IdentityResetRequest(_OperationPayload):
+    authorization_request_id: str = Field(min_length=1)
 
 
 class RawAuthorityBlockerResolveRequest(_OperationPayload):
@@ -1365,7 +1373,12 @@ class UserSettingGetResult(UserOverlayGetResult):
     outcome: dict[str, object]
 
 
+class AssertionExportReleaseResult(_OperationResult):
+    released: bool
+
+
 class AssertionExportResult(UserOverlayListResult):
+    selection_ref: str
     outcome: dict[str, object]
     offset: int = Field(ge=0)
     next_offset: int | None = Field(default=None, ge=0)
@@ -1662,6 +1675,7 @@ class MutationResult(_OperationPayload):
     session_ids_sample: list[str] | None = None
     session_count: int | None = Field(default=None, ge=0)
     expires_at_ms: int | None = None
+    lifetime: Literal["accepted-request"] | None = None
     outcome: str | None = None
     sequence: int | None = Field(default=None, ge=0)
     reference: AcceptedOperationReference | None = None
@@ -1718,8 +1732,20 @@ class MutationResult(_OperationPayload):
                 raise ValueError("prepared result requires its measured selection")
             if len(self.session_ids_sample) != min(self.session_count, DELETE_PREVIEW_SAMPLE_IDS):
                 raise ValueError("prepared result requires the declared bounded selection sample")
-            if self.session_count:
-                if self.reference is None or self.expires_at_ms is None:
+            reset = self.operation == "identity-reset"
+            if reset:
+                if (
+                    self.lifetime != "accepted-request"
+                    or self.expires_at_ms is not None
+                    or self.reference is None
+                    or self.reference.operation_name != "mutation.identity-reset.preview"
+                    or self.preview_ref is not None
+                ):
+                    raise ValueError("reset preview requires its sealed accepted-request custody")
+            elif self.lifetime is not None:
+                raise ValueError("accepted-request lifetime belongs only to reset previews")
+            if self.session_count or reset:
+                if self.reference is None or (not reset and self.expires_at_ms is None):
                     raise ValueError("nonempty preview requires its durable operation reference and expiry")
                 if self.reference.artifact_kind != "preview-batch":
                     raise ValueError("prepared result does not name sealed preview authority")
@@ -2270,10 +2296,19 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         "user.assertions.export",
         DaemonAuthority.READ,
         DaemonFallback.NEVER,
-        request_contract="user.assertions.export.request/v2",
-        result_contract="user.assertions.export.result/v2",
+        request_contract="user.assertions.export.request/v3",
+        result_contract="user.assertions.export.result/v3",
         request_model=AssertionExportRequest,
         result_model=AssertionExportResult,
+    ),
+    DaemonOperationSpec(
+        "user.assertions.export.release",
+        DaemonAuthority.CONTROL,
+        DaemonFallback.NEVER,
+        request_contract="user.assertions.export.release.request/v1",
+        result_contract="user.assertions.export.release.result/v1",
+        request_model=AssertionExportReleaseRequest,
+        result_model=AssertionExportReleaseResult,
     ),
     DaemonOperationSpec(
         "session.identity-reset.targets",
@@ -2281,7 +2316,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonFallback.NEVER,
         capability="archive.identity_reset",
         handler="identity_reset_targets",
-        request_contract="session.identity-reset.targets.request/v2",
+        request_contract="session.identity-reset.targets.request/v3",
         result_contract="session.identity-reset.targets.result/v2",
         request_model=IdentityResetTargetsRequest,
         result_model=IdentityResetTargetsResult,
@@ -2955,7 +2990,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=DeletePreviewRequest,
         result_model=MutationResult,
         durable_request=True,
-        handler="execute_session_delete_preview_operation",
+        handler="execute_selected_preview_operation",
     ),
     DaemonOperationSpec(
         "mutation.session.delete.authorize",
@@ -3178,11 +3213,25 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonFallback.NEVER,
         capability="archive.identity_reset",
         accepted_reference=True,
-        request_contract="mutation.identity-reset.preview.request/v1",
+        request_contract="mutation.identity-reset.preview.request/v2",
         result_contract="mutation.result/v1",
         request_model=IdentityResetPreviewRequest,
         result_model=MutationResult,
-        handler="mutation_identity_reset_preview",
+        handler="execute_selected_preview_operation",
+        handler_module="polylogue.operations.daemon_mutations",
+    ),
+    DaemonOperationSpec(
+        "mutation.identity-reset.authorize",
+        DaemonAuthority.LONG_RUNNING,
+        DaemonFallback.NEVER,
+        capability="archive.identity_reset",
+        accepted_reference=True,
+        request_contract="mutation.identity-reset.authorize.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=IdentityResetAuthorizeRequest,
+        result_model=MutationResult,
+        handler="mutation_identity_reset_authorize",
+        authorization=DaemonAuthorization.CONFIRMATION,
     ),
     DaemonOperationSpec(
         "mutation.identity-reset",
@@ -3190,14 +3239,14 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonFallback.NEVER,
         capability="archive.identity_reset",
         accepted_reference=True,
-        request_contract="mutation.identity-reset.request/v2",
+        request_contract="mutation.identity-reset.request/v3",
         result_contract="mutation.result/v1",
         request_type="IdentityResetRequest",
         result_type="MutationResult",
         request_model=IdentityResetRequest,
         result_model=MutationResult,
         handler="mutation_identity_reset",
-        authorization=DaemonAuthorization.CONFIRMATION,
+        authorization=DaemonAuthorization.PREVIEW,
     ),
     DaemonOperationSpec(
         "mutation.raw-authority-blocker.resolve",
@@ -3647,16 +3696,20 @@ class DaemonOperationRequest:
         )
 
     @property
-    def fingerprint(self) -> str:
-        """Stable exchange identity used for safe duplicate recovery."""
-        intent = {
+    def fingerprint_intent(self) -> dict[str, object]:
+        """The complete semantic intent used by exchange identity."""
+        return {
             "operation": self.operation,
             "payload": self.payload,
             "archive_root": self.archive_root,
             "expected_archive_identity": self.expected_archive_identity,
             "expected_generation_id": self.expected_generation_id,
         }
-        encoded = json.dumps(intent, sort_keys=True, separators=(",", ":")).encode()
+
+    @property
+    def fingerprint(self) -> str:
+        """Stable exchange identity used for safe duplicate recovery."""
+        encoded = json.dumps(self.fingerprint_intent, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 
     def to_dict(self) -> dict[str, object]:
