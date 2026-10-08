@@ -2963,3 +2963,104 @@ def test_accepted_restore_backpressure_retains_indeterminate_terminal_identity(
         assert status is not None and status["result"]["outcome"] == "indeterminate", status
         assert status["result"]["error"]["retryable"] is False
         assert attempts == 1
+
+
+def test_restarted_accepted_ingest_backpressure_preserves_durable_custody(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new exchange inherits durable acceptance before its first compute phase."""
+    from polylogue.core.compute import DaemonBackpressureError
+    from polylogue.operations.audit import AuditRepository, MachineRequestBinding
+    from polylogue.operations.daemon_protocol import DAEMON_PRINCIPAL_CAPABILITIES, DaemonOperationRequest
+    from polylogue.operations.machine_lifecycle import machine_request_state
+    from polylogue.operations.mutation_transaction import MutationPrincipal
+    from polylogue.operations.operation_context import observe_control_authority
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceInput
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.source_builders import prepared_ingest_manifest
+
+    root = tmp_path / "archive"
+    principal = MutationPrincipal(
+        f"daemon:unix:uid:{os.getuid()}", DAEMON_PRINCIPAL_CAPABILITIES, "cli", "daemon-unix-peer"
+    )
+    request = DaemonOperationRequest(
+        "ingest",
+        {"path": str(tmp_path / "input.json")},
+        request_id="restarted-accepted-ingest",
+        archive_root=str(root),
+    )
+    request = DaemonOperationRequest.from_dict(request.to_dict())
+    retained: dict[str, object] = {}
+
+    def seed_accepted(root: Path) -> None:
+        publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+        digest, _ = publisher.write_from_bytes(b"synthetic retained export")
+        with write_lease("test.accepted-ingest-restart", archive_root=root):
+            publisher.flush()
+            publication_id = publisher.receipt_id(digest)
+            assert publication_id is not None
+            manifest = prepared_ingest_manifest(
+                root,
+                "accepted-generation",
+                "d" * 64,
+                (FrozenSourceInput("input.json", str(tmp_path / "input.json"), digest, publication_id),),
+                publisher_id=publisher.publisher_id,
+            )
+        identity = observe_control_authority(root).identity.authority_identity_digest
+        binding = MachineRequestBinding(
+            identity, str(request.request_id), principal.actor_ref, request.fingerprint, "ingest"
+        )
+        audit = AuditRepository.for_archive_root(root)
+        with audit.bind_machine_request(binding, transition="accept_ingest"):
+            audit.accept_ingest(manifest, principal)
+        record = audit.machine_request(binding)
+        assert record is not None
+        retained.update(machine_request_state(audit, record))
+        assert retained["outcome"] == "accepted"
+
+    with running_daemon_operations(root, seed_archive=seed_accepted):
+        pass
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def occupy_input_capacity() -> None:
+        entered.set()
+        assert release.wait(timeout=30)
+
+    with running_daemon_operations(root, session_derivation=True) as restarted:
+        durable = restarted.runtime._durable
+
+        def observe_after_worker_settlement(exchange: Any) -> Any:
+            # Observe the actual failed staged future before the read loop can
+            # return its early accepted reference. Preserve the durable reader.
+            assert exchange.future is not None
+            with pytest.raises(DaemonBackpressureError):
+                exchange.future.result(timeout=10)
+            return durable(exchange)
+
+        monkeypatch.setattr(restarted.runtime, "_durable", observe_after_worker_settlement)
+        blocker = restarted.execution_kernel.submit(
+            occupy_input_capacity, admission_class="control", estimated_bytes=0, exclusive_bytes=True
+        )
+        try:
+            assert entered.wait(timeout=5)
+            response = restarted.client.operation(
+                request.operation, request.payload, archive_root=str(root), request_id=str(request.request_id)
+            )
+            assert response is not None and response["outcome"] == "accepted", response
+            # Progress operations hand back existing custody first; the
+            # settled refusal must not become a fresh retry authorization.
+            assert response["error"] is None
+            assert response["accepted_reference"] == retained["reference"]
+            assert response["result"]["reference"] == retained["reference"]
+            status = restarted.client.operation(
+                "operation.status", {"request_id": str(request.request_id)}, archive_root=str(root)
+            )
+            assert status is not None and status["result"]["outcome"] == "accepted", status
+            assert status["result"]["reference"] == retained["reference"]
+        finally:
+            release.set()
+            blocker.future.result(timeout=10)
