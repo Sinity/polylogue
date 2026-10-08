@@ -20,6 +20,13 @@ signalled by `find`, a quoted expression, or field syntax. The query DSL is
 lowered to SQL; it is not a grep-like post-filter. Pagination and cancellation
 are part of the route contract (`polylogue/archive/query/transaction.py:1-100`).
 
+Saved query definitions canonicalize the typed predicate wire shape before
+persistence. Only declared grammar tokens and field aliases are normalized;
+opaque operands and mapping keys stay exact. Boolean `kind=and/or` children
+are sorted for identity, while directional sequence steps retain order. The
+production evaluator executes the persisted predicate, so canonicalization
+must preserve its selection meaning (`core/query_identity.py`).
+
 ## Shared read input
 
 `ReadRequest.normalize` and `read_contract_schema` share the flat input

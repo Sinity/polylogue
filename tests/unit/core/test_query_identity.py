@@ -13,19 +13,19 @@ from polylogue.core.query_identity import (
 )
 
 
-def test_query_hash_normalizes_aliases_unicode_and_commutative_children() -> None:
+def test_query_hash_normalizes_field_aliases_and_actual_commutative_kind() -> None:
     left: dict[str, JsonValue] = {
-        "operator": "AND",
+        "kind": "AND",
         "children": [
-            {"field": "provider", "value": "cafe\u0301"},
-            {"field": "title", "value": "alpha"},
+            {"kind": "field", "field": "provider", "values": ["codex-session"]},
+            {"kind": "field", "field": "title", "values": ["alpha"]},
         ],
     }
     right: dict[str, JsonValue] = {
-        "operator": "and",
+        "kind": "and",
         "children": [
-            {"field": "title", "value": "alpha"},
-            {"field": "origin", "value": "café"},
+            {"kind": "field", "field": "title", "values": ["alpha"]},
+            {"kind": "field", "field": "origin", "values": ["codex-session"]},
         ],
     }
 
@@ -93,3 +93,59 @@ def test_definition_protocol_version_is_bound_into_query_identity() -> None:
 def test_unsupported_definition_protocol_version_fails_closed_at_execution_boundary() -> None:
     with pytest.raises(ValueError, match="unsupported"):
         require_supported_definition_protocol_version("polylogue.query-definition.v999")
+
+
+def test_query_canonicalization_preserves_opaque_operands_and_mapping_keys() -> None:
+    opaque: dict[str, JsonValue] = {
+        "é": "composed",
+        "e\u0301": "decomposed",
+        "kind": "AND",
+        "field": "provider",
+        "op": "OR",
+        "children": ["second", "first"],
+    }
+    ast: dict[str, JsonValue] = {"kind": "field", "field": "id", "values": ["cafe\u0301"], "literal": opaque}
+    canonical = canonical_query_plan(
+        ast, grain="session", lane="dialogue", rank_policy="mixed", field_aliases={"provider": "origin"}
+    )
+    assert canonical["ast"] == ast
+    changed: dict[str, JsonValue] = {**ast, "values": ["café"]}
+    assert query_hash_for_plan(ast, grain="session", lane="dialogue", rank_policy="mixed") != query_hash_for_plan(
+        changed, grain="session", lane="dialogue", rank_policy="mixed"
+    )
+
+
+def test_typed_directional_sequence_order_remains_semantic() -> None:
+    from typing import cast
+
+    from polylogue.archive.query.predicate import QueryFieldPredicate, QuerySequencePredicate
+
+    steps = (QueryFieldPredicate("action", ("read",)), QueryFieldPredicate("action", ("write",)))
+    forward = cast(dict[str, JsonValue], QuerySequencePredicate(steps=steps).to_payload())
+    reverse = cast(dict[str, JsonValue], QuerySequencePredicate(steps=tuple(reversed(steps))).to_payload())
+    assert query_hash_for_plan(forward, grain="session", lane="dialogue", rank_policy="mixed") != query_hash_for_plan(
+        reverse, grain="session", lane="dialogue", rank_policy="mixed"
+    )
+
+
+def test_query_canonicalization_preserves_bound_field_coordinates_and_unknown_nodes() -> None:
+    bound: dict[str, JsonValue] = {
+        "kind": "field",
+        "field": "provider",
+        "values": ["codex-session"],
+        "field_ref": {"scope": "session", "name": "origin", "source_name": "session.provider", "unit": "message"},
+    }
+    expected: dict[str, JsonValue] = {**bound, "field": "origin"}
+    assert (
+        canonical_query_plan(
+            bound, grain="session", lane="dialogue", rank_policy="mixed", field_aliases={"provider": "origin"}
+        )["ast"]
+        == expected
+    )
+    unknown: dict[str, JsonValue] = {"kind": "OpaqueKind", "field": "provider", "children": [bound]}
+    assert (
+        canonical_query_plan(
+            unknown, grain="session", lane="dialogue", rank_policy="mixed", field_aliases={"provider": "origin"}
+        )["ast"]
+        == unknown
+    )

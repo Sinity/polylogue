@@ -207,3 +207,84 @@ def test_resolve_cohort_is_not_yet_implemented(tmp_path: Path) -> None:
     evaluator = ArchiveCanonicalPlanEvaluator(tmp_path / "index.db")
     with pytest.raises(NotImplementedError):
         evaluator.resolve_cohort(RefOperand(ObjectRef(kind="cohort", object_id="team")))
+
+
+def test_saved_exact_id_query_preserves_opaque_unicode_through_selection(tmp_path: Path) -> None:
+    """Mutation: canonicalization NFC-folds the ID and selects a different session."""
+    from typing import cast
+
+    from polylogue.archive.query.predicate import QueryFieldPredicate
+    from polylogue.storage.sqlite.query_objects import get_query
+
+    archive_root = tmp_path / "archive"
+    _seed_archive(archive_root)
+    native_ids = ("cafe\u0301", "café")
+    with ArchiveStore(archive_root) as archive:
+        for native_id in native_ids:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id=native_id,
+                    title="neutral session",
+                    messages=[
+                        ParsedMessage(provider_message_id=f"{native_id}-m", role=Role.USER, text="neutral content")
+                    ],
+                ),
+            )
+    evaluator = ArchiveCanonicalPlanEvaluator(archive_root / "index.db")
+    hashes = []
+    for native_id in native_ids:
+        session_id = f"codex-session:{native_id}"
+        predicate = QueryFieldPredicate(field="id", values=(session_id,))
+        with sqlite3.connect(archive_root / "user.db") as conn:
+            saved = put_query(
+                conn,
+                cast(dict[str, JsonValue], predicate.to_payload()),
+                grain="session",
+                lane="dialogue",
+                rank_policy="mixed",
+                created_at_ms=1,
+            )
+            conn.commit()
+            loaded = get_query(conn, saved.query_hash)
+        assert loaded is not None
+        evaluation = evaluator.evaluate(QueryEvaluationRequest(query=loaded, purpose="reference"))
+        assert evaluation.member_refs == (f"session:{session_id}",)
+        assert loaded.canonical_plan["ast"] == predicate.to_payload()
+        hashes.append(loaded.query_hash)
+    assert len(set(hashes)) == 2
+
+
+@pytest.mark.parametrize("operator", ["and", "or"])
+def test_saved_boolean_query_uses_real_wire_kind_for_commutative_identity(operator: str) -> None:
+    """Mutation: sorting looks for operator/op instead of the actual typed kind."""
+    from typing import cast
+
+    from polylogue.archive.query.predicate import QueryBoolOp, QueryBoolPredicate, QueryFieldPredicate
+    from polylogue.storage.sqlite.query_objects import list_watched_queries, put_query_name
+
+    conn = sqlite3.connect(":memory:")
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+
+    initialize_archive_tier(conn, ArchiveTier.USER)
+    children = (QueryFieldPredicate("origin", ("codex-session",)), QueryFieldPredicate("tag", ("neutral",)))
+    saved = []
+    for ordered in (children, tuple(reversed(children))):
+        predicate = QueryBoolPredicate(cast(QueryBoolOp, operator), ordered)
+        saved.append(
+            put_query(
+                conn,
+                cast(dict[str, JsonValue], predicate.to_payload()),
+                grain="session",
+                lane="dialogue",
+                rank_policy="mixed",
+                created_at_ms=1,
+            )
+        )
+    assert saved[0].query_hash == saved[1].query_hash
+    assert conn.execute("SELECT COUNT(*) FROM queries").fetchone()[0] == 1
+    for index, query in enumerate(saved):
+        put_query_name(conn, name=f"neutral-{index}", query_hash=query.query_hash, updated_at_ms=2, watch=True)
+    assert tuple(query.query_hash for query in list_watched_queries(conn)) == (saved[0].query_hash,)
+    conn.close()
