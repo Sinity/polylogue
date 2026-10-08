@@ -4222,3 +4222,39 @@ def test_http_hybrid_search_keeps_actual_lane_gap_with_or_without_hits(
     assert payload["total"] is None
     assert payload["route_state"]["state"] == "degraded"
     assert bool(payload["hits"]) is (query == "Hello")
+
+
+@pytest.mark.parametrize("route", ["/api/sessions", "/sessions"])
+def test_http_repository_literal_keeps_trailing_space(workspace_env: dict[str, Path], route: str) -> None:
+    from polylogue.storage.sqlite.connection import open_connection
+    from tests.infra.storage_records import SessionBuilder
+
+    root = workspace_env["archive_root"]
+    with _running_server(workspace_env, seeded=False) as (_, base_url):
+        ids: list[str] = []
+        for native, label in (("literal-repo", "project "), ("neighbor-repo", "project")):
+            builder = SessionBuilder(root / "index.db", native).provider("codex").git_repository_url(native)
+            builder.add_message(text="synthetic HTTP repo evidence").save()
+            ids.append(builder.native_session_id())
+            with open_connection(root / "index.db") as conn:
+                conn.execute("UPDATE repos SET repo_name=? WHERE origin_url=?", (label, native))
+                conn.commit()
+        status, _, body = _get_text(base_url, route + "?repo=project%20")
+        assert status == HTTPStatus.OK
+        if route == "/api/sessions":
+            payload = json.loads(body)
+            assert payload["total"] == 1
+            assert ids[0] in body
+            assert ids[1] not in body
+        else:
+            assert f'href="/sessions/{quote(ids[0], safe="")}"' in body
+            assert f'href="/sessions/{quote(ids[1], safe="")}"' not in body
+
+
+def test_http_repository_csv_preserves_literal_segments_and_repetitions() -> None:
+    from polylogue.daemon.http import _build_query_spec_params
+
+    result = _build_query_spec_params(
+        {"repo": ["project ,pipe|repo", "other ", "project ", "project"]}, _QueryParamBuilderHandler()
+    )  # type: ignore[arg-type]
+    assert result["repo"] == ("project ", "pipe|repo", "other ", "project")

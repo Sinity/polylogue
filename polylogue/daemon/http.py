@@ -1118,6 +1118,8 @@ def _build_query_spec_params(
     API and server-rendered session lists pass these operands to the canonical
     query executor, so filter, ordering and retrieval semantics have one owner.
     """
+    from polylogue.archive.query.spec import split_repo_names
+
     spec_params: dict[str, object] = {}
 
     origins = _csv_values(params, "origin")
@@ -1167,10 +1169,13 @@ def _build_query_spec_params(
     if excluded_origins:
         spec_params["exclude_origin"] = excluded_origins
 
+    repo_names = tuple(dict.fromkeys(name for value in params.get("repo", ()) for name in split_repo_names(value)))
+    if repo_names:
+        spec_params["repo"] = repo_names
+
     for key in (
         "tag",
         "exclude_tag",
-        "repo",
         "has_type",
         "referenced_path",
         "action",
