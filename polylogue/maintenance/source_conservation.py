@@ -63,6 +63,7 @@ ARTIFACT_IDENTITY_SUFFIXES: tuple[tuple[str, str], ...] = (
 
 _TERM_SOURCE_MISSING = "source_missing"
 _TERM_SOURCE_LOST = "source_lost"
+_TERM_MISSING_BLOB = "missing_blob"
 _TERM_SOURCE_UNAVAILABLE = "source_unavailable"
 _TERM_MATERIALIZED = "materialized"
 _TERM_REVISION_SUPERSEDED = "revision_superseded"
@@ -107,6 +108,7 @@ _RULES: dict[str, str] = {
     _TERM_SOURCE_LOST: (
         "acquired source file no longer exists on disk and no raw payload blob is retained; the bytes are gone"
     ),
+    _TERM_MISSING_BLOB: "acquired raw payload has no retained CAS body; an original source is not archive retention",
     _TERM_SOURCE_UNAVAILABLE: "source file or member inventory is unreadable; retention is unmeasured and retryable",
     _TERM_MATERIALIZED: "index session carries this raw_id, or the agent work event's session is indexed",
     _TERM_REVISION_SUPERSEDED: "another revision of the same logical source is materialized",
@@ -168,6 +170,7 @@ _RULES: dict[str, str] = {
 _BLOCKING: frozenset[str] = frozenset(
     {
         _TERM_SOURCE_LOST,
+        _TERM_MISSING_BLOB,
         _TERM_SOURCE_UNAVAILABLE,
         _TERM_UNCLASSIFIED_SHAPE,
         _TERM_QUARANTINED_COHORT,
@@ -658,19 +661,22 @@ def audit_source_conservation(
         term,
         coordinate,
     ) in typed_rows:
-        # A work event is authored by the archive itself; its retained raw is
-        # the source, so there is no acquired file to probe.
+        # Archive retention is independent of whether reacquisition is possible.
+        # Probe CAS metadata only; body fidelity belongs to retained-byte validation.
+        retained = bool(bytes_retained)
+        if blob_hash is not None:
+            digest = bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash)
+            retained = retained and blob_store.exists(digest)
+        present: bool | None = True
+        # A work event's retained raw is its source; it has no acquired file.
         if probe_filesystem and not is_work_event_raw_id(str(raw_id)):
             present = _source_presence(archive_root, str(source_path), inventories, captured_coordinate=coordinate)
-            if present is None:
-                term = _TERM_SOURCE_UNAVAILABLE
-            elif not present:
-                retained = bool(bytes_retained)
-                # blob_hash comes from the census query itself: no per-row read.
-                if blob_hash is not None:
-                    digest = bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash)
-                    retained = retained and blob_store.exists(digest)
-                term = _TERM_SOURCE_MISSING if retained else _TERM_SOURCE_LOST
+        if not retained:
+            term = _TERM_SOURCE_LOST if present is False else _TERM_MISSING_BLOB
+        elif present is None:
+            term = _TERM_SOURCE_UNAVAILABLE
+        elif not present:
+            term = _TERM_SOURCE_MISSING
         counts[term] = counts.get(term, 0) + 1
         bucket = samples.setdefault(term, [])
         if len(bucket) < sample_limit:
@@ -1061,6 +1067,7 @@ def audit_source_conservation(
     forward_order = (
         _TERM_SOURCE_MISSING,
         _TERM_SOURCE_LOST,
+        _TERM_MISSING_BLOB,
         _TERM_SOURCE_UNAVAILABLE,
         _TERM_MATERIALIZED,
         _TERM_REVISION_SUPERSEDED,

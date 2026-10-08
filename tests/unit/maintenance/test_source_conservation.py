@@ -765,6 +765,7 @@ def test_check_json_carries_every_term_with_its_rule(tmp_path: Path) -> None:
         "materialized",
         "source_missing",
         "source_lost",
+        "missing_blob",
         "unexplained",
         "phantom_declared_non_session_lineage",
     } <= set(terms)
@@ -1334,14 +1335,11 @@ def test_stale_sqlite_revision_is_not_conserved(tmp_path: Path) -> None:
     assert _count(current, "frontier_unacquired") == 0, current.evidence["terms"]
 
 
-def test_archive_member_source_is_not_lost(tmp_path: Path) -> None:
-    """A raw acquired from an archive member whose container is present is conserved.
+def test_archive_member_presence_does_not_replace_retained_cas(tmp_path: Path) -> None:
+    """A declared ZIP member proves source presence, not retained archive bytes.
 
-    Anti-vacuity: revert ``_source_presence`` to a bare ``Path(source_path).exists()``
-    and the declared member receipt is ignored, so the raw is typed
-    ``source_lost`` (blocking) even though the bytes are sitting in the archive on
-    disk. The blob ref is deleted on purpose so the ladder cannot fall back to the
-    non-blocking ``source_missing`` arm -- only the on-disk probe decides.
+    Mutation: source presence bypasses a missing capture and falsely materializes
+    this raw after its blob reference is removed.
     """
     session_source, _ = _seed(tmp_path)
     payload = session_source.read_bytes()
@@ -1362,10 +1360,11 @@ def test_archive_member_source_is_not_lost(tmp_path: Path) -> None:
     session_source.unlink()
 
     check = _run(tmp_path)
-    assert check.status is OutcomeStatus.OK, check.summary
+    assert check.status is OutcomeStatus.ERROR, check.summary
     assert _count(check, "source_lost") == 0
     assert _count(check, "source_missing") == 0
-    assert _count(check, "materialized") == 1
+    assert _count(check, "missing_blob") == 1
+    assert _count(check, "materialized") == 0
 
 
 def test_member_container_absent_is_lost(tmp_path: Path) -> None:
@@ -1454,9 +1453,10 @@ def test_non_zip_member_container_cannot_conserve_materialized_raw(tmp_path: Pat
     assert check.status is (OutcomeStatus.OK if retained else OutcomeStatus.ERROR)
 
 
+@pytest.mark.parametrize("retained", [False, True])
 @pytest.mark.parametrize("suffix", [".zip", ".data"])
 def test_unreadable_member_inventory_is_retryable_and_not_loss(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str, retained: bool
 ) -> None:
     """Mutation: treating a denied container as present or missing loses measurement truth."""
     session_source, _ = _seed(tmp_path)
@@ -1467,7 +1467,8 @@ def test_unreadable_member_inventory_is_retryable_and_not_loss(
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (coordinate,))
         _record_member_fixture(conn, bundle)
-        conn.execute("DELETE FROM blob_refs WHERE ref_id = 'raw-session'")
+        if not retained:
+            conn.execute("DELETE FROM blob_refs WHERE ref_id = 'raw-session'")
     original = os.open
 
     def denied(path: Path, *args: Any, **kwargs: Any) -> int:
@@ -1479,14 +1480,16 @@ def test_unreadable_member_inventory_is_retryable_and_not_loss(
         patch.setattr(os, "open", denied)
         check = _run(tmp_path)
     assert check.status is OutcomeStatus.ERROR
-    assert _count(check, "source_unavailable") == 1
+    assert _count(check, "source_unavailable") == int(retained)
+    assert _count(check, "missing_blob") == int(not retained)
     assert _count(check, "source_lost") == 0
     assert _count(check, "source_missing") == 0
     assert _count(check, "materialized") == 0
     # A new audit measures the recovered inventory rather than caching its denial.
     recovered = _run(tmp_path)
     assert _count(recovered, "source_unavailable") == 0
-    assert _count(recovered, "materialized") == 1
+    assert _count(recovered, "materialized") == int(retained)
+    assert _count(recovered, "missing_blob") == int(not retained)
 
 
 def test_conservation_rechecks_cached_inventory_after_container_replacement(
@@ -1606,3 +1609,30 @@ def test_completed_intake_does_not_owe_declared_out_of_scope_database_projection
     assert check.status is OutcomeStatus.OK, check.evidence
     assert _count(check, "frontier_unacquired") == 0
     assert projection.is_file()
+
+
+@pytest.mark.parametrize(
+    "source_present,blob_present,term",
+    [(True, False, "missing_blob"), (False, True, "source_missing"), (False, False, "source_lost")],
+)
+def test_retained_cas_presence_is_independent_of_original_source(
+    tmp_path: Path, source_present: bool, blob_present: bool, term: str
+) -> None:
+    """Mutation: CAS existence is probed only after the original disappears."""
+    session_source, _ = _seed(tmp_path)
+    connection = sqlite3.connect(tmp_path / "source.db")
+    try:
+        digest = bytes(
+            connection.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = 'raw-session'").fetchone()[0]
+        ).hex()
+    finally:
+        connection.close()
+    if not source_present:
+        session_source.unlink()
+    if not blob_present:
+        BlobStore(tmp_path / "blob").blob_path(digest).unlink()
+    check = _run(tmp_path)
+    assert check.status is (OutcomeStatus.OK if blob_present else OutcomeStatus.ERROR)
+    assert _count(check, term) == 1
+    assert _terms(check)[term]["blocking"] is (not blob_present)
+    assert _count(check, "materialized") == 0

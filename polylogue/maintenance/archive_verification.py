@@ -691,7 +691,8 @@ def _check_source_conservation_at_index_path(
     session traces to a raw row that is not a declared non-session artifact,
     and every message, block, and attachment ref traces to its owner. Blocking
     terms are the unexplained ones (``unexplained``, ``unclassified_shape``,
-    ``quarantined_cohort_unmaterialized``, ``source_lost``, ``source_unavailable``, orphans,
+    ``quarantined_cohort_unmaterialized``, ``source_lost``, ``missing_blob``,
+    ``source_unavailable``, orphans,
     phantoms); a source file that is gone while its raw payload bytes are
     retained (``source_missing``) is typed accounting, and ``pending``,
     ``authority_blocked_head``, plus hook events whose session file was never

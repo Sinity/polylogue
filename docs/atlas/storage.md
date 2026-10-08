@@ -480,3 +480,10 @@ required evidence, including canonical and shipped-order source witnesses.
 Eligibility requires complete document validation through EOF. The diagnostic
 prefix does not decide support. Memory remains subject to the existing decoder's
 one-scalar allocation and SQLite's physical value-length bound.
+
+Source conservation checks retained raw CAS presence independently of original
+source availability. A present original with absent retained bytes is blocking
+`missing_blob`; an absent original and absent retained bytes is `source_lost`.
+An absent original with retained bytes remains nonblocking `source_missing`.
+These checks inspect CAS existence, while retained-byte validation owns full
+body fidelity.
