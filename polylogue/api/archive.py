@@ -464,9 +464,17 @@ def _archive_query_kwargs(spec: SessionQuerySpec, *, default_limit: int | None) 
         kwargs["reverse"] = True
     if spec.sample is not None:
         # ``spec.sample`` is the requested page size; ``list_summaries(sample=...)``
-        # is the boolean "order randomly" switch, and the size travels as
-        # ``limit``. Passing the count through worked only because it is truthy.
+        # is the boolean "order randomly" switch. Sampling starts at offset
+        # zero and its requested size replaces the ordinary page limit.
         kwargs["sample"] = True
+        kwargs["limit"] = spec.sample
+        kwargs["offset"] = 0
+    elif spec.latest:
+        # Keep the low-level summary route aligned with query_spec_to_plan.
+        # The plan's latest expansion is an updated-date ordering and one row.
+        latest = spec.to_plan()
+        kwargs["sort"] = latest.sort
+        kwargs["limit"] = latest.limit
     return kwargs
 
 

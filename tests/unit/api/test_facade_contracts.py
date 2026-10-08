@@ -3158,6 +3158,30 @@ async def test_query_sessions_sampled_text_query_uses_search_kwargs(tmp_path: Pa
         await archive.close()
 
 
+async def test_query_sessions_latest_and_sample_match_canonical_list_windows(tmp_path: Path) -> None:
+    from tests.infra.storage_records import SessionBuilder
+
+    archive = _archive(tmp_path)
+    try:
+        index_db = archive.config.archive_root / "index.db"
+        for name, updated_at in (
+            ("window-old", "2026-01-01T00:00:00+00:00"),
+            ("window-middle", "2026-02-01T00:00:00+00:00"),
+            ("window-new", "2026-03-01T00:00:00+00:00"),
+        ):
+            SessionBuilder(index_db, name).provider("codex").updated_at(updated_at).add_message(
+                "user", role="user", text=f"Session {name}"
+            ).save()
+
+        latest = await archive.query_sessions(latest=True, limit=3)
+        sampled = await archive.query_sessions(sample=2, limit=3, offset=1)
+
+        assert [row["id"] for row in latest] == ["codex-session:ext-window-new"]
+        assert len(sampled) == 2
+    finally:
+        await archive.close()
+
+
 async def test_query_units_returns_typed_envelope_on_empty_archive(tmp_path: Path) -> None:
     """``query_units()`` returns a typed terminal-unit envelope even with no rows."""
     from polylogue.surfaces.payloads import QueryUnitEnvelope
