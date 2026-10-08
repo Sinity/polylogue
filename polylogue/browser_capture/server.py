@@ -248,6 +248,19 @@ class BrowserCaptureHTTPServer(ThreadingHTTPServer):
             emit("browser_capture.stale_staging_reaped", level=INFO, reclaimed=reaped)
         super().__init__(server_address, BrowserCaptureHandler)
 
+    def service_actions(self) -> None:
+        """Autonomous bounded receiver retirement, owned by serve_forever."""
+        try:
+            registry_for_receiver(self.config.spool_path, receiver_identity(self.config)).maintenance_step()
+        except (sqlite3.Error, OSError, CaptureJobError) as exc:
+            emit("browser_capture.capture_job_registry_unavailable", level=WARNING, error=repr(exc))
+
+    def server_close(self) -> None:
+        try:
+            super().server_close()
+        finally:
+            registry_for_receiver(self.config.spool_path, receiver_identity(self.config)).close_maintenance()
+
 
 class BrowserCaptureHandler(BaseHTTPRequestHandler):
     """Local JSON API used by the browser extension.

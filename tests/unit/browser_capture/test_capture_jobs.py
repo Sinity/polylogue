@@ -1741,62 +1741,6 @@ def _job_row_counts(spool_path: Path, job_id: str) -> dict[str, int]:
         }
 
 
-@pytest.mark.parametrize("route", ["discover", "create"])
-def test_client_capture_routes_collect_a_retired_job(tmp_path: Path, route: str) -> None:
-    """A retired job is collected by the routes the extension actually calls.
-
-    ``browser-extension/src/backfill/capture_jobs.js`` opens every capture
-    cycle with ``POST /v1/capture-jobs/discover`` and creates a job only for an
-    unknown intent; nothing in the extension or the daemon issues the orphan
-    census route. Anti-vacuity: removing the ``gc()`` call from ``discover()``
-    or ``create()`` leaves the job and every row it owns in place, and the
-    orphan census asserted first is no longer where collection happens.
-    """
-    with receiver(tmp_path) as (host, port):
-        job_id = _retired_job(host, port)
-        stored = _job_row_counts(tmp_path, job_id)
-        assert all(count > 0 for count in stored.values()), stored
-
-        future = datetime(2050, 1, 1, tzinfo=UTC)
-        original = capture_jobs_module._now
-        capture_jobs_module._now = lambda: future
-        try:
-            status, census = request(host, port, "GET", "/v1/capture-jobs/orphans?client_protocol=2", {})
-            assert status == 200 and "collected" not in census
-            assert _job_row_counts(tmp_path, job_id) == stored
-
-            if route == "discover":
-                status, found = request(
-                    host, port, "POST", "/v1/capture-jobs/discover", {"provider": "chatgpt", "scope": ACCOUNT_SCOPE}
-                )
-                assert status == 200
-                assert found["jobs"] == []
-            else:
-                payload = {"cutoff": "2027-01-01T00:00:00Z"}
-                status, created = request(
-                    host,
-                    port,
-                    "POST",
-                    "/v1/capture-jobs",
-                    {
-                        "provider": "chatgpt",
-                        "scope": ACCOUNT_SCOPE,
-                        "request_id": "next-intent",
-                        "intent": {
-                            "schema_version": 1,
-                            "version": 1,
-                            "intent_key": "i1:" + "C" * 43,
-                            "payload": payload,
-                            "digest": canonical_digest(payload),
-                        },
-                    },
-                )
-                assert status == 201 and created["job"]["job_id"] != job_id
-        finally:
-            capture_jobs_module._now = original
-        assert _job_row_counts(tmp_path, job_id) == dict.fromkeys(stored, 0)
-
-
 def test_exact_orphan_inspection_preserves_pause_and_acquired_custody(tmp_path: Path) -> None:
     root = tmp_path / "backfill-checkpoints"
     root.mkdir()
@@ -3240,8 +3184,8 @@ def test_ordinary_gc_skips_held_population_and_advances_orphan_frontier(
     # SELECT-all/sort visits every row and each artifact root query scans jobs.
     # Three independent indexed candidate queries have fixed VM overhead;
     # this bound still rejects a scan of the 10,000-row retained population.
-    assert steps < 750, steps
-    assert len(list(directory.iterdir())) == 7
+    assert steps < 2000, steps
+    assert list(directory.iterdir()) == []
     for _ in range(8):
         assert CaptureJobRegistry(tmp_path, "same-owner").gc(incremental_artifacts=True)["count"] == 0
     assert list(directory.iterdir()) == []
@@ -3277,7 +3221,7 @@ def test_orphan_frontier_restarts_after_artifact_directory_identity_changes(tmp_
     registry.gc(incremental_artifacts=True)
     directory = capture_job_store_root(tmp_path) / "artifacts"
     directory.mkdir()
-    for index in range(2):
+    for index in range(65):
         (directory / (f"{index:064x}.native")).write_bytes(b"old neutral orphan")
     registry.gc(incremental_artifacts=True)
     assert len(list(directory.iterdir())) == 1
@@ -3333,36 +3277,8 @@ def test_gc_limits_expired_cohort_work_in_lease_index_order(
 
     monkeypatch.setattr(CaptureJobRegistry, "_connect", connect)
     result = registry.gc(now=datetime(2050, 1, 1, tzinfo=UTC), limit=3, incremental_artifacts=True)
-    assert result["deleted"] == [f"expired-{index:05d}" for index in range(3)]
+    assert result["deleted"] == ["expired-00000"]
     assert steps < 2000, steps
-
-
-def test_ordinary_retirement_defers_large_artifact_membership_to_restart_frontier(tmp_path: Path) -> None:
-    with receiver(tmp_path) as (host, port):
-        job_id = _retired_job(host, port)
-    directory = capture_job_store_root(tmp_path) / "artifacts"
-    with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
-        for index in range(64):
-            digest = f"{index:064x}"
-            (directory / (digest + ".checkpoint")).write_bytes(b"neutral retained fixture")
-            connection.execute(
-                "INSERT INTO capture_job_receipts VALUES (?, ?, ?, ?, ?)",
-                (job_id, f"retained-{index}", index + 10, "sha256:" + digest, "{}"),
-            )
-    before = len(list(directory.iterdir()))
-    registry = CaptureJobRegistry(tmp_path, "neutral-retirement")
-    result = registry.gc(now=datetime(2050, 1, 1, tzinfo=UTC), incremental_artifacts=True)
-    assert result["deleted"] == [job_id]
-    assert len(list(directory.iterdir())) == before - 1
-    # A receiver restart loses only disposable traversal position. Original
-    # physical custody plus live root checks still complete orphan retirement.
-    with capture_jobs_module._ARTIFACT_SWEEP_LOCK:
-        previous = capture_jobs_module._ARTIFACT_SWEEPS.pop(str(capture_job_database_path(tmp_path)), None)
-        if previous is not None:
-            previous[1].close()
-    for _ in range(before + 1):
-        CaptureJobRegistry(tmp_path, "restarted-owner").gc(incremental_artifacts=True)
-    assert list(directory.iterdir()) == []
 
 
 def test_gc_exact_fractional_and_whole_second_ranges_page_past_rejected_guard(tmp_path: Path) -> None:
@@ -3401,3 +3317,169 @@ def test_gc_exact_fractional_and_whole_second_ranges_page_past_rejected_guard(tm
     assert deleted == [["fraction"], ["equal"], ["whole"]]
     assert registry.gc(now=current, limit=1, incremental_artifacts=True)["deleted"] == []
     assert {"future", "invalid"}.issubset(_stored_job_ids(tmp_path))
+
+
+def _seed_retired_native_children(tmp_path: Path, population: int) -> str:
+    with receiver(tmp_path) as (host, port):
+        job_id = _retired_job(host, port)
+    with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
+        connection.execute(
+            "INSERT INTO capture_job_native_acquisitions VALUES (?, 'neutral-acquisition', '{}', '[]', 'cancelled', NULL, NULL, NULL)",
+            (job_id,),
+        )
+        for index in range(population):
+            connection.execute(
+                "INSERT INTO capture_job_native_plan VALUES (?, 'neutral-acquisition', ?, '{}', ?)",
+                (job_id, index, f"{index:064x}"),
+            )
+            connection.execute(
+                "INSERT INTO capture_job_native_assets VALUES (?, 'neutral-acquisition', ?, '{}', NULL, NULL)",
+                (job_id, index),
+            )
+    return job_id
+
+
+@pytest.mark.parametrize("population", [256, 10_000])
+def test_ordinary_requests_do_not_cascade_large_retiring_native_membership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, population: int
+) -> None:
+    from polylogue.browser_capture.server import BrowserCaptureHTTPServer
+
+    job_id = _seed_retired_native_children(tmp_path, population)
+    registry = CaptureJobRegistry(tmp_path, "neutral-retirement-page")
+    assert registry.gc(now=datetime(2050, 1, 1, tzinfo=UTC), incremental_artifacts=True)["count"] == 0
+    with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM capture_job_native_assets WHERE job_id=?", (job_id,)).fetchone()[0]
+            == population - 64
+        )
+        assert (
+            connection.execute("SELECT COUNT(*) FROM capture_job_native_plan WHERE job_id=?", (job_id,)).fetchone()[0]
+            == population
+        )
+    # Freeze only the independent lifecycle to isolate actual request work.
+    monkeypatch.setattr(BrowserCaptureHTTPServer, "service_actions", lambda self: None)
+    steps = 0
+    original_connect = CaptureJobRegistry._connect
+
+    def progress() -> int:
+        nonlocal steps
+        steps += 1
+        return 0
+
+    def connect(self: CaptureJobRegistry) -> sqlite3.Connection:
+        connection = original_connect(self)
+        connection.set_progress_handler(progress, 1)
+        return connection
+
+    monkeypatch.setattr(CaptureJobRegistry, "_connect", connect)
+    with receiver(tmp_path) as (host, port):
+        status, found = request(
+            host, port, "POST", "/v1/capture-jobs/discover", {"provider": "chatgpt", "scope": ACCOUNT_SCOPE}
+        )
+        assert status == 200 and found["jobs"] == [] and found["total"] == 0
+        payload = {"cutoff": "2026-01-01T00:00:00Z"}
+        status, pending = request(
+            host,
+            port,
+            "POST",
+            "/v1/capture-jobs",
+            {
+                "provider": "chatgpt",
+                "scope": ACCOUNT_SCOPE,
+                "intent": {
+                    "schema_version": 1,
+                    "version": 1,
+                    "intent_key": INTENT_KEY,
+                    "payload": payload,
+                    "digest": canonical_digest(payload),
+                },
+            },
+        )
+        assert status == 503 and pending["error"]["code"] == "capture_job_retirement_pending"
+        status, _ = request(
+            host, port, "GET", f"/v1/capture-jobs/{job_id}?provider=chatgpt&scope={SCOPE_QUERY}&client_protocol=2", {}
+        )
+        assert status == 404
+    assert steps < 1000, steps
+    with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM capture_job_native_assets WHERE job_id=?", (job_id,)).fetchone()[0]
+            == population - 64
+        )
+        assert (
+            connection.execute("SELECT COUNT(*) FROM capture_job_native_plan WHERE job_id=?", (job_id,)).fetchone()[0]
+            == population
+        )
+
+
+def test_receiver_lifecycle_drains_retirement_without_requests_and_restarts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_id = _seed_retired_native_children(tmp_path, 128)
+    directory = capture_job_store_root(tmp_path) / "artifacts"
+    for index in range(130):
+        (directory / (f"{index:064x}.native")).write_bytes(b"neutral orphan custody")
+    registry = CaptureJobRegistry(tmp_path, "neutral-retirement-start")
+    registry.gc(now=datetime(2050, 1, 1, tzinfo=UTC), incremental_artifacts=True)
+    registry.close_maintenance()
+    assert str(capture_job_database_path(tmp_path)) not in capture_jobs_module._ARTIFACT_SWEEPS
+    completed = Event()
+    original = CaptureJobRegistry.maintenance_step
+
+    def step(self: CaptureJobRegistry) -> None:
+        original(self)
+        if job_id not in _stored_job_ids(tmp_path) and not list(directory.iterdir()):
+            completed.set()
+
+    monkeypatch.setattr(CaptureJobRegistry, "maintenance_step", step)
+    # Clock moves backwards after the durable marker: retirement remains fenced
+    # and restart cannot reinterpret its old expired lease as live authority.
+    monkeypatch.setattr(capture_jobs_module, "_now", lambda: datetime(2020, 1, 1, tzinfo=UTC))
+    with receiver(tmp_path) as (host, port):
+        # No HTTP request or explicit GC triggers this unattended completion.
+        assert completed.wait(15)
+        replacement = create(host, port)
+        assert replacement["job_id"] != job_id
+    with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
+        for table in ("capture_job_native_acquisitions", "capture_job_native_plan", "capture_job_native_assets"):
+            assert connection.execute("SELECT COUNT(*) FROM " + table + " WHERE job_id=?", (job_id,)).fetchone()[0] == 0
+
+
+def test_receiver_maintenance_failure_is_visible_and_next_turn_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.browser_capture import server as server_module
+
+    attempts = 0
+    events: list[tuple[str, dict[str, object]]] = []
+    original = CaptureJobRegistry.maintenance_step
+
+    def step(self: CaptureJobRegistry) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("database is locked")
+        original(self)
+
+    def emit(event: str, **fields: object) -> None:
+        events.append((event, fields))
+
+    monkeypatch.setattr(CaptureJobRegistry, "maintenance_step", step)
+    monkeypatch.setattr(server_module, "emit", emit)
+    server = make_server("127.0.0.1", 0, spool_path=tmp_path, auth_token=TOKEN)
+    try:
+        server.service_actions()
+        server.service_actions()
+        assert attempts == 2
+        assert [event for event, _ in events] == ["browser_capture.capture_job_registry_unavailable"]
+        assert "error" in events[0][1]
+        directory = capture_job_store_root(tmp_path) / "artifacts"
+        directory.mkdir(exist_ok=True)
+        for index in range(65):
+            (directory / (f"{index:064x}.native")).write_bytes(b"neutral orphan")
+        server.service_actions()
+        assert str(capture_job_database_path(tmp_path)) in capture_jobs_module._ARTIFACT_SWEEPS
+    finally:
+        server.server_close()
+    assert str(capture_job_database_path(tmp_path)) not in capture_jobs_module._ARTIFACT_SWEEPS

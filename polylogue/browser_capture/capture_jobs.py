@@ -22,7 +22,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import IO, BinaryIO, Protocol, cast
+from typing import BinaryIO, Protocol, cast
 from uuid import UUID, uuid4
 
 import ijson
@@ -846,6 +846,8 @@ class CaptureJobRegistry:
                 )
         else:
             matches = False
+        if row is not None and json.loads(row["retention_json"]).get("retiring") is True:
+            matches = False
         if not matches:
             raise CaptureJobError(404, "capture_job_not_found")
         return cast(sqlite3.Row, row)
@@ -917,7 +919,6 @@ class CaptureJobRegistry:
             body.get("provider"), body.get("scope"), body.get("client_protocol")
         )
         intent = self._intent(body.get("intent"))
-        self.gc(incremental_artifacts=True)
         now = _stamp()
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -926,6 +927,8 @@ class CaptureJobRegistry:
                 (provider, scope_key, intent["intent_key"]),
             ).fetchone()
             if found is not None:
+                if self._retirement_eligible(connection, found, _now()):
+                    raise CaptureJobError(503, "capture_job_retirement_pending")
                 with ExitStack() as intent_owner:
                     stored_intent = cast(
                         dict[str, object],
@@ -991,12 +994,6 @@ class CaptureJobRegistry:
         intent_key = body.get("intent_key")
         if intent_key is not None and (not isinstance(intent_key, str) or not intent_key.startswith("i1:")):
             raise CaptureJobError(400, "invalid_intent")
-        # Every capture cycle opens with discovery and falls through to
-        # create() only for an unknown intent, so these two routes are where
-        # retired jobs are collected. Collecting before listing means the
-        # client never adopts a job this pass is about to delete.
-        if body.get("cursor") is None:
-            self.gc(incremental_artifacts=True)
         cursor = body.get("cursor")
         if cursor is not None and (
             not isinstance(cursor, dict)
@@ -1007,7 +1004,7 @@ class CaptureJobRegistry:
         with self._connection() as connection:
             connection.execute("BEGIN")
             parameters: list[object] = [provider, scope["key"]]
-            predicate = "provider=? AND scope_kind='account' AND scope_key=?"
+            predicate = "provider=? AND scope_kind='account' AND scope_key=? AND COALESCE(json_extract(retention_json, '$.retiring'),0)=0"
             if intent_key:
                 predicate += " AND intent_key=?"
                 parameters.append(intent_key)
@@ -1640,15 +1637,59 @@ class CaptureJobRegistry:
     def gc(
         self, *, now: datetime | None = None, limit: int = 100, incremental_artifacts: bool = False
     ) -> dict[str, object]:
-        """Delete only explicitly eligible, acknowledged, non-authoritative jobs."""
+        """Explicitly drain eligible jobs; incremental calls perform one page."""
         if not 1 <= limit <= 1000:
             raise CaptureJobError(400, "invalid_gc_limit")
         current = now or _now()
         deleted: list[str] = []
-        # Retired membership can be arbitrarily large even for one job. Keep
-        # its exact candidate names on request-owned scratch until commit.
-        with tempfile.TemporaryFile(mode="w+t", encoding="ascii") as artifact_names:
-            return self._gc_retire(current, limit, incremental_artifacts, deleted, artifact_names)
+        while len(deleted) < limit:
+            result = self._retire_page(current)
+            deleted.extend(cast(list[str], result["deleted"]))
+            if incremental_artifacts or not result["progress"]:
+                break
+        self._collect_checkpoint_artifacts((), incremental=incremental_artifacts, quantum=64)
+        return {"deleted": deleted, "count": len(deleted)}
+
+    def maintenance_step(self) -> None:
+        """One lifecycle turn; physical rows and files retain restart custody."""
+        from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
+
+        try:
+            self.gc(incremental_artifacts=True)
+        except NativeConnectionSettlementError as exc:
+            raise CaptureJobError(503, "capture_job_registry_unsettled") from exc
+
+    def close_maintenance(self) -> None:
+        """Release only this receiver store's disposable directory frontier."""
+        with _ARTIFACT_SWEEP_LOCK:
+            frontier = _ARTIFACT_SWEEPS.pop(str(capture_job_database_path(self.spool_path)), None)
+            if frontier is not None:
+                frontier[1].close()
+
+    def _retirement_eligible(self, connection: sqlite3.Connection, row: sqlite3.Row, current: datetime) -> bool:
+        retention = json.loads(row["retention_json"])
+        if retention.get("retiring") is True:
+            return True
+        if retention.get("state") != "eligible" or retention.get("timeline_authoritative", True):
+            return False
+        if json.loads(row["retry_json"]).get("state") not in {"completed", "abandoned"}:
+            return False
+        if row["checkpoint_sequence"] is None or not row["receipt_json"]:
+            return False
+        if connection.execute(
+            "SELECT 1 FROM capture_job_native_acquisitions WHERE job_id=? "
+            "AND final_receipt_json IS NULL AND state!='cancelled' LIMIT 1",
+            (row["job_id"],),
+        ).fetchone():
+            return False
+        lease = self._lease(row)
+        if lease is None:
+            return True
+        try:
+            expiry = datetime.fromisoformat(str(lease.get("expires_at")).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return expiry.tzinfo is not None and expiry <= current
 
     def _gc_candidates(
         self, connection: sqlite3.Connection, current: datetime, remaining: Callable[[], int]
@@ -1712,75 +1753,51 @@ class CaptureJobRegistry:
                     if remaining() <= 0:
                         return
 
-    def _gc_retire(
-        self,
-        current: datetime,
-        limit: int,
-        incremental_artifacts: bool,
-        deleted: list[str],
-        artifact_names: IO[str],
-    ) -> dict[str, object]:
+    def _retire_page(self, current: datetime) -> dict[str, object]:
+        from polylogue.core.compute_cancel import check_compute_cancelled
+
+        check_compute_cancelled()
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            for row in self._gc_candidates(connection, current, lambda: limit - len(deleted)):
+            for row in self._gc_candidates(connection, current, lambda: 1):
+                if not self._retirement_eligible(connection, row, current):
+                    continue
+                job_id = row["job_id"]
                 retention = json.loads(row["retention_json"])
-                retry = json.loads(row["retry_json"])
-                lease = self._lease(row)
-                if retention.get("state") != "eligible" or retention.get("timeline_authoritative", True):
-                    continue
-                if retry.get("state") not in {"completed", "abandoned"}:
-                    continue
-                if connection.execute(
-                    "SELECT 1 FROM capture_job_native_acquisitions WHERE job_id=? AND final_receipt_json IS NULL AND state != 'cancelled' LIMIT 1",
-                    (row["job_id"],),
-                ).fetchone():
-                    # A terminal scheduling choice is not capture acceptance.
-                    # Unpublished live native bytes remain inspectable custody.
-                    # Cancellation permanently fences acquisition; its artifacts
-                    # retire only with the independently eligible owning job.
-                    continue
-                if lease is not None:
-                    expires_at = lease.get("expires_at")
-                    if not isinstance(expires_at, str):
-                        continue
-                    try:
-                        lease_expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-                    except ValueError:
-                        continue
-                    if lease_expires_at.tzinfo is None or lease_expires_at > current:
-                        continue
-                if row["checkpoint_sequence"] is None or not row["receipt_json"]:
-                    continue
-                if not incremental_artifacts:
-                    for digest_row in connection.execute(
-                        "SELECT checkpoint_digest AS digest FROM capture_job_receipts WHERE job_id=? "
-                        "UNION SELECT checkpoint_artifact_ref FROM capture_jobs WHERE job_id=?",
-                        (row["job_id"], row["job_id"]),
-                    ):
-                        if digest_row[0]:
-                            artifact_names.write(str(digest_row[0]).removeprefix("sha256:") + ".checkpoint\n")
-                    for digest_row in connection.execute(
-                        "SELECT sha256 FROM capture_job_native_members WHERE job_id=? "
-                        "UNION SELECT sha256 FROM capture_job_native_assets WHERE job_id=? "
-                        "UNION SELECT sha256 FROM capture_job_native_artifacts WHERE job_id=?",
-                        (row["job_id"], row["job_id"], row["job_id"]),
-                    ):
-                        if digest_row[0]:
-                            artifact_names.write(str(digest_row[0]) + ".native\n")
-                connection.execute("DELETE FROM capture_job_events WHERE job_id=?", (row["job_id"],))
-                connection.execute("DELETE FROM capture_job_receipts WHERE job_id=?", (row["job_id"],))
-                connection.execute("DELETE FROM capture_job_update_receipts WHERE job_id=?", (row["job_id"],))
-                connection.execute("DELETE FROM capture_jobs WHERE job_id=?", (row["job_id"],))
-                deleted.append(row["job_id"])
-        # Job retirement must commit before any artifact is removed. Otherwise
-        # a crash could restore a row whose payload had already been deleted.
-        artifact_names.seek(0)
-        self._collect_checkpoint_artifacts(
-            (name.rstrip("\n") for name in artifact_names), incremental=incremental_artifacts
-        )
-        return {"deleted": deleted, "count": len(deleted)}
+                if retention.get("retiring") is not True:
+                    # Existing eligible JSON/index authority is the restart
+                    # marker. No remaining lease may revive a retired job.
+                    connection.execute(
+                        "UPDATE capture_jobs SET retention_json=?, lease_json=NULL WHERE job_id=?",
+                        (canonical_json({**retention, "retiring": True}), job_id),
+                    )
+                # Drain leaves before their parents. No paged parent DELETE may
+                # cascade an unbounded native plan or acquisition membership.
+                for table in (
+                    "capture_job_native_assets",
+                    "capture_job_native_members",
+                    "capture_job_native_artifacts",
+                    "capture_job_native_plan",
+                    "capture_job_native_acquisitions",
+                    "capture_job_events",
+                    "capture_job_receipts",
+                    "capture_job_update_receipts",
+                ):
+                    cursor = connection.execute(
+                        "DELETE FROM "
+                        + table
+                        + " WHERE rowid IN (SELECT rowid FROM "
+                        + table
+                        + " WHERE job_id=? LIMIT 64)",
+                        (job_id,),
+                    )
+                    if cursor.rowcount:
+                        return {"deleted": [], "progress": True}
+                connection.execute("DELETE FROM capture_jobs WHERE job_id=?", (job_id,))
+                return {"deleted": [job_id], "progress": True}
+            return {"deleted": [], "progress": False}
 
-    def _collect_checkpoint_artifacts(self, retired: Iterable[str], *, incremental: bool) -> None:
+    def _collect_checkpoint_artifacts(self, retired: Iterable[str], *, incremental: bool, quantum: int = 1) -> None:
         directory = capture_job_store_root(self._spool_root()) / "artifacts"
         if not directory.is_dir():
             return
@@ -1803,7 +1820,8 @@ class CaptureJobRegistry:
                 entries = previous[1] if previous is not None else os.scandir(directory)
                 _ARTIFACT_SWEEPS[identity[0]] = (physical, entries)
                 try:
-                    names.append(next(entries).name)
+                    for _ in range(quantum):
+                        names.append(next(entries).name)
                 except StopIteration:
                     entries.close()
                     del _ARTIFACT_SWEEPS[identity[0]]

@@ -332,3 +332,15 @@ without sending through stale settings. Injected adapters and fanout keep
 their existing behavior, and daemon restart starts a fresh in-memory allowance.
 
 Generation promotion logs retain the opaque predecessor generation ID in the registered nullable `predecessor` field. FTS readiness stage terminals retain the boolean publication measurement in the registered `bound` field, alongside their existing ok, degraded or empty outcomes.
+
+The browser receiver owns CaptureJob retirement through the existing
+`BrowserCaptureHTTPServer.service_actions` lifecycle hook. Each server turn
+drains one bounded leaf-row page and one artifact-directory quantum independently
+of client request frequency. The existing eligible retention JSON holds a durable
+internal retiring marker; scoped reads and mutations are fenced, discovery hides
+the job, and same-intent creation returns retryable 503 until the unique parent
+retires. Native assets and other leaves drain before acquisition/job parents,
+so their deletion cannot cascade an unbounded membership. Each page commits
+under the original receiver registry connection owner. Shutdown closes the
+disposable frontier; restart resumes the marker and existing physical roots.
+This receiver state is separate from the archive tiers and archive writer.

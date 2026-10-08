@@ -27,18 +27,26 @@ event under its own two cell-view owners and release them before reading the
 next event. One lazy page document then serves the events and their timelines;
 open spill connections do not scale with the selected event count.
 
-Ordinary create and first-page discovery select retirement candidates through
-receiver-local eligibility and lease indexes in limited batches, without sorting
-the full expired cohort. They advance one entry of a process-owned orphan-directory
-sweep after retirement commits; ordinary requests leave retired artifact membership
-in that physical directory rather than synchronously draining every reference.
-Explicit registry GC may stream the retired job's exact artifact references. Repeated requests finish the sweep;
-restart begins a new sweep. Replacing the registry or artifact directory closes
-the prior frontier. Explicit registry GC retains a complete streamed sweep.
-Artifact root checks and active-reader locks still precede removal. The indexes
-add only receiver registry metadata, without changing archive tiers or capture
-wire fields. Explicit GC's retired artifact membership stays on temporary scratch until the
-registry transaction commits.
+The receiver's existing `serve_forever` lifecycle owns CaptureJob retirement.
+Each `service_actions` turn selects one eligible job through the existing
+receiver-local indexes, persists an internal `retiring` marker, drains at most
+64 rows from one leaf relation, and advances 64 artifact-directory entries.
+The marker permanently fences scoped reads, adoption and mutations and excludes
+the job from discovery. An expired lease is cleared when marking; a later clock
+change cannot restore authority. Native assets and other leaves drain before
+plans, acquisitions and the job parent, so a parent deletion cannot cascade an
+unbounded membership. Each page commits independently and restart resumes from
+the durable marker and physical artifact roots.
+
+Create and discovery do no retirement deletion or artifact traversal. Creating
+the same intent while its old eligible or retiring job owns the unique key
+returns retryable HTTP 503 `capture_job_retirement_pending`; no new job is
+partially created. Cleanup continues without client requests. Existing extension
+transport retries retain the capture and retry this 503. Explicit registry GC
+repeats the same row pages and retains a complete streamed artifact sweep.
+Artifact root checks and active-reader locks still precede removal. Shutdown
+stops between lifecycle turns and closes its disposable directory frontier; a failed turn logs the named registry failure
+and remains retryable. No archive tier, receiver DDL or public field changes.
 
 The
 ordinary browser-action, pairing, health, and assertion control routes retain
