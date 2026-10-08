@@ -120,7 +120,7 @@ extensible registry):
 
 The configured frontier is a current source projection, not a cross-run
 registry of optional child roots. It omits hook carrier or pending children
-that have never been created, while requiring the primary hook spool root to
+that are currently absent, while requiring the primary hook spool root to
 be resolvable. Cold-build baselines retain accepted revisions through their
 pending receipt and candidate generation, and source-conservation checks
 durable acquired Source evidence independently; those are the owners of
