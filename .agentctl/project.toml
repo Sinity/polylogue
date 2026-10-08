@@ -18,6 +18,8 @@ require = ["POLYLOGUE_ARCHIVE_ROOT"]
 
 [environment.values]
 POLYLOGUE_ARCHIVE_ROOT = "/realm/state/polylogue"
+POLYLOGUE_VERIFY_HISTORY_PATH = "/realm/project/polylogue/source/development/verify-history.jsonl"
+POLYLOGUE_RETIRED_VERIFY_HISTORY_PATHS = "/realm/activity/dev/polylogue/verify-history.jsonl:/realm/activity/development/polylogue/verify-history.jsonl:/realm/projects/polylogue/source/development/verify-history.jsonl"
 
 [workspace]
 root = "/realm/worktree"
@@ -190,3 +192,12 @@ pool = "bulk"
 result = "exit"
 cache = "none"
 timeout_seconds = 28800
+
+[operations.publish_branch]
+description = "Push a selected branch with normal hooks in the managed environment"
+exec = ["git", "push"]
+arguments = "required"
+pool = "normal"
+result = "exit"
+cache = "none"
+timeout_seconds = 2400
