@@ -423,10 +423,15 @@ current billing cycle:
 * `confidence` combines plan confidence with `coverage_ratio` to
   discourage projecting from sparse data.
 
-The API reads usage through the requested `now` instant, inclusively,
+The API reads usage by session creation time through the requested `now`
+instant, inclusively,
 and bounds timestamps before folding them into UTC days. The cycle end
 is exclusive. Later archive records do not change an earlier as-of
-result. Direct engine callers supplying daily usage must first bound
+result. `SessionCostInsightQuery.time_basis` defaults to `source` (the
+canonical sort time) for ordinary cost queries; outlook selects `created`
+so later session updates cannot exclude earlier attributed usage. Both
+bases apply SQL filtering before pagination. Direct engine callers
+supplying daily usage must first bound
 the current day at the exact as-of instant; day totals cannot recover
 that distinction. Future days and the cycle-end day are excluded.
 

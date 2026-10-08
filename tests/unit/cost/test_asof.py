@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.analysis.archive import ArchiveInsightProvenance, SessionCostInsight
+from polylogue.analysis.archive import ArchiveInsightProvenance, SessionCostInsight, SessionCostInsightQuery
 from polylogue.api import Polylogue
 from polylogue.archive.semantic.pricing import CostEstimatePayload
 from polylogue.cost.aggregation import session_costs_to_daily_usd
@@ -99,3 +99,47 @@ def test_daily_aggregation_bounds_exact_instant_before_utc_fold() -> None:
     cutoff = datetime(2026, 5, 11, 23, tzinfo=UTC)
     assert session_costs_to_daily_usd(rows, as_of=cutoff) == [DailyUsage(day=date(2026, 5, 11), basis="usd", amount=15)]
     assert sum(row.amount for row in session_costs_to_daily_usd(rows)) == 105
+
+
+@pytest.mark.asyncio
+async def test_api_outlook_attributes_later_updated_session_to_creation_time(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = workspace_env["archive_root"] / "cost-plan.toml"
+    config.write_text("""[[cost.subscription.plans]]
+name = "calendar"
+provider = "test"
+display_name = "Calendar"
+monthly_cost_usd = 0.0
+cycle_anchor_day = 1
+""")
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(config))
+    path = db_setup(workspace_env)
+    (
+        SessionBuilder(path, "later-update")
+        .provider("claude-code")
+        .created_at("2026-05-11T08:00:00Z")
+        .updated_at("2026-05-20T00:00:00Z")
+        .reported_cost_usd(10)
+        .add_message("m", role="assistant", text="neutral usage")
+        .save()
+    )
+    async with Polylogue(archive_root=path.parent, db_path=path) as archive:
+        outlook = await archive.cost_outlook("calendar", now=datetime(2026, 5, 11, 12, tzinfo=UTC))
+        assert outlook is not None and outlook.cycle_to_date == {"usd": 10.0}
+        # Generic cost queries retain their canonical source/sort time contract.
+        generic = await archive.list_session_cost_insights(
+            SessionCostInsightQuery(until="2026-05-11T12:00:00Z", limit=None)
+        )
+        assert generic == []
+        created = await archive.list_session_cost_insights(
+            SessionCostInsightQuery(until="2026-05-11T12:00:00Z", time_basis="created", limit=None)
+        )
+        assert len(created) == 1 and created[0].created_at is not None
+        assert datetime.fromisoformat(created[0].created_at) == datetime(2026, 5, 11, 8, tzinfo=UTC)
+        assert (
+            SessionCostInsightQuery.model_validate_json(
+                SessionCostInsightQuery(time_basis="created").model_dump_json()
+            ).time_basis
+            == "created"
+        )

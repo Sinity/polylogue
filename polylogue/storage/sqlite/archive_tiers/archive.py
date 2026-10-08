@@ -66,6 +66,7 @@ from polylogue.analysis.archive import (
     ArchiveInsightProvenance,
     CostRollupInsight,
     SessionCostInsight,
+    SessionCostTimeBasis,
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,
@@ -3728,6 +3729,7 @@ class ArchiveStore:
         self,
         *,
         session_id: str | None = None,
+        time_basis: SessionCostTimeBasis = "source",
         origin: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
@@ -3739,7 +3741,10 @@ class ArchiveStore:
         Rows are fetched and priced in batches of
         :data:`COST_INSIGHT_FETCH_BATCH`, so a caller that filters per row
         scans the matched scope once with bounded memory.
+        Time bounds use source/sort time by default; cycle outlook selects
+        creation time to match its daily usage attribution.
         """
+        time_column = {"source": "s.sort_key_ms", "created": "s.created_at_ms"}[time_basis]
         where: list[str] = []
         params: list[object] = []
         if session_id is not None:
@@ -3757,10 +3762,10 @@ class ArchiveStore:
             where.append("s.origin = ?")
             params.append(origin)
         if since_ms is not None:
-            where.append("s.sort_key_ms >= ?")
+            where.append(f"{time_column} >= ?")
             params.append(since_ms)
         if until_ms is not None:
-            where.append("s.sort_key_ms <= ?")
+            where.append(f"{time_column} <= ?")
             params.append(until_ms)
         clause = "WHERE " + " AND ".join(where) if where else ""
         base_sql = f"""
@@ -3795,6 +3800,7 @@ class ArchiveStore:
         self,
         *,
         session_id: str | None = None,
+        time_basis: SessionCostTimeBasis = "source",
         origin: str | None = None,
         status: str | None = None,
         model: str | None = None,
@@ -3820,7 +3826,13 @@ class ArchiveStore:
 
         def scan(*, limit: int | None = None, offset: int = 0) -> Iterator[SessionCostInsight]:
             return self.iter_session_cost_insights(
-                session_id=session_id, origin=origin, since_ms=since_ms, until_ms=until_ms, limit=limit, offset=offset
+                session_id=session_id,
+                time_basis=time_basis,
+                origin=origin,
+                since_ms=since_ms,
+                until_ms=until_ms,
+                limit=limit,
+                offset=offset,
             )
 
         if status is None:
