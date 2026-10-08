@@ -138,8 +138,8 @@ async def submit_facade_operation(config: Config, operation: str, payload: dict[
         daemon_socket_path(root),
         timeout_s=spec.deadline_s,
         auth_token=lambda: resolve_api_auth_token(
-            getattr(config, "api_auth_token", None),
-            allow_no_auth=getattr(config, "api_allow_no_auth", False),
+            config.api_auth_token,
+            allow_no_auth=config.api_allow_no_auth,
         ),
     )
     from polylogue.operations.daemon_errors import DaemonMutationIndeterminateError

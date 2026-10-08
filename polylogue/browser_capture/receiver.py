@@ -16,7 +16,7 @@ import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -75,7 +75,10 @@ class BrowserCaptureReceiverConfig:
     archive_root: Path | None = None
     allowed_origins: frozenset[str] = frozenset({BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD})
     allow_remote: bool = False
-    auth_token: str | None = None
+    auth_token: str | None = field(default=None, repr=False)
+    # The receiver pairing token and the daemon machine credential are distinct.
+    api_auth_token: str | None = field(default=None, repr=False)
+    api_allow_no_auth: bool = False
 
     @classmethod
     def default(cls) -> BrowserCaptureReceiverConfig:

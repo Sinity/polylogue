@@ -101,9 +101,7 @@ async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dic
         return hooks.error_json(f"start polylogued run to serve this operation: {operation}", code="daemon_required")
     client = DaemonClient(
         daemon_socket_path(config.archive_root),
-        auth_token=lambda: resolve_api_auth_token(
-            getattr(config, "api_auth_token", None), allow_no_auth=getattr(config, "api_allow_no_auth", False)
-        ),
+        auth_token=lambda: resolve_api_auth_token(config.api_auth_token, allow_no_auth=config.api_allow_no_auth),
     )
     import asyncio
     import uuid

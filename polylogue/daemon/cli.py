@@ -2799,6 +2799,9 @@ async def _run_daemon_services_under_active_writer_lease(
                 allow_remote=browser_capture_allow_remote,
                 auth_token=resolved_browser_capture_auth_token,
                 extra_origins=browser_capture_extra_origins,
+                archive_root=archive_root_path,
+                api_auth_token=api_auth_token,
+                api_allow_no_auth=api_allow_no_auth,
             )
             server_task = supervisor.start(
                 "browser_capture_server",

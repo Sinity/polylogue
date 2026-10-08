@@ -1008,8 +1008,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             client = DaemonClient(
                 daemon_socket_path(root),
                 auth_token=lambda: resolve_api_auth_token(
-                    getattr(config, "api_auth_token", None),
-                    allow_no_auth=getattr(config, "api_allow_no_auth", False),
+                    config.api_auth_token,
+                    allow_no_auth=config.api_allow_no_auth,
                 ),
             )
             response = client.operation_to_completion(
@@ -1605,6 +1605,8 @@ def make_server(
     allow_remote: bool = False,
     auth_token: str | None = None,
     extra_origins: tuple[str, ...] = (),
+    api_auth_token: str | None = None,
+    api_allow_no_auth: bool = False,
 ) -> BrowserCaptureHTTPServer:
     """Create a configured browser-capture receiver server."""
     if not allow_remote and not _is_loopback(host):
@@ -1618,6 +1620,8 @@ def make_server(
         allowed_origins=frozenset(allowed_origins),
         allow_remote=allow_remote,
         auth_token=auth_token,
+        api_auth_token=api_auth_token,
+        api_allow_no_auth=api_allow_no_auth,
     )
     config.validate()
     return BrowserCaptureHTTPServer((host, port), config)

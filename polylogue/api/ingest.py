@@ -75,8 +75,8 @@ class PolylogueIngestMixin:
             daemon_socket_path(root),
             timeout_s=spec.deadline_s,
             auth_token=lambda: resolve_api_auth_token(
-                getattr(self.config, "api_auth_token", None),
-                allow_no_auth=getattr(self.config, "api_allow_no_auth", False),
+                self.config.api_auth_token,
+                allow_no_auth=self.config.api_allow_no_auth,
             ),
         )
         for source in local_sources:
