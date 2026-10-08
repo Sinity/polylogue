@@ -129,10 +129,13 @@ different name. Hermes acquisition separately captures the resolved declared
 profile namespace and its shared qualifier before retention. New raw identities
 use the captured namespace/member under the v3 domain; retained replay reads
 `raw_profile_identity_receipts` and never resolves a current filesystem alias.
-Hermes marker production and consumption accept the same acquired export as
-replay: declared members require their exact scope/header; schema-admitted
-noncanonical filenames require an unbound full-scope header. A declared export
-cannot be relabeled as a noncanonical source, and page images remain refused.
+Hermes acquisition decodes declared and unbound full-scope exports for
+validation. Retained preparation and replay parse the acquired blob itself,
+with its captured profile identity; they never follow an imported JSON pointer
+for noncanonical backups. JSON marker consumers require the exact declared
+member scope/header and refuse unbound exports: a scope header cannot prove
+that external bytes belong to that JSON source. A declared export cannot be
+relabeled as a noncanonical source, and page images remain refused.
 
 An older raw without a receipt reports `terminal_missing_profile_identity`,
 distinct from missing physical byte coordinates. Captured source-manifest

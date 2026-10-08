@@ -18,6 +18,7 @@ the replayed archive comes back empty while the live one is populated.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -26,10 +27,12 @@ import pytest
 
 import polylogue.sources.live.watcher as live_watcher
 from polylogue.core.enums import Provider
+from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live import WatchSource
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.sources.source_layout import export_drop_layout
-from polylogue.sources.sqlite_export import read_export_header
+from polylogue.sources.source_parsing import parse_one_source_path
+from polylogue.sources.sqlite_export import logical_export_bytes, read_export_header
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.agent_thread_state import read_spawn_edges, read_thread_titles
 from tests.infra.live_batch import prepared_live_batch_processor
@@ -242,4 +245,53 @@ def test_hermes_page_image_is_refused_by_the_retained_replay_route(tmp_path: Pat
             sidecar_resolver=None,
             # The receipt gate precedes the export check; this law is the page-image refusal.
             profile_identity="synthetic-profile",
+        )
+
+
+@pytest.mark.parametrize(
+    "member,field,marker",
+    [
+        ("state.db", "state_db_path", "hermes_state_db"),
+        ("verification_evidence.db", "verification_db_path", "hermes_verification_evidence_db"),
+    ],
+)
+def test_imported_json_cannot_publish_an_external_unbound_export(
+    tmp_path: Path, member: str, field: str, marker: str
+) -> None:
+    """An export header supplies scope, never custody of an imported JSON source.
+
+    Allowing unbound exports in JSON marker consumption publishes the external
+    session under innocent.json through parse_payload, so the refusal turns red.
+    """
+    external = tmp_path / "unselected" / member
+    if member == "state.db":
+        _write_hermes_state_db(external)
+    else:
+        external.parent.mkdir(parents=True)
+        with sqlite3.connect(external) as conn:
+            conn.executescript((Path(__file__).parents[2] / "fixtures/hermes/verification-ledger.sql").read_text())
+            conn.execute(
+                "INSERT INTO verification_events "
+                "(created_at,session_id,cwd,root,command,canonical_command,kind,scope,status,exit_code,output_summary) "
+                "VALUES ('2026-07-18T00:00:00Z','external-session','/neutral','/neutral','check','check',"
+                "'test','targeted','passed',0,'complete')"
+            )
+    export = external.with_suffix(".export")
+    export.write_bytes(logical_export_bytes(external))
+    imported = tmp_path / "innocent.json"
+    payload = {"polylogue_artifact": marker, field: str(export)}
+    imported.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="declared logical export"):
+        parse_payload(Provider.HERMES, json.loads(imported.read_text()), "imported", source_path=str(imported))
+    # The local-artifact owner detects Hermes from the JSON and forwards the
+    # innocent source coordinate through its real emitter and dispatch route.
+    with pytest.raises(ValueError, match="declared logical export"):
+        list(
+            parse_one_source_path(
+                str(imported),
+                file_mtime=None,
+                source_name="local-artifact",
+                sidecar_data={},
+                capture_raw=False,
+            )
         )

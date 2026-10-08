@@ -99,7 +99,7 @@ from .hermes_identity import split_qualified_session_id as _split_qualified_sess
 from .hermes_state import (
     HermesFidelityCapability,
     HermesImportFidelity,
-    require_acquired_export,
+    require_declared_export,
 )
 
 HERMES_VERIFICATION_DB_MARKER = "hermes_verification_evidence_db"
@@ -258,7 +258,7 @@ def parse_verification_evidence_db_payload(
         raise ValueError("Hermes verification_evidence.db marker is missing verification_db_path")
     # Same confused-deputy guard as the state.db marker: an imported JSON
     # document must not steer this open at an arbitrary local database.
-    require_acquired_export(Path(path_value), source_path, field="verification_db_path")
+    require_declared_export(Path(path_value), source_path, field="verification_db_path")
     if profile_root is None:
         profile_value = payload.get("profile_root")
         profile_root = Path(profile_value) if isinstance(profile_value, str) and profile_value else None

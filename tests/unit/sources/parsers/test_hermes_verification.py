@@ -137,7 +137,7 @@ def _declared_export_of(source_path: Path, blob_root: Path) -> Path:
     """Return the retained declared logical export of *source_path*.
 
     Acquisition retains a declared mutable member as its canonical logical
-    export, never as a page image, and ``require_acquired_export`` re-checks
+    export, never as a page image, and ``require_declared_export`` re-checks
     that pairing when a marker is parsed (#5040/#5022). A marker built over a
     live database is one production never mints.
     """
