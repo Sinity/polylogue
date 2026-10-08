@@ -26,15 +26,19 @@ import tempfile
 import zipfile
 from bisect import bisect_left
 from collections.abc import Iterable, Iterator, Mapping
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from polylogue.sources.source_layout import SourceLayout
 
 from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
+from polylogue.sources.file_alias import contained_file_alias_coordinate
 from polylogue.sources.source_staging import bind_source_input
 from polylogue.sources.sqlite_export import BinaryWriteSink, _logical_export_digest_bound, _write_logical_export_bound
 from polylogue.sources.sqlite_snapshot import member_export_scope
@@ -396,7 +400,7 @@ def _open_source_file(
     anchor: int,
     coordinate: str,
     path: Path,
-    expected: tuple[int, int],
+    expected: tuple[int, int] | None,
     *,
     directory: bool = False,
 ) -> Iterator[tuple[int, os.stat_result]]:
@@ -419,7 +423,7 @@ def _open_source_file(
             descriptor = os.dup(anchor)
         info = os.fstat(descriptor)
         valid_kind = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
-        if not valid_kind or (info.st_dev, info.st_ino) != expected:
+        if not valid_kind or (expected is not None and (info.st_dev, info.st_ino) != expected):
             raise SourceMutationError(f"source member identity changed: {path}")
         yield descriptor, info
     except OSError as exc:
@@ -518,49 +522,143 @@ def _walk_files(
             from polylogue.sources.source_layout import source_layout_for
 
             layout = source_layout_for(layout_name)
-        directories: list[tuple[Path, os.stat_result, tuple[str, ...]]] = [(root, root_info, ())]
-        while directories:
-            check_compute_cancelled()
-            directory, expected, relative = directories.pop()
-            with (
-                _open_source_file(
-                    anchor,
-                    directory.relative_to(root).as_posix() if directory != root else "",
-                    directory,
-                    (expected.st_dev, expected.st_ino),
-                    directory=True,
-                ) as (descriptor, _info),
-                os.scandir(descriptor) as entries,
-            ):
-                children = sorted(entries, key=lambda entry: entry.name)
-                for entry in children:
-                    check_compute_cancelled()
-                    path = directory / entry.name
-                    info = entry.stat(follow_symlinks=False)
-                    child_parts = (*relative, entry.name)
-                    if stat.S_ISDIR(info.st_mode):
-                        if layout is None or layout.admits_directory(child_parts):
-                            directories.append((path, info, child_parts))
-                    elif stat.S_ISREG(info.st_mode):
-                        if "/".join(child_parts) in exclude_coordinates:
-                            continue
-                        if layout is not None and layout.artifact_kind(child_parts) is None:
-                            continue
-                        yield (
-                            path.relative_to(root).as_posix(),
-                            path,
-                            info,
-                            descriptor,
-                            (physical_root / path.relative_to(root)).parent,
-                        )
-                    elif (
-                        layout is None
-                        or layout.admits_directory(child_parts)
-                        or layout.artifact_kind(child_parts) is not None
-                    ):
-                        raise SourceSnapshotError(f"source member is not a regular file: {path}")
-    except OSError as exc:
+        with (
+            tempfile.TemporaryDirectory(prefix="polylogue-alias-coverage-") as directory,
+            closing(sqlite3.connect(Path(directory) / "coverage.db")) as coverage,
+        ):
+            coverage.execute("PRAGMA journal_mode=OFF")
+            coverage.execute("PRAGMA synchronous=OFF")
+            coverage.execute("PRAGMA cache_size=-1024")
+            coverage.execute(
+                "CREATE TABLE targets(coordinate TEXT PRIMARY KEY, device INTEGER, inode INTEGER) WITHOUT ROWID"
+            )
+            coverage.execute(
+                "CREATE TABLE aliases(coordinate TEXT PRIMARY KEY, device INTEGER, inode INTEGER, ctime INTEGER, "
+                "link_text TEXT, target TEXT, target_device INTEGER, target_inode INTEGER) WITHOUT ROWID"
+            )
+            yield from _walk_bound_directory_files(
+                root, anchor, root_info, physical_root, layout, exclude_coordinates, coverage
+            )
+    except (OSError, sqlite3.Error) as exc:
         raise SourceSnapshotError(f"source root inventory failed: {root}") from exc
+
+
+def _walk_bound_directory_files(
+    root: Path,
+    anchor: int,
+    root_info: os.stat_result,
+    physical_root: Path,
+    layout: SourceLayout | None,
+    exclude_coordinates: tuple[str, ...],
+    coverage: sqlite3.Connection,
+) -> Iterator[tuple[str, Path, os.stat_result, int | None, Path]]:
+    directories: list[tuple[Path, os.stat_result, tuple[str, ...]]] = [(root, root_info, ())]
+    while directories:
+        check_compute_cancelled()
+        directory, expected, relative = directories.pop()
+        with (
+            _open_source_file(
+                anchor,
+                directory.relative_to(root).as_posix() if directory != root else "",
+                directory,
+                (expected.st_dev, expected.st_ino),
+                directory=True,
+            ) as (descriptor, _info),
+            os.scandir(descriptor) as entries,
+        ):
+            children = sorted(entries, key=lambda entry: entry.name)
+            for entry in children:
+                check_compute_cancelled()
+                path = directory / entry.name
+                info = entry.stat(follow_symlinks=False)
+                child_parts = (*relative, entry.name)
+                if stat.S_ISDIR(info.st_mode):
+                    if layout is None or layout.admits_directory(child_parts):
+                        directories.append((path, info, child_parts))
+                elif stat.S_ISREG(info.st_mode):
+                    if "/".join(child_parts) in exclude_coordinates:
+                        continue
+                    if layout is not None and layout.artifact_kind(child_parts) is None:
+                        continue
+                    coordinate = path.relative_to(root).as_posix()
+                    coverage.execute("INSERT INTO targets VALUES (?,?,?)", (coordinate, info.st_dev, info.st_ino))
+                    yield (
+                        coordinate,
+                        path,
+                        info,
+                        descriptor,
+                        (physical_root / path.relative_to(root)).parent,
+                    )
+                elif stat.S_ISLNK(info.st_mode) and (layout is None or layout.artifact_kind(child_parts) is not None):
+                    coordinate = "/".join(child_parts)
+                    link_text = os.readlink(entry.name, dir_fd=descriptor)
+                    after = os.stat(entry.name, dir_fd=descriptor, follow_symlinks=False)
+                    if (after.st_dev, after.st_ino, after.st_ctime_ns) != (info.st_dev, info.st_ino, info.st_ctime_ns):
+                        raise SourceMutationError(f"source alias changed during inventory: {path}")
+                    named = Path(link_text)
+                    target = Path(
+                        os.path.normpath(
+                            str(named if named.is_absolute() else physical_root / Path(coordinate).parent / named)
+                        )
+                    )
+                    # An absolute target may use the declaration's stable parent alias.
+                    if target.is_relative_to(root):
+                        target = physical_root / target.relative_to(root)
+                    target_coordinate = contained_file_alias_coordinate(physical_root, target, stat.S_IFREG)
+                    if target_coordinate is None or (
+                        layout is not None and layout.artifact_kind(Path(target_coordinate).parts) is None
+                    ):
+                        raise SourceSnapshotError(f"source alias target is outside the declared layout: {path}")
+                    with _open_source_file(anchor, target_coordinate, target, None) as (_target, target_info):
+                        if contained_file_alias_coordinate(physical_root, target, target_info.st_mode) is None:
+                            raise SourceSnapshotError(f"source alias target is not a regular file: {path}")
+                    coverage.execute(
+                        "INSERT INTO aliases VALUES (?,?,?,?,?,?,?,?)",
+                        (
+                            coordinate,
+                            info.st_dev,
+                            info.st_ino,
+                            info.st_ctime_ns,
+                            link_text,
+                            target_coordinate,
+                            target_info.st_dev,
+                            target_info.st_ino,
+                        ),
+                    )
+                elif (
+                    layout is None
+                    or layout.admits_directory(child_parts)
+                    or layout.artifact_kind(child_parts) is not None
+                ):
+                    raise SourceSnapshotError(f"source member is not a regular file: {path}")
+    for coordinate, device, inode, ctime, link_text, target, target_device, target_inode in coverage.execute(
+        "SELECT coordinate,device,inode,ctime,link_text,target,target_device,target_inode FROM aliases"
+    ):
+        check_compute_cancelled()
+        observed = coverage.execute("SELECT device,inode FROM targets WHERE coordinate=?", (target,)).fetchone()
+        if observed != (target_device, target_inode):
+            raise SourceSnapshotError(f"source alias target was not independently observed: {root / coordinate}")
+        parent_coordinate = str(Path(coordinate).parent)
+        parent_coordinate = "" if parent_coordinate == "." else parent_coordinate
+        with (
+            _open_source_file(
+                anchor,
+                parent_coordinate,
+                root / parent_coordinate,
+                None,
+                directory=True,
+            ) as (parent, _info),
+            _open_source_file(anchor, target, root / target, (target_device, target_inode)),
+        ):
+            current = os.stat(Path(coordinate).name, dir_fd=parent, follow_symlinks=False)
+            current_link = os.readlink(Path(coordinate).name, dir_fd=parent)
+            if (current.st_dev, current.st_ino, current.st_ctime_ns, current_link) != (
+                device,
+                inode,
+                ctime,
+                link_text,
+            ):
+                raise SourceMutationError(f"source alias changed during inventory: {root / coordinate}")
 
 
 def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:

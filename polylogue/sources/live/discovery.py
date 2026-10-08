@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 from polylogue.logging import WARNING, emit
+from polylogue.sources.file_alias import contained_file_alias_coordinate
 from polylogue.sources.live.acquisition_log import log_unclaimed_file
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import WatchSource
@@ -184,7 +186,7 @@ def _ordered_children(
                 if not entry.is_file(follow_symlinks=False):
                     if is_link and entry.is_file():
                         target = path.resolve()
-                        if not target.is_relative_to(source.root.resolve()):
+                        if contained_file_alias_coordinate(source.root.resolve(), target, stat.S_IFREG) is None:
                             _emit_discovery_fault(
                                 source,
                                 WalkFault(path, f"symlink target {target} escapes the source root"),

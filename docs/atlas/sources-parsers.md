@@ -115,8 +115,11 @@ Staging publishes provenance and database through separate replacements.
 The provenance includes the backup owner's actual destination identity, so
 readers refuse the intermediate mismatch and a failed second replacement.
 A retry publishes a newly proved pair. Explicit stable root aliases resolve
-once to the accepted actual root; aliases inside enumerated directories are
-refused.
+once to the accepted actual root. A contained regular-file alias is excluded
+only when its target is independently observed at an admitted coordinate with
+the same physical identity. The anchored walk rechecks the alias and target;
+external, dangling, nonregular, unselected, and changing aliases refuse the
+observation. Internal directory aliases are not followed.
 
 Exports retain their canonical bytes and declared logical-table scope. Pipe
 frames stream to the existing sink, with each callback acknowledged before the

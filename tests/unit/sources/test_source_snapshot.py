@@ -1094,3 +1094,105 @@ def test_sqlite_observation_preserves_another_connections_process_locks(tmp_path
     finally:
         reader.rollback()
         reader.close()
+
+
+@pytest.mark.parametrize("target_name", ["a.jsonl", "z.jsonl"])
+@pytest.mark.parametrize("parent_alias", [False, True])
+def test_contained_file_alias_is_excluded_only_after_target_observation(
+    tmp_path: Path, target_name: str, parent_alias: bool
+) -> None:
+    """Rejecting every internal alias makes an otherwise complete provider root unavailable."""
+    physical = tmp_path / "physical" / "sessions"
+    project = physical / "-project"
+    project.mkdir(parents=True)
+    target = project / target_name
+    target.write_bytes(b"session\n")
+    (project / "m.jsonl").symlink_to(target if parent_alias else target.name)
+    root = tmp_path / "declared" / "sessions" if parent_alias else physical
+    if parent_alias:
+        root.parent.symlink_to(physical.parent, target_is_directory=True)
+    from polylogue.sources.live.discovery import _source_path_steps
+    from polylogue.sources.live.watcher import WatchSource
+    from polylogue.sources.source_layout import source_layout_for
+
+    source = WatchSource("claude-code", root, layout=source_layout_for("claude-code"))
+    ordinary_paths = [path for path in _source_path_steps(source, (source,), after=None) if path is not None]
+    assert ordinary_paths == [root / "-project" / target_name]
+    declaration = SourceDeclaration("declared", SourceRole.DIRECTORY, root, True, layout_name="claude-code")
+    frontier = build_source_frontier([declaration])
+    assert frontier.complete
+    assert [member.coordinate for member in frontier.members] == [f"-project/{target_name}"]
+    cut = execute_source_cut(preflight_source_cut([declaration]), tmp_path / "cut")
+    assert cut.counts.conserved
+    assert [item.coordinate for item in cut.candidate_manifest.items] == [f"-project/{target_name}"]
+    assert reacquire_candidate(cut)[0].path.read_bytes() == b"session\n"
+
+
+@pytest.mark.parametrize("target_kind", ["external", "dangling", "directory", "chain", "unselected", "excluded"])
+def test_selected_file_alias_requires_contained_independently_selected_regular_target(
+    tmp_path: Path, target_kind: str
+) -> None:
+    """A blanket symlink exclusion would hide missing or undeclared source material."""
+    root = tmp_path / "source"
+    project = root / "-project"
+    project.mkdir(parents=True)
+    target = project / "target.jsonl"
+    target.write_bytes(b"session\n")
+    if target_kind == "external":
+        target = tmp_path / "external.jsonl"
+        target.write_bytes(b"external\n")
+    elif target_kind == "dangling":
+        target = project / "missing.jsonl"
+    elif target_kind == "directory":
+        target = project / "directory"
+        target.mkdir()
+    elif target_kind == "chain":
+        chain = project / "chain.jsonl"
+        chain.symlink_to(target.name)
+        target = chain
+    elif target_kind == "unselected":
+        target = project / "other.txt"
+        target.write_bytes(b"unselected\n")
+    (project / "alias.jsonl").symlink_to(target)
+    declaration = SourceDeclaration(
+        "declared",
+        SourceRole.DIRECTORY,
+        root,
+        True,
+        layout_name="claude-code",
+        exclude_coordinates=("-project/target.jsonl",) if target_kind == "excluded" else (),
+    )
+    frontier = build_source_frontier([declaration])
+    assert frontier.root_states["declared"] is FrontierState.UNAVAILABLE
+    assert frontier.members == ()
+    assert not frontier.complete
+
+
+@pytest.mark.parametrize("mutation", ["alias", "target"])
+def test_contained_alias_mutation_after_target_read_refuses_whole_frontier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """Checking containment once would publish a changed alias or target as a complete cut."""
+    root = tmp_path / "source"
+    root.mkdir()
+    target = root / "z.jsonl"
+    target.write_bytes(b"session\n")
+    alias = root / "a.jsonl"
+    alias.symlink_to(target.name)
+    original = source_snapshot._snapshot_regular_file
+
+    def mutate(path: Path, expected: os.stat_result, *, anchor: int, coordinate: str) -> tuple[str, int, str]:
+        result = original(path, expected, anchor=anchor, coordinate=coordinate)
+        if mutation == "alias":
+            alias.unlink()
+            alias.symlink_to("missing.jsonl")
+        else:
+            target.unlink()
+            target.write_bytes(b"replacement\n")
+        return result
+
+    monkeypatch.setattr(source_snapshot, "_snapshot_regular_file", mutate)
+    frontier = build_source_frontier([SourceDeclaration("declared", SourceRole.APPEND_JSONL, root, True)])
+    assert frontier.root_states["declared"] is FrontierState.UNAVAILABLE
+    assert frontier.members == ()
+    assert not frontier.complete
