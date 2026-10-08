@@ -1186,6 +1186,19 @@ def _drain_convergence_debt_and_frontier(db: Path, *, compute_adapter: BoundedCo
     stage = make_raw_frontier_inspection_stage(db, compute_adapter=compute_adapter)
     if stage.check(db):
         healthy = stage.execute(db)
+        if not healthy:
+            check_compute_cancelled()
+            admit_stage_write(
+                "maintenance.convergence_debt.frontier",
+                partial(
+                    cursor.record_convergence_debt,
+                    stage=stage.name,
+                    subject_type="source_path",
+                    subject_id=str(db),
+                    error="stage state: pending",
+                    deferred=True,
+                ),
+            )
         emit(
             "daemon.raw_frontier_inspection.pass.completed",
             outcome="ok" if healthy else "degraded",

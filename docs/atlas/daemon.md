@@ -363,6 +363,8 @@ the same admitted compute worker and stage writer bridge when the mark is absent
 or its source/cursor authority changed. A full-convergence admission refusal
 can leave no debt rows, so an empty debt ledger does not suppress this check.
 Existing frontier debt retains its due retry and backoff ownership; the
-coverage fallback never runs another census in that debt pass. Completed
+coverage fallback never runs another census in that debt pass. A blocked
+fallback records deferred frontier debt through the stage writer bridge, so
+later attempts use the canonical debt retry schedule and backoff. Completed
 current healthy coverage avoids another census; cancellation and
 inspection refusals retain their ordinary typed outcomes.

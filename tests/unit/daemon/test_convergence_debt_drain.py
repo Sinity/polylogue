@@ -328,3 +328,19 @@ def test_blocked_frontier_fallback_retains_registered_telemetry_outcome(
     assert terminal[0]["outcome"] == "degraded"
     assert terminal[0]["reason"] == "frontier_inspection_blocked"
     assert not [r for r in records if r["event"] == "log.field_rejected"]
+    cursor = CursorStore(archive / "index.db", initialize=False)
+    debt = cursor.list_convergence_debt(stage=stage.name)
+    assert len(debt) == 1
+    assert debt[0].status == "deferred"
+    assert debt[0].next_retry_at is not None
+    assert cursor.list_convergence_debt(stage=stage.name, retry_due_only=True) == []
+    daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert len(stage.executions) == 1
+    # A due retry runs once, keeps pending debt, and schedules its next backoff.
+    with sqlite3.connect(archive / "ops.db") as conn:
+        conn.execute("UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'")
+    daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert len(stage.executions) == 2
+    assert cursor.list_convergence_debt(stage=stage.name, retry_due_only=True) == []
+    daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert len(stage.executions) == 2

@@ -463,11 +463,11 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     db = tmp_path / "index.db"
     db.touch()
 
-    def fake_drain(_db: Path, **_kwargs: object) -> tuple[int, int]:
+    def fake_drain(_db: Path, **_kwargs: object) -> int:
         raise sqlite3.OperationalError("database is locked")
 
     with (
-        patch.object(daemon_cli, "_drain_convergence_debt_backlog", fake_drain),
+        patch.object(daemon_cli, "_drain_convergence_debt_and_frontier", fake_drain),
         patch.object(
             daemon_cli,
             "daemon_write_coordinator",
@@ -597,9 +597,9 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
     raw_retention_calls: list[None] = []
     drained = asyncio.Event()
 
-    def fake_drain(drain_db: Path, **_kwargs: object) -> tuple[int, int]:
+    def fake_drain(drain_db: Path, **_kwargs: object) -> int:
         drains.append(drain_db)
-        return 0, 0
+        return 0
 
     async def fake_fts_converge() -> object:
         fts_scopes.append(None)
@@ -619,7 +619,7 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
             "daemon_write_coordinator",
             lambda: SimpleNamespace(run_sync=None),
         )
-        monkeypatch.setattr(daemon_cli, "_drain_convergence_debt_backlog", fake_drain)
+        monkeypatch.setattr(daemon_cli, "_drain_convergence_debt_and_frontier", fake_drain)
         monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: db)
         task = asyncio.create_task(
             daemon_cli._periodic_convergence_check(
@@ -653,13 +653,13 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
     db = tmp_path / "index.db"
     db.touch()
 
-    def fake_drain(_db: Path, **_kwargs: object) -> tuple[int, int]:
+    def fake_drain(_db: Path, **_kwargs: object) -> int:
         raise RuntimeError("unexpected convergence retry failure")
 
     # The drain itself runs off the writer lease (polylogue-ssplv); the
     # coordinator is reached only by the admission each stage's write uses.
     with (
-        patch.object(daemon_cli, "_drain_convergence_debt_backlog", fake_drain),
+        patch.object(daemon_cli, "_drain_convergence_debt_and_frontier", fake_drain),
         patch.object(
             daemon_cli,
             "daemon_write_coordinator",

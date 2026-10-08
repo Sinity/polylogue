@@ -34,8 +34,9 @@ The same `~/.codex` source retains the install-level `session_index.jsonl` and
 no other JSONL.
 The periodic convergence owner rechecks completed frontier coverage even when
 its stage-debt ledger is empty. Existing frontier debt retains its retry
-schedule and backoff. Missing or changed coverage without frontier debt schedules the census
-on its admitted worker; unchanged healthy coverage is reused. Transient compute
+schedule and backoff. Missing or changed coverage without frontier debt
+schedules the census on its admitted worker; a blocked census records deferred
+frontier debt, and unchanged healthy coverage is reused. Transient compute
 saturation therefore leaves inspection owed after the input was published.
 Operators can have the daemon record the same census, without applying plans, with `polylogue ops maintenance raw-authority-frontier` (the `maintenance.raw-authority-frontier` operation).
 
