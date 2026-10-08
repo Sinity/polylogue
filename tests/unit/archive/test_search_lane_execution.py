@@ -24,6 +24,7 @@ from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.search_contract import LaneFailure
 from polylogue.archive.query.search_hits import project_search_hits
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.cli.query_output import format_search_envelope
 from polylogue.config import Config, Source
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
@@ -495,7 +496,7 @@ async def test_session_list_page_and_total_share_one_snapshot(
     root, _config, ids = lane_archive
     real_list = archive_execution._list_summaries_in_archive
 
-    def list_then_delete(plan: object, archive: object, **kwargs: object) -> list[object]:
+    def list_then_delete(plan: object, archive: object, **kwargs: object) -> list[SessionSummary]:
         summaries = real_list(plan, archive, **kwargs)  # type: ignore[arg-type]
         with closing(sqlite3.connect(root / "index.db")) as writer:
             writer.execute("DELETE FROM sessions WHERE session_id = ?", (ids["dialogue"],))
