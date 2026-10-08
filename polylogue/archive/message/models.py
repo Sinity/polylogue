@@ -12,6 +12,8 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, MaterialOrigin, Origin
 
+_CONTENT_DERIVED_CACHED_PROPERTIES = ("is_tool_use", "is_thinking", "is_noise", "is_substantive", "word_count")
+
 
 class Message(MessageRuntimeMixin, BaseModel):
     model_config = ConfigDict(protected_namespaces=())
@@ -80,6 +82,25 @@ class Message(MessageRuntimeMixin, BaseModel):
     # unreported/not-applicable/not-yet-threaded by the read path, not
     # "ended normally" -- do not default it to a happy-path value.
     stop_reason: str | None = None
+
+    def copy_with_projected_content(
+        self,
+        *,
+        text: str | None,
+        blocks: list[dict[str, object]],
+        attachments: list[Attachment],
+    ) -> Message:
+        """Copy visible content while leaving content-derived caches cold.
+
+        ``BaseModel.model_copy`` also copies values cached by ``cached_property``.
+        Those values describe the original text and blocks, so they must not
+        follow the projected content. Other fields, including identity and
+        material attribution, remain unchanged.
+        """
+        projected = self.model_copy(update={"text": text, "blocks": blocks, "attachments": attachments})
+        for property_name in _CONTENT_DERIVED_CACHED_PROPERTIES:
+            projected.__dict__.pop(property_name, None)
+        return projected
 
     @field_validator("role", mode="before")
     @classmethod
