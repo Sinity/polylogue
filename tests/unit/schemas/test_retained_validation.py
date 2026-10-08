@@ -953,3 +953,86 @@ def test_committed_schema_files_match_draft202012_validity() -> None:
     assert schema_count == 60
     assert schema_shaped_positive_count == schema_count, generic_distribution
     assert late_invalid_count == schema_count, f"only {late_invalid_count}/{schema_count} had invalid variants"
+
+
+@pytest.mark.parametrize(
+    "valid,reason,extra,unread,expected",
+    [
+        (False, "package_default", True, True, "field_changed"),
+        (True, "package_default", True, True, "unseen_shape"),
+        (True, "exact_structure", True, True, "new_field"),
+        (True, "exact_structure", False, True, "known_field_unread"),
+        (True, "exact_structure", False, False, None),
+        (False, "exact_structure", False, True, "field_changed"),
+    ],
+)
+def test_retained_drift_classification_preserves_combined_precedence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    valid: bool,
+    reason: SchemaResolutionReason,
+    extra: bool,
+    unread: bool,
+    expected: str | None,
+) -> None:
+    """Mutation: unknown/default or unread fields outrank the stronger retained signal."""
+    from polylogue.schemas.drift_sentinel import BENIGN_CLASSIFICATIONS, RISKY_CLASSIFICATIONS, is_risky
+
+    registry = _registry(tmp_path, {"type": "string"})
+    payload: dict[str, object] = {"type": "record", "kind": "value" if valid else 1}
+    if extra:
+        payload["added_0"] = 1
+    path = tmp_path / "record.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(
+        "polylogue.schemas.retained_validation.unread_field_names", lambda _provider: {"kind"} if unread else set()
+    )
+    verdict = validate_retained_document(
+        "claude-code",
+        path,
+        mode=ValidationMode.ADVISORY,
+        raw_id="raw-combined",
+        revision_sha256="f" * 64,
+        evidence_id="raw-combined",
+        schema_resolution=_resolution("v2", explicit_reason=reason),
+        schema_resolution_is_explicit=True,
+        registry=registry,
+    )
+    observation = verdict.drift_observation
+    assert (None if observation is None else observation.classification) == expected
+    if observation is not None:
+        assert is_risky(observation.classification) is (expected != "new_field")
+        assert observation.classification in (
+            BENIGN_CLASSIFICATIONS if expected == "new_field" else RISKY_CLASSIFICATIONS
+        )
+    if expected in {"field_changed", "unseen_shape", "new_field"} and extra:
+        assert observation is not None and observation.unseen_key_signature == "added_0"
+
+
+def test_retained_new_field_signature_is_sorted_and_repeated_records_do_not_duplicate_it(tmp_path: Path) -> None:
+    """Mutation: arrival/key order or repeated field observations change the published signature."""
+    registry = _registry(tmp_path, {"type": "string"})
+    signatures = []
+    rows = [
+        {"type": "record", "kind": "value", "beta": 1, "alpha": 1},
+        {"alpha": 1, "beta": 1, "kind": "value", "type": "record"},
+    ]
+    for index, records in enumerate(([rows[0]], [rows[1], rows[1], rows[0]])):
+        path = tmp_path / f"records-{index}.jsonl"
+        _write_jsonl(path, records)
+        verdict = validate_retained_document(
+            "claude-code",
+            path,
+            mode=ValidationMode.ADVISORY,
+            raw_id="raw-signature",
+            revision_sha256="a" * 64,
+            evidence_id="raw-signature",
+            jsonl=True,
+            schema_resolution=_resolution("v2", explicit_reason="exact_structure"),
+            schema_resolution_is_explicit=True,
+            registry=registry,
+        )
+        assert verdict.drift_observation is not None
+        assert verdict.drift_observation.classification == "new_field"
+        signatures.append(verdict.drift_observation.unseen_key_signature)
+    assert signatures == ["alpha,beta", "alpha,beta"]
