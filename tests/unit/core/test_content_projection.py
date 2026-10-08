@@ -107,7 +107,7 @@ def test_tool_output_projection_recomputes_tool_and_substantive_properties() -> 
     assert projected.word_count == 4
     assert (projected.id, projected.identity_source, projected.origin, projected.material_origin) == original_identity
     assert source.model_dump() == original_fields
-    assert source.is_tool_use and source.is_noise and not source.is_substantive and source.word_count == 7
+    assert (source.is_tool_use, source.is_noise, source.is_substantive, source.word_count) == (True, True, False, 7)
 
 
 def test_projection_removes_only_file_read_payloads_when_requested() -> None:
