@@ -281,3 +281,50 @@ def test_generic_retry_preserves_each_unevaluated_stage(archive: Path) -> None:
     )
     daemon_cli._record_convergence_debt_retries(cursor, [debt], {("convergence", "session_id", subject): state})
     assert _rows(archive) == [("lineage", subject), ("titles", subject)]
+
+
+@pytest.mark.parametrize("due", [False, True])
+@pytest.mark.parametrize("converges", [False, True])
+def test_frontier_fallback_preserves_existing_debt_retry_schedule(
+    archive: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bounded_compute_adapter: BoundedComputeAdapter,
+    due: bool,
+    converges: bool,
+) -> None:
+    """An existing frontier debt owns the census, even after its due retry."""
+    stage = _Stage("raw_frontier_inspection", subject_independent=True, converges=converges)
+    _install(monkeypatch, stage)
+    monkeypatch.setattr(
+        "polylogue.operations.raw_frontier_inspection.make_raw_frontier_inspection_stage",
+        lambda _db, **_kwargs: stage.build(),
+    )
+    _seed(archive, stage.name, 1)
+    if not due:
+        with sqlite3.connect(archive / "ops.db") as conn:
+            conn.execute("UPDATE convergence_debt SET next_retry_at = '2999-01-01T00:00:00+00:00'")
+
+    daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    assert len(stage.executions) == int(due)
+    assert len(_rows(archive)) == int(not (due and converges))
+
+
+def test_blocked_frontier_fallback_retains_registered_telemetry_outcome(
+    archive: Path, monkeypatch: pytest.MonkeyPatch, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
+    """The real event validator must retain the incomplete census outcome."""
+    from polylogue import logging as plog
+
+    stage = _Stage("raw_frontier_inspection", subject_independent=True, converges=False)
+    _install(monkeypatch, stage)
+    monkeypatch.setattr(
+        "polylogue.operations.raw_frontier_inspection.make_raw_frontier_inspection_stage",
+        lambda _db, **_kwargs: stage.build(),
+    )
+    with plog.capture() as records:
+        daemon_cli._drain_convergence_debt_and_frontier(archive / "index.db", compute_adapter=bounded_compute_adapter)
+    terminal = [r for r in records if r["event"] == "daemon.raw_frontier_inspection.pass.completed"]
+    assert len(terminal) == 1
+    assert terminal[0]["outcome"] == "degraded"
+    assert terminal[0]["reason"] == "frontier_inspection_blocked"
+    assert not [r for r in records if r["event"] == "log.field_rejected"]

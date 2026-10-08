@@ -1174,14 +1174,22 @@ def _drain_convergence_debt_and_frontier(db: Path, *, compute_adapter: BoundedCo
     census; a changed source/cursor watermark or an absent mark requires it.
     """
     from polylogue.operations.raw_frontier_inspection import make_raw_frontier_inspection_stage
+    from polylogue.sources.live.cursor import CursorStore
 
+    cursor = CursorStore(db, initialize=False)
+    frontier_debt = cursor.list_convergence_debt(stage="raw_frontier_inspection", limit=1)
     retried = _drain_convergence_debt_backlog(db, compute_adapter=compute_adapter)
+    # Recorded debt owns both due execution and backoff. Check before draining
+    # as well: a successful due retry may clear its row during this pass.
+    if frontier_debt or cursor.list_convergence_debt(stage="raw_frontier_inspection", limit=1):
+        return retried
     stage = make_raw_frontier_inspection_stage(db, compute_adapter=compute_adapter)
     if stage.check(db):
         healthy = stage.execute(db)
         emit(
             "daemon.raw_frontier_inspection.pass.completed",
-            outcome="ok" if healthy else "blocked",
+            outcome="ok" if healthy else "degraded",
+            reason="complete" if healthy else "frontier_inspection_blocked",
             path=db,
         )
     return retried

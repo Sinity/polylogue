@@ -362,5 +362,7 @@ coverage after draining stage debts. It runs the existing inspection stage on
 the same admitted compute worker and stage writer bridge when the mark is absent
 or its source/cursor authority changed. A full-convergence admission refusal
 can leave no debt rows, so an empty debt ledger does not suppress this check.
-Completed current healthy coverage avoids another census; cancellation and
+Existing frontier debt retains its due retry and backoff ownership; the
+coverage fallback never runs another census in that debt pass. Completed
+current healthy coverage avoids another census; cancellation and
 inspection refusals retain their ordinary typed outcomes.
