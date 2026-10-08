@@ -73,9 +73,7 @@ _WRITER_SURFACE_CONTRACTS = {
     "user": ("durable", "atomic"),
     "ops": ("disposable", "restartable"),
 }
-_SQLITE_TIER_DATABASES = frozenset(
-    {"source.db", "index.db", "embeddings.db", "user.db", "audit.db", "ops.db"}
-)
+_SQLITE_TIER_DATABASES = frozenset({"source.db", "index.db", "embeddings.db", "user.db", "audit.db", "ops.db"})
 
 
 @dataclass(frozen=True)
@@ -369,17 +367,17 @@ def _sqlite_archive_open_violations(tree: ast.Module, *, relative: str) -> list[
         if isinstance(node, ast.Name):
             return values.get(node.id)
         if isinstance(node, ast.JoinedStr):
-            parts: list[str] = []
+            string_parts: list[str] = []
             for item in node.values:
                 if isinstance(item, ast.Constant) and isinstance(item.value, str):
-                    parts.append(item.value)
+                    string_parts.append(item.value)
                 elif isinstance(item, ast.FormattedValue):
                     value = expression_text(item.value, values)
                     if value is None:
-                        parts.append("<dynamic>")
+                        string_parts.append("<dynamic>")
                     else:
-                        parts.append(value)
-            return "".join(parts)
+                        string_parts.append(value)
+            return "".join(string_parts)
         if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Add)):
             left = expression_text(node.left, values)
             right = expression_text(node.right, values)
@@ -391,8 +389,8 @@ def _sqlite_archive_open_violations(tree: ast.Module, *, relative: str) -> list[
             if name in {"Path", "pathlib.Path", "PurePath", "pathlib.PurePath"} and node.args:
                 return expression_text(node.args[0], values)
             if name in {"os.path.join", "posixpath.join"} and node.args:
-                parts = [expression_text(item, values) for item in node.args]
-                return None if any(item is None for item in parts) else "/".join(str(item) for item in parts)
+                join_parts = [expression_text(item, values) for item in node.args]
+                return None if any(item is None for item in join_parts) else "/".join(str(item) for item in join_parts)
         return None
 
     def tier_name(node: ast.expr, values: dict[str, str]) -> str | None:
@@ -402,7 +400,7 @@ def _sqlite_archive_open_violations(tree: ast.Module, *, relative: str) -> list[
         if text is None:
             if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
                 right = expression_text(node.right, values)
-                return right if right in _SQLITE_TIER_DATABASES else None
+                return tier_from_text(right)
             if isinstance(node, ast.Call) and node.args:
                 name = canonical_name(node.func, imported_names)
                 if name in {"Path", "pathlib.Path", "PurePath", "pathlib.PurePath"}:
@@ -417,17 +415,31 @@ def _sqlite_archive_open_violations(tree: ast.Module, *, relative: str) -> list[
             return match.group(1)
         return None
 
+    def tier_from_text(text: str | None) -> str | None:
+        if text is None:
+            return None
+        match = re.search(r"(?:^|[/\\])([^/\\?]+\.db)(?:\?|$)", text)
+        return match.group(1) if match and match.group(1) in _SQLITE_TIER_DATABASES else None
+
     def readonly(call: ast.Call, argument: ast.expr, values: dict[str, str]) -> bool:
         uri_enabled = any(
-            keyword.arg == "uri"
-            and isinstance(keyword.value, ast.Constant)
-            and keyword.value.value is True
+            keyword.arg == "uri" and isinstance(keyword.value, ast.Constant) and keyword.value.value is True
             for keyword in call.keywords
         )
         if not uri_enabled:
             return False
-        text = expression_text(argument, values) or ""
-        return (
+        text = expression_text(argument, values)
+        if text is None:
+            fragments = [
+                item.value
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+                else values.get(item.id, "")
+                if isinstance(item, ast.Name)
+                else ""
+                for item in ast.walk(argument)
+            ]
+            text = "/".join(fragments)
+        return bool(
             re.search(r"(?:[?&])mode=ro(?:&|$)", text)
             or re.search(r"(?:[?&])immutable=1(?:&|$)", text)
             or text in {":memory:", "file::memory:"}
@@ -453,6 +465,7 @@ def _sqlite_archive_open_violations(tree: ast.Module, *, relative: str) -> list[
 
     def is_scratch_directory_factory(name: str | None) -> bool:
         return name in {"tempfile.TemporaryDirectory", "tempfile.mkdtemp"}
+
     violations: list[dict[str, object]] = []
     scopes: list[ast.AST] = [tree]
     scopes.extend(node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)))
@@ -505,13 +518,17 @@ def _sqlite_archive_open_violations(tree: ast.Module, *, relative: str) -> list[
                         scratch_names.add(item.optional_vars.id)
             elif isinstance(node, ast.Call):
                 name = canonical_name(node.func, names)
-                guarded = guarded or is_population_admission(name) or (
-                    is_write_lease(name) and any(keyword.arg == "archive_root" for keyword in node.keywords)
+                guarded = (
+                    guarded
+                    or is_population_admission(name)
+                    or (is_write_lease(name) and any(keyword.arg == "archive_root" for keyword in node.keywords))
                 )
                 if not is_sink(name):
                     continue
-                argument = node.args[0] if node.args else next(
-                    (keyword.value for keyword in node.keywords if keyword.arg == "database"), None
+                argument = (
+                    node.args[0]
+                    if node.args
+                    else next((keyword.value for keyword in node.keywords if keyword.arg == "database"), None)
                 )
                 if argument is None:
                     continue

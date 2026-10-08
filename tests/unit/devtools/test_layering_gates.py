@@ -827,7 +827,7 @@ def test_layering_flags_unadmitted_locally_resolved_archive_sqlite_opens(tmp_pat
     """
     findings = _archive_open_findings(
         tmp_path,
-        '''\
+        """\
 import sqlite3 as sql
 from pathlib import Path as P
 from polylogue.storage.sqlite.managed_connection import sqlite_connection as managed_open
@@ -854,11 +854,11 @@ def scratch_name_rebound_to_archive_tier(root):
         pass
     ignored = root / "embeddings.db"
     sql.connect(ignored)
-''',
+""",
     )
 
     assert [finding["rule"] for finding in findings] == ["sqlite_archive_open_without_factory"] * 6
-    assert [finding["line"] for finding in findings] == [10, 11, 12, 14, 19, 25]
+    assert [finding["line"] for finding in findings] == [10, 11, 12, 14, 19, 26]
 
 
 def test_layering_main_fails_for_new_raw_open_in_a_clean_package_module(
@@ -883,7 +883,7 @@ def test_layering_archive_open_gate_allows_admission_readonly_and_scratch(tmp_pa
     """Read-only, temp-scratch, ordinary scratch, and admitted opens pass."""
     findings = _archive_open_findings(
         tmp_path,
-        '''\
+        """\
 import sqlite3
 from pathlib import Path
 from tempfile import TemporaryDirectory as TempDir
@@ -908,7 +908,7 @@ def read_and_scratch(root):
     sqlite3.connect(":memory:")
     with TempDir() as directory:
         sqlite3.connect(Path(directory) / "index.db")
-''',
+""",
     )
 
     assert findings == []
@@ -917,11 +917,11 @@ def read_and_scratch(root):
 def test_layering_archive_open_gate_visits_lambda_scopes(tmp_path: Path) -> None:
     findings = _archive_open_findings(
         tmp_path,
-        '''\
+        """\
 import sqlite3
 
 open_index = lambda root: sqlite3.connect(root / "index.db")
-''',
+""",
     )
 
     assert [finding["rule"] for finding in findings] == ["sqlite_archive_open_without_factory"]
@@ -930,13 +930,13 @@ open_index = lambda root: sqlite3.connect(root / "index.db")
 def test_layering_archive_open_readonly_uri_requires_uri_true(tmp_path: Path) -> None:
     findings = _archive_open_findings(
         tmp_path,
-        '''\
+        """\
 import sqlite3
 
 def uri_modes(root):
     sqlite3.connect(root / "user.db?mode=ro")
     sqlite3.connect(root / "audit.db?mode=ro", uri=True)
-''',
+""",
     )
 
     assert len(findings) == 1
