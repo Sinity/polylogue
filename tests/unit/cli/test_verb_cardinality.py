@@ -596,7 +596,6 @@ class TestDeleteCardinalityLargeNonMocked:
 def test_temporal_cli_first_with_text_keeps_only_the_resolved_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from tests.infra.archive_templates import bootstrap_archive_root
     from tests.infra.storage_records import SessionBuilder
 
@@ -604,17 +603,23 @@ def test_temporal_cli_first_with_text_keeps_only_the_resolved_session(
     for index in range(2):
         builder = SessionBuilder(tmp_path / "index.db", f"temporal-{index}").provider("codex")
         builder.created_at(f"2026-01-0{index + 1}T00:00:00Z").updated_at(f"2026-01-0{index + 1}T00:00:00Z")
-        builder.add_message(text="needle temporal evidence").save()
-    from polylogue.archive.query.expression import compile_expression
-    from polylogue.archive.query.filter_kwargs import plan_filter_kwargs
-
-    with ArchiveStore.open_existing(tmp_path) as archive:
-        expected = archive.list_summaries(limit=1, **plan_filter_kwargs(compile_expression("needle").to_plan()))[
-            0
-        ].session_id
-    with cli_daemon_archive(tmp_path, monkeypatch):
-        result = _resident_verb(tmp_path, "needle", "read", "--view", "temporal", "--first")
+        builder.add_message(
+            text="needle temporal evidence",
+            blocks=[
+                {"type": "tool_use", "tool_name": "Bash", "tool_id": f"shell-{index}", "input": {"command": "pwd"}}
+            ],
+        ).save()
+    with cli_daemon_archive(tmp_path, monkeypatch) as stack:
+        with patch.object(stack.runtime, "call", wraps=stack.runtime.call) as calls:
+            result = _resident_verb(tmp_path, "needle", "read", "--view", "temporal", "--first")
+        selected = [
+            call.args[0].payload["session_id"]
+            for call in calls.call_args_list
+            if call.args[0].operation == "read.temporal"
+        ]
+    assert len(selected) == 1 and selected[0]
     assert result.exit_code == 0, result.output
     events = json.loads(result.output)["temporal_window"]["events"]
     refs = {ref for event in events for ref in event["evidence_refs"] if ref.startswith("session:")}
-    assert refs == {f"session:{expected}"}
+    assert refs == {f"session:{selected[0]}"}
+    assert {event["family"] for event in events} == {"archive-session", "archive-message", "archive-action"}
