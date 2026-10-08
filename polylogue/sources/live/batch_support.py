@@ -327,12 +327,15 @@ class _FullIngestResult:
     # Accepted raw bytes awaiting worker completion or capacity. The cursor
     # schedules a full retry without consuming its finite failure budget.
     preparation_deferred: list[Path] = field(default_factory=list)
+    # Source bytes could not yet be read. Retry without quarantining valid
+    # input, independently of accepted-Raw worker preparation.
+    source_read_deferred: list[Path] = field(default_factory=list)
     # Durably acquired source observations whose index authority is still
     # pending. They must wake the raw owner even with zero session writes.
     raw_deferred: list[Path] = field(default_factory=list)
     #: Planned paths this pass deliberately admitted nothing for, each with
     #: the typed reason. A planned path must land in exactly one of
-    #: succeeded, failed, preparation_deferred, or here: one that lands in none is
+    #: succeeded, failed, preparation_deferred, source_read_deferred, or here: one that lands in none is
     #: indistinguishable from an idle source (polylogue-6q16u).
     excluded: dict[Path, str] = field(default_factory=dict)
     #: Admitted paths whose provider is the source fallback only because
@@ -386,6 +389,7 @@ def _full_ingest_result_from_summary(
     succeeded: list[Path],
     failed: list[Path],
     preparation_deferred: list[Path] | None = None,
+    source_read_deferred: list[Path] | None = None,
     raw_deferred: list[Path] | None = None,
     source_payload_read_bytes: int,
     excluded: dict[Path, str] | None = None,
@@ -412,6 +416,7 @@ def _full_ingest_result_from_summary(
         succeeded=succeeded,
         failed=failed,
         preparation_deferred=list(preparation_deferred or ()),
+        source_read_deferred=list(source_read_deferred or ()),
         raw_deferred=list(raw_deferred or ()),
         source_payload_read_bytes=source_payload_read_bytes,
         excluded=dict(excluded or {}),
@@ -1287,6 +1292,10 @@ def retryable_read_fault(exc: BaseException) -> bool:
     """Whether a source read failed for a reason a later read can clear."""
     if isinstance(exc, RetryableSourceReadError):
         return True
+    # SQLite snapshot acquisition's live-file adapter preserves the native
+    # result code as the explicit cause of its OSError.
+    if isinstance(exc, OSError) and isinstance(exc.__cause__, sqlite3.Error):
+        return retryable_read_fault(exc.__cause__)
     sqlite_code = getattr(exc, "sqlite_errorcode", None)
     return (isinstance(exc, OSError) and exc.errno in _RETRYABLE_READ_ERRNOS) or (
         isinstance(exc, sqlite3.Error)
@@ -1415,7 +1424,8 @@ def classify_pre_writer_admissions(
 
     A JSONL decision streams the file's records, so it is taken here, off the
     Source writer, and acquisition reads the result. A retryable read fault
-    or a vanished file is recorded as that path's failure; any other fault
+    is returned for the caller to defer; a vanished file is returned as a
+    failure. Any other fault
     propagates.
     """
     admissions: dict[Path, PreAcquisitionDecision | Exception] = {}

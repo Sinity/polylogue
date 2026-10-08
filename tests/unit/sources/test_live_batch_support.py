@@ -1262,7 +1262,7 @@ def test_source_only_antigravity_metadata_stays_pending_with_mutable_companion(t
 
 
 def test_unreadable_state_database_stays_retryable_instead_of_excluded(tmp_path: Path) -> None:
-    """A read fault on a declared database fails the file; it is never excluded.
+    """A read fault on a declared database defers the file; it is never excluded.
 
     The Codex state recognizer cannot open the file and reads it as "not
     Codex state". Anti-vacuity: without the readability probe in
@@ -1286,13 +1286,18 @@ def test_unreadable_state_database_stays_retryable_instead_of_excluded(tmp_path:
     state.chmod(0)
     try:
         result = _full_paths_sync(processor, [state], source_name="codex")
+        metrics = run_ingest_files(processor, [state], emit_event=False)
     finally:
         state.chmod(0o600)
 
-    assert result.failed == [state]
+    assert result.failed == []
+    assert result.source_read_deferred == [state]
     assert result.succeeded == []
+    assert metrics.failed_file_count == 0
+    assert metrics.deferred_file_count == 1
+    assert metrics.retry_paths == [str(state)]
     record = cursor.get_record(state)
-    assert record is None or record.excluded is False
+    assert record is None or (record.excluded is False and record.failure_count == 0)
 
 
 @pytest.mark.parametrize("fault_stage", ["classification", "capture"])
@@ -1395,6 +1400,72 @@ def test_pre_acquisition_reports_a_retryable_read_as_its_typed_fault(tmp_path: P
         size_bytes=not_a_database.stat().st_size,
     )
     assert decision.excluded_reason is not None
+
+
+def test_pre_writer_sqlite_reads_defer_then_exclude_proven_unsupported_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The admission thread owes unread input until a read can classify it."""
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "inbox"
+    root.mkdir()
+    path = root / "candidate.sqlite"
+    path.write_bytes(b"synthetic unsupported database bytes" * 64)
+    cursor = CursorStore(tmp_path / "index.db")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="inbox", root=root, layout=export_drop_layout((".sqlite",))),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    def busy(*_args: Any, **_kwargs: Any) -> Any:
+        error = sqlite3.OperationalError("synthetic source inspection busy")
+        error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+        raise error
+
+    with monkeypatch.context() as fault:
+        fault.setattr("polylogue.sources.sqlite_inspection.classify_sqlite_source", busy)
+        metrics = [run_ingest_files(processor, [path], emit_event=False) for _ in range(6)]
+    assert all(item.failed_file_count == 0 and item.deferred_file_count == 1 for item in metrics)
+    record = cursor.get_record(path)
+    assert record is not None and record.failure_count == 0 and record.excluded is False
+    settled = run_ingest_files(processor, [path], emit_event=False)
+    assert settled.failed_file_count == 0 and settled.deferred_file_count == 0
+    record = cursor.get_record(path)
+    assert record is not None and record.excluded is True
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+
+
+@pytest.mark.parametrize("state_name", ["state_5.sqlite", "candidate.sqlite"])
+def test_sqlite_admission_cancellation_propagates_without_a_failure_cursor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state_name: str
+) -> None:
+    """Both pre-writer admission routes preserve the owner's cancellation."""
+    from polylogue.core.compute import DaemonOperationCancelled
+
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "input"
+    path = root / state_name
+    _write_plain_sqlite_db(path)
+    cursor = CursorStore(tmp_path / "index.db")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="codex-state" if state_name == "state_5.sqlite" else "inbox", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    def cancel(*_args: Any, **_kwargs: Any) -> Any:
+        raise DaemonOperationCancelled("synthetic owner cancellation")
+
+    monkeypatch.setattr("polylogue.sources.sqlite_inspection.classify_sqlite_source", cancel)
+    with pytest.raises(DaemonOperationCancelled):
+        run_ingest_files(processor, [path], emit_event=False)
+    assert cursor.get_record(path) is None
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
 
 
 def test_jsonl_pre_acquisition_classifies_record_by_record_in_bounded_memory(

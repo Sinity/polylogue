@@ -1564,13 +1564,14 @@ class CursorStore:
         self._read_modify_write_cursor_record(path, mutate, actuator="mark_failed")
 
     def defer_full_cursor_reconciliation(self, path: Path) -> None:
-        """Retry archive-backed full-cursor handoff without poisoning the source.
+        """Retry full intake or its handoff without poisoning the source.
 
         A raw full capture can be durable and parseable while its live JSONL
         source is still appending too quickly to establish a stable handoff.
         This is a scheduling condition, not a parse/persistence failure: it
         must never consume the finite failure budget that quarantines malformed
-        files.
+        files. A transient source read likewise remains owed for as many passes
+        as it takes to become readable.
         """
 
         def mutate(current: CursorRecord | None) -> CursorRecord | None:

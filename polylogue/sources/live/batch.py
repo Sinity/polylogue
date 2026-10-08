@@ -143,6 +143,7 @@ from polylogue.sources.live.batch_support import (
     jsonl_complete_prefix_path,
     jsonl_prefix_record_count,
     last_complete_newline_from_tail,
+    retryable_read_fault,
     sha256_range_from_path,
     tail_hash_from_path,
 )
@@ -1202,6 +1203,7 @@ class LiveBatchProcessor:
         full_paths: list[Path] = []
         deferred_paths: list[Path] = []
         preparation_deferred_paths: set[Path] = set()
+        source_read_deferred_paths: set[Path] = set()
         # Identity-scoped session touches for this batch (polylogue-20d.13):
         # collected as (source_name, session_id) pairs so the daemon can emit
         # session.appended/session.updated/message.appended events carrying
@@ -1689,6 +1691,16 @@ class LiveBatchProcessor:
                         source_name=source_name,
                         captured_file_observation=full_result.captured_file_observations.get(path),
                     )
+                for path in full_result.source_read_deferred:
+                    deferred_paths.append(path)
+                    source_read_deferred_paths.add(path)
+                    await self._run_ops_write(
+                        "cursor_deferred_source_read",
+                        self._defer_source_read_cursor_retry,
+                        path,
+                        source_name=source_name,
+                        captured_file_observation=full_result.captured_file_observations.get(path),
+                    )
                 excluded_by_path.update(full_result.excluded)
                 detection_fallbacks_by_path.update(full_result.detection_fallbacks)
                 settled_exclusions.update(full_result.settled_exclusions)
@@ -1787,7 +1799,9 @@ class LiveBatchProcessor:
                 subject_type="source_path",
                 subject_id=str(deferred_path),
                 error=(
-                    "ingest deferred: JSONL worker preparation pending"
+                    "ingest deferred: source read unavailable"
+                    if deferred_path in source_read_deferred_paths
+                    else "ingest deferred: JSONL worker preparation pending"
                     if deferred_path in preparation_deferred_paths
                     else "ingest deferred: no new authority-relevant append this pass"
                 ),
@@ -2537,6 +2551,33 @@ class LiveBatchProcessor:
             ):
                 return _FullCapturePrefixProof("rejected", proof_end, bytes_read)
         return _FullCapturePrefixProof("deferred", latest_stat, bytes_read)
+
+    def _defer_source_read_cursor_retry(
+        self,
+        path: Path,
+        *,
+        source_name: str,
+        captured_file_observation: tuple[int, int, int, int, int] | None = None,
+    ) -> None:
+        """Schedule unread bytes without spending the permanent-failure budget."""
+        existing = self._cursor.get_record(path)
+        authority = CursorPathAuthority.of_record(existing) if existing is not None else None
+        if authority is None:
+            try:
+                authority = CursorPathAuthority.observe(path)
+            except OSError as exc:
+                if isinstance(exc, FileNotFoundError) or retryable_read_fault(exc):
+                    # An unreadable new file has no accepted coordinate to
+                    # bind a cursor to. Its explicit deferred outcome and debt
+                    # keep it owed; discovery/adapter retries retain the path.
+                    return
+                raise
+        self._defer_full_cursor_retry(
+            path,
+            source_name=source_name,
+            captured_file_observation=captured_file_observation,
+            authority=authority,
+        )
 
     def _defer_full_cursor_retry(
         self,
@@ -3329,6 +3370,7 @@ class LiveBatchProcessor:
         failed: list[Path] = []
         antigravity_excised_paths: set[Path] = set()
         preparation_deferred_paths: list[Path] = []
+        source_read_deferred_paths: list[Path] = []
         ingested: list[Path] = []
         source_payload_read_bytes = 0
         fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
@@ -3475,15 +3517,23 @@ class LiveBatchProcessor:
                 blob_publication_receipt_id: str | None = None
                 prepared = pre_writer_admissions[path]
                 if isinstance(prepared, Exception):
+                    if isinstance(prepared, DaemonOperationCancelled):
+                        raise prepared
                     raise_if_storage_fault(prepared, kinds=_snapshot_fault_kinds(prepared))
-                    failed.append(path)
+                    if retryable_read_fault(prepared):
+                        source_read_deferred_paths.append(path)
+                    else:
+                        failed.append(path)
                     continue
                 captured_sqlite = prepared if isinstance(prepared, PreparedLiveSQLiteCapture) else None
                 try:
                     observed_at_ns = captured_sqlite.observed_at_ns if captured_sqlite is not None else time.time_ns()
                     stat = captured_sqlite.source_stat if captured_sqlite is not None else path.stat()
-                except OSError:
-                    failed.append(path)
+                except OSError as exc:
+                    if retryable_read_fault(exc):
+                        source_read_deferred_paths.append(path)
+                    else:
+                        failed.append(path)
                     continue
                 captured_file_observations[path] = _file_observation(stat)
                 captured_observation_times_ns[path] = observed_at_ns
@@ -3614,7 +3664,10 @@ class LiveBatchProcessor:
                             raise
                         raise_if_storage_fault(error, kinds=_snapshot_fault_kinds(error))
                         logger.exception("antigravity: trajectory SQLite acquisition failed: %s", path)
-                        failed.append(path)
+                        if retryable_read_fault(error):
+                            source_read_deferred_paths.append(path)
+                        else:
+                            failed.append(path)
                         continue
                     source_payload_read_bytes += blob_size
                     if heartbeat is not None:
@@ -3654,7 +3707,10 @@ class LiveBatchProcessor:
                         raw_source_fingerprints[path] = snapshot.source_fingerprint
                     except OSError as exc:
                         raise_if_storage_fault(exc, kinds=_snapshot_fault_kinds(exc))
-                        failed.append(path)
+                        if retryable_read_fault(exc):
+                            source_read_deferred_paths.append(path)
+                        else:
+                            failed.append(path)
                         continue
                     source_payload_read_bytes += blob_size
                     if heartbeat is not None:
@@ -3949,7 +4005,13 @@ class LiveBatchProcessor:
                     partial_admissions.setdefault(path, partial)
         for path in skipped_paths:
             excluded_paths.setdefault(path, REFUSED_UNATTEMPTED_TIME_BUDGET)
-        accounted = set(succeeded_paths) | failed_set | set(excluded_paths) | set(preparation_deferred_paths)
+        accounted = (
+            set(succeeded_paths)
+            | failed_set
+            | set(excluded_paths)
+            | set(preparation_deferred_paths)
+            | set(source_read_deferred_paths)
+        )
         for path in paths:
             if path not in accounted:
                 excluded_paths[path] = "dropped without a recorded outcome"
@@ -3964,6 +4026,7 @@ class LiveBatchProcessor:
             succeeded=succeeded_paths,
             failed=failed,
             preparation_deferred=preparation_deferred_paths,
+            source_read_deferred=source_read_deferred_paths,
             raw_deferred=raw_deferred_paths if raw_records and archive_write is not None else [],
             source_payload_read_bytes=source_payload_read_bytes,
             excluded=excluded_paths,
