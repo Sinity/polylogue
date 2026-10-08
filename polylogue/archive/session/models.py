@@ -207,9 +207,7 @@ class SessionProfile:
     @classmethod
     def from_dict(cls, payload: SessionProfilePayload | Mapping[str, object]) -> SessionProfile:
         repo_paths = normalize_repo_paths(string_sequence(payload.get("repo_paths")))
-        explicit_repo_names = tuple(
-            sorted({item.strip() for item in string_sequence(payload.get("repo_names")) if item.strip()})
-        )
+        explicit_repo_names = tuple(sorted({item for item in string_sequence(payload.get("repo_names")) if item}))
         repo_names = explicit_repo_names or normalize_repo_names(repo_paths=repo_paths)
         return cls(
             session_id=str(payload["session_id"]),

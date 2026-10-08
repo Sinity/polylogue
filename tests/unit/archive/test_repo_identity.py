@@ -19,6 +19,7 @@ from polylogue.archive.session.repo_identity import (
     normalize_repo_names,
     normalize_repo_path,
     normalize_repo_paths,
+    repo_relative_path,
 )
 from polylogue.archive.session.session_profile import SessionProfile, build_session_profile
 from polylogue.archive.viewport.viewports import ToolCategory
@@ -639,3 +640,34 @@ def test_literal_worktree_path_preserves_linked_git_marker_and_ceiling(
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(linked))
     assert normalize_repo_path(str(cwd)) is None
     assert normalize_repo_path(str(linked)) == str(linked)
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [("/neutral/project copy /file ", "file "), ("/neutral/project copy/file ", "/neutral/project copy/file ")],
+)
+def test_repo_relative_literal_paths_preserve_blank_and_neighbor(path: str, expected: str) -> None:
+    assert repo_relative_path(path, "/neutral/project copy ") == expected
+
+
+def test_build_session_profile_round_trips_literal_basename_without_phantom_neighbor(tmp_path: Path) -> None:
+    root = tmp_path / "project "
+    neighbor = tmp_path / "project"
+    for repo in (root, neighbor):
+        subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    session = Session(
+        id=SessionId("neutral-literal-profile"),
+        origin=Origin.CODEX_SESSION,
+        title="neutral",
+        created_at=datetime(2026, 4, 12, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 4, 12, tzinfo=timezone.utc),
+        working_directories=(str(root),),
+        messages=MessageCollection(messages=[]),
+    )
+    profile = build_session_profile(session)
+    assert profile.repo_paths == (str(root),)
+    assert profile.repo_names == ("project ",)
+    restored = SessionProfile.from_dict(profile.to_dict())
+    assert restored.repo_names == profile.repo_names
+    assert restored.repo_paths == profile.repo_paths
+    assert normalize_repo_names(["project ", " explicit "], repo_paths=[str(root)]) == ("explicit", "project ")

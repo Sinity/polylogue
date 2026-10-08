@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import aiosqlite
 import pytest
 
-from polylogue.archive.session.attribution import SessionAttribution
+from polylogue.archive.session.attribution import SessionAttribution, extract_attribution_from_actions
 from polylogue.storage.derived.session.repo_observations import (
     RepoObservation,
     attribution_to_observations,
@@ -348,3 +350,39 @@ def test_list_repos_filter_by_name() -> None:
     all_repos, filtered = asyncio.run(_run())
     assert {row["repo_name"] for row in all_repos} == {"polylogue", "sinex"}
     assert {row["repo_name"] for row in filtered} == {"polylogue"}
+
+
+@pytest.mark.parametrize("component", ["project copy other", "project copy ", "project "])
+def test_materializer_preserves_literal_repo_root_next_to_trimmed_neighbor(tmp_path: Path, component: str) -> None:
+    neighbor = tmp_path / (component.rstrip() if component.endswith(" ") else "project copy")
+    root = tmp_path / component
+    for repo in (root, neighbor):
+        subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    attr = extract_attribution_from_actions([], working_directories=[str(root)])
+    conn = _make_db()
+    try:
+        session_id = _seed_session(conn, "literal-root")
+        observations = attribution_to_observations(attr)
+        refresh_session_repos_sync(conn, session_id, observations)
+        assert [(r["root_path"], r["repo_id"]) for r in conn.execute("SELECT root_path,repo_id FROM repos")] == [
+            (str(root), f"dir:{root}")
+        ]
+        assert attr.repo_paths == (str(root),)
+        assert attr.repo_names == (component,)
+        assert conn.execute("SELECT repo_name FROM repos").fetchone()[0] == component
+        conn.commit()
+        database = tmp_path / "derived.db"
+        with sqlite3.connect(database) as persisted:
+            conn.backup(persisted)
+
+        async def read_filters() -> None:
+            async with aiosqlite.connect(database) as reader:
+                reader.row_factory = aiosqlite.Row
+                assert await list_sessions_for_repo(reader, root_path=str(root)) == (session_id,)
+                assert await list_sessions_for_repo(reader, repo_name=component) == (session_id,)
+                assert await list_sessions_for_repo(reader, root_path=str(neighbor)) == ()
+                assert await list_sessions_for_repo(reader, repo_name=neighbor.name) == ()
+
+        asyncio.run(read_filters())
+    finally:
+        conn.close()

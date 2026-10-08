@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
@@ -87,5 +90,32 @@ def test_commit_evidence_survives_a_checkout_this_machine_cannot_resolve(tmp_pat
         assert evidence["unresolved_working_directories"] == [str(unrooted)]
         # No repository was invented for it.
         assert list(conn.execute("SELECT repo_id FROM repos")) == []
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("subdirectory", [False, True])
+def test_writer_preserves_literal_repo_root_ending_blank(tmp_path: Path, subdirectory: bool) -> None:
+    root = tmp_path / "project copy "
+    neighbor = tmp_path / "project copy"
+    for repo in (root, neighbor):
+        subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    cwd = root / "src" if subdirectory else root
+    cwd.mkdir(exist_ok=True)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="literal-cwd",
+        working_directories=[str(cwd)],
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="neutral")],
+    )
+    conn = connect_measured(bootstrapped_tier_path(tmp_path / "index.db"))
+    try:
+        write_fixture_index_session(
+            conn, session, content_hash=str(session_content_hash(session)), prepared_rows=prepare_session_rows(session)
+        )
+        assert conn.execute("SELECT root_path FROM repos").fetchall() == [(str(root),)]
+        assert conn.execute("SELECT root_path FROM repo_checkouts").fetchall() == [(str(root),)]
+        assert conn.execute("SELECT path FROM session_working_dirs").fetchall() == [(str(cwd),)]
+        assert session.working_directories == [str(cwd)]
     finally:
         conn.close()

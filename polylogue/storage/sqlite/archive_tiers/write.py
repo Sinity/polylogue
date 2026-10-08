@@ -12908,7 +12908,7 @@ def _write_repo_edges(
     observed_at_ms = to_epoch_ms(session.updated_at, numeric_unit="seconds") or to_epoch_ms(
         session.created_at, numeric_unit="seconds"
     )
-    raw_root_paths = tuple(path.strip() for path in session.working_directories if path.strip())
+    raw_root_paths = tuple(path for path in session.working_directories if path)
     origin_url = (session.git_repository_url or "").strip()
     # polylogue-cijx.4 decision 1: resolve each raw cwd to its git root before
     # deduplicating, so multiple cwds inside the same checkout (or a cwd

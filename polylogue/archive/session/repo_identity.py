@@ -154,21 +154,24 @@ def normalize_repo_names(
     *,
     repo_paths: Iterable[object] = (),
 ) -> tuple[str, ...]:
-    normalized: set[str] = set()
+    literal_names: set[str] = set()
+    for repo_path in repo_paths:
+        repo_root = normalize_repo_path(repo_path)
+        if repo_root is not None and (name := Path(repo_root).name):
+            literal_names.add(name)
+    normalized = set(literal_names)
     for value in values:
-        raw = str(value or "").strip()
+        literal = str(value or "")
+        if literal in literal_names:
+            # A known checkout basename is filesystem evidence, not a
+            # whitespace-padded lexical name or remote operand.
+            continue
+        raw = literal.strip()
         if raw and _PLAIN_REPO_NAME_RE.fullmatch(raw):
             normalized.add(raw)
             continue
         repo_name = normalize_repo_name(value)
         if repo_name is not None:
-            normalized.add(repo_name)
-    for repo_path in repo_paths:
-        repo_root = normalize_repo_path(repo_path)
-        if repo_root is None:
-            continue
-        repo_name = Path(repo_root).name
-        if repo_name:
             normalized.add(repo_name)
     return tuple(sorted(normalized))
 
@@ -195,8 +198,8 @@ def repo_relative_path(path: str, root_path: str) -> str:
     prefix of ``path`` (e.g. the checkout root could not be resolved for
     this session, or the path is outside any known checkout).
     """
-    candidate = path.strip()
-    root = root_path.strip()
+    candidate = path
+    root = root_path
     if not candidate or not root:
         return candidate
     normalized_root = root.rstrip("/")
