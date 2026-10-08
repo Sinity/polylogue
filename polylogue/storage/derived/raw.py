@@ -1927,6 +1927,7 @@ class RawObservationDerivation(RawObservationInspection):
                 parse_prefix_size=parse_prefix_size,
                 sidecar_resolver=captured_sidecar_resolver,
                 progress_identity=_neutral_identity_digest(("neutral-parser-work-v1", neutral_keys[raw_id])),
+                captured_zip_coordinate=captured.zip_coordinate,
             )
             # Transfer ownership before validation or checkpoint work can fail.
             carry.neutral_artifacts[neutral_keys[raw_id]] = neutral
@@ -1944,6 +1945,7 @@ class RawObservationDerivation(RawObservationInspection):
                         evidence_id=raw_id,
                         source_path=source_path,
                         jsonl=True,
+                        captured_zip_coordinate=captured.zip_coordinate,
                     )
                 neutral = dataclasses.replace(neutral, validation_verdict=verdict)
                 carry.neutral_artifacts[neutral_keys[raw_id]] = neutral

@@ -2306,6 +2306,48 @@ def test_advancing_work_progress_events_are_useful_progress_and_a_frozen_unit_is
     with events.open("a", encoding="utf-8") as handle:
         handle.write(line[10:])
     assert _useful_progress(same_work_advanced, Observation(7.0, work_progress=tail.poll()))
+    tail.close()
+
+
+def test_work_progress_tail_spills_high_water_and_streams_appended_event_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from devtools.fresh_build_bench import run
+
+    monkeypatch.setattr(run, "_WORK_PROGRESS_READ_CHUNK_BYTES", 128)
+    events = tmp_path / "many-progress-events.jsonl"
+    event_count = 1_200
+    with events.open("w", encoding="utf-8") as handle:
+        for index in range(event_count):
+            handle.write(
+                json.dumps(
+                    {
+                        "event": "daemon.work.progress",
+                        "phase": "source_preparation",
+                        "unit_id": f"unit-{index}",
+                        "productive_id": f"recipe-{index}",
+                        "messages": 1,
+                        "bytes": 0,
+                    }
+                )
+                + "\n"
+            )
+
+    tail = run.WorkProgressTail(events, state_root=tmp_path)
+    state_directory = Path(tail._state_directory.name)
+    try:
+        assert tail.poll() == event_count
+        assert tail._pending == b""
+        assert not hasattr(tail, "_high_water")
+        assert tail._connection.execute("PRAGMA cache_size").fetchone() == (-256,)
+        assert tail._connection.execute("SELECT count(*) FROM productive_high_water").fetchone() == (event_count,)
+        assert (state_directory / "high-water.sqlite3").is_file()
+    finally:
+        tail.close()
+
+    assert not state_directory.exists()
 
 
 @pytest.mark.parametrize("with_debt", [False, True])

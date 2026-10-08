@@ -26,6 +26,7 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -52,6 +53,7 @@ REQUIRED_READINESS_DOMAINS: Final = frozenset(
 )
 _CLOCK_TICKS: Final = os.sysconf("SC_CLK_TCK")
 _PAGE_SIZE: Final = os.sysconf("SC_PAGE_SIZE")
+_WORK_PROGRESS_READ_CHUNK_BYTES: Final = 64 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,47 +405,86 @@ class WorkProgressTail:
     """Count advancing ``daemon.work.progress`` events appended to the event log.
 
     Reads only the bytes appended since the previous call. Counter high-water
-    marks are scoped by productive identity, so a retry that resets its local
-    counters cannot masquerade as new work.
+    marks are scoped by productive identity in a private SQLite file, so a
+    retry that resets its local counters cannot masquerade as new work and a
+    long run does not retain one Python object per source recipe.
     """
 
-    def __init__(self, events: Path) -> None:
+    def __init__(self, events: Path, *, state_root: Path | None = None) -> None:
         self._events = events
         self._offset = 0
         self._pending = b""
-        self._high_water: dict[tuple[str, str], tuple[int, int]] = {}
+        self._state_directory = tempfile.TemporaryDirectory(prefix="polylogue-work-progress-", dir=state_root)
+        self._connection = sqlite3.connect(Path(self._state_directory.name) / "high-water.sqlite3")
+        self._connection.execute("PRAGMA cache_size = -256")
+        self._connection.execute("PRAGMA journal_mode = OFF")
+        self._connection.execute("PRAGMA synchronous = OFF")
+        self._connection.execute(
+            """CREATE TABLE productive_high_water (
+                phase TEXT NOT NULL,
+                productive_id TEXT NOT NULL,
+                messages INTEGER NOT NULL,
+                bytes INTEGER NOT NULL,
+                PRIMARY KEY (phase, productive_id)
+            ) WITHOUT ROWID"""
+        )
         self.advancing = 0
+        self._closed = False
+
+    def close(self) -> None:
+        """Close and remove the private high-water store."""
+        if self._closed:
+            return
+        self._closed = True
+        self._connection.close()
+        self._state_directory.cleanup()
+
+    def _consume_line(self, line: bytes) -> None:
+        if b"daemon.work.progress" not in line:
+            return
+        try:
+            event = json.loads(line)
+        except ValueError:
+            return
+        if event.get("event") != "daemon.work.progress":
+            return
+        phase = str(event.get("phase"))
+        productive_id = event.get("productive_id")
+        unit_id = event.get("unit_id")
+        if not isinstance(productive_id, str) or not productive_id or not isinstance(unit_id, str) or not unit_id:
+            return
+        counters = (int(event.get("messages") or 0), int(event.get("bytes") or 0))
+        row = self._connection.execute(
+            "SELECT messages, bytes FROM productive_high_water WHERE phase = ? AND productive_id = ?",
+            (phase, productive_id),
+        ).fetchone()
+        previous = (0, 0) if row is None else (int(row[0]), int(row[1]))
+        if counters[0] >= previous[0] and counters[1] >= previous[1] and counters != previous:
+            self._connection.execute(
+                """INSERT INTO productive_high_water (phase, productive_id, messages, bytes)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (phase, productive_id) DO UPDATE SET
+                    messages = excluded.messages,
+                    bytes = excluded.bytes""",
+                (phase, productive_id, counters[0], counters[1]),
+            )
+            self.advancing += 1
 
     def poll(self) -> int:
+        if self._closed:
+            return self.advancing
         try:
             with self._events.open("rb") as handle:
                 handle.seek(self._offset)
-                chunk = handle.read()
+                while chunk := handle.read(_WORK_PROGRESS_READ_CHUNK_BYTES):
+                    self._offset += len(chunk)
+                    lines = (self._pending + chunk).split(b"\n")
+                    self._pending = lines.pop()
+                    with self._connection:
+                        for line in lines:
+                            self._consume_line(line)
         except OSError:
             return self.advancing
-        self._offset += len(chunk)
-        lines = (self._pending + chunk).split(b"\n")
-        self._pending = lines.pop()
-        for line in lines:
-            if b"daemon.work.progress" not in line:
-                continue
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            if event.get("event") != "daemon.work.progress":
-                continue
-            phase = str(event.get("phase"))
-            productive_id = event.get("productive_id")
-            unit_id = event.get("unit_id")
-            if not isinstance(productive_id, str) or not productive_id or not isinstance(unit_id, str) or not unit_id:
-                continue
-            counters = (int(event.get("messages") or 0), int(event.get("bytes") or 0))
-            key = (phase, productive_id)
-            previous = self._high_water.get(key, (0, 0))
-            if counters[0] >= previous[0] and counters[1] >= previous[1] and counters != previous:
-                self.advancing += 1
-                self._high_water[key] = counters
         return self.advancing
 
 
@@ -905,6 +946,7 @@ def _measure_and_write_receipt(
     last_useful_progress_at: float | None = None
     last_activity_at: float | None = None
     work_progress = WorkProgressTail(paths["events"])
+    final_work_progress = 0
     # Wall minus monotonic elapsed, sampled every poll: a step that is
     # restored before the end still displaced the milestones logged meanwhile.
     clock_steps: list[float] = [0.0]
@@ -983,19 +1025,29 @@ def _measure_and_write_receipt(
                 )
             time.sleep(config.poll_s)
     finally:
-        exit_code, shutdown_s = _stop(
-            process,
-            stall_s=config.stall_timeout_s,
-            # A draining or checkpointing shutdown moves the archive's
-            # database and WAL files. Process CPU, read I/O, thread counts and
-            # the event log are left out: the stack sampler, status readers
-            # and periodic skip events keep those moving in a hung daemon, so
-            # a stalled run was never terminated.
-            progress=lambda: _archive_write_stamp(paths["archive"]),
-            interrupted=interrupted,
-        )
-        sampler.finish()
-        log_stream.close()
+        try:
+            exit_code, shutdown_s = _stop(
+                process,
+                stall_s=config.stall_timeout_s,
+                # A draining or checkpointing shutdown moves the archive's
+                # database and WAL files. Process CPU, read I/O, thread counts and
+                # the event log are left out: the stack sampler, status readers
+                # and periodic skip events keep those moving in a hung daemon, so
+                # a stalled run was never terminated.
+                progress=lambda: _archive_write_stamp(paths["archive"]),
+                interrupted=interrupted,
+            )
+        finally:
+            try:
+                sampler.finish()
+            finally:
+                try:
+                    log_stream.close()
+                finally:
+                    try:
+                        final_work_progress = work_progress.poll()
+                    finally:
+                        work_progress.close()
     if interrupted:
         # A cancellation after the loop settled (during shutdown, or before
         # the fingerprint) still skips post-processing; the receipt says so.
@@ -1003,7 +1055,7 @@ def _measure_and_write_receipt(
     finished = time.monotonic()
     finished_wall = time.time()
     final = observe(paths["archive"], started)
-    final.work_progress = work_progress.poll()
+    final.work_progress = final_work_progress
     final.useful_progress_at_s = last_useful_progress_at
     final.activity_at_s = last_activity_at
     # The watcher may have read a file edited after the launch-time check.

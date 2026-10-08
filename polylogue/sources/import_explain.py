@@ -19,6 +19,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.evidence import Measured, Unavailable
 from polylogue.core.json import JSONValue
 from polylogue.core.provider_identity import captured_hermes_profile_key
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.acquisition_boundary import open_bound_container
 from polylogue.sources.decoder_zip import (
@@ -39,7 +40,9 @@ from polylogue.sources.dispatch import (
 from polylogue.sources.parsers import hermes_spans, hermes_state
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_acquisition_components import (
+    captured_zip_member_coordinate,
     sniff_zip_provider,
+    zip_acquisition_fingerprint,
     zip_member_admission,
 )
 from polylogue.sources.source_staging import bind_source_input
@@ -603,13 +606,24 @@ def _explain_zip(
                         )
                     )
             central_directory = archive.infolist()
+            entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
             admission = zip_member_admission(archive, path, central_directory, provider_hint)
             validator = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=path)
 
             for info in validator.filter_entries(central_directory, allowed_path=admission.allowed_path):
+                entry_ordinal = entry_ordinals[id(info)]
                 entry_provider = admission.entry_provider_hint(archive, info)
                 profile = captured.captured_identity.member_profile_identity(info.filename)
                 profile_identity = None if profile is None else captured_hermes_profile_key(profile[0])
+                zip_coordinate = captured_zip_member_coordinate(
+                    captured.captured_identity,
+                    entry_name=info.filename,
+                    entry_ordinal=entry_ordinal,
+                    split_index=0,
+                    addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+                    container_blob_hash=physical.blob_hash,
+                    decoder_fingerprint=zip_acquisition_fingerprint(container_provider),
+                )
                 path_classification = classify_artifact_path(info.filename, provider=entry_provider)
                 decoded_session_artifact: ArtifactClassification | None = None
                 if path_classification is not None and not path_classification.parse_as_session:
@@ -619,6 +633,7 @@ def _explain_zip(
                             info,
                             provider=entry_provider,
                             profile_identity=profile_identity,
+                            captured_zip_coordinate=zip_coordinate,
                         )
                     except zipfile.BadZipFile as exc:
                         skipped.append(
@@ -647,6 +662,7 @@ def _explain_zip(
                         source_path=f"{path}:{info.filename}",
                         provider_hint=entry_provider,
                         profile_identity=profile_identity,
+                        captured_zip_coordinate=zip_coordinate,
                     )
                 except zipfile.BadZipFile as exc:
                     skipped.append(
@@ -697,6 +713,7 @@ def _explain_zip_entry(
     source_path: str,
     provider_hint: Provider,
     profile_identity: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
 ) -> ImportExplainEntryPayload:
     """Aggregate the existing sealed parser artifact without a session list."""
     import ijson
@@ -727,6 +744,7 @@ def _explain_zip_entry(
         provider=provider,
         source_path=source_path,
         profile_identity=profile_identity,
+        captured_zip_coordinate=captured_zip_coordinate,
     ) as prepared:
         if prepared.error is not None or prepared.deferred or prepared.blob_hash is None:
             return _skipped_entry(

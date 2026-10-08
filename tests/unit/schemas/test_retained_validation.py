@@ -16,6 +16,7 @@ import pytest
 
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.json import JSONDocument, JSONValue
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.schemas import observation_spill
 from polylogue.schemas.packages import SchemaResolution, SchemaResolutionReason
 from polylogue.schemas.retained_validation import PrefixValidationState, _bounded_validator, _normalized
@@ -279,6 +280,101 @@ def test_retained_validation_productive_identity_uses_source_recipe_not_attempt_
     assert identity(path=tmp_path / "attempt-a.jsonl", revision_sha256="b" * 64) != original
     assert identity(path=tmp_path / "attempt-a.jsonl", mode=ValidationMode.STRICT) != original
     assert stable_productive_identity(("source-path", "/tmp/source-\udcff.jsonl"))
+
+
+def test_zip_occurrence_validation_progress_reuses_only_the_same_captured_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import warnings
+    import zipfile
+
+    from devtools.fresh_build_bench.run import WorkProgressTail
+    from polylogue.core import work_progress
+    from polylogue.core.raw_coordinates import MemberAddressingMode
+    from polylogue.sources.source_acquisition_components import (
+        captured_zip_member_coordinate,
+        zip_acquisition_fingerprint,
+    )
+    from polylogue.sources.source_staging import bind_source_input
+
+    payload = json.dumps(
+        {"id": "same-session", "mapping": {"root": {"message": {"author": {"role": "user"}}}}},
+        separators=(",", ":"),
+    ).encode()
+    first_container = tmp_path / "first.zip"
+    second_container = tmp_path / "second.zip"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with zipfile.ZipFile(first_container, "w") as archive:
+            archive.writestr("same.json", payload)
+            archive.writestr("same.json", payload)
+    with zipfile.ZipFile(second_container, "w") as archive:
+        archive.writestr("same.json", payload)
+
+    decoder_fingerprint = zip_acquisition_fingerprint(Provider.CHATGPT)
+
+    def captured_coordinate(container: Path, ordinal: int) -> CapturedZipMemberCoordinate:
+        with zipfile.ZipFile(container) as archive:
+            entry = archive.infolist()[ordinal]
+            assert entry.filename == "same.json"
+            assert archive.read(entry) == payload
+        with bind_source_input(container) as binding:
+            coordinate = captured_zip_member_coordinate(
+                binding.captured_identity,
+                entry_name="same.json",
+                entry_ordinal=ordinal,
+                split_index=0,
+                addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+                container_blob_hash=hashlib.sha256(container.read_bytes()).hexdigest(),
+                decoder_fingerprint=decoder_fingerprint,
+            )
+        assert coordinate is not None
+        return coordinate
+
+    coordinates = (
+        captured_coordinate(first_container, 0),
+        captured_coordinate(first_container, 1),
+        captured_coordinate(second_container, 0),
+    )
+    emitted: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(work_progress, "PROGRESS_INTERVAL_S", 0)
+    monkeypatch.setattr(work_progress, "emit", lambda event, **fields: emitted.append((event, fields)))
+    events_path = tmp_path / "events.jsonl"
+    tail = WorkProgressTail(events_path, state_root=tmp_path)
+    try:
+        observed: list[tuple[str, int]] = []
+        for attempt, coordinate in enumerate((*coordinates[:1], *coordinates[:1], *coordinates[1:])):
+            path = tmp_path / f"attempt-{attempt}.json"
+            path.write_bytes(payload)
+            validate_retained_document(
+                Provider.CHATGPT,
+                path,
+                mode=ValidationMode.ADVISORY,
+                raw_id="same-raw-id",
+                revision_sha256=hashlib.sha256(payload).hexdigest(),
+                evidence_id="same-raw-id",
+                source_path=coordinate.declared_member,
+                captured_zip_coordinate=coordinate,
+            )
+            productive_ids = [
+                str(fields["productive_id"]) for event, fields in emitted if event == "daemon.work.progress"
+            ]
+            assert productive_ids
+            with events_path.open("a", encoding="utf-8") as handle:
+                for event, fields in emitted:
+                    if event == "daemon.work.progress":
+                        handle.write(json.dumps({"event": event, **fields}) + "\n")
+            emitted.clear()
+            observed.append((productive_ids[-1], tail.poll()))
+
+        assert observed[0][0] == observed[1][0]
+        assert observed[0][1] > 0
+        assert observed[1][1] == observed[0][1]
+        assert len({identity for identity, _count in observed}) == 3
+        assert observed[2][1] > observed[1][1]
+        assert observed[3][1] > observed[2][1]
+    finally:
+        tail.close()
 
 
 def test_spilled_object_membership_checks_only_the_key_index(tmp_path: Path) -> None:

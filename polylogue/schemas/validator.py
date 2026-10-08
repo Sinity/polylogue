@@ -20,6 +20,7 @@ from polylogue.archive.raw_payload import extract_payload_samples
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider, ValidationMode
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, json_document
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.schemas.field_stats.detection import is_dynamic_key
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SchemaRegistry
@@ -741,6 +742,7 @@ def validate_retained_document(
     evidence_id: str,
     source_path: str | None = None,
     jsonl: bool = False,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
     schema_resolution: SchemaResolution | None = None,
     schema_resolution_is_explicit: bool = False,
     registry: SchemaRegistry | None = None,
@@ -762,6 +764,7 @@ def validate_retained_document(
         evidence_id=evidence_id,
         source_path=source_path,
         jsonl=jsonl,
+        captured_zip_coordinate=captured_zip_coordinate,
         schema_resolution=schema_resolution,
         schema_resolution_is_explicit=schema_resolution_is_explicit,
         registry=registry,

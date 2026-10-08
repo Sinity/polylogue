@@ -92,6 +92,7 @@ def test_prepared_jsonl_retry_progress_keeps_source_identity(tmp_path: Path, mon
     assert len(productive_ids) == 1
     assert counts[0] > 0
     assert counts[1] == counts[0]
+    tail.close()
 
 
 from polylogue.sources.value_bounds import MAX_STORABLE_VALUE_BYTES

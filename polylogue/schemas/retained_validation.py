@@ -26,6 +26,7 @@ from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.provider_identity import normalize_provider_token
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.work_progress import (
     advance_work_progress,
@@ -74,6 +75,7 @@ def _retained_validation_productive_identity(
     evidence_id: str,
     source_path: str | None = None,
     jsonl: bool = False,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
     schema_resolution: SchemaResolution | None = None,
     schema_resolution_is_explicit: bool = False,
     registry: SchemaRegistry | None = None,
@@ -91,6 +93,20 @@ def _retained_validation_productive_identity(
             schema_resolution.reason,
             schema_resolution.profile_score,
         )
+    zip_coordinate = None
+    if captured_zip_coordinate is not None:
+        zip_coordinate = (
+            "captured-zip-coordinate",
+            captured_zip_coordinate.canonical_container,
+            captured_zip_coordinate.declared_container,
+            captured_zip_coordinate.member_name,
+            captured_zip_coordinate.entry_ordinal,
+            captured_zip_coordinate.split_index,
+            captured_zip_coordinate.addressing_mode.value,
+            captured_zip_coordinate.container_blob_hash,
+            captured_zip_coordinate.decoder_fingerprint,
+            captured_zip_coordinate.profile_namespace,
+        )
     recipe = (
         normalize_provider_token(provider),
         raw_id,
@@ -98,6 +114,7 @@ def _retained_validation_productive_identity(
         evidence_id,
         source_path,
         jsonl,
+        zip_coordinate,
         ValidationMode.from_string(mode).value,
         resolution,
         schema_resolution_is_explicit,
@@ -568,6 +585,7 @@ def validate_retained_document(
     evidence_id: str,
     source_path: str | None = None,
     jsonl: bool = False,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
     schema_resolution: SchemaResolution | None = None,
     schema_resolution_is_explicit: bool = False,
     registry: SchemaRegistry | None = None,

@@ -19,7 +19,7 @@ from polylogue.archive.zip_admission import (
 )
 from polylogue.core.content_identity import ContentIdentityRefusal, stream_payload_content_identity
 from polylogue.core.enums import Provider
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.blob_store import BlobStore
@@ -134,6 +134,7 @@ def prepare_zip_entry(
     provider: Provider,
     source_path: str,
     profile_identity: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
 ) -> Iterator[PreparedJsonl]:
     """Prepare the complete exact member with the existing streamed parser owner."""
     from .dispatch import is_stream_record_provider
@@ -157,6 +158,7 @@ def prepare_zip_entry(
             shard_directory=str(root),
             strict_jsonl_records=True,
             source_sha256=digest.hexdigest(),
+            captured_zip_coordinate=captured_zip_coordinate,
         )
         try:
             yield artifact
@@ -170,6 +172,7 @@ def zip_entry_session_artifact(
     *,
     provider: Provider,
     profile_identity: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
 ) -> ArtifactClassification | None:
     """Override a weak path rule only with complete positive parsed evidence."""
     from .dispatch import is_stream_record_provider
@@ -183,6 +186,7 @@ def zip_entry_session_artifact(
         provider=provider,
         source_path=info.filename,
         profile_identity=profile_identity,
+        captured_zip_coordinate=captured_zip_coordinate,
     ) as prepared:
         assert isinstance(prepared, PreparedJsonl)
         if prepared.error is not None or prepared.deferred or prepared.blob_hash is None:
@@ -334,7 +338,23 @@ def process_zip(
                     # Declared raw-only evidence is never probed for sessions.
                     member_skipped(info, "declared raw-only artifact")
                     continue
-                session_artifact = zip_entry_session_artifact(zf, info, provider=entry_provider_hint)
+                from .source_acquisition_components import captured_zip_member_coordinate
+
+                session_coordinate = captured_zip_member_coordinate(
+                    member_context.captured_input_identity,
+                    entry_name=name,
+                    entry_ordinal=entry_ordinal,
+                    split_index=0,
+                    addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+                    container_blob_hash=member_context.container_blob_hash,
+                    decoder_fingerprint=member_context.decoder_fingerprint,
+                )
+                session_artifact = zip_entry_session_artifact(
+                    zf,
+                    info,
+                    provider=entry_provider_hint,
+                    captured_zip_coordinate=session_coordinate,
+                )
                 if session_artifact is None:
                     member_skipped(info, "non-session path without positive session evidence")
                     continue

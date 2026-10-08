@@ -37,6 +37,7 @@ from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue, is_json_value
 from polylogue.core.prepared_file import PreparedFileSeal, VerificationCancelledError, file_digest
 from polylogue.core.provider_identity import profile_root_for_artifact
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.work_progress import reports_work_progress, stable_productive_identity
@@ -2475,6 +2476,7 @@ def _prepared_jsonl_productive_identity(
     publication_publisher: ArchiveBlobPublisher | None = None,
     publication_source_read: BlobPublicationSourceRead | None = None,
     progress_identity: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
 ) -> str | None:
     """Bind parser progress to retained bytes and source operands, never scratch paths."""
     has_prepare_sessions = prepare_sessions is not None
@@ -2487,11 +2489,26 @@ def _prepared_jsonl_productive_identity(
     if sidecar_resolver is not None and provider_value == "claude-code":
         scope = sidecar_resolver.claude_code_scope(source_path)
         sidecar_signature = (scope.scope_key, scope.available, scope.witness)
+    zip_coordinate_identity = None
+    if captured_zip_coordinate is not None:
+        zip_coordinate_identity = (
+            "captured-zip-coordinate",
+            captured_zip_coordinate.canonical_container,
+            captured_zip_coordinate.declared_container,
+            captured_zip_coordinate.member_name,
+            captured_zip_coordinate.entry_ordinal,
+            captured_zip_coordinate.split_index,
+            captured_zip_coordinate.addressing_mode.value,
+            captured_zip_coordinate.container_blob_hash,
+            captured_zip_coordinate.decoder_fingerprint,
+            captured_zip_coordinate.profile_namespace,
+        )
     recipe = (
         "prepared-jsonl",
         provider_value,
         source_sha256,
         source_path,
+        zip_coordinate_identity,
         fallback_id,
         is_stream,
         profile_identity,
@@ -2525,6 +2542,7 @@ def prepare_jsonl_blob(
     progress_identity: str | None = None,
     publication_publisher: ArchiveBlobPublisher | None = None,
     publication_source_read: BlobPublicationSourceRead | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC.
 

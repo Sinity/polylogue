@@ -902,6 +902,7 @@ def prepare_retained_jsonl_artifact(
             sidecar_resolver=evidence_reader.retained_sidecar_resolver(),
             prepare_session=prepare_bundle_session if prepare_per_session else None,
             prepare_sessions=None if prepare_per_session else finalize,
+            captured_zip_coordinate=captured_zip_coordinate,
         )
     except (OSError, sqlite3.OperationalError) as exc:
         raise RetainedPreparationRetryableError(f"retained JSON evidence read failed for raw {raw_id}") from exc
@@ -945,6 +946,7 @@ def prepare_retained_jsonl_artifact(
                 evidence_id=raw_id,
                 source_path=source_path,
                 jsonl=validation_jsonl,
+                captured_zip_coordinate=captured_zip_coordinate,
             )
         artifact = dataclasses.replace(artifact, validation_verdict=verdict)
     return artifact

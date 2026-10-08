@@ -6,6 +6,7 @@ Functions: _decode_json_bytes, _iter_json_stream, _ZipEntryValidator, _process_z
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import zipfile
@@ -423,6 +424,91 @@ def test_zip_json_probe_consumes_complete_positive_member(tmp_path: Path) -> Non
         assert info.file_size / info.compress_size > 1000
         artifact = decoder_zip.zip_entry_session_artifact(archive, info, provider=Provider.CHATGPT)
     assert artifact is not None and artifact.parse_as_session
+
+
+def test_zip_parser_progress_identity_tracks_captured_occurrences_and_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import warnings
+
+    from devtools.fresh_build_bench.run import WorkProgressTail
+    from polylogue.core import work_progress
+    from polylogue.core.raw_coordinates import MemberAddressingMode
+    from polylogue.sources.source_acquisition_components import (
+        captured_zip_member_coordinate,
+        zip_acquisition_fingerprint,
+    )
+    from polylogue.sources.source_staging import bind_source_input
+
+    fixture = Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json"
+    payload = fixture.read_bytes()
+    first_container = tmp_path / "first.zip"
+    second_container = tmp_path / "second.zip"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with zipfile.ZipFile(first_container, "w") as archive:
+            archive.writestr("assets/conversations.json", payload)
+            archive.writestr("assets/conversations.json", payload)
+    with zipfile.ZipFile(second_container, "w") as archive:
+        archive.writestr("assets/conversations.json", payload)
+
+    decoder_fingerprint = zip_acquisition_fingerprint(Provider.CHATGPT)
+
+    def run_entry(container: Path, ordinal: int) -> tuple[set[str], int]:
+        with zipfile.ZipFile(container) as archive:
+            info = archive.infolist()[ordinal]
+            assert archive.read(info) == payload
+            with bind_source_input(container) as binding:
+                coordinate = captured_zip_member_coordinate(
+                    binding.captured_identity,
+                    entry_name=info.filename,
+                    entry_ordinal=ordinal,
+                    split_index=0,
+                    addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+                    container_blob_hash=hashlib.sha256(container.read_bytes()).hexdigest(),
+                    decoder_fingerprint=decoder_fingerprint,
+                )
+            assert coordinate is not None
+            classification = decoder_zip.zip_entry_session_artifact(
+                archive,
+                info,
+                provider=Provider.CHATGPT,
+                captured_zip_coordinate=coordinate,
+            )
+            assert classification is not None and classification.parse_as_session
+        product_ids = {
+            str(fields["productive_id"])
+            for event, fields in emitted
+            if event == "daemon.work.progress" and fields.get("phase") == "source_preparation"
+        }
+        assert product_ids
+        with events_path.open("a", encoding="utf-8") as handle:
+            for event, fields in emitted:
+                if event == "daemon.work.progress":
+                    handle.write(json.dumps({"event": event, **fields}) + "\n")
+        emitted.clear()
+        return product_ids, tail.poll()
+
+    emitted: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(work_progress, "PROGRESS_INTERVAL_S", 0)
+    monkeypatch.setattr(work_progress, "emit", lambda event, **fields: emitted.append((event, fields)))
+    events_path = tmp_path / "parser-progress.jsonl"
+    tail = WorkProgressTail(events_path, state_root=tmp_path)
+    try:
+        first = run_entry(first_container, 0)
+        retry = run_entry(first_container, 0)
+        duplicate_entry = run_entry(first_container, 1)
+        second_container_entry = run_entry(second_container, 0)
+
+        assert first[0] == retry[0]
+        assert first[1] > 0
+        assert retry[1] == first[1]
+        assert len(duplicate_entry[0]) == 1 and duplicate_entry[0] != first[0]
+        assert duplicate_entry[1] > retry[1]
+        assert len(second_container_entry[0]) == 1 and second_container_entry[0] != duplicate_entry[0]
+        assert second_container_entry[1] > duplicate_entry[1]
+    finally:
+        tail.close()
 
 
 def test_zip_json_probe_does_not_override_with_empty_session_shape(tmp_path: Path) -> None:

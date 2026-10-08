@@ -985,28 +985,21 @@ def _captured_zip_record(data: RawSessionData, context: ZipEntryReadContext) -> 
         return data
     if receipt is None:
         return data
-    if context.entry_ordinal is None:
-        raise ValueError("captured ZIP member lacks its central-directory ordinal")
     if data.addressing_mode is None:
         raise ValueError("captured ZIP member lacks its addressing mode")
-    if context.container_blob_hash is None or context.decoder_fingerprint is None:
-        raise ValueError("captured ZIP member lacks its accepted container or decoder identity")
-    namespace: Path | None = None
-    profile_path: Path | None = None
-    profile = receipt.member_profile_identity(context.entry.filename)
-    if profile is not None:
-        namespace, profile_path = profile
-    coordinate = CapturedZipMemberCoordinate(
-        receipt.canonical_source_path,
-        receipt.semantic_source_path,
-        context.entry.filename,
-        context.entry_ordinal,
-        data.source_index or 0,
-        data.addressing_mode,
-        context.container_blob_hash,
-        context.decoder_fingerprint,
-        None if namespace is None else str(namespace),
+    coordinate = captured_zip_member_coordinate(
+        receipt,
+        entry_name=context.entry.filename,
+        entry_ordinal=context.entry_ordinal,
+        split_index=data.source_index or 0,
+        addressing_mode=data.addressing_mode,
+        container_blob_hash=context.container_blob_hash,
+        decoder_fingerprint=context.decoder_fingerprint,
     )
+    if coordinate is None:
+        return data
+    profile = receipt.member_profile_identity(context.entry.filename)
+    namespace, profile_path = profile if profile is not None else (None, None)
     from polylogue.core.provider_identity import captured_hermes_profile_key
 
     return data.model_copy(
@@ -1018,6 +1011,38 @@ def _captured_zip_record(data: RawSessionData, context: ZipEntryReadContext) -> 
             "captured_profile_key": None if namespace is None else captured_hermes_profile_key(namespace),
             "captured_profile_source_path": None if profile_path is None else str(profile_path),
         }
+    )
+
+
+def captured_zip_member_coordinate(
+    captured_identity: CapturedSourceInputIdentity | None,
+    *,
+    entry_name: str,
+    entry_ordinal: int | None,
+    split_index: int,
+    addressing_mode: MemberAddressingMode,
+    container_blob_hash: str | None,
+    decoder_fingerprint: str | None,
+) -> CapturedZipMemberCoordinate | None:
+    """Build a member coordinate only from the accepted typed Source witness."""
+    if captured_identity is None:
+        return None
+    if entry_ordinal is None:
+        raise ValueError("captured ZIP member lacks its central-directory ordinal")
+    if container_blob_hash is None or decoder_fingerprint is None:
+        raise ValueError("captured ZIP member lacks its accepted container or decoder identity")
+    profile = captured_identity.member_profile_identity(entry_name)
+    namespace = None if profile is None else profile[0]
+    return CapturedZipMemberCoordinate(
+        captured_identity.canonical_source_path,
+        captured_identity.semantic_source_path,
+        entry_name,
+        entry_ordinal,
+        split_index,
+        addressing_mode,
+        container_blob_hash,
+        decoder_fingerprint,
+        None if namespace is None else str(namespace),
     )
 
 
@@ -1123,6 +1148,7 @@ __all__ = [
     "sniff_zip_provider",
     "make_status_heartbeat",
     "observe_acquisition",
+    "captured_zip_member_coordinate",
     "raw_data_record",
     "read_plain_source_file",
     "stream_preserved_zip_entry_raw_data",
