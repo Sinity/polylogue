@@ -554,6 +554,7 @@ class BoundedComputeAdapter:
         self.capacity_units = max_workers + queue_units
         self.capacity_bytes = queue_bytes
         self._lock = threading.Lock()
+        self._idle = threading.Condition(self._lock)
         self._used_units = 0
         self._used_bytes = 0
         self._active_units = 0
@@ -564,6 +565,7 @@ class BoundedComputeAdapter:
         self._active_slots = 0
         self._rejected = 0
         self._shutdown = False
+        self._cancel_on_shutdown = False
         self._sql_settlements: dict[int, _RetainedSQLSettlement] = {}
         self._classes: dict[str, _ClassState] = {name: _ClassState(name) for name in ADMISSION_CLASSES}
         self._queues: dict[str, deque[_Task]] = {name: deque() for name in ADMISSION_CLASSES}
@@ -968,6 +970,8 @@ class BoundedComputeAdapter:
         next unrelated event.
         """
 
+        if self._shutdown and self._cancel_on_shutdown:
+            return []
         runnable: list[_Task] = []
         while (task := self._select_locked()) is not None:
             runnable.append(task)
@@ -1018,11 +1022,20 @@ class BoundedComputeAdapter:
             else:
                 task.future.set_result(result)
 
+        def settle_executor_cancellation(execution: Future[None]) -> None:
+            if execution.cancelled():
+                self._release(task, active=True)
+                task.future.set_exception(DaemonOperationCancelled("daemon compute adapter shut down"))
+
         try:
-            self.executor.submit(task.context.run, run)
-        except BaseException:
+            execution = self.executor.submit(task.context.run, run)
+        except BaseException as submission_failure:
             self._release(task, active=True)
-            raise
+            task.future.set_exception(
+                DaemonOperationCancelled("daemon compute adapter shut down") if self._shutdown else submission_failure
+            )
+        else:
+            execution.add_done_callback(settle_executor_cancellation)
 
     def _settle_native_sql(
         self,
@@ -1139,7 +1152,13 @@ class BoundedComputeAdapter:
                 state.active_units -= task.units
                 state.active_slots -= task.slots
             runnable = self._drain_locked()
+            idle = self._used_units == 0
+            if idle:
+                self._idle.notify_all()
+            finish_graceful_shutdown = idle and self._shutdown and not self._cancel_on_shutdown
         self._run_all(runnable)
+        if finish_graceful_shutdown:
+            self.executor.shutdown(wait=False, cancel_futures=False)
 
     def _cancel_before_start(self, task: _Task) -> None:
         """Drop an admitted-but-unstarted task and return its reservation."""
@@ -1202,10 +1221,18 @@ class BoundedComputeAdapter:
             )
 
     def shutdown(self, *, wait: bool = False, cancel_futures: bool = True) -> None:
+        """Close admission and settle every accepted operation.
+
+        Cancelling shutdown stops dispatch and settles both scheduler and
+        executor queues. Graceful shutdown keeps the executor open until the
+        already-admitted work drains; the last release closes it even when
+        the caller does not wait.
+        """
         with self._lock:
             self._shutdown = True
+            self._cancel_on_shutdown = self._cancel_on_shutdown or cancel_futures
             queued: list[_Task] = []
-            if cancel_futures:
+            if self._cancel_on_shutdown:
                 for queue in self._queues.values():
                     while queue:
                         queued.append(queue.popleft())
@@ -1214,7 +1241,14 @@ class BoundedComputeAdapter:
             with contextlib.suppress(Exception):
                 task.future.set_exception(DaemonOperationCancelled("daemon compute adapter shut down"))
         self.retry_sql_settlement()
-        self.executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+        with self._idle:
+            if not self._cancel_on_shutdown:
+                if wait:
+                    self._idle.wait_for(lambda: self._used_units == 0 or self._cancel_on_shutdown)
+                elif self._used_units:
+                    return
+            cancel_executor_futures = self._cancel_on_shutdown
+        self.executor.shutdown(wait=wait, cancel_futures=cancel_executor_futures)
 
     def close(self, *, join_timeout_s: float) -> tuple[str, ...]:
         """Shut down and join the worker threads within one shared deadline.

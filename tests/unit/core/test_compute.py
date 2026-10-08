@@ -24,6 +24,77 @@ from polylogue.core.compute_cancel import check_compute_cancelled
 pytestmark = pytest.mark.uses_real_clock("compute worker synchronization uses OS waits")
 
 
+@pytest.mark.parametrize("reject_submission", [True, False])
+def test_shutdown_during_queued_dispatch_settles_both_operation_futures(
+    monkeypatch: pytest.MonkeyPatch, reject_submission: bool
+) -> None:
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=2)
+    started = threading.Event()
+    release = threading.Event()
+    queued_invoked = threading.Event()
+
+    def active() -> str:
+        started.set()
+        assert release.wait(5)
+        return "active completed"
+
+    first = adapter.submit(active)
+    try:
+        assert started.wait(5)
+        second = adapter.submit(queued_invoked.set)
+        original_submit = adapter.executor.submit
+
+        def shutdown_at_submission(*args: object, **kwargs: object) -> object:
+            if reject_submission:
+                adapter.shutdown(wait=False)
+                return original_submit(*args, **kwargs)
+            execution = original_submit(*args, **kwargs)
+            # The first task still owns the only physical worker, so this
+            # accepted executor future cannot start before shutdown cancels it.
+            adapter.shutdown(wait=False)
+            assert execution.cancelled()
+            return execution
+
+        monkeypatch.setattr(adapter.executor, "submit", shutdown_at_submission)
+        release.set()
+        assert first.future.result(timeout=5) == "active completed"
+        with pytest.raises(DaemonOperationCancelled):
+            second.future.result(timeout=5)
+        assert not queued_invoked.is_set()
+        snapshot = adapter.snapshot()
+        assert snapshot.used_units == snapshot.active_units == snapshot.queued_units == 0
+    finally:
+        release.set()
+        adapter.shutdown(wait=True)
+
+
+def test_graceful_shutdown_drains_already_admitted_work_without_accepting_more() -> None:
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    started = threading.Event()
+    release = threading.Event()
+
+    def active() -> str:
+        started.set()
+        assert release.wait(5)
+        return "active completed"
+
+    first = adapter.submit(active)
+    try:
+        assert started.wait(5)
+        second = adapter.submit(lambda: "queued completed")
+        adapter.shutdown(wait=False, cancel_futures=False)
+        with pytest.raises(DaemonBackpressureError):
+            adapter.submit(lambda: "after shutdown")
+        release.set()
+        assert first.future.result(timeout=5) == "active completed"
+        assert second.future.result(timeout=5) == "queued completed"
+        snapshot = adapter.snapshot()
+        assert snapshot.used_units == snapshot.active_units == snapshot.queued_units == 0
+    finally:
+        release.set()
+        adapter.shutdown(wait=True)
+
+
 @pytest.mark.parametrize("wrong_context", ["outside", "adapter", "bridge_thread"])
 def test_preparation_creator_guard_refuses_an_unadmitted_or_transferred_reservation(wrong_context: str) -> None:
     from polylogue.core.compute import capture_compute_bridge

@@ -71,6 +71,8 @@ detecting those call sites needs a second rule with its own baseline; see
 
 The live watcher passes acquired Raw IDs to the supplied resident Raw owner for retained publication. When derived schema authority blocks that owner, the watcher keeps Source acquisition active without opening a replacement parser or publication owner.
 
+The shared compute adapter settles each operation's future even when executor submission races shutdown or the executor cancels work before its worker starts. Cancelling shutdown stops scheduler dispatch. Graceful shutdown closes admission, drains already-admitted work, and closes the executor only after those reservations are released (`polylogue/core/compute.py`).
+
 ## Domain derivations
 
 The typed kernel validates prerequisite names against the supplied ordered domain list. It pages required and excess keys, inspects authoritative output, computes outside the writer lease, and admits each replacement through the writer bridge. Publication adopts the coordinator's delegation on the existing compute worker, so preparation observers retain their creator. Its joined native cleanup boundary drains publication handles before the delegation and writer gate retire. Process-local continuation state is disposable. A partially consumed page retains only its bounded unconsumed key suffix and the next-page cursor; resumption reinspects those exact keys rather than offsetting a fresh query whose demand rows may have disappeared. Smaller resumed budgets split that suffix without losing its remaining keys. Reports distinguish pending policy work from failed attempts (`polylogue/daemon/derivation.py:375-428`; `polylogue/daemon/derivation.py:481-498`; `polylogue/daemon/convergence.py:110-123`).
