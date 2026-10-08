@@ -295,6 +295,8 @@ uv run python scripts/cost_accounting_demo.py \
 > apply to new ingests. Re-materialize with the fresh-first rebuild path above
 > to update stored cost.
 
+The origin usage audit selects Claude Code request snapshots through the same storage selector as model usage derivation. `provider_request_usage` sums each request's latest present counter per lane; distinct requests and unkeyed events remain independent. `provider_event_count`, event-type counts, missing-model counts, and zero-token diagnostics describe physical stored events, including repeated fragments. Exact integer summation preserves this request grain even when totals exceed SQLite INTEGER. Codex request-window counters and its separate latest session cumulative counters retain their existing semantics.
+
 ## Basis Taxonomy
 
 A single estimate carries cost on five independent axes

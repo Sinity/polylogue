@@ -9,7 +9,6 @@ module's docstring for the current writer-module declaration.
 
 from __future__ import annotations
 
-import builtins
 import hashlib
 import json
 import pickle
@@ -127,7 +126,7 @@ from polylogue.storage.fts.sql import (
     insert_session_identity_rows_sql,
     insert_session_rows_sql,
 )
-from polylogue.storage.io_phase_metrics import close_connection_cursor, connect_measured, connection_cursor
+from polylogue.storage.io_phase_metrics import connect_measured, connection_cursor
 from polylogue.storage.runtime import (
     LINEAGE_TRUNCATION_CYCLE,
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
@@ -175,9 +174,9 @@ from polylogue.storage.sqlite.session_shard import (
 )
 from polylogue.storage.usage import (
     UsageProjectionModel,
-    UsageRequestModelConflictError,
     project_provider_usage_events,
     provider_usage_event_identity,
+    provider_usage_request_events,
 )
 
 
@@ -17331,177 +17330,12 @@ def _provider_usage_projections(
     """
     models = _provider_usage_existing_models(conn, session_id)
     sole_model = models[0] if len(models) == 1 else None
-    cursor = conn.execute(
-        """
-        WITH message_usage_rows AS MATERIALIZED (
-            SELECT NULLIF(TRIM(request_id), '') AS request_key,
-                   model_name,
-                   position,
-                   last_input_tokens,
-                   last_output_tokens,
-                   last_cached_input_tokens,
-                   last_cache_write_tokens
-            FROM session_provider_usage_events
-            WHERE (SELECT origin FROM sessions WHERE session_id = ?) = 'claude-code-session'
-              AND session_id = ?
-              AND provider_event_type = 'message_usage'
-              AND (? IS NULL OR position >= ?)
-        ),
-        request_lane_positions AS (
-            SELECT request_key,
-                   COUNT(DISTINCT NULLIF(TRIM(model_name), '')) AS model_count,
-                   MIN(NULLIF(TRIM(model_name), '')) AS model_name,
-                   MAX(position) AS position,
-                   MAX(CASE WHEN last_input_tokens IS NOT NULL THEN position END) AS input_position,
-                   MAX(CASE WHEN last_output_tokens IS NOT NULL THEN position END) AS output_position,
-                   MAX(CASE WHEN last_cached_input_tokens IS NOT NULL THEN position END) AS cache_read_position,
-                   MAX(CASE WHEN last_cache_write_tokens IS NOT NULL THEN position END) AS cache_write_position
-            FROM message_usage_rows
-            WHERE request_key IS NOT NULL
-            GROUP BY request_key
-        ),
-        request_snapshots AS (
-            SELECT p.request_key,
-                   p.model_count,
-                   p.model_name,
-                   p.position,
-                   MAX(CASE WHEN e.position = p.input_position THEN e.last_input_tokens END) AS last_input_tokens,
-                   MAX(CASE WHEN e.position = p.output_position THEN e.last_output_tokens END) AS last_output_tokens,
-                   MAX(CASE WHEN e.position = p.cache_read_position THEN e.last_cached_input_tokens END) AS last_cached_input_tokens,
-                   MAX(CASE WHEN e.position = p.cache_write_position THEN e.last_cache_write_tokens END) AS last_cache_write_tokens
-            FROM request_lane_positions AS p
-            JOIN message_usage_rows AS e ON e.request_key = p.request_key
-            GROUP BY p.request_key, p.model_count, p.model_name, p.position
-        ),
-        event_rows AS (
-            SELECT ? AS session_id,
-                   provider_event_type,
-                   model_name,
-                   position,
-                   last_input_tokens,
-                   last_output_tokens,
-                   last_cached_input_tokens,
-                   last_cache_write_tokens,
-                   last_reasoning_output_tokens,
-                   last_total_tokens,
-                   total_input_tokens,
-                   total_output_tokens,
-                   total_cached_input_tokens,
-                   total_cache_write_tokens,
-                   total_reasoning_output_tokens,
-                   total_tokens,
-                   NULL AS request_key,
-                   0 AS model_conflict
-            FROM session_provider_usage_events
-            WHERE session_id = ? AND provider_event_type = 'token_count'
-              AND (? IS NULL OR position >= ?)
 
-            UNION ALL
-
-            SELECT ? AS session_id,
-                   'message_usage' AS provider_event_type,
-                   model_name,
-                   position,
-                   last_input_tokens,
-                   last_output_tokens,
-                   last_cached_input_tokens,
-                   last_cache_write_tokens,
-                   NULL AS last_reasoning_output_tokens,
-                   NULL AS last_total_tokens,
-                   NULL AS total_input_tokens,
-                   NULL AS total_output_tokens,
-                   NULL AS total_cached_input_tokens,
-                   NULL AS total_cache_write_tokens,
-                   NULL AS total_reasoning_output_tokens,
-                   NULL AS total_tokens,
-                   request_key,
-                   model_count > 1 AS model_conflict
-            FROM request_snapshots
-
-            UNION ALL
-
-            SELECT ? AS session_id,
-                   'message_usage' AS provider_event_type,
-                   model_name,
-                   position,
-                   last_input_tokens,
-                   last_output_tokens,
-                   last_cached_input_tokens,
-                   last_cache_write_tokens,
-                   NULL AS last_reasoning_output_tokens,
-                   NULL AS last_total_tokens,
-                   NULL AS total_input_tokens,
-                   NULL AS total_output_tokens,
-                   NULL AS total_cached_input_tokens,
-                   NULL AS total_cache_write_tokens,
-                   NULL AS total_reasoning_output_tokens,
-                   NULL AS total_tokens,
-                   request_key,
-                   0 AS model_conflict
-            FROM message_usage_rows
-            WHERE request_key IS NULL
-        )
-        SELECT *
-        FROM event_rows
-        ORDER BY position, provider_event_type
-        """,
-        (
-            session_id,
-            session_id,
-            start_position,
-            start_position,
-            session_id,
-            session_id,
-            start_position,
-            start_position,
-            session_id,
-            session_id,
-        ),
-    )
-    names = (
-        "session_id",
-        "provider_event_type",
-        "model_name",
-        "position",
-        "last_input_tokens",
-        "last_output_tokens",
-        "last_cached_input_tokens",
-        "last_cache_write_tokens",
-        "last_reasoning_output_tokens",
-        "last_total_tokens",
-        "total_input_tokens",
-        "total_output_tokens",
-        "total_cached_input_tokens",
-        "total_cache_write_tokens",
-        "total_reasoning_output_tokens",
-        "total_tokens",
-        "request_key",
-        "model_conflict",
-    )
-
-    def events() -> Iterator[dict[str, object]]:
-        for row in cursor:
-            values = dict(zip(names, row, strict=True))
-            if values["model_conflict"]:
-                raise UsageRequestModelConflictError(str(values["request_key"] or ""))
+    def events(selected: Iterator[dict[str, object]]) -> Iterator[dict[str, object]]:
+        for values in selected:
             values["model_name"] = str(values["model_name"] or "").strip() or sole_model
-            values.pop("request_key")
-            values.pop("model_conflict")
             if values["model_name"] is not None:
                 yield values
 
-    primary: BaseException | None = None
-    try:
-        return project_provider_usage_events(events(), origin="")
-    except BaseException as failure:
-        primary = failure
-        raise
-    finally:
-        try:
-            close_connection_cursor(conn, cursor)
-        except BaseException as cleanup:
-            if primary is None or cleanup is primary:
-                raise
-            raise builtins.BaseExceptionGroup(
-                "Usage projection and cursor cleanup failed", [primary, cleanup]
-            ) from None
+    with closing(provider_usage_request_events(conn, session_id, start_position=start_position)) as selected:
+        return project_provider_usage_events(events(selected), origin="")

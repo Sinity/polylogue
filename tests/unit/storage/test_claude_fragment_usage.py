@@ -2,18 +2,29 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+from click.testing import CliRunner
+
+from polylogue.cli.click_app import cli
 from polylogue.core.enums import BlockType
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.claude import parse_code
+from polylogue.storage import usage as usage_storage
 from polylogue.storage.derived.session.usage_rollup import reconcile_session_usage_rollup
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
-from polylogue.storage.usage import UsageRequestModelConflictError, session_usage_reconciliation_for_connection
+from polylogue.storage.usage import (
+    UsageRequestModelConflictError,
+    origin_usage_report_from_connection,
+    session_usage_reconciliation_for_connection,
+)
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.index_writer import write_fixture_index_session
 
 
@@ -25,7 +36,9 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def test_claude_fragments_share_one_usage_snapshot_but_keep_all_records(tmp_path: Path) -> None:
+def test_claude_fragments_share_one_usage_snapshot_but_keep_all_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """One request split across assistant records contributes one snapshot.
 
     The first three records share an API message/request and repeat the same
@@ -133,8 +146,37 @@ def test_claude_fragments_share_one_usage_snapshot_but_keep_all_records(tmp_path
         expected_tokens = 2 * sum(usage.values())
         actual_tokens = reconciliation.reconciled_tokens_evidence.value
         assert actual_tokens == expected_tokens, f"expected {expected_tokens} tokens, got {actual_tokens}"
+
+        report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
+        row = report.origins[0]
+        assert row.provider_event_count == row.message_usage_event_count == 4
+        assert row.provider_request_usage.input_tokens == 14
+        assert row.provider_request_usage.output_tokens == 22
+        assert row.provider_request_usage.cached_input_tokens == 26
+        assert row.provider_request_usage.cache_write_tokens == 34
+        # Force the diagnostic overflow branch independently of counter size.
+        # Both paths must select request snapshots, not physical fragments.
+        with monkeypatch.context() as forced:
+            forced.setattr(usage_storage, "_provider_event_stats", usage_storage._provider_event_stats_streaming)
+            streamed = origin_usage_report_from_connection(conn, archive_root=tmp_path)
+        assert streamed.origins[0] == row
+        conn.commit()
     finally:
         conn.close()
+
+    with cli_daemon_archive(tmp_path, monkeypatch, home=tmp_path / "home"):
+        result = CliRunner().invoke(
+            cli,
+            ["analyze", "usage", "--format", "json"],
+            env={
+                "POLYLOGUE_ARCHIVE_ROOT": str(tmp_path),
+                "HOME": str(tmp_path / "home"),
+            },
+        )
+        assert result.exit_code == 0, result.output
+        cli_row = json.loads(result.output)["origins"][0]
+        assert cli_row["provider_request_usage"] == row.provider_request_usage.to_dict()
+        assert cli_row["provider_event_count"] == 4
 
 
 def test_appended_claude_fragment_rederives_request_snapshot(tmp_path: Path) -> None:
@@ -212,6 +254,12 @@ def test_appended_claude_fragment_rederives_request_snapshot(tmp_path: Path) -> 
             (stored_session_id,),
         ).fetchone()
         assert tuple(row) == (0, 11, 13, 17)
+        report_row = origin_usage_report_from_connection(conn, archive_root=tmp_path).origins[0]
+        assert report_row.provider_request_usage.input_tokens == 0
+        assert report_row.provider_request_usage.output_tokens == 11
+        assert report_row.provider_request_usage.cached_input_tokens == 13
+        assert report_row.provider_request_usage.cache_write_tokens == 17
+        assert report_row.provider_event_count == 2
     finally:
         conn.close()
 
@@ -326,5 +374,8 @@ def test_unkeyed_claude_usage_events_remain_per_message(tmp_path: Path) -> None:
             (stored_session_id,),
         ).fetchone()
         assert tuple(rollup) == (14, 22)
+        report_row = origin_usage_report_from_connection(conn, archive_root=tmp_path).origins[0]
+        assert report_row.provider_request_usage.input_tokens == 14
+        assert report_row.provider_request_usage.output_tokens == 22
     finally:
         conn.close()
