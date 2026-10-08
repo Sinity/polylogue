@@ -5151,14 +5151,39 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         """Read one session page and its total from the same archive snapshot."""
 
         def read(archive: Any) -> tuple[builtins.list[SessionSummary], int]:
+            from polylogue.archive.query.archive_execution import _count_in_archive, _list_summaries_in_archive
+
             if spec.session_id is not None:
                 try:
                     archive.resolve_session_id(spec.session_id)
                 except KeyError:
                     return [], 0
-            summaries = _archive_list_summaries_for_spec(archive, spec, default_limit=DEFAULT_SESSION_LIST_LIMIT)
-            total = _archive_count_sessions_for_spec(archive, spec)
-            return [archive_summary_to_domain(summary) for summary in summaries], total
+            count_plan = spec.to_plan()
+            plan = count_plan
+            if spec.sample is not None:
+                if spec.sample <= 0:
+                    raise ValueError("sample must be positive")
+                if spec.query_terms or spec.contains_terms:
+                    raise ValueError("sample does not combine with search terms")
+                if spec.cursor:
+                    raise ValueError("sample does not combine with a cursor")
+                plan = replace(plan, sort="random", limit=spec.sample, offset=0, sample=None)
+            summaries = _list_summaries_in_archive(
+                plan,
+                archive,
+                config=self.config,
+                archive_root=_active_archive_root(self.config),
+                default_limit=DEFAULT_SESSION_LIST_LIMIT,
+            )
+            total = _count_in_archive(
+                count_plan,
+                archive,
+                config=self.config,
+                archive_root=_active_archive_root(self.config),
+            )
+            if spec.latest:
+                total = min(total, 1)
+            return summaries, total
 
         return await run_archive_read(
             _active_archive_root(self.config),

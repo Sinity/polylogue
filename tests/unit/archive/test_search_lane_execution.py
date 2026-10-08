@@ -32,7 +32,6 @@ from polylogue.mcp.archive_support import archive_search_payload
 from polylogue.mcp.payloads import session_search_result_payload
 from polylogue.operations.daemon_reads import execute_read_operation
 from polylogue.operations.operation_context import open_operation_read
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.storage.sqlite.connection_profile import ReadFrameCancelledError, ReadFrameExpiredError
 from polylogue.surfaces.payloads import decode_search_cursor
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -362,16 +361,16 @@ def test_random_post_filter_consumes_one_controlled_permutation(
         observed: list[str] = []
         plan = SessionQueryPlan(sort="random", query_terms=("needle",) if query_text else ())
         if query_text:
-            hits = archive.iter_search_summaries("needle", limit=None, sort="date")
-            search_by_id = {hit.session_id: hit for hit in hits}
-            controlled_search_hits = [search_by_id[session_id] for session_id in expected_order]
+            identities = archive.iter_session_identities(query="needle", limit=None, sort="date")
+            identity_by_id = {identity.session_id: identity for identity in identities}
+            controlled_identities = [identity_by_id[session_id] for session_id in expected_order]
 
             def one_permutation(*_args: object, **_kwargs: object) -> Iterator[object]:
-                for hit in controlled_search_hits:
-                    observed.append(hit.session_id)
-                    yield hit
+                for identity in controlled_identities:
+                    observed.append(identity.session_id)
+                    yield identity
 
-            monkeypatch.setattr(archive, "iter_search_summaries", one_permutation)
+            monkeypatch.setattr(archive, "iter_session_identities", one_permutation)
         else:
             all_rows = list(archive.iter_summaries(limit=None, offset=0, sort="date"))
             summary_by_id = {row.session_id: row for row in all_rows}
@@ -402,47 +401,71 @@ def test_random_post_filter_consumes_one_controlled_permutation(
     assert [row.session_id for row in rows] == [ids["action-one"]]
 
 
-def test_random_post_filter_deduplicates_sessions_across_fts_batches(
+def test_random_post_filter_streams_session_grain_candidates_across_batches(
     lane_archive: LaneArchive, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A session with >500 matching blocks cannot consume a two-session page."""
+    """Duplicate block hits collapse before paging; rejected sessions stream across batches."""
     from polylogue.archive.query.archive_execution import _archive_summaries
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionIdentity
 
     root, config, _ids = lane_archive
     first = SessionBuilder(root / "index.db", "many-blocks").provider("codex").title("many blocks")
     for index in range(501):
-        first.add_message(f"many-{index}", role="user", text="batchmarker")
+        first.add_message(f"many-{index}", role="user", text="spillmarker")
     first.save()
     first_id = first.native_session_id()
     second = SessionBuilder(root / "index.db", "last-block").provider("codex").title("last block")
-    second.add_message("one", role="user", text="batchmarker")
+    second.add_message("one", role="user", text="spillmarker")
     second.save()
     second_id = second.native_session_id()
 
     with open_operation_read(root) as pinned:
         archive = pinned.archive
-        actual_matches = list(archive.iter_search_summaries("batchmarker", limit=None, sort="date"))
-        first_hits = [hit for hit in actual_matches if hit.session_id == first_id]
-        second_hits = [hit for hit in actual_matches if hit.session_id == second_id]
-        assert len(first_hits) == 501
-        assert len(second_hits) == 1
-        controlled = [*first_hits, *second_hits]
+        block_hits = list(archive.iter_search_summaries("spillmarker", limit=None, sort="date"))
+        assert sum(hit.session_id == first_id for hit in block_hits) == 501
+        assert sum(hit.session_id == second_id for hit in block_hits) == 1
+        actual_candidates = list(archive.iter_session_identities(query="spillmarker", limit=None, sort="date"))
+        assert {identity.session_id for identity in actual_candidates} == {first_id, second_id}
+
+        controlled = [
+            ArchiveSessionIdentity(session_id=f"codex-session:spill-{index:03d}", origin="codex-session")
+            for index in range(501)
+        ]
+        candidate_order = [identity.session_id for identity in controlled]
+        accepted_id = candidate_order[-1]
+        consumed: list[str] = []
+        base_summary = archive.read_summary(first_id)
+        read_summary = archive.read_summary
 
         def one_random_permutation(*_args: object, **_kwargs: object) -> Iterator[object]:
-            yield from controlled
+            for identity in controlled:
+                consumed.append(identity.session_id)
+                yield identity
 
-        monkeypatch.setattr(archive, "iter_search_summaries", one_random_permutation)
-        plan = SessionQueryPlan(sort="random", query_terms=("batchmarker",), negative_terms=("unused",), limit=2)
+        def read_synthetic_summary(session_id: str) -> object:
+            if session_id.startswith("codex-session:spill-"):
+                return replace(base_summary, session_id=session_id)
+            return read_summary(session_id)
+
+        def reject_block_hit_stream(*_args: object, **_kwargs: object) -> Iterator[object]:
+            raise AssertionError("random post-filter search must stream unique session identities")
+            yield
+
+        monkeypatch.setattr(archive, "iter_session_identities", one_random_permutation)
+        monkeypatch.setattr(archive, "read_summary", read_synthetic_summary)
+        monkeypatch.setattr(archive, "iter_search_summaries", reject_block_hit_stream)
+        plan = SessionQueryPlan(sort="random", query_terms=("spillmarker",), negative_terms=("unused",), limit=2)
         rows = _archive_summaries(
             plan,
             archive,
             config=config,
             archive_root=root,
-            default_limit=2,
-            keep=lambda batch: batch,
+            default_limit=1,
+            keep=lambda batch: [row for row in batch if row.session_id == accepted_id],
         )
 
-    assert [row.session_id for row in rows] == [first_id, second_id]
+    assert consumed == candidate_order
+    assert [row.session_id for row in rows] == [accepted_id]
 
 
 @pytest.mark.asyncio
@@ -450,19 +473,19 @@ async def test_session_list_page_and_total_share_one_snapshot(
     lane_archive: LaneArchive, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A concurrent delete after page selection cannot make its total disagree."""
-    from polylogue.api import archive as archive_api
+    from polylogue.archive.query import archive_execution
 
     root, _config, ids = lane_archive
-    real_list = archive_api._archive_list_summaries_for_spec
+    real_list = archive_execution._list_summaries_in_archive
 
-    def list_then_delete(archive: object, spec: object, **kwargs: object) -> list[ArchiveSessionSummary]:
-        summaries = real_list(archive, spec, **kwargs)  # type: ignore[arg-type]
+    def list_then_delete(plan: object, archive: object, **kwargs: object) -> list[object]:
+        summaries = real_list(plan, archive, **kwargs)  # type: ignore[arg-type]
         with closing(sqlite3.connect(root / "index.db")) as writer:
             writer.execute("DELETE FROM sessions WHERE session_id = ?", (ids["dialogue"],))
             writer.commit()
         return summaries
 
-    monkeypatch.setattr(archive_api, "_archive_list_summaries_for_spec", list_then_delete)
+    monkeypatch.setattr(archive_execution, "_list_summaries_in_archive", list_then_delete)
     spec = SessionQuerySpec.from_params({"limit": 10}, strict=True)
     async with Polylogue(archive_root=root, db_path=root / "index.db") as facade:
         summaries, total = await facade.list_session_summaries_with_count(spec)
@@ -470,6 +493,24 @@ async def test_session_list_page_and_total_share_one_snapshot(
     assert len(summaries) == 3
     assert total == 3
     assert current_total == 2
+
+
+@pytest.mark.asyncio
+async def test_session_list_total_counts_content_filtered_scope_on_pinned_read(
+    lane_archive: LaneArchive,
+) -> None:
+    """A one-row page total still applies content filters to the whole scope."""
+    root, _config, _ids = lane_archive
+    excluded = SessionBuilder(root / "index.db", "excluded-content").provider("codex").title("excluded content")
+    excluded.add_message("secret", role="user", text="exclude this candidate")
+    excluded.save()
+    excluded_id = excluded.native_session_id()
+    spec = SessionQuerySpec.from_params({"exclude_text": ("exclude this candidate",), "limit": 1}, strict=True)
+    async with Polylogue(archive_root=root, db_path=root / "index.db") as facade:
+        summaries, total = await facade.list_session_summaries_with_count(spec)
+    assert len(summaries) == 1
+    assert all(summary.id != excluded_id for summary in summaries)
+    assert total == 3
 
 
 @pytest.mark.parametrize("sort", ("messages", "tokens", "words", "longest"))

@@ -1096,6 +1096,15 @@ class TestReaderSearchState:
         assert payload["route_state"]["state"] == "ready"
         assert payload["route_state"]["route"] == "/api/sessions"
 
+    def test_latest_and_sample_preserve_the_requested_list_window(self, workspace_env: dict[str, Path]) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            latest = _get_json(base_url, "/api/sessions?latest=true&limit=3")
+            sampled = _get_json(base_url, "/api/sessions?sample=2&limit=3&offset=1")
+        assert len(latest["items"]) == 1
+        assert latest["total"] == 1
+        assert len(sampled["items"]) == 2
+        assert sampled["total"] == 3
+
     def test_facets_envelope_includes_scoped_flag(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             payload = _get_json(base_url, "/api/facets")
