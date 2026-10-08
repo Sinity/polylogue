@@ -23,6 +23,7 @@ from polylogue.core.enums import Provider
 from polylogue.operations.import_operations import prepare_import_source_admission
 from polylogue.sources import assembly_chatgpt, dispatch, drive, revision_backfill
 from polylogue.sources.drive.types import DriveFile
+from polylogue.sources.drive.witness import drive_cache_directory, drive_source_coordinate
 from polylogue.sources.import_preflight import ImportPreflightStatus
 from polylogue.sources.live import WatchSource, cold_build, hook_paste_enrichment
 from polylogue.sources.live.batch import LiveBatchProcessor
@@ -189,7 +190,7 @@ class _DriveClient:
 def _cached_drive_source(root: Path, name: str, payload: bytes) -> tuple[Source, Path, _DriveClient]:
     root.mkdir(parents=True, exist_ok=True)
     source = Source(name="gemini", folder="AI Studio", path=root)
-    cache = drive.drive_cache_file_path(drive.drive_cache_directory(root, "w9-folder"), "w9-file")
+    cache = drive.drive_cache_file_path(drive_cache_directory(root, "w9-folder"), "w9-file")
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_bytes(payload)
     cache.with_name(cache.name + ".revision").write_text(_TIMESTAMP, encoding="utf-8")
@@ -209,7 +210,7 @@ def test_w9_drive_cache_accepts_null_jsonl(
             source=source,
             client=cast(Any, client),
             blob_store=BlobStore(tmp_path / "blob"),
-            known_mtimes={drive.drive_source_coordinate(source.name, "w9-folder", "w9-file"): _TIMESTAMP}
+            known_mtimes={drive_source_coordinate(source.name, "w9-folder", "w9-file"): _TIMESTAMP}
             if known_revision
             else None,
         )

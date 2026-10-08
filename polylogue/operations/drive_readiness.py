@@ -333,3 +333,33 @@ def configured_source_readiness_from_archive(archive: object, config: object | N
             else DriveCatchupReport(DriveCatchupState.UNKNOWN, gaps=("drive_archive_authority_unavailable",))
         )
     return configured_source_component(report)
+
+
+def inspect_current_drive_readiness(
+    root: Path,
+    sources: Sequence[Source],
+    witnesses: Mapping[str, DriveListingWitness],
+    *,
+    changed_count: int = 0,
+    raw_owner_available: bool = True,
+) -> DriveCatchupReport:
+    """Inspect the pinned current generation without opening an independent frame."""
+    from polylogue.operations.operation_context import open_operation_read
+
+    def read() -> DriveCatchupReport:
+        with open_operation_read(root) as pinned:
+            return inspect_drive_readiness(
+                sources,
+                None if "source" in pinned.degraded_components else pinned.archive.source_connection,
+                pinned.archive.index_connection,
+                witnesses,
+                changed_count=changed_count,
+                raw_owner_available=raw_owner_available,
+            )
+
+    measured = capture_sqlite_read(read)
+    return (
+        measured.value
+        if isinstance(measured, Measured)
+        else DriveCatchupReport(DriveCatchupState.UNKNOWN, changed_count, gaps=("drive_archive_authority_unavailable",))
+    )

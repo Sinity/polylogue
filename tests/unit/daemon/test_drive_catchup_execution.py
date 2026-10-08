@@ -454,6 +454,16 @@ async def test_drive_download_cancellation_closes_staging_after_thread_settles(
     parser, source, _ = await make_parser(tmp_path, monkeypatch)
     started = threading.Event()
     release = threading.Event()
+    from polylogue.sources.drive.witness import DriveListingWitness
+
+    closed_witnesses: list[str] = []
+    original_close = DriveListingWitness.close
+
+    def close_witness(witness: DriveListingWitness) -> None:
+        original_close(witness)
+        closed_witnesses.append(witness.source_name)
+
+    monkeypatch.setattr(DriveListingWitness, "close", close_witness)
 
     def block() -> None:
         assert current_write_lease() is None
@@ -471,6 +481,7 @@ async def test_drive_download_cancellation_closes_staging_after_thread_settles(
         with pytest.raises(asyncio.CancelledError):
             await task
     assert not list((tmp_path / "blob" / ".staging").iterdir())
+    assert closed_witnesses == [source.name]
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
     await parser.repository.close()
@@ -931,9 +942,16 @@ async def test_drive_terminal_no_session_evidence_blocks_even_without_parse_erro
 
     parser, source, coordinator = await make_parser(tmp_path, monkeypatch)
     client = DriveClient()
-    monkeypatch.setattr(client, "download_bytes", lambda file_id: b'{"unrecognized_neutral_shape":true}')
     monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: client)
     result = await parser.ingest_sources(sources=[source])
+    with sqlite3.connect(tmp_path / "source.db") as raw:
+        # A current parser's terminal no-session disposition can have no
+        # free-text diagnostic; its typed Source evidence remains authority.
+        raw.execute("UPDATE raw_sessions SET parse_error=NULL")
+        raw.execute(
+            "UPDATE raw_artifacts SET artifact_kind='terminal_unknown_export_no_session',support_status='unsupported_parseable'"
+        )
+        raw.execute("DELETE FROM raw_session_memberships")
     report = _read_drive_report(parser, source, result.acquire_result.drive_witnesses)
     assert report.state is DriveCatchupState.BLOCKED
     assert report.failures[0].permanent

@@ -671,14 +671,11 @@ async def _run_drive_source_catchup_once(
             DriveCatchupState.COMPLETE, enumerated_count=0, acquired_count=0, materialization_pending=0
         )
 
-    from polylogue.core.evidence import Measured
     from polylogue.operations.drive_readiness import (
         drive_readiness_observation,
-        inspect_drive_readiness,
+        inspect_current_drive_readiness,
         reobserve_drive_readiness,
     )
-    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-    from polylogue.storage.tier_access import capture_sqlite_read
 
     observation = drive_readiness_observation(config.archive_root)
     resume = observation.resume_materialization
@@ -736,32 +733,13 @@ async def _run_drive_source_catchup_once(
                 "budget_ms": round(_DRIVE_CATCHUP_MAX_PASS_SECONDS * 1000, 3),
             }
 
-            def inspect() -> DriveCatchupReport:
-                from polylogue.storage.archive_identity import resolve_active_index_path
-
-                with (
-                    contextlib.closing(open_readonly_connection(config.archive_root / "source.db")) as source_conn,
-                    contextlib.closing(
-                        open_readonly_connection(resolve_active_index_path(config.archive_root))
-                    ) as index_conn,
-                ):
-                    return inspect_drive_readiness(
-                        sources,
-                        source_conn,
-                        index_conn,
-                        observation.witnesses,
-                        changed_count=len(session_ids),
-                        raw_owner_available=raw_owner is not None,
-                    )
-
-            measured = await execution.prepare(lambda: capture_sqlite_read(inspect))
-            report = (
-                measured.value
-                if isinstance(measured, Measured)
-                else DriveCatchupReport(
-                    DriveCatchupState.UNKNOWN,
+            report = await execution.prepare(
+                lambda: inspect_current_drive_readiness(
+                    config.archive_root,
+                    sources,
+                    observation.witnesses,
                     changed_count=len(session_ids),
-                    gaps=("drive_archive_authority_unavailable",),
+                    raw_owner_available=raw_owner is not None,
                 )
             )
             if report.state is DriveCatchupState.COMPLETE:

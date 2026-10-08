@@ -506,7 +506,7 @@ def test_executing_status_requires_configured_drive_witness_even_with_embeddings
     drive_readiness_observation(tmp_path).witnesses["aistudio"] = witness
     from polylogue.daemon import status as resident_status
 
-    monkeypatch.setattr("polylogue.config.get_config", lambda: settings)
+    monkeypatch.setattr("polylogue.config.get_config", lambda: config)
     monkeypatch.setattr(resident_status, "_active_status_db_path", lambda: tmp_path / "index.db")
     fingerprint = resident_status._configured_source_status_fingerprint()
     resident = resident_status._configured_source_readiness_info()

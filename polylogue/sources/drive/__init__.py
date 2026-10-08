@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 import ijson
@@ -109,14 +109,10 @@ def _read_valid_cache(path: Path, revision: str | None) -> bytes | None:
         raw = path.read_bytes()
         if not raw.strip():
             return None
-        if path.suffix.lower() in {".jsonl", ".ndjson"}:
-            for line in raw.splitlines():
-                if line.strip():
-                    json.loads(line)
-        else:
-            json.loads(raw)
+        for _event in ijson.parse(BytesIO(raw), multiple_values=True):
+            pass
         return raw
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+    except (OSError, UnicodeDecodeError, ijson.JSONError, TypeError, ValueError):
         return None
 
 
@@ -133,21 +129,12 @@ def _cache_document_is_readable(path: Path) -> bool:
     ``_read_valid_cache`` returns bytes for.
     """
     try:
-        if path.suffix.lower() in {".jsonl", ".ndjson"}:
-            saw_record = False
-            with path.open("rb") as handle:
-                for line in handle:
-                    if not line.strip():
-                        continue
-                    saw_record = True
-                    json.loads(line)
-            return saw_record
         with path.open("rb") as handle:
             # Consume every event: short-circuiting on the first one would
             # accept a truncated document, which is exactly the cache
             # ``_read_valid_cache`` refuses to hand back.
             events = 0
-            for _event in ijson.parse(handle):
+            for _event in ijson.parse(handle, multiple_values=True):
                 events += 1
             return events > 0
     except (OSError, UnicodeDecodeError, ValueError, ijson.JSONError):
@@ -276,7 +263,7 @@ def iter_drive_raw_data(
             heartbeat = make_status_heartbeat(
                 status_callback,
                 source_name=source.name,
-                source_path=source_path,
+                source_path=file_meta.name,
             )
             if heartbeat is not None:
                 heartbeat()

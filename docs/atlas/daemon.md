@@ -273,6 +273,13 @@ Cold promotion settles its declared local baseline independently. The
 `configured_sources` status component and `claim_guard.converged` separately
 withhold full readiness until configured Drive obligations are measured complete,
 including when embeddings are disabled.
+Resident collection retains an in-flight scan across its response deadline.
+Its cache fingerprint binds both archive generations and the configured scope
+and listing custody, so replacing a witness invalidates prior readiness even
+when no archive file changed. Deferred membership remains pending; conflicting
+membership is blocked debt, and typed terminal parser evidence blocks completion
+even when it has no free-text diagnostic. Shutdown releases listing scratch
+after compute custody drains.
 
 Attachment status reads the supplied Source and Index snapshots and reports
 allowed unfetched references, contested identity, unretained suppliers, acquired

@@ -450,6 +450,13 @@ class AcquisitionService:
                 drive_witnesses=result.drive_witnesses,
             )
             await _flush_pending()
+        except BaseException:
+            # Preparation has physically drained before it escapes execution.
+            # No caller receives this result, so no caller can own its witnesses.
+            for witness in result.drive_witnesses.values():
+                witness.close()
+            result.drive_witnesses.clear()
+            raise
         finally:
             blob_publisher.discard_pending()
         result.errors += visit_result.counts["errors"]
