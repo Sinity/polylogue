@@ -508,8 +508,11 @@ def test_reset_spills_more_than_one_authority_page_and_survives_delayed_confirma
 def test_reset_cancelled_after_first_part_reports_only_the_committed_prefix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from threading import Event
+
+    from polylogue.daemon import operation_runtime
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
-    from polylogue.operations import daemon_mutations, mutation_transaction
+    from polylogue.operations import daemon_execution, daemon_mutations, mutation_transaction
     from polylogue.operations.mutation_actuators import IdentityResetActuator
 
     monkeypatch.setattr(mutation_transaction, "MUTATION_PLAN_PAGE_SIZE", 3)
@@ -517,6 +520,23 @@ def test_reset_cancelled_after_first_part_reports_only_the_committed_prefix(
     original_apply = IdentityResetActuator.apply
     original_stop = DaemonOperationRuntime.stop_reason
     committed = [False]
+    terminal_envelopes: list[str] = []
+    original_envelope = daemon_execution.operation_envelope
+    original_execute = daemon_execution.execute_operation
+    settled = Event()
+
+    def observe_settlement(request: DaemonOperationRequest, context: Any) -> Any:
+        try:
+            return original_execute(request, context)
+        finally:
+            if request.operation == "mutation.identity-reset":
+                settled.set()
+
+    def capture_terminal(request: DaemonOperationRequest, context: Any, **kwargs: Any) -> Any:
+        envelope = original_envelope(request, context, **kwargs)
+        if request.operation == "mutation.identity-reset":
+            terminal_envelopes.append(envelope.outcome)
+        return envelope
 
     def apply(self: IdentityResetActuator, plan: Any, args: Any) -> Any:
         receipt = original_apply(self, plan, args)
@@ -528,6 +548,8 @@ def test_reset_cancelled_after_first_part_reports_only_the_committed_prefix(
             return "cancelled"
         return original_stop(self, request)
 
+    monkeypatch.setattr(operation_runtime, "execute_operation", observe_settlement)
+    monkeypatch.setattr(daemon_execution, "operation_envelope", capture_terminal)
     monkeypatch.setattr(IdentityResetActuator, "apply", apply)
     monkeypatch.setattr(DaemonOperationRuntime, "stop_reason", stop)
     with running_daemon_operations(
@@ -547,13 +569,18 @@ def test_reset_cancelled_after_first_part_reports_only_the_committed_prefix(
             request_id="neutral-prefix-authorize",
         )
         assert authorized is not None and authorized["outcome"] == "completed", authorized
-        applied = stack.client.operation_to_completion(
+        applied = stack.client.operation(
             "mutation.identity-reset",
             {"authorization_request_id": "neutral-prefix-authorize"},
             archive_root=str(stack.archive_root),
             request_id="neutral-prefix-apply",
         )
-        assert applied is not None and applied["outcome"] == "cancelled", applied
+        assert applied is not None and applied["outcome"] in {"accepted", "running", "cancelled"}, applied
+        # Do not race a durable-status read against the writer's final settled
+        # read. Observe physical settlement through the real dispatch callback.
+        settled.wait()
+        # Check the actual mutation handler's first terminal envelope before
+        # runtime/status reconstruction can mask a default-completed defect.
         status = stack.client.operation(
             "operation.status", {"request_id": "neutral-prefix-apply"}, archive_root=str(stack.archive_root)
         )
@@ -564,6 +591,10 @@ def test_reset_cancelled_after_first_part_reports_only_the_committed_prefix(
         with sqlite3.connect(stack.archive_root / "user.db") as connection:
             assert connection.execute("SELECT count(*) FROM assertions WHERE kind='suppression'").fetchone()[0] == 3
         assert stack.session_exists("codex-session:neutral-reset-0003")
+    # The fixture drains the real runtime and writer before returning. Durable
+    # cancelled status can precede physical handler completion; no sleep guesses
+    # when its first terminal envelope becomes observable.
+    assert terminal_envelopes == ["cancelled"], terminal_envelopes
 
 
 def test_reset_authorization_replays_its_outer_confirmed_custody_without_child_machine_requests(

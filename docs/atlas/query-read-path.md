@@ -218,8 +218,8 @@ remains required, including for an empty export. The final page remains
 replayable until `user.assertions.export.release`; release reads no User tier.
 The daemon deletes abandoned images after its exchanges physically settle on
 shutdown. There is no selection expiry or population cap.
-CLI JSON and JSONL exports stage rows and expose output only after every page
-succeeds, then release the image; failed and cancelled walks also release it.
+CLI JSON and JSONL exports stage the complete walk, release the image, then
+publish output; failed and cancelled walks also release it.
 Python callers use `iter_assertions_for_export`. One assertion's payload remains
 proportional to one row.
 

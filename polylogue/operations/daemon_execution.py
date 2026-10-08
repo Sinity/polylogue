@@ -404,17 +404,7 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                     result = identity_reset_targets(request, context, audit, snapshot)
                 checkpoint()
                 validate_operation_result(request.operation, result)
-                # A reset batch can settle a committed prefix while cancellation
-                # leaves its suffix untouched. Its terminal envelope must carry
-                # the same durable outcome as the batch, never default success.
-                outcome = (
-                    str(result["outcome"])
-                    if request.operation == "mutation.identity-reset" and isinstance(result, dict)
-                    else "completed"
-                )
-                return operation_envelope(
-                    request, context, snapshot=snapshot, started_at=started, result=result, outcome=outcome
-                )
+                return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
 
         if request.operation.startswith("operation."):
             assert context.runtime is not None
@@ -531,7 +521,17 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                         read_view=snapshot.read_view,
                     )
                 validate_operation_result(request.operation, result)
-                return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
+                # A reset batch can settle a committed prefix while cancellation
+                # leaves its suffix untouched. Its terminal envelope must carry
+                # the same durable outcome as the batch, never default success.
+                outcome = (
+                    str(result["outcome"])
+                    if request.operation == "mutation.identity-reset" and isinstance(result, dict)
+                    else "completed"
+                )
+                return operation_envelope(
+                    request, context, snapshot=snapshot, started_at=started, result=result, outcome=outcome
+                )
 
         if spec.authority is DaemonAuthority.READ:
             return execute(mutating=False)
