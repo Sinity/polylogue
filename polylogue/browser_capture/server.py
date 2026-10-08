@@ -1182,7 +1182,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     else:
                         self.close_connection = True
         except (ijson.JSONError, ValueError):
-            logger.warning("browser_capture.invalid_json", request_id=self._request_id())
+            emit("browser_capture.invalid_json", level=WARNING, request_id=self._request_id())
             if getattr(self, "_polylogue_status", None) is None:
                 self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_json")
             else:
