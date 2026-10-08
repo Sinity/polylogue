@@ -44,12 +44,12 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_pathology_finding,
     assertion_id_for_promoted_candidate,
     assertion_id_for_transform_candidate,
+    iter_assertions_for_export,
     judge_assertion_candidate,
     judge_assertion_candidates,
     list_assertion_candidate_reviews,
     list_assertion_candidates,
     list_assertion_claims,
-    list_assertions_for_export,
     list_assertions_for_target,
     mark_assertion_status,
     read_assertion_envelope,
@@ -129,7 +129,7 @@ def test_durable_user_tier_carries_every_assertion_status_forward(tmp_path: Path
         # Assertion writers hand the transaction back to their caller's
         # unit-of-work boundary (``_immediate_user_write_transaction``).
         conn.commit()
-        before = {row.assertion_id: row.status for row in list_assertions_for_export(conn)}
+        before = {row.assertion_id: row.status for row in list(iter_assertions_for_export(conn))}
         epoch_before = int(conn.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton = 1").fetchone()[0])
         indexes_before = {name for name in _sqlite_objects(conn, "index") if name.startswith("idx_assertions_")}
         triggers_before = {name for name in _sqlite_objects(conn, "trigger") if "assertions" in name}
@@ -143,7 +143,7 @@ def test_durable_user_tier_carries_every_assertion_status_forward(tmp_path: Path
     # The fresh floor runs the user-tier DDL again over the durable database.
     conn = connect_measured_user_tier(db_path)
     try:
-        after = {row.assertion_id: row.status for row in list_assertions_for_export(conn)}
+        after = {row.assertion_id: row.status for row in list(iter_assertions_for_export(conn))}
         assert {name for name in _sqlite_objects(conn, "index") if name.startswith("idx_assertions_")} == indexes_before
         assert {name for name in _sqlite_objects(conn, "trigger") if "assertions" in name} == triggers_before
 
@@ -542,7 +542,7 @@ def test_assertion_defaults_are_explicit_private_no_inject(tmp_path: Path) -> No
         active_claims = list_assertion_claims(conn, target_ref="session:s-1", statuses=("active",))
         assert [claim.assertion_id for claim in active_claims] == ["default-decision"]
 
-        active_exports = list_assertions_for_export(conn, statuses=("active",))
+        active_exports = list(iter_assertions_for_export(conn, statuses=("active",)))
         assert [row.assertion_id for row in active_exports] == ["default-decision"]
     finally:
         conn.close()
@@ -607,7 +607,9 @@ def test_legacy_null_lifecycle_assertions_read_as_active_private_no_inject(tmp_p
         assert stored.context_policy == {"inject": False}
 
         assert [claim.assertion_id for claim in list_assertion_claims(conn, statuses=("active",))] == ["legacy-null"]
-        assert [row.assertion_id for row in list_assertions_for_export(conn, statuses=("active",))] == ["legacy-null"]
+        assert [row.assertion_id for row in list(iter_assertions_for_export(conn, statuses=("active",)))] == [
+            "legacy-null"
+        ]
     finally:
         conn.close()
 
@@ -1061,7 +1063,7 @@ def test_highlight_candidate_promotion_carries_expiry_into_the_active_claim(tmp_
         conn.close()
 
 
-def test_list_assertions_for_export_covers_all_kinds_and_statuses(tmp_path: Path) -> None:
+def test_iter_assertions_for_export_covers_all_kinds_and_statuses(tmp_path: Path) -> None:
     conn = connect_measured_user_tier(tmp_path / "user.db")
     try:
         rows = [
@@ -1091,16 +1093,16 @@ def test_list_assertions_for_export_covers_all_kinds_and_statuses(tmp_path: Path
                 now_ms=now_ms,
             )
 
-        exported = list_assertions_for_export(conn)
+        exported = list(iter_assertions_for_export(conn))
         assert [row.assertion_id for row in exported] == ["a-mark", "a-deleted-note", "a-candidate"]
 
-        active = list_assertions_for_export(conn, statuses=("active",))
+        active = list(iter_assertions_for_export(conn, statuses=("active",)))
         assert [row.assertion_id for row in active] == ["a-mark"]
 
-        notes = list_assertions_for_export(conn, kinds=(AssertionKind.NOTE,))
+        notes = list(iter_assertions_for_export(conn, kinds=(AssertionKind.NOTE,)))
         assert [row.assertion_id for row in notes] == ["a-deleted-note"]
 
-        limited = list_assertions_for_export(conn, limit=2)
+        limited = list(iter_assertions_for_export(conn, limit=2))
         assert [row.assertion_id for row in limited] == ["a-mark", "a-deleted-note"]
 
         payload = assertion_envelope_to_payload(exported[0])

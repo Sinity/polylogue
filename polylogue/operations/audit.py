@@ -817,6 +817,50 @@ class AuditRepository:
             raise AuthorizationMismatchError("preview does not belong to the authenticated principal")
         return MutationPreview(preview_ref=preview_ref, plan=_plan_from_payload(json.loads(row[0])))
 
+    def identity_reset_machine_preview_summary(self, binding: MachineRequestBinding) -> dict[str, object]:
+        """Recover only the bounded product of a durably accepted preview."""
+        with self._connection() as conn:
+            row = conn.execute(
+                """SELECT p.preview_id, p.target_count, p.expires_at_ms
+                FROM machine_requests AS m JOIN operation_previews AS p ON p.preview_id = m.artifact_ref
+                WHERE m.archive_identity = ? AND m.request_id = ? AND m.principal_ref = ?
+                  AND m.fingerprint = ? AND m.operation_name = 'mutation.identity-reset.preview'
+                  AND m.artifact_kind = 'preview' AND p.operation_name = 'mutate-identity-reset'""",
+                (binding.archive_identity, binding.request_id, binding.principal_ref, binding.fingerprint),
+            ).fetchone()
+        if row is None:
+            raise MachineRequestConflictError("identity reset preview custody is unavailable")
+        return {"preview_ref": row[0], "session_count": int(row[1]), "expires_at_ms": int(row[2])}
+
+    def identity_reset_preview_target_page(
+        self, preview_ref: str, principal: MutationPrincipal, *, offset: int, page_size: int
+    ) -> tuple[tuple[str, ...], int]:
+        """Read immutable target ordinals without decoding the whole plan."""
+        if offset < 0 or page_size < 1:
+            raise ValueError("invalid identity reset target page")
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT operation_name, principal_actor_ref, principal_surface FROM operation_previews WHERE preview_id = ?",
+                (preview_ref,),
+            ).fetchone()
+            if row is None or row[1] != principal.actor_ref or row[2] != principal.surface:
+                raise AuthorizationMismatchError("preview does not belong to the authenticated principal")
+            if row[0] != "mutate-identity-reset":
+                raise AuthorizationMismatchError("preview is not an identity reset")
+            total = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM operation_preview_targets WHERE preview_id = ?", (preview_ref,)
+                ).fetchone()[0]
+            )
+            ids = tuple(
+                str(row[0]).removeprefix("session:")
+                for row in conn.execute(
+                    "SELECT target_ref FROM operation_preview_targets WHERE preview_id = ? ORDER BY ordinal LIMIT ? OFFSET ?",
+                    (preview_ref, min(page_size, max(0, total - offset)), min(offset, total)),
+                )
+            )
+        return ids, total
+
     def authorization_for_principal(
         self, authorization_ref: str, principal: MutationPrincipal
     ) -> tuple[MutationPreview, MutationAuthorization]:
@@ -2854,21 +2898,27 @@ class AuditRepository:
 
         if not target_refs:
             return ()
-        placeholders = ", ".join("?" for _ in target_refs)
         with self._connection() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT DISTINCT r.operation_id, r.operation_name, r.operation_version,
-                       r.plan_hash, r.target_digest
-                FROM operation_runs AS r
-                JOIN operation_targets AS t ON t.operation_id = r.operation_id
-                WHERE r.status IN ('running', 'interrupted')
-                  AND t.target_ref IN ({placeholders})
-                ORDER BY r.started_at_ms, r.operation_id
-                """,
-                target_refs,
-            ).fetchall()
-            operations = [self._recovery_operation(conn, row) for row in rows]
+            page_size = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+            rows_by_id: dict[str, sqlite3.Row] = {}
+            for offset in range(0, len(target_refs), page_size):
+                page = target_refs[offset : offset + page_size]
+                placeholders = ", ".join("?" for _ in page)
+                rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT r.operation_id, r.operation_name, r.operation_version,
+                           r.plan_hash, r.target_digest, r.started_at_ms
+                    FROM operation_runs AS r
+                    JOIN operation_targets AS t ON t.operation_id = r.operation_id
+                    WHERE r.status IN ('running', 'interrupted')
+                      AND t.target_ref IN ({placeholders})
+                    """,
+                    page,
+                ).fetchall()
+                for row in rows:
+                    rows_by_id[str(row["operation_id"])] = row
+            ordered = sorted(rows_by_id.values(), key=lambda row: (row["started_at_ms"], row["operation_id"]))
+            operations = [self._recovery_operation(conn, row) for row in ordered]
         return tuple(operations)
 
     def attempt_owner_liveness(self, operation_id: str) -> Literal["dead", "live", "unknown"]:
@@ -3137,6 +3187,11 @@ class AuditRepository:
                     "outcome": resolution.outcome,
                     "detail": detail,
                     "affected_count": 0 if receipt is None else receipt.affected_count,
+                    **(
+                        {"historical_receipt": encode_machine_receipt(receipt.historical_receipt)}
+                        if receipt is not None and receipt.historical_receipt is not None
+                        else {}
+                    ),
                 },
             )
 
@@ -3750,7 +3805,7 @@ class AuditRepository:
             event = conn.execute(
                 """
                 SELECT detail_json FROM operation_events
-                WHERE operation_id = ? AND event_type = 'attempt_finalized' AND to_state = 'completed'
+                WHERE operation_id = ? AND event_type IN ('attempt_finalized', 'recovery_resolved') AND to_state = 'completed'
                 ORDER BY sequence DESC LIMIT 1
                 """,
                 (operation_id,),

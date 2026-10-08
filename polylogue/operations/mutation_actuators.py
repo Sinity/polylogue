@@ -430,10 +430,10 @@ class IdentityResetActuator(ConvergentReplay):
     tombstone helpers (``_suppress_archive_sessions`` writes the durable
     user.db suppression, ``_delete_archive_sessions`` drops the rebuildable
     index.db rows). Target resolution (token -> exact session ids) happens
-    once by the caller before ``prepare`` is invoked, mirroring #jnj.5's
-    "resolve once, preview and mutate the identical set" fix; ``prepare``
-    only re-verifies that the resolved set still exists so a concurrent
-    change is caught before APPLY.
+    once by the resident preview owner before ``prepare`` is invoked. The
+    client receives the frozen preview reference; confirmation reconstructs
+    these arguments from that audited plan. ``prepare`` re-verifies the exact
+    recorded IDs so a concurrent target change is caught before APPLY.
     """
 
     operation: str = "mutate-identity-reset"
@@ -465,6 +465,7 @@ class IdentityResetActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: IdentityResetArgs) -> MutationReceipt:
+        from polylogue.operations.machine_receipts import IdentityResetHistoricalReceipt
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
         from polylogue.storage.sqlite.archive_tiers.user_write import upsert_suppression
@@ -480,6 +481,9 @@ class IdentityResetActuator(ConvergentReplay):
                 detail="no_matching_sessions",
                 receipt_ref=None,
                 applied_at=plan.prepared_at,
+                historical_receipt=IdentityResetHistoricalReceipt(
+                    suppressed_count=0, deleted_archive_rows=0, tombstoned_without_index_row_count=0
+                ),
             )
 
         user_db = args.archive_root / "user.db"
@@ -534,18 +538,11 @@ class IdentityResetActuator(ConvergentReplay):
             detail=None,
             receipt_ref=None,
             applied_at=plan.prepared_at,
-            domain_receipt={
-                "suppressed_count": suppressed,
-                "deleted_archive_rows": deleted,
-                # A target with no rebuildable row still gets its durable
-                # tombstone; name those instead of letting the row count
-                # imply the suppression silently did not happen.
-                "tombstoned_without_index_row": [
-                    sid
-                    for sid in session_ids
-                    if sid not in set(cast("list[str]", plan.context.get("present_in_index") or ()))
-                ],
-            },
+            historical_receipt=IdentityResetHistoricalReceipt(
+                suppressed_count=suppressed,
+                deleted_archive_rows=deleted,
+                tombstoned_without_index_row_count=sum(sid not in prepared_present for sid in session_ids),
+            ),
         )
 
     def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> IdentityResetArgs:
@@ -923,12 +920,15 @@ def _resolve_existing_session_ids(archive_root: Path, session_ids: tuple[str, ..
     try:
         if not session_ids:
             return ()
-        placeholders = ",".join("?" for _ in session_ids)
-        rows = conn.execute(
-            f"SELECT session_id FROM sessions WHERE session_id IN ({placeholders})",
-            session_ids,
-        ).fetchall()
-        found = {str(row[0]) for row in rows}
+        found: set[str] = set()
+        batch_size = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+        for offset in range(0, len(session_ids), batch_size):
+            batch = session_ids[offset : offset + batch_size]
+            placeholders = ",".join("?" for _ in batch)
+            found.update(
+                str(row[0])
+                for row in conn.execute(f"SELECT session_id FROM sessions WHERE session_id IN ({placeholders})", batch)
+            )
         return tuple(sid for sid in session_ids if sid in found)
     finally:
         conn.close()

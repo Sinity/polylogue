@@ -107,21 +107,103 @@ def mutation_session_lifecycle_request(
     return _execute_named_mutation(request, context, audit, snapshot, SessionLifecycleRequestActuator(), args)
 
 
+def mutation_identity_reset_preview(
+    request: DaemonOperationRequest, context: OperationContext, audit: AuditRepository, snapshot: PinnedOperationRead
+) -> dict[str, object]:
+    from polylogue.operations.cli_aux_reads import _resolve_session_prefixes, _sessions_from_source_path
+    from polylogue.operations.mutation_actuators import IdentityResetActuator, IdentityResetArgs
+
+    session = request.payload.get("session")
+    ids = (
+        tuple(_resolve_session_prefixes(snapshot.archive, [session]))
+        if isinstance(session, str)
+        else (_sessions_from_source_path(snapshot.archive, Path(str(request.payload["source_path"]))))
+    )
+    actuator = IdentityResetActuator()
+    args = IdentityResetArgs(context.archive_root, ids, str(request.payload["reason"]))
+    with audit.bind_machine_request(_binding(request, context, snapshot), transition="create_preview"):
+        preview = OperationExecutor(audit=audit, archive_root=context.archive_root).prepare_bound_for_archive(
+            runtime_operation_binding(actuator), args, context.principal, archive_root=context.archive_root
+        )
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "no-effect",
+        "affected_count": 0,
+        "result": {
+            "preview_ref": preview.preview_ref,
+            "session_count": len(ids),
+            "expires_at_ms": preview.plan.expires_at_ms,
+        },
+    }
+
+
+def identity_reset_targets(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead | OperationControlRead,
+) -> dict[str, object]:
+    from polylogue.surfaces.outcome import decide_outcome
+
+    offset = int(cast(int, request.payload.get("offset", 0)))
+    ids, total = audit.identity_reset_preview_target_page(
+        str(request.payload["preview_ref"]),
+        context.principal,
+        offset=offset,
+        page_size=int(cast(int, request.payload.get("page_size", 256))),
+    )
+    next_offset = offset + len(ids)
+    return {
+        "session_ids": list(ids),
+        "total": total,
+        "offset": offset,
+        "next_offset": next_offset if next_offset < total else None,
+        "outcome": decide_outcome(matched=total).to_dict(),
+    }
+
+
 def mutation_identity_reset(
     request: DaemonOperationRequest,
     context: OperationContext,
     audit: AuditRepository,
     snapshot: PinnedOperationRead,
 ) -> dict[str, object]:
-    from polylogue.operations.mutation_actuators import IdentityResetActuator, IdentityResetArgs
+    from polylogue.operations.mutation_actuators import IdentityResetActuator
+    from polylogue.operations.mutation_transaction import AuthorizationMismatchError, ReplayHandles
 
-    payload = request.payload
-    args = IdentityResetArgs(
-        archive_root=context.archive_root,
-        session_ids=tuple(cast(list[str], payload["session_ids"])),
-        reason=str(payload["reason"]),
-    )
-    return _execute_named_mutation(request, context, audit, snapshot, IdentityResetActuator(), args)
+    if request.payload.get("confirm") is not True:
+        raise ConfirmationRequiredError("identity reset requires explicit confirmation")
+    preview = audit.preview_for_principal(str(request.payload["preview_ref"]), context.principal)
+    actuator = IdentityResetActuator()
+    if preview.plan.operation != actuator.operation:
+        raise AuthorizationMismatchError("preview is not an identity reset")
+    handles = ReplayHandles(context.archive_root)
+    try:
+        args = actuator.replay_args(handles, preview.plan)
+    finally:
+        handles.close()
+    binding = runtime_operation_binding(actuator)
+    executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
+    authorization = executor.authorize_bound(binding, preview, context.principal, confirmation_strength="bound_token")
+    with audit.bind_machine_request(_binding(request, context, snapshot), transition="consume_authorization_and_start"):
+        receipt = executor.execute_bound(binding, preview, authorization, args)
+    if receipt.status in {"blocked", "unknown"}:
+        raise ValueError(receipt.detail or "identity reset did not apply")
+    from polylogue.operations.machine_receipts import IdentityResetHistoricalReceipt
+
+    if not isinstance(receipt.historical_receipt, IdentityResetHistoricalReceipt):
+        raise ValueError("identity reset terminal receipt is unavailable")
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed" if receipt.affected_count else "no-effect",
+        "affected_count": receipt.affected_count,
+        "receipt_ref": receipt.receipt_ref,
+        "result": receipt.historical_receipt.result_counts(),
+    }
 
 
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm")

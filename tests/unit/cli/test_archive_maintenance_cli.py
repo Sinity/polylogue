@@ -1491,3 +1491,32 @@ def test_blob_publication_abandonment_chunks_instead_of_refusing(monkeypatch: py
     assert [len(batch) for batch in batches] == [256, 1]
     assert merged["result"] == {"abandoned": list(ids)}
     assert merged["receipt_ref"] == "r1,r2"
+
+
+@pytest.mark.parametrize("output_format", ["json", "jsonl"])
+def test_assertion_export_cli_walks_multiple_daemon_pages(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch, output_format: str
+) -> None:
+    root = cli_workspace["archive_root"]
+    with sqlite3.connect(root / "user.db") as user:
+        user.executemany(
+            "INSERT INTO assertions(assertion_id,target_ref,key,kind,value_json,created_at_ms,updated_at_ms) "
+            "VALUES (?,?,?,?,?,?,?)",
+            [
+                (f"neutral-page-{index:04d}", "session:neutral", "neutral", "tag", "{}", index + 1, index + 1)
+                for index in range(513)
+            ],
+        )
+    with cli_daemon_archive(root, monkeypatch):
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "assertion-export", "--format", output_format],
+            catch_exceptions=False,
+        )
+    assert result.exit_code == 0, result.output
+    rows = (
+        json.loads(result.stdout)["assertions"]
+        if output_format == "json"
+        else [json.loads(line) for line in result.stdout.splitlines()]
+    )
+    assert [row["assertion_id"] for row in rows] == [f"neutral-page-{index:04d}" for index in range(513)]

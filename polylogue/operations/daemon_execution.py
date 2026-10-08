@@ -348,6 +348,32 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                 if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(context.archive_root)) != identity:
                     raise ValueError("archive changed while reading user settings")
                 return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
+        if request.operation == "session.identity-reset.targets":
+            from polylogue.operations.daemon_mutations import identity_reset_targets
+            from polylogue.operations.operation_context import abort_checkpoint
+
+            assert context.runtime is not None
+            read_control = context.read_control or QueryExecutionContext(
+                call_id=str(request.request_id),
+                query_ref=request.fingerprint,
+                deadline_monotonic=None if request.deadline_ms is None else started + request.deadline_ms / 1000,
+                owner_ref=context.principal.actor_ref,
+            )
+            checkpoint = abort_checkpoint(read_control)
+            checkpoint()
+            with open_operation_read(
+                context.archive_root,
+                publication_guard=context.runtime.publication_guard,
+                execution_context=read_control,
+            ) as snapshot:
+                _validate_identity(request, context, snapshot)
+                audit = context.runtime.audit_for_request(request, context)
+                with audit.settled_machine_read():
+                    result = identity_reset_targets(request, context, audit, snapshot)
+                checkpoint()
+                validate_operation_result(request.operation, result)
+                return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
+
         if request.operation.startswith("operation."):
             assert context.runtime is not None
             control_snapshot = observe_control_authority(context.archive_root)

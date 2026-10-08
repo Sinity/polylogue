@@ -10,6 +10,7 @@ from itertools import chain
 from polylogue.operations.audit import MACHINE_PAGE_KINDS, MACHINE_PAGE_PARTS, AuditRepository, MachineRequestBinding
 from polylogue.operations.daemon_protocol import AcceptedOperationReference, MutationResult, daemon_operation_spec
 from polylogue.operations.machine_receipts import (
+    IdentityResetHistoricalReceipt,
     IngestHistoricalReceiptV2,
     InsightPartHistoricalReceipt,
     decode_machine_receipt,
@@ -30,7 +31,7 @@ def _operation_requires_rich_historical_receipt(operation_name: object) -> bool:
     the final audit event, so they must not be demoted merely because they do
     not opt into a rich receipt.
     """
-    return operation_name in _RICH_HISTORICAL_RECEIPT_OPERATIONS
+    return operation_name == "mutate-identity-reset" or operation_name in _RICH_HISTORICAL_RECEIPT_OPERATIONS
 
 
 def _audit_int(value: object, *, field: str) -> int:
@@ -123,7 +124,16 @@ def machine_request_state(
                 return {**state, "outcome": outcome, "effect": "no-effect", "stop_reason": record["stop_reason"]}
             return {**state, "outcome": "running", "effect": "no-effect"}
         if kind not in {"operation", "execution-batch", "source-generation"}:
-            if kind == "preview-batch":
+            if kind == "preview" and binding.operation_name == "mutation.identity-reset.preview":
+                state["result"] = {
+                    "operation": binding.operation_name,
+                    "outcome": "completed",
+                    "sequence": 1,
+                    "effect": "no-effect",
+                    "affected_count": 0,
+                    "result": audit.identity_reset_machine_preview_summary(binding),
+                }
+            elif kind == "preview-batch":
                 state["result"] = audit.machine_preview_summary(binding)
             elif kind == "authorization-batch":
                 authorized: dict[str, object] = {
@@ -260,6 +270,27 @@ def machine_request_state(
                     "outcome": outcome,
                     "sequence": receipt["final_sequence"],
                     "historical_receipt": receipt,
+                }
+        if (
+            record.get("operation_name") == "mutation.identity-reset"
+            and first_attempted is not None
+            and first_attempted["outcome"] == "completed"
+        ):
+            raw = first_attempted["receipt"]
+            if raw is None:
+                outcome = "indeterminate"
+            else:
+                history = decode_machine_receipt(raw)
+                if not isinstance(history, IdentityResetHistoricalReceipt):
+                    raise ValueError("identity reset run carries a non-reset historical receipt")
+                result = {
+                    "operation": binding.operation_name,
+                    "outcome": "completed",
+                    "sequence": sequence,
+                    "effect": "committed" if history.suppressed_count else "no-effect",
+                    "affected_count": history.suppressed_count,
+                    "receipt_ref": f"mutation-operation:{first_attempted['operation_id']}",
+                    "result": history.result_counts(),
                 }
         if record.get("operation_name") == "maintenance.insights.rebuild" and outcome == "completed":
             # The declared result is the terminal summary the final page's receipt

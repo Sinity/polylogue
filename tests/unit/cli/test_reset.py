@@ -25,23 +25,22 @@ from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.operation_recovery import recover_on_admitted_owner
 
 
-def test_reset_session_resolution_uses_declared_resident_read(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reset_session_resolution_uses_server_owned_preview(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_module = importlib.import_module("polylogue.cli.commands.reset")
-    from polylogue.cli import operation_kernel
-
     seen: list[tuple[str, dict[str, object]]] = []
 
-    def read(_config: object, operation: str, payload: dict[str, object]) -> Any:
+    def submit(_env: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
         seen.append((operation, payload))
-        return SimpleNamespace(value={"session_ids": ["selected"]})
+        return {"result": {"preview_ref": "preview:neutral", "session_count": 1}}
 
-    monkeypatch.setattr(operation_kernel, "configured_read_operation", read)
+    monkeypatch.setattr(reset_module, "_submit", submit)
     env = SimpleNamespace(config=object())
     assert reset_module._identity_reset_targets(env, conv_id="selected", source_path=None) == (
-        ["selected"],
+        "preview:neutral",
+        1,
         "session 'selected'",
     )
-    assert seen == [("session.identity-reset.targets", {"session": "selected"})]
+    assert seen == [("mutation.identity-reset.preview", {"session": "selected", "reason": "reset --session"})]
 
 
 def _no_seed(_root: Path) -> None:

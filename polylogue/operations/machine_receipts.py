@@ -391,8 +391,29 @@ class IngestHistoricalReceiptV2(_Receipt):
         return self
 
 
+class IdentityResetHistoricalReceipt(_Receipt):
+    kind: Literal["identity-reset/v1"] = "identity-reset/v1"
+    count_scope: Literal["completing-apply"] = "completing-apply"
+    suppressed_count: int = Field(ge=0)
+    deleted_archive_rows: int = Field(ge=0)
+    tombstoned_without_index_row_count: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def consistent_counts(self) -> IdentityResetHistoricalReceipt:
+        if self.deleted_archive_rows > self.suppressed_count:
+            raise ValueError("deleted rows exceed suppression targets")
+        if self.tombstoned_without_index_row_count > self.suppressed_count:
+            raise ValueError("absent rows exceed suppression targets")
+        return self
+
+    def result_counts(self) -> dict[str, object]:
+        return self.model_dump(mode="json", exclude={"kind"})
+
+
 IngestTerminalReceipt: TypeAlias = IngestHistoricalReceiptV2
-MachineHistoricalReceipt: TypeAlias = InsightPartHistoricalReceipt | IngestTerminalReceipt
+MachineHistoricalReceipt: TypeAlias = (
+    InsightPartHistoricalReceipt | IngestTerminalReceipt | IdentityResetHistoricalReceipt
+)
 
 
 def ingest_terminal_outcome(history: IngestHistoricalReceiptV2) -> str:
@@ -455,6 +476,8 @@ def decode_machine_receipt(raw: object) -> MachineHistoricalReceipt:
         raise ValueError("historical machine receipt is not an object")
     try:
         kind = raw.get("kind")
+        if kind == "identity-reset/v1":
+            return IdentityResetHistoricalReceipt.model_validate(raw)
         if kind == "insight-part/v1":
             return InsightPartHistoricalReceipt.model_validate(raw)
         if kind == "ingest/v2":
@@ -478,6 +501,7 @@ __all__ = [
     "InsightPartHistoricalReceipt",
     "InsightTargetHistoricalReceipt",
     "MachineHistoricalReceipt",
+    "IdentityResetHistoricalReceipt",
     "decode_machine_receipt",
     "encode_machine_receipt",
     "ingest_input_pages_digest",

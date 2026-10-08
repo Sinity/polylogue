@@ -248,8 +248,11 @@ classification and refuses module inference; classification is local to that
 observation.
 
 The CLI's auxiliary archive reads also execute against the resident pinned
-reader: identity-reset target resolution, assertion export, and excision
-planning are declared operations; tutorial counts and summary aggregates use
+reader. Assertion export pages the original User authority and excision
+planning remains a declared read. Identity reset prepares one frozen audited
+preview on the resident writer; authenticated target pages read its immutable
+ordinals and confirmed execution accepts only the preview reference.
+Tutorial counts and summary aggregates use
 `query.aggregate`, and archive-coverage summaries use `insights.list`.
 Composed context images carry their selected read views through
 `read.context-image`, so the daemon compiles messages, temporal evidence, and

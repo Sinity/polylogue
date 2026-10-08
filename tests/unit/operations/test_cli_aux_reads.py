@@ -17,22 +17,6 @@ from polylogue.storage.sqlite.connection_profile import attach_readonly_database
 from tests.infra.storage_records import SessionBuilder
 
 
-def test_identity_reset_targets_resolve_on_the_pinned_archive(tmp_path: Path) -> None:
-    root = tmp_path / "archive"
-    root.mkdir()
-    SessionBuilder(root / "index.db", "reset-targets").provider("codex").title("Target").save()
-    with ArchiveStore.open_existing(root, read_only=True) as archive:
-        session_id = archive.list_summaries(limit=1)[0].session_id
-        result = execute_read_operation(
-            "session.identity-reset.targets",
-            {"session": session_id},
-            archive=archive,
-            serving_identity="test",
-        )
-    validate_operation_result("session.identity-reset.targets", result)
-    assert result["session_ids"] == [session_id]
-
-
 def test_assertion_export_keeps_a_present_empty_user_tier_empty(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     root.mkdir()
@@ -82,29 +66,15 @@ def test_identity_reset_source_path_uses_the_pinned_source_snapshot(tmp_path: Pa
         )
         with sqlite3.connect(root / "source.db") as writer:
             writer.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = ?", ("/new/source.jsonl", raw_id))
-        old_result = execute_read_operation(
-            "session.identity-reset.targets",
-            {"source_path": "/old/source.jsonl"},
-            archive=pinned.archive,
-            serving_identity="test",
-        )
-        new_result = execute_read_operation(
-            "session.identity-reset.targets",
-            {"source_path": "/new/source.jsonl"},
-            archive=pinned.archive,
-            serving_identity="test",
-        )
-    assert old_result["session_ids"] == [session_id], old_result
-    assert new_result["session_ids"] == []
+        from polylogue.operations.cli_aux_reads import _sessions_from_source_path
 
+        old_result = _sessions_from_source_path(pinned.archive, Path("/old/source.jsonl"))
+        new_result = _sessions_from_source_path(pinned.archive, Path("/new/source.jsonl"))
+    assert old_result == (session_id,)
+    assert new_result == ()
     with open_operation_read(root) as fresh:
-        current = execute_read_operation(
-            "session.identity-reset.targets",
-            {"source_path": "/new/source.jsonl"},
-            archive=fresh.archive,
-            serving_identity="test",
-        )
-    assert current["session_ids"] == [session_id]
+        current = _sessions_from_source_path(fresh.archive, Path("/new/source.jsonl"))
+    assert current == (session_id,)
 
 
 def test_assertion_export_uses_the_pinned_user_snapshot(tmp_path: Path) -> None:
@@ -189,3 +159,111 @@ def test_assertion_list_uses_pinned_user_after_update_or_path_replacement(tmp_pa
         assert isinstance(items, list) and len(items) == 1
         assert isinstance(items[0], dict)
         assert items[0]["body_text"] == "old snapshot"
+
+
+def test_assertion_export_pages_complete_population_and_explicit_limit(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    SessionBuilder(root / "index.db", "neutral-export-pages").provider("codex").save()
+    with sqlite3.connect(root / "user.db") as user:
+        user.executemany(
+            "INSERT INTO assertions(assertion_id,target_ref,key,kind,value_json,created_at_ms,updated_at_ms) "
+            "VALUES (?,?,?,?,?,?,?)",
+            [
+                (f"neutral-{index:04d}", "session:neutral", "neutral", "tag", "{}", index + 1, index + 1)
+                for index in range(513)
+            ],
+        )
+    seen: list[str] = []
+    offset = 0
+    epoch = None
+    with open_operation_read(root) as pinned:
+        while True:
+            page = execute_read_operation(
+                "user.assertions.export",
+                {"page_size": 17, "offset": offset, "selection_epoch": epoch},
+                archive=pinned.archive,
+                serving_identity="test",
+            )
+            validate_operation_result("user.assertions.export", page)
+            assert page["total"] == 513
+            items = page["items"]
+            assert isinstance(items, list) and len(items) <= 17
+            seen.extend(row["assertion_id"] for row in items)
+            epoch = page["snapshot_epoch"]
+            if page["next_offset"] is None:
+                break
+            next_offset = page["next_offset"]
+            assert isinstance(next_offset, int)
+            offset = next_offset
+        past_end = execute_read_operation(
+            "user.assertions.export",
+            {"offset": 10**100, "page_size": 10**100, "selection_epoch": epoch},
+            archive=pinned.archive,
+            serving_identity="test",
+        )
+        assert past_end["items"] == [] and past_end["next_offset"] is None
+        for limit in (0, 9):
+            page = execute_read_operation(
+                "user.assertions.export", {"limit": limit}, archive=pinned.archive, serving_identity="test"
+            )
+            assert page["total"] == limit
+            limited_items = page["items"]
+            assert isinstance(limited_items, list)
+            assert len(limited_items) == limit
+            assert page["next_offset"] is None
+    assert seen == [f"neutral-{index:04d}" for index in range(513)]
+
+
+def test_assertion_export_continuation_refuses_changed_view(tmp_path: Path) -> None:
+    from polylogue.archive.query.transaction import QueryContinuationStaleError
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    SessionBuilder(root / "index.db", "neutral-export-view").provider("codex").save()
+    with open_operation_read(root) as pinned:
+        page = execute_read_operation("user.assertions.export", {}, archive=pinned.archive, serving_identity="test")
+    with sqlite3.connect(root / "user.db") as user:
+        user.execute(
+            "INSERT INTO assertions(assertion_id,target_ref,key,kind,value_json,created_at_ms,updated_at_ms) "
+            "VALUES ('neutral-new', 'session:neutral', 'neutral', 'tag', '{}', 1, 1)"
+        )
+    with open_operation_read(root) as fresh:
+        with pytest.raises(QueryContinuationStaleError):
+            execute_read_operation(
+                "user.assertions.export",
+                {"selection_epoch": page["snapshot_epoch"], "offset": 1},
+                archive=fresh.archive,
+                serving_identity="test",
+            )
+
+
+def test_assertion_export_cancel_checkpoint_precedes_rows(tmp_path: Path) -> None:
+    from polylogue.operations.daemon_reads import DaemonReadDependencies
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    SessionBuilder(root / "index.db", "neutral-export-cancel").provider("codex").save()
+
+    def cancel() -> None:
+        raise InterruptedError("neutral cancellation")
+
+    with open_operation_read(root) as pinned:
+        with pytest.raises(InterruptedError):
+            execute_read_operation(
+                "user.assertions.export",
+                {},
+                archive=pinned.archive,
+                serving_identity="test",
+                dependencies=DaemonReadDependencies(raise_if_aborted=cancel),
+            )
+
+
+@pytest.mark.parametrize("payload", [{"page_size": 0}, {"offset": -1}, {"offset": 1}, {"limit": -1}])
+def test_assertion_export_refuses_malformed_page_operands(payload: dict[str, object]) -> None:
+    from pydantic import ValidationError
+
+    from polylogue.operations.daemon_protocol import AssertionExportRequest
+
+    with pytest.raises(ValidationError):
+        AssertionExportRequest.model_validate(payload)

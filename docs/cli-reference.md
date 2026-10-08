@@ -671,8 +671,8 @@ Options:
   -y, --yes        Skip confirmation prompt
   --session TEXT   Tombstone a specific session by ID
   --source PATH    Tombstone all sessions from a source path
-  --dry-run        Preview --session/--source identity-reset targets without
-                   mutating anything
+  --dry-run        Retain an audited preview of --session/--source targets
+                   without changing sessions
   --json           Shortcut for --format json (applies to --session/--source).
   --format [json]  Output format for --session/--source identity resets. JSON
                    emits a MutationResultPayload.

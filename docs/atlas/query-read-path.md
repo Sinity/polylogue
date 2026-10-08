@@ -203,6 +203,35 @@ budget with `omission_rows_truncated`; session totals remain exact unless
 `session_token_totals_truncated` explicitly names missing totals. Budgets below
 the final typed envelope are refused rather than enlarged.
 
+## Assertion export and identity reset
+
+Assertion export reads ordered `created_at_ms, assertion_id` pages through the
+resident `user.assertions.export` v2 contract. `limit` selects the requested
+export prefix, including an explicitly empty prefix; page size only selects
+one transport window. Each continuation binds the original Index/User frame.
+A changed frame refuses the walk. CLI JSON and JSONL exports stream rows into
+private staging and expose output only after every page succeeds. The original
+attached User authority remains required, including for an empty export.
+Python export callers use `iter_assertions_for_export`; the unpaged list
+producer is retired. SQL counts and offset scans can still scale with the
+relation, and one assertion's content remains proportional to one row.
+
+Identity reset retains its selector as one authenticated Audit preview on the
+resident writer. Preview creation binds its request ID to that durable preview,
+so repeats recover the same bounded summary without selecting again. It has no
+implicit execution deadline; cancellation before acceptance creates no preview.
+Confirmation also binds its request to the accepted Audit operation without an
+implicit execution deadline. Its typed historical receipt retains the suppression
+count, absent-index count and rows deleted by the completing apply. A recovered
+completion reports that apply's count, not a reconstructed lifetime total.
+Confirmation submits only that preview reference and executes
+its frozen exact targets, never a fresh path selection. New matching arrivals
+remain outside the authorized plan. Principal-checked target pages read immutable
+Audit ordinals without decoding the whole plan. CLI dry-run and JSON ID arrays
+stream through staging; dry-run writes the Audit preview but changes no sessions.
+This bounds transport and client target memory. The existing canonical audited
+mutation plan remains proportional to its full target population.
+
 ## Durable setting reads
 
 `setting get` and `setting list` use the resident `user.settings.get` and

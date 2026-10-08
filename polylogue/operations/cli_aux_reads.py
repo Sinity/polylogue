@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import cast
 
@@ -10,20 +10,11 @@ from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
-def execute_cli_aux_read(name: str, payload: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:
+def execute_cli_aux_read(
+    name: str, payload: Mapping[str, object], *, archive: ArchiveStore, checkpoint: Callable[[], None] = lambda: None
+) -> dict[str, object]:
     """Execute the small CLI-only read contracts against the daemon's pinned reader."""
     from polylogue.surfaces.outcome import decide_outcome
-
-    if name == "session.identity-reset.targets":
-        session = payload.get("session")
-        source_path = payload.get("source_path")
-        if isinstance(session, str):
-            session_ids = _resolve_session_prefixes(archive, [session])
-        elif isinstance(source_path, str):
-            session_ids = _sessions_from_source_path(archive, Path(source_path))
-        else:
-            raise ValueError("identity reset targets require a session or source_path")
-        return {"session_ids": session_ids, "outcome": decide_outcome(matched=len(session_ids)).to_dict()}
 
     if name == "session.excision.plan":
         from polylogue.security.excision import LineageDependentsError, plan_session_excision
@@ -49,24 +40,42 @@ def execute_cli_aux_read(name: str, payload: Mapping[str, object], *, archive: A
         }
 
     if name == "user.assertions.export":
+        from polylogue.archive.query.transaction import archive_snapshot_epoch
         from polylogue.storage.sqlite.archive_tiers.user_write import (
             assertion_envelope_to_payload,
-            list_assertions_for_export,
+            count_assertions_for_export,
+            iter_assertions_for_export,
         )
 
         archive.require_attached_user_tier()
-        rows = list_assertions_for_export(
+        checkpoint()
+        kinds = cast(list[str] | None, payload.get("kinds"))
+        statuses = cast(list[str] | None, payload.get("statuses"))
+        limit = cast(int | None, payload.get("limit"))
+        offset = int(cast(int, payload.get("offset", 0)))
+        page_size = int(cast(int, payload.get("page_size", 256)))
+        total = count_assertions_for_export(archive._conn, kinds=kinds, statuses=statuses, schema="user_tier")
+        if limit is not None:
+            total = min(total, limit)
+        items = []
+        for row in iter_assertions_for_export(
             archive._conn,
-            kinds=cast(list[str] | None, payload.get("kinds")),
-            statuses=cast(list[str] | None, payload.get("statuses")),
-            limit=cast(int | None, payload.get("limit")),
+            kinds=kinds,
+            statuses=statuses,
+            limit=min(page_size, max(0, total - offset)),
+            offset=min(offset, total),
             schema="user_tier",
-        )
-        items = [assertion_envelope_to_payload(row) for row in rows]
+        ):
+            checkpoint()
+            items.append(assertion_envelope_to_payload(row))
+        next_offset = offset + len(items)
         return {
             "items": items,
-            "total": len(items),
-            "outcome": decide_outcome(matched=len(items)).to_dict(),
+            "total": total,
+            "offset": offset,
+            "next_offset": next_offset if next_offset < total else None,
+            "snapshot_epoch": f"{archive.index_db_path.resolve()}:{archive_snapshot_epoch(archive)}",
+            "outcome": decide_outcome(matched=total).to_dict(),
         }
 
     raise ValueError(f"unsupported CLI auxiliary read operation: {name}")
@@ -94,7 +103,7 @@ def _resolve_session_prefixes(archive: ArchiveStore, tokens: list[str]) -> list[
     return list(dict.fromkeys(resolved))
 
 
-def _sessions_from_source_path(archive: ArchiveStore, path: Path) -> list[str]:
+def _sessions_from_source_path(archive: ArchiveStore, path: Path) -> tuple[str, ...]:
     attached = {str(row[1]) for row in archive._conn.execute("PRAGMA database_list")}
     if "source_tier" not in attached:
         raise ArchiveTierUnavailableError(
@@ -114,8 +123,18 @@ def _sessions_from_source_path(archive: ArchiveStore, path: Path) -> list[str]:
               OR REPLACE(r.source_path, char(92), '/') LIKE ? ESCAPE '\\'
            ORDER BY s.session_id""",
         (exact_prefix, child_prefix),
-    ).fetchall()
-    return [str(row[0]) for row in rows]
+    )
+    from polylogue.core.compute_cancel import check_compute_cancelled
+
+    def selected_ids() -> Iterator[str]:
+        for row in rows:
+            check_compute_cancelled()
+            yield str(row[0])
+
+    try:
+        return tuple(selected_ids())
+    finally:
+        rows.close()
 
 
 __all__ = ["execute_cli_aux_read"]

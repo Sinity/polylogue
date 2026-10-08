@@ -6,6 +6,9 @@ rather than hard-deleted, preserving user metadata across reset cycles.
 
 from __future__ import annotations
 
+import json
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -138,51 +141,101 @@ def _embeddings_db_present() -> bool:
     return (_archive_root() / _EMBEDDINGS_ARCHIVE_DATABASE[1]).exists()
 
 
-def _identity_reset_targets(env: AppEnv, *, conv_id: str | None, source_path: Path | None) -> tuple[list[str], str]:
-    """Resolve the exact archive session ids targeted by an identity reset.
+def _identity_reset_targets(env: AppEnv, *, conv_id: str | None, source_path: Path | None) -> tuple[str, int, str]:
+    """Retain one server-owned audited preview, returning no target collection."""
+    payload: dict[str, object] = {"session": conv_id} if conv_id else {"source_path": str(source_path)}
+    payload["reason"] = "reset --session" if conv_id else f"reset --source {source_path}"
+    response = _submit(env, "mutation.identity-reset.preview", payload)
+    result = response.get("result")
+    if (
+        not isinstance(result, dict)
+        or not isinstance(result.get("preview_ref"), str)
+        or not isinstance(result.get("session_count"), int)
+        or result["session_count"] < 0
+    ):
+        raise click.ClickException("identity reset preview returned an invalid result")
+    label = f"session {conv_id!r}" if conv_id else f"source {source_path}"
+    return result["preview_ref"], result["session_count"], label
 
-    Resolution happens once, up front, so the dry-run preview and the real
-    mutation act on the identical id set (mirrors the ``delete`` verb's
-    preview/mutate consistency fix, #1873). The resident target operation
-    returns no match for a typo instead of treating it as a literal target.
-    """
+
+def _identity_reset_target_pages(env: AppEnv, preview_ref: str, count: int) -> Iterator[list[str]]:
     from polylogue.cli.operation_kernel import OperationKernelError, configured_read_operation
 
-    payload: dict[str, object] = {"session": conv_id} if conv_id else {"source_path": str(source_path)}
-    try:
-        result = configured_read_operation(env.config, "session.identity-reset.targets", payload).value
-    except OperationKernelError as exc:
-        from polylogue.cli.render.outcome import exit_for_read_failure
+    offset = 0
+    while True:
+        try:
+            result = configured_read_operation(
+                env.config,
+                "session.identity-reset.targets",
+                {"preview_ref": preview_ref, "offset": offset, "page_size": 256},
+            ).value
+        except OperationKernelError as exc:
+            from polylogue.cli.render.outcome import exit_for_read_failure
 
-        exit_for_read_failure(exc)
-    if not isinstance(result, dict) or not isinstance(result.get("session_ids"), list):
-        raise click.ClickException("identity reset target operation returned an invalid result")
-    ids = [str(value) for value in result["session_ids"]]
-    label = f"session {conv_id!r}" if conv_id else f"source {source_path}"
-    return ids, label
+            exit_for_read_failure(exc)
+        if (
+            not isinstance(result, dict)
+            or not isinstance(result.get("session_ids"), list)
+            or result.get("total") != count
+            or result.get("offset") != offset
+        ):
+            raise click.ClickException("identity reset targets returned an invalid page")
+        ids = result["session_ids"]
+        if len(ids) > 256 or not all(isinstance(value, str) for value in ids):
+            raise click.ClickException("identity reset targets returned invalid IDs")
+        next_offset = result.get("next_offset")
+        end = offset + len(ids)
+        if (
+            end > count
+            or (next_offset is None and end != count)
+            or (next_offset is not None and (next_offset != end or end <= offset or end >= count))
+        ):
+            raise click.ClickException("identity reset targets returned an invalid continuation")
+        yield ids
+        if next_offset is None:
+            break
+        offset = end
 
 
 def _emit_identity_reset_result(
     env: AppEnv,
     *,
     status: MutationStatus,
-    session_ids: list[str],
+    preview_ref: str,
+    session_count: int,
     affected_count: int,
     output_format: str | None,
     plain_message: str,
+    include_plain_targets: bool = False,
 ) -> None:
-    if output_format == "json":
+    if output_format == "json" or include_plain_targets:
         from polylogue.surfaces.payloads import MutationResultPayload
 
-        click.echo(
-            MutationResultPayload(
-                status=status,
-                operation="reset",
-                session_count=len(session_ids),
-                affected_count=affected_count,
-                session_ids=tuple(session_ids),
-            ).to_json(exclude_none=True)
-        )
+        # The immutable ordinal walk is staged, never collected into a client
+        # target list. A malformed page or cancellation exposes no prefix.
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as staged:
+            if output_format == "json":
+                payload = MutationResultPayload(
+                    status=status, operation="reset", session_count=session_count, affected_count=affected_count
+                ).model_dump(mode="json", exclude_none=True)
+                payload.pop("session_ids", None)
+                staged.write(json.dumps(payload)[:-1] + ', "session_ids": [')
+            else:
+                staged.write(plain_message + ": ")
+            written = 0
+            for ids in _identity_reset_target_pages(env, preview_ref, session_count):
+                for session_id in ids:
+                    if written:
+                        staged.write(", " if output_format != "json" else ",")
+                    staged.write(json.dumps(session_id) if output_format == "json" else session_id)
+                    written += 1
+            if output_format == "json":
+                staged.write("]}\n")
+            else:
+                staged.write("\n" if written else "(no matching sessions)\n")
+            staged.seek(0)
+            while chunk := staged.read(64 * 1024):
+                click.echo(chunk, nl=False)
         return
     env.ui.console.print(plain_message)
 
@@ -216,7 +269,7 @@ def _emit_identity_reset_result(
 @click.option(
     "--dry-run",
     is_flag=True,
-    help="Preview --session/--source identity-reset targets without mutating anything",
+    help="Retain an audited preview of --session/--source targets without changing sessions",
 )
 @click.option(
     "--json",
@@ -272,21 +325,18 @@ def reset_command(
     # up front so the dry-run preview and the real mutation act on the
     # identical id set (#jnj.5).
     if conv_id or source_path:
-        session_ids, label = _identity_reset_targets(env, conv_id=conv_id, source_path=source_path)
-        reason = "reset --session" if conv_id else f"reset --source {source_path}"
-        count = len(session_ids)
+        preview_ref, count, label = _identity_reset_targets(env, conv_id=conv_id, source_path=source_path)
 
         if dry_run:
             _emit_identity_reset_result(
                 env,
                 status="preview",
-                session_ids=session_ids,
+                preview_ref=preview_ref,
+                session_count=count,
                 affected_count=0,
                 output_format=output_format,
-                plain_message=(
-                    f"Would tombstone {count} session(s) for {label}: "
-                    + (", ".join(session_ids) if session_ids else "(no matching sessions)")
-                ),
+                plain_message=f"Would tombstone {count} session(s) for {label}",
+                include_plain_targets=True,
             )
             return
 
@@ -294,7 +344,8 @@ def reset_command(
             _emit_identity_reset_result(
                 env,
                 status="ok",
-                session_ids=[],
+                preview_ref=preview_ref,
+                session_count=0,
                 affected_count=0,
                 output_format=output_format,
                 plain_message=f"No sessions found for {label}.",
@@ -306,7 +357,8 @@ def reset_command(
                 _emit_identity_reset_result(
                     env,
                     status="aborted",
-                    session_ids=session_ids,
+                    preview_ref=preview_ref,
+                    session_count=count,
                     affected_count=0,
                     output_format=output_format,
                     plain_message="Use --yes to confirm deletion.",
@@ -323,7 +375,7 @@ def reset_command(
         result = _submit(
             env,
             "mutation.identity-reset",
-            {"session_ids": session_ids, "reason": reason, "confirm": True},
+            {"preview_ref": preview_ref, "confirm": True},
         )
         result_payload = result.get("result")
         result_payload = result_payload if isinstance(result_payload, dict) else {}
@@ -343,7 +395,8 @@ def reset_command(
         _emit_identity_reset_result(
             env,
             status="ok",
-            session_ids=session_ids,
+            preview_ref=preview_ref,
+            session_count=count,
             affected_count=suppressed,
             output_format=output_format,
             plain_message=plain_message,

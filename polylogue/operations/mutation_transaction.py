@@ -939,7 +939,7 @@ class OperationExecutor:
 
         if self._audit is None:
             raise MutationTransactionError("production mutation preparation requires a durable audit repository")
-        from polylogue.storage.archive_identity import ArchiveIdentity
+        from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 
         raw_plan = binding.actuator.prepare(args)
         return self.prepare_bound(
@@ -947,7 +947,9 @@ class OperationExecutor:
             args,
             principal,
             archive_instance_id=self._audit.ensure_archive_authority(now_ms=self._now_ms()),
-            archive_identity_digest=ArchiveIdentity.resolve(archive_root).authority_identity_digest,
+            archive_identity_digest=ArchiveIdentity.resolve_location(
+                ArchiveLocation.resolve(archive_root)
+            ).authority_identity_digest,
             parameter_digest=compute_parameter_digest(raw_plan),
             raw_plan=raw_plan,
         )
@@ -1142,9 +1144,11 @@ class OperationExecutor:
         ):
             raise TokenExpiredError("authorization token is expired")
         if self._archive_root is not None:
-            from polylogue.storage.archive_identity import ArchiveIdentity
+            from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 
-            live_identity = ArchiveIdentity.resolve(self._archive_root).authority_identity_digest
+            live_identity = ArchiveIdentity.resolve_location(
+                ArchiveLocation.resolve(self._archive_root)
+            ).authority_identity_digest
             if live_identity != preview.plan.archive_identity_digest:
                 revoke_local()
                 raise PlanStaleError("archive identity changed after the bound preview was prepared")
@@ -1265,9 +1269,11 @@ class OperationExecutor:
         if preview.plan.operation != binding.spec.name or authorization.plan_hash != preview.plan.plan_hash:
             raise AuthorizationMismatchError("accepted insight authority does not match this operation binding")
         if self._archive_root is not None:
-            from polylogue.storage.archive_identity import ArchiveIdentity
+            from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 
-            live_identity = ArchiveIdentity.resolve(self._archive_root).authority_identity_digest
+            live_identity = ArchiveIdentity.resolve_location(
+                ArchiveLocation.resolve(self._archive_root)
+            ).authority_identity_digest
             if live_identity != preview.plan.archive_identity_digest:
                 raise PlanStaleError("archive identity changed after the insight manifest was accepted")
         self._resolve_dead_operations(resolver_actor_ref=authorization.actor)

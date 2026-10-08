@@ -2677,33 +2677,16 @@ def assertion_envelope_to_payload(envelope: ArchiveAssertionEnvelope) -> dict[st
     }
 
 
-def list_assertions_for_export(
-    conn: sqlite3.Connection,
-    *,
-    kinds: Sequence[str | AssertionKind] | None = None,
-    statuses: Sequence[str | AssertionStatus] | None = None,
-    limit: int | None = None,
-    schema: str = "main",
-) -> list[ArchiveAssertionEnvelope]:
-    """List assertion rows for durable user-tier export.
-
-    Unlike ``list_assertion_claims``, this is deliberately all-kinds and
-    all-statuses by default: backup/export must include marks, overlays,
-    accepted claims, deleted rows, and private transform candidates.
-    """
-
-    if schema not in {"main", "user_tier"}:
-        raise ValueError(f"unsupported assertion export schema: {schema}")
-    if not _table_exists(conn, "assertions", schema=schema):
-        return []
-
+def _assertion_export_selection(
+    *, kinds: Sequence[str | AssertionKind] | None, statuses: Sequence[str | AssertionStatus] | None
+) -> tuple[str, tuple[object, ...]]:
     where: list[str] = []
     params: list[object] = []
 
     if kinds is not None:
         normalized_kinds = tuple(_normalize_assertion_kind(kind).value for kind in kinds)
         if not normalized_kinds:
-            return []
+            return " WHERE 0", ()
         placeholders = ", ".join("?" for _ in normalized_kinds)
         where.append(f"kind IN ({placeholders})")
         params.extend(normalized_kinds)
@@ -2711,22 +2694,56 @@ def list_assertions_for_export(
     if statuses is not None:
         normalized_statuses = tuple(_normalize_assertion_status(status).value for status in statuses)
         if not normalized_statuses:
-            return []
+            return " WHERE 0", ()
         placeholders = ", ".join("?" for _ in normalized_statuses)
         where.append(f"COALESCE(status, ?) IN ({placeholders})")
         params.append(ASSERTION_DEFAULT_STATUS.value)
         params.extend(normalized_statuses)
 
-    sql = f"SELECT {_ASSERTION_COLUMNS} FROM {schema}.assertions"
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY created_at_ms, assertion_id"
-    if limit is not None and limit >= 0:
-        sql += " LIMIT ?"
-        params.append(limit)
+    return (" WHERE " + " AND ".join(where) if where else ""), tuple(params)
 
-    rows = conn.execute(sql, tuple(params)).fetchall()
-    return [_assertion_row_to_envelope(row) for row in rows]
+
+def count_assertions_for_export(
+    conn: sqlite3.Connection,
+    *,
+    kinds: Sequence[str | AssertionKind] | None = None,
+    statuses: Sequence[str | AssertionStatus] | None = None,
+    schema: str = "main",
+) -> int:
+    """Count the same all-kind/status relation the export iterator reads."""
+    if schema not in {"main", "user_tier"}:
+        raise ValueError(f"unsupported assertion export schema: {schema}")
+    if not _table_exists(conn, "assertions", schema=schema):
+        return 0
+    where, params = _assertion_export_selection(kinds=kinds, statuses=statuses)
+    return int(conn.execute(f"SELECT COUNT(*) FROM {schema}.assertions" + where, params).fetchone()[0])
+
+
+def iter_assertions_for_export(
+    conn: sqlite3.Connection,
+    *,
+    kinds: Sequence[str | AssertionKind] | None = None,
+    statuses: Sequence[str | AssertionStatus] | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+    schema: str = "main",
+) -> Iterator[ArchiveAssertionEnvelope]:
+    """Stream durable export rows, including every kind and status by default."""
+    if schema not in {"main", "user_tier"}:
+        raise ValueError(f"unsupported assertion export schema: {schema}")
+    if offset < 0 or (limit is not None and limit < 0):
+        raise ValueError("assertion export bounds must be nonnegative")
+    if not _table_exists(conn, "assertions", schema=schema):
+        return
+    where, params = _assertion_export_selection(kinds=kinds, statuses=statuses)
+    sql = f"SELECT {_ASSERTION_COLUMNS} FROM {schema}.assertions" + where
+    sql += " ORDER BY created_at_ms, assertion_id LIMIT ? OFFSET ?"
+    cursor = conn.execute(sql, (*params, -1 if limit is None else limit, offset))
+    try:
+        for row in cursor:
+            yield _assertion_row_to_envelope(row)
+    finally:
+        cursor.close()
 
 
 ASSERTION_CLAIM_KINDS: tuple[AssertionKind, ...] = (
@@ -3084,7 +3101,8 @@ __all__ = [
     "list_assertion_candidates",
     "list_assertion_candidate_reviews",
     "list_assertion_claims",
-    "list_assertions_for_export",
+    "count_assertions_for_export",
+    "iter_assertions_for_export",
     "list_assertions_by_kind",
     "list_assertions_for_target",
     "list_judgment_automation_receipt_outbox",

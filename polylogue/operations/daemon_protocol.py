@@ -515,21 +515,24 @@ class ContextImageReadRequest(_OperationPayload):
     purpose: Literal["handoff", "continue"] = "handoff"
 
 
-class IdentityResetTargetsRequest(_OperationPayload):
-    """Resolve the sessions an identity reset would tombstone.
-
-    Exactly one selector: ``session`` (an exact id or a unique id prefix) or
-    ``source_path`` (every session acquired from that path or below it).
-    """
+class IdentityResetPreviewRequest(_OperationPayload):
+    """Resolve one selector into a frozen, authenticated audited preview."""
 
     session: str | None = Field(default=None, min_length=1)
     source_path: str | None = Field(default=None, min_length=1)
+    reason: str = Field(min_length=1)
 
     @model_validator(mode="after")
-    def exactly_one_selector(self) -> IdentityResetTargetsRequest:
+    def exactly_one_selector(self) -> IdentityResetPreviewRequest:
         if (self.session is None) == (self.source_path is None):
-            raise ValueError("identity reset targets need exactly one of session or source_path")
+            raise ValueError("identity reset preview needs exactly one selector")
         return self
+
+
+class IdentityResetTargetsRequest(_OperationPayload):
+    preview_ref: str = Field(min_length=1)
+    offset: int = Field(default=0, ge=0)
+    page_size: int = Field(default=256, ge=1)
 
 
 class ExcisionPlanRequest(_OperationPayload):
@@ -543,6 +546,15 @@ class AssertionExportRequest(_OperationPayload):
     kinds: list[str] | None = None
     statuses: list[str] | None = None
     limit: int | None = Field(default=None, ge=0)
+    offset: int = Field(default=0, ge=0)
+    page_size: int = Field(default=256, ge=1)
+    selection_epoch: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def continued_export_requires_epoch(self) -> AssertionExportRequest:
+        if self.offset and self.selection_epoch is None:
+            raise ValueError("continued assertion export requires selection_epoch")
+        return self
 
 
 class ContinuationRouteRequest(_OperationPayload):
@@ -1234,8 +1246,7 @@ class SessionLifecycleRequest(_OperationPayload):
 
 
 class IdentityResetRequest(_OperationPayload):
-    session_ids: list[str] = Field(min_length=1, max_length=10_000)
-    reason: str = Field(min_length=1, max_length=4096)
+    preview_ref: str = Field(min_length=1)
     confirm: bool = False
 
 
@@ -1356,10 +1367,16 @@ class UserSettingGetResult(UserOverlayGetResult):
 
 class AssertionExportResult(UserOverlayListResult):
     outcome: dict[str, object]
+    offset: int = Field(ge=0)
+    next_offset: int | None = Field(default=None, ge=0)
+    snapshot_epoch: str
 
 
 class IdentityResetTargetsResult(_OperationResult):
     session_ids: list[str]
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    next_offset: int | None = Field(default=None, ge=0)
     outcome: dict[str, object]
 
 
@@ -2253,8 +2270,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         "user.assertions.export",
         DaemonAuthority.READ,
         DaemonFallback.NEVER,
-        request_contract="user.assertions.export.request/v1",
-        result_contract="user.assertions.export.result/v1",
+        request_contract="user.assertions.export.request/v2",
+        result_contract="user.assertions.export.result/v2",
         request_model=AssertionExportRequest,
         result_model=AssertionExportResult,
     ),
@@ -2262,8 +2279,10 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         "session.identity-reset.targets",
         DaemonAuthority.READ,
         DaemonFallback.NEVER,
-        request_contract="session.identity-reset.targets.request/v1",
-        result_contract="session.identity-reset.targets.result/v1",
+        capability="archive.identity_reset",
+        handler="identity_reset_targets",
+        request_contract="session.identity-reset.targets.request/v2",
+        result_contract="session.identity-reset.targets.result/v2",
         request_model=IdentityResetTargetsRequest,
         result_model=IdentityResetTargetsResult,
     ),
@@ -3154,20 +3173,24 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         authorization=DaemonAuthorization.CONFIRMATION,
     ),
     DaemonOperationSpec(
+        "mutation.identity-reset.preview",
+        DaemonAuthority.LONG_RUNNING,
+        DaemonFallback.NEVER,
+        capability="archive.identity_reset",
+        accepted_reference=True,
+        request_contract="mutation.identity-reset.preview.request/v1",
+        result_contract="mutation.result/v1",
+        request_model=IdentityResetPreviewRequest,
+        result_model=MutationResult,
+        handler="mutation_identity_reset_preview",
+    ),
+    DaemonOperationSpec(
         "mutation.identity-reset",
         DaemonAuthority.LONG_RUNNING,
         DaemonFallback.NEVER,
         capability="archive.identity_reset",
-        deadline_s=300.0,
-        progress=True,
-        # IdentityResetRequest declares session_ids up to 10_000 and a 4 KiB
-        # reason. At ~60 bytes per JSON-quoted session id that is ~600 KiB, so
-        # the default 64 KiB body cap would refuse ~1,100 ids as
-        # ``request_too_large`` while the contract still advertised 10_000 --
-        # and cli/commands/reset.py submits exactly that payload. The bound the
-        # request contract already promises is the honest one to admit.
-        max_body_bytes=8 * 1024 * 1024,
-        request_contract="mutation.identity-reset.request/v1",
+        accepted_reference=True,
+        request_contract="mutation.identity-reset.request/v2",
         result_contract="mutation.result/v1",
         request_type="IdentityResetRequest",
         result_type="MutationResult",

@@ -515,3 +515,29 @@ def test_refusal_page_digest_streams_to_the_canonical_array_digest() -> None:
         streamed.update(page)
     canonical = json.dumps([page.model_dump(mode="json") for page in pages], sort_keys=True, separators=(",", ":"))
     assert streamed.hexdigest() == hashlib.sha256(canonical.encode()).hexdigest()
+
+
+@pytest.mark.parametrize("suppressed,deleted,absent", [(0, 0, 0), (3, 1, 1), (3, 0, 0)])
+def test_reset_history_round_trips_only_completed_apply_counts(suppressed: int, deleted: int, absent: int) -> None:
+    from polylogue.operations.machine_receipts import IdentityResetHistoricalReceipt, encode_machine_receipt
+
+    history = IdentityResetHistoricalReceipt(
+        suppressed_count=suppressed, deleted_archive_rows=deleted, tombstoned_without_index_row_count=absent
+    )
+    assert decode_machine_receipt(encode_machine_receipt(history)) == history
+    assert history.count_scope == "completing-apply"
+    with pytest.raises(ValueError):
+        decode_machine_receipt({**encode_machine_receipt(history), "session_ids": ["neutral-session"]})
+
+
+@pytest.mark.parametrize("deleted,absent", [(4, 0), (0, 4), (-1, 0)])
+def test_reset_history_refuses_impossible_completed_counts(deleted: int, absent: int) -> None:
+    with pytest.raises(ValueError):
+        decode_machine_receipt(
+            {
+                "kind": "identity-reset/v1",
+                "suppressed_count": 3,
+                "deleted_archive_rows": deleted,
+                "tombstoned_without_index_row_count": absent,
+            }
+        )

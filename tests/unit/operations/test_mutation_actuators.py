@@ -686,9 +686,13 @@ class TestIdentityResetActuator:
         assert receipt.affected_count == 1
         # The receipt names what had no rebuildable row, so a zero deleted-row
         # count can never be read as "nothing was tombstoned".
-        domain_receipt = receipt.domain_receipt or {}
-        assert domain_receipt["deleted_archive_rows"] == 0
-        assert domain_receipt["tombstoned_without_index_row"] == [vanished]
+        from polylogue.operations.machine_receipts import IdentityResetHistoricalReceipt
+
+        history = receipt.historical_receipt
+        assert isinstance(history, IdentityResetHistoricalReceipt)
+        assert history.deleted_archive_rows == 0
+        assert history.tombstoned_without_index_row_count == 1
+        assert receipt.target_refs == (f"session:{vanished}",)
         with closing(sqlite3.connect(archive_root / "user.db")) as conn, conn:
             assert (
                 conn.execute(

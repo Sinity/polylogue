@@ -264,7 +264,7 @@ class DaemonClient:
         # Explicit and mutation deadlines leave room for the server response
         # without changing a client shared by other calls.
         deadline_ms = request.deadline_ms
-        if writes and deadline_ms is None:
+        if writes and deadline_ms is None and not (spec.accepted_reference or spec.durable_request):
             raise DaemonOperationProtocolError("write operation request has no execution deadline")
 
         def bound_body() -> dict[str, object]:
@@ -568,13 +568,13 @@ class DaemonClient:
             raise
         if envelope is None or envelope.get("outcome") not in {"accepted", "running"}:
             return envelope
-        if spec.deadline_s is None:
+        if spec.deadline_s is None and not (spec.accepted_reference or spec.durable_request):
             raise DaemonOperationProtocolError("read operation returned accepted mutation work")
         return self._follow_accepted(
             operation,
             envelope,
             archive_root=archive_root,
-            deadline=started + spec.deadline_s,
+            deadline=None if spec.deadline_s is None else started + spec.deadline_s,
             progress_callback=progress_callback,
         )
 
@@ -602,13 +602,13 @@ class DaemonClient:
         if envelope.get("outcome") not in {"accepted", "running"}:
             return dict(envelope)
         budget = spec.deadline_s if wait_s is None else wait_s
-        if budget is None:
+        if budget is None and not (spec.accepted_reference or spec.durable_request):
             raise DaemonOperationProtocolError("read operation returned accepted mutation work")
         return self._follow_accepted(
             operation,
             envelope,
             archive_root=archive_root,
-            deadline=perf_counter() + budget,
+            deadline=None if budget is None else perf_counter() + budget,
             progress_callback=progress_callback,
         )
 
@@ -618,7 +618,7 @@ class DaemonClient:
         envelope: Mapping[str, Any],
         *,
         archive_root: str,
-        deadline: float,
+        deadline: float | None,
         progress_callback: Callable[[Mapping[str, Any]], None] | None,
     ) -> dict[str, Any]:
         spec = daemon_operation_spec(operation)
@@ -636,9 +636,9 @@ class DaemonClient:
         # indeterminate for a write the daemon durably accepted, and the
         # recovery it forces on the operator is the read skipped here.
         consulted = False
-        while not consulted or perf_counter() < deadline:
+        while not consulted or deadline is None or perf_counter() < deadline:
             consulted = True
-            timeout_ms = max(1, min(30_000, int((deadline - perf_counter()) * 1000)))
+            timeout_ms = 30_000 if deadline is None else max(1, min(30_000, int((deadline - perf_counter()) * 1000)))
             try:
                 waited = self.await_operation(
                     target,

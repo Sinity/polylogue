@@ -444,6 +444,16 @@ def test_restart_leaves_an_interrupted_mutation_complete_and_unblocked(
     assert (status, reason) == ("completed", "recovered_complete")
     assert target_states <= {"applied", "already_satisfied"}
     assert blocking == 0
+    if scenario.name == "identity-reset":
+        from polylogue.operations.audit import AuditRepository
+        from polylogue.operations.machine_receipts import IdentityResetHistoricalReceipt
+
+        history = AuditRepository.for_archive_root(root).historical_machine_receipt(operation_id)
+        assert isinstance(history, IdentityResetHistoricalReceipt)
+        assert history.count_scope == "completing-apply"
+        assert history.suppressed_count == 1
+        assert history.deleted_archive_rows == (1 if crash == "before-apply" else 0)
+        assert history.tombstoned_without_index_row_count == 0
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         assert scenario.applied(root, archive)
 
