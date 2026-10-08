@@ -116,7 +116,6 @@ extensible registry):
 | `fts-parity` | `messages_fts` exactly covers its source `blocks` rows, archive-wide, with the worst-offending sessions surfaced by name. |
 | `lineage-sanity` | `session_links.resolved_dst_session_id` and `branch_point_message_id` resolve to real sessions/messages (the latter is deliberately not a foreign key — see the data-model docs). |
 | `planner-stats` | `sqlite_stat1` covers `blocks`/`messages`/`session_links`/`action_pairs` (warn-level: a fresh generation without `ANALYZE` picks pathological query plans, polylogue-l3tk class). |
-| `counts-summary` | Archive-wide session/message/block counts and an origin breakdown — the numbers-freeze starting point for an operator handoff. |
 
 The configured frontier is a current source projection, not a cross-run
 registry of optional child roots. It omits hook carrier or pending children
