@@ -1136,7 +1136,7 @@ async def _run_convergence_debt_pass(db: Path) -> None:
                     partial(
                         _run_with_stage_admission,
                         _daemon_stage_write_admission(),
-                        partial(_drain_convergence_debt_backlog, db, compute_adapter=adapter),
+                        partial(_drain_convergence_debt_and_frontier, db, compute_adapter=adapter),
                     )
                 ),
                 admission_class="incremental-background",
@@ -1164,6 +1164,27 @@ async def _run_convergence_debt_pass(db: Path) -> None:
             pass_span.ok(retried=repaired)
         else:
             pass_span.empty(retried=0)
+
+
+def _drain_convergence_debt_and_frontier(db: Path, *, compute_adapter: BoundedComputeAdapter) -> int:
+    """Derive frontier work even when an unadmitted pass recorded no debt.
+
+    This runs on the periodic pass's original admitted compute worker, with
+    its existing stage writer bridge. Completed current coverage skips the
+    census; a changed source/cursor watermark or an absent mark requires it.
+    """
+    from polylogue.operations.raw_frontier_inspection import make_raw_frontier_inspection_stage
+
+    retried = _drain_convergence_debt_backlog(db, compute_adapter=compute_adapter)
+    stage = make_raw_frontier_inspection_stage(db, compute_adapter=compute_adapter)
+    if stage.check(db):
+        healthy = stage.execute(db)
+        emit(
+            "daemon.raw_frontier_inspection.pass.completed",
+            outcome="ok" if healthy else "blocked",
+            path=db,
+        )
+    return retried
 
 
 async def _periodic_raw_materialization_convergence(

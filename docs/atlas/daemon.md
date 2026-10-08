@@ -356,3 +356,11 @@ filters original retirement eligibility before total/page selection and adoption
 checks it before renewing a lease, so a premarker expired terminal job cannot
 revive through recovery. This receiver state is separate from the archive tiers
 and archive writer.
+
+The periodic convergence-debt owner also checks canonical accepted-frontier
+coverage after draining stage debts. It runs the existing inspection stage on
+the same admitted compute worker and stage writer bridge when the mark is absent
+or its source/cursor authority changed. A full-convergence admission refusal
+can leave no debt rows, so an empty debt ledger does not suppress this check.
+Completed current healthy coverage avoids another census; cancellation and
+inspection refusals retain their ordinary typed outcomes.
