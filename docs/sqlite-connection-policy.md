@@ -72,7 +72,8 @@ external databases keep their own destination contracts.
 
 The CLI uses one per-open residency and archive-ownership check whether a daemon
 was present at entry or arrives later. Its process-wide residency interceptor
-refuses configured-archive writes and admits separately owned scratch archives.
+admits configured-archive writes only from that archive's daemon coordinator,
+and admits separately owned scratch archives.
 Its filename/URI classifier belongs to `maintenance/offline_guard.py`; it does
 not grant a write lease.
 
